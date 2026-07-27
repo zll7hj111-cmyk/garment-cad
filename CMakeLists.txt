@@ -90,3 +90,39 @@ add_executable(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets)
+
+# --- Unit Tests (CTest + Qt Test) ---
+enable_testing()
+find_package(Qt6 REQUIRED COMPONENTS Test)
+
+# Test: ExpressionEvaluator
+add_executable(test_expression
+    tests/test_expression.cpp
+    src/parametric/ExpressionEvaluator.h
+    src/parametric/ExpressionEvaluator.cpp
+)
+target_include_directories(test_expression PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_expression PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME test_expression COMMAND test_expression)
+
+# Test: Resolver
+add_executable(test_resolver
+    tests/test_resolver.cpp
+    src/parametric/Resolver.h
+    src/parametric/Resolver.cpp
+    src/parametric/Block.h
+    src/parametric/Block.cpp
+    src/parametric/ExpressionEvaluator.h
+    src/parametric/ExpressionEvaluator.cpp
+    src/parametric/ConditionEngine.h
+    src/parametric/ConditionEngine.cpp
+    src/parametric/ParamPoint.h
+    src/parametric/Segment.h
+    src/parametric/Attachment.h
+    src/parametric/Condition.h
+    src/geometry/Vec2.h
+    src/geometry/Units.h
+)
+target_include_directories(test_resolver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_resolver PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_resolver COMMAND test_resolver)
