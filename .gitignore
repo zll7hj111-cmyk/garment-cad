@@ -1,0 +1,49 @@
+# Build output
+build/
+out/
+
+# IDE / Editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+
+# CMake user presets (local config, not shared)
+CMakeUserPresets.json
+CMakeSettings.json
+
+# Compiled objects
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+
+# Qt generated
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+*.qrc.depends
+*.pro.user
+*.pro.user.*
+.moc/
+.rcc/
+.uic/
+
+# Clang / tooling
+.clang-tidy
+.clang-format
+compile_commands.json
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Qoder local
+.qoder/
