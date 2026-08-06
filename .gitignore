@@ -47,3 +47,28 @@ Thumbs.db
 
 # Qoder local
 .qoder/
+
+# ── Root-level debug / UI-automation artifacts (not project source) ──
+# Historical UI-probing scripts, screenshots, scan logs and tool-local files
+# were accidentally committed once; they are excluded from now on.
+.reasonix/
+Testing/
+reasonix.toml
+@AutomationLog.txt
+_probe.py
+temp_save.zip
+temp_save/
+/*.ps1
+/*.png
+# Root-level scan/log text files (explicit — NEVER match CMakeLists.txt)
+/scan*.txt
+/tp_*.txt
+/uia_*.txt
+/border_scan.txt
+/build_log.txt
+/cb_scan.txt
+/full_rows.txt
+/hborder.txt
+/rgb_scan.txt
+/row1_content.txt
+/vborder.txt
