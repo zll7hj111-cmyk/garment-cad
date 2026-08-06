@@ -1,0 +1,22 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+<qresource prefix="/icons">
+    <file alias="cursor-click.svg">icons/cursor-click.svg</file>
+    <file alias="pen.svg">icons/pen.svg</file>
+    <file alias="plus.svg">icons/plus.svg</file>
+    <file alias="x.svg">icons/x.svg</file>
+    <file alias="caret-right.svg">icons/caret-right.svg</file>
+    <file alias="caret-down.svg">icons/caret-down.svg</file>
+    <file alias="funnel.svg">icons/funnel.svg</file>
+    <file alias="t-shirt.svg">icons/t-shirt.svg</file>
+    <file alias="tree-structure.svg">icons/tree-structure.svg</file>
+    <file alias="trash.svg">icons/trash.svg</file>
+    <file alias="copy.svg">icons/copy.svg</file>
+    <file alias="ruler.svg">icons/ruler.svg</file>
+    <file alias="sigma.svg">icons/sigma.svg</file>
+    <file alias="rotate.svg">icons/rotate.svg</file>
+    <file alias="scissors.svg">icons/scissors.svg</file>
+    <file alias="eye.svg">icons/eye.svg</file>
+    <file alias="eye-closed.svg">icons/eye-closed.svg</file>
+</qresource>
+</RCC>

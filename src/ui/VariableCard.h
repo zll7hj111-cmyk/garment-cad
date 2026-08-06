@@ -12,10 +12,9 @@ class QLabel;
 
 namespace cad::ui { class CopyChip; }
 
-/// Collapsible single-row card for one variable.
-/// Collapsed: [▸] [Name] [Value]        [✕]
-/// Expanded:  [▾] [Name] [Value]        [✕]
-///            [refName chip] [comment edit]
+/// Single-row card for one variable (always expanded).
+/// Layout: [Name] [Value]        [✕]
+///         [refName chip] [value spin] [comment edit]
 class VariableCard : public QWidget
 {
     Q_OBJECT
@@ -27,8 +26,11 @@ public:
     [[nodiscard]] QUuid variableId() const { return m_id; }
     [[nodiscard]] cad::param::Variable variable() const;
 
+    /// Update displayed fields from the model without emitting signals.
+    /// Skips the value spin when it has keyboard focus (user is typing).
+    void syncFromModel(const cad::param::Variable& var);
+
     void focusName();
-    void setExpanded(bool on);
 
 signals:
     void deleteRequested(const QUuid& id);
@@ -36,17 +38,15 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
-    bool eventFilter(QObject* obj, QEvent* event) override;
+    void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     void setupUi(const cad::param::Variable& var, bool alternate);
-    void toggleExpanded();
     void updateValueLabel();
 
     QUuid m_id;
-    bool  m_expanded = false;
 
-    QLabel*          m_arrow = nullptr;
     cad::ui::CopyChip* m_nameChip = nullptr;
     QLabel*          m_valueLabel = nullptr;
     QToolButton*     m_deleteBtn = nullptr;

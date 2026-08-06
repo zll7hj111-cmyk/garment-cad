@@ -5,6 +5,7 @@
 #include <QStackedWidget>
 
 #include "VariablePanel.h"
+#include "LayerPanel.h"
 #include "GroupPanel.h"
 
 SidePanel::SidePanel(cad::param::ParamDocument* paramDoc, CanvasScene* scene,
@@ -19,10 +20,11 @@ SidePanel::SidePanel(cad::param::ParamDocument* paramDoc, CanvasScene* scene,
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    // ===== Top-level tab bar: 变量 / 组结构 =====
+    // ===== Top-level tab bar: 变量 / 图层 / 组 =====
     m_tabBar = new QTabBar(central);
     m_tabBar->addTab(QString::fromUtf8("变量"));
-    m_tabBar->addTab(QString::fromUtf8("组结构"));
+    m_tabBar->addTab(QString::fromUtf8("图层"));
+    m_tabBar->addTab(QString::fromUtf8("组"));
     m_tabBar->setExpanding(true);
     m_tabBar->setDrawBase(false);
     m_tabBar->setCursor(Qt::PointingHandCursor);
@@ -40,10 +42,12 @@ SidePanel::SidePanel(cad::param::ParamDocument* paramDoc, CanvasScene* scene,
 
     // ===== Stacked pages =====
     m_stack = new QStackedWidget(central);
-    m_variablePanel = new VariablePanel(m_stack);
-    m_groupPanel    = new GroupPanel(paramDoc, scene, m_stack);
+    m_variablePanel = new VariablePanel(paramDoc, m_stack);
+    m_layerPanel    = new LayerPanel(paramDoc, m_stack);
+    m_groupPanel    = new GroupPanel(paramDoc, m_stack);
     m_stack->addWidget(m_variablePanel);  // index 0
-    m_stack->addWidget(m_groupPanel);     // index 1
+    m_stack->addWidget(m_layerPanel);     // index 1
+    m_stack->addWidget(m_groupPanel);     // index 2
     layout->addWidget(m_stack, 1);
 
     setWidget(central);

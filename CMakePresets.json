@@ -8,12 +8,12 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "Default (Ninja + MSVC)",
-      "description": "使用 Ninja 生成器，需先运行 vcvarsall.bat 或从 Developer Command Prompt 启动",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/default",
+      "displayName": "默认构建",
+      "description": "使用 Visual Studio 生成器，无需额外环境配置",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/out",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_CXX_STANDARD": "23",
         "CMAKE_PREFIX_PATH": {
           "type": "PATH",
@@ -25,60 +25,23 @@
       },
       "vendor": {
         "qt-project.org/qt": {
-          "hint": "设置环境变量 QT_DIR 指向 Qt6 安装路径的 msvc2022_64 目录，例如 C:/Qt/6.8.0/msvc2022_64"
+          "hint": "设置环境变量 QT_DIR 指向 Qt6 安装路径的 msvc2022_64 目录，例如 C:/Qt/6.11.1/msvc2022_64"
         }
-      }
-    },
-    {
-      "name": "debug",
-      "displayName": "Debug (Ninja + MSVC)",
-      "description": "Debug 构建，含完整调试符号",
-      "inherits": "default",
-      "binaryDir": "${sourceDir}/build/debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "vs",
-      "displayName": "Visual Studio 2022",
-      "description": "使用 Visual Studio 生成器，无需预配置编译环境",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "binaryDir": "${sourceDir}/build/vs",
-      "cacheVariables": {
-        "CMAKE_PREFIX_PATH": {
-          "type": "PATH",
-          "value": "$env{QT_DIR}"
-        }
-      },
-      "environment": {
-        "QT_DIR": "$penv{QT_DIR}"
       }
     }
   ],
   "buildPresets": [
     {
       "name": "default",
-      "displayName": "Release (RelWithDebInfo)",
-      "configurePreset": "default"
-    },
-    {
-      "name": "debug",
-      "displayName": "Debug",
-      "configurePreset": "debug"
-    },
-    {
-      "name": "vs-release",
-      "displayName": "VS Release",
-      "configurePreset": "vs",
-      "configuration": "Release"
-    },
-    {
-      "name": "vs-debug",
-      "displayName": "VS Debug",
-      "configurePreset": "vs",
+      "displayName": "Debug 构建",
+      "configurePreset": "default",
       "configuration": "Debug"
+    },
+    {
+      "name": "release",
+      "displayName": "Release 构建",
+      "configurePreset": "default",
+      "configuration": "Release"
     }
   ]
 }

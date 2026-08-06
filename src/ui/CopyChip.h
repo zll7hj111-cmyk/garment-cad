@@ -50,6 +50,7 @@ private:
     QString m_text;
     QString m_placeholder;
     bool m_copyEnabled = true;
+    bool m_placeholderStyled = false;   ///< label shows placeholder style (avoids per-frame setStyleSheet)
 
     QLabel*    m_label = nullptr;
     QLineEdit* m_edit  = nullptr;   ///< Hidden overlay, shown only during editing.

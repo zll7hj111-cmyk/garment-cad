@@ -1,14 +1,23 @@
-#pragma once
+﻿#pragma once
 
 #include <QGraphicsScene>
 #include <QHash>
+#include <QSet>
 #include <QUuid>
+
+#include "CanvasStyle.h"
+#include "CanvasAnimator.h"
+
+class QGraphicsRectItem;
+class QTimer;
 
 namespace cad::param { class ParamDocument; }
 
 class BlockItem;
+class GroupBadgeItem;
 
 /// The scene that holds all entity items and the origin crosshair.
+/// Owns the CanvasStyle (design tokens) and CanvasAnimator (transition engine).
 class CanvasScene : public QGraphicsScene
 {
     Q_OBJECT
@@ -19,14 +28,36 @@ public:
 
     [[nodiscard]] cad::param::ParamDocument* paramDocument() const { return m_paramDoc; }
 
+    /// Access the style token table.
+    [[nodiscard]] const CanvasStyle* style() const { return &m_style; }
+
+    /// Access the animation engine.
+    [[nodiscard]] CanvasAnimator* animator() { return &m_animator; }
+
+    /// Replace the active theme (triggers full scene repaint).
+    void setStyle(const CanvasStyle& s);
+
     /// Create and add a BlockItem for the given block ID.
     void addBlockItem(const QUuid& blockId);
 
     /// Remove the BlockItem for the given block ID.
     void removeBlockItem(const QUuid& blockId);
 
+    /// Remove every BlockItem (used on document reset / load).
+    void clearAllBlockItems();
+
     /// Refresh all BlockItems (call after resolve).
     void refreshAllBlockItems();
+
+    /// Lightweight position sync for all BlockItems: items whose block only
+    /// translated are moved via setPos() (O(1) each — no cache rebuild, no
+    /// string formatting, no allocation). Items whose block rotated fall back
+    /// to a full refresh. Call after resolveAll() or direct transform edits.
+    void syncBlockPositions();
+
+    /// Targeted sync for a subset of blocks (drag hot-path: only the dragged
+    /// blocks are touched — the rest of the scene is not even iterated).
+    void syncBlockPositions(const QList<QUuid>& blockIds);
 
     /// Select exactly the given block on canvas (clears previous selection).
     /// Drives group highlighting via selectionChanged.
@@ -36,21 +67,70 @@ public:
     [[nodiscard]] BlockItem* findBlockItem(const QUuid& blockId) const;
 
     /// Notify listeners (e.g. group panel) that group display info (names or
-    /// construction angles) changed without a structural topology change.
+    /// follower angles) changed without a structural topology change.
     void notifyGroupInfoChanged();
+
+    /// Transient toast pill anchored at the top-center of the first view
+    /// (工具守卫提示, auto-hides after ~1.4 s). Shared by every tool.
+    void showToast(const QString& text);
+
+    /// Flash the two source points of a measurement: amber rings on both
+    /// points plus an amber dashed connector (ToolMeasure preview style).
+    /// The transient graphics self-destruct after ~1.5 s. Returns false when
+    /// either block/point is missing or unresolved (caller falls back to a
+    /// whole-block highlight).
+    bool flashMeasure(const QUuid& blockA, const QUuid& pointA,
+                      const QUuid& blockB, const QUuid& pointB);
+
+    /// Group-hover coordination (成组悬停): nominate the block under the
+    /// cursor as the hover source — every SIBLING member of its user group
+    /// lights up (null id clears the broadcast).
+    void setGroupHoverSource(const QUuid& blockId);
+
+    /// Reconcile the group badges (组徽标): create/drop pills for groups
+    /// that appeared/vanished, refresh labels + visibility (members all on
+    /// manually hidden layers → badge hidden) and reposition. Runs on group
+    /// registry / layer changes (LOW frequency) — badge geometry during live
+    /// drags is handled by updateGroupBadgePositions() alone.
+    void reconcileGroupBadges();
+    /// Reposition every badge above its member union bounds. Cheap — the
+    /// per-frame path after resolves; never creates/drops pills or rewrites
+    /// labels (membership/visibility changes land via reconcile).
+    void updateGroupBadgePositions();
+    /// The badge item of a group (null when the group has no badge yet).
+    [[nodiscard]] GroupBadgeItem* groupBadge(const QUuid& groupId) const;
+    /// Accent the badges of the given groups (selection state, driven by
+    /// ToolSelect's confirmed selection).
+    void setGroupSelected(const QSet<QUuid>& groupIds);
 
 signals:
     void sceneMouseMoved(qreal x, qreal y);
     void groupInfoChanged();
+    /// Badge clicked — the host window selects the whole group on canvas.
+    void groupBadgeClicked(const QUuid& groupId);
 
 protected:
     void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
 
 private:
-    /// Recompute the soft group highlight from the current selection.
-    void updateGroupHighlight();
-
-private:
     cad::param::ParamDocument* m_paramDoc = nullptr;
     QHash<QUuid, BlockItem*> m_blockItems;
+
+    CanvasStyle m_style = CanvasStyle::lightTheme();
+    CanvasAnimator m_animator;
+
+    // Toast overlay (owned by the scene, lazily created).
+    QGraphicsRectItem* m_toastItem = nullptr;
+    QTimer* m_toastTimer = nullptr;
+
+    // Group-hover source (block currently hovered, null = none).
+    QUuid m_groupHoverSource;
+    /// All members of the block's user group (empty when ungrouped).
+    [[nodiscard]] QSet<QUuid> groupMemberSet(const QUuid& blockId) const;
+
+    // Group badges (组徽标) — one item per group, reconciled by reconcileGroupBadges.
+    QHash<QUuid, GroupBadgeItem*> m_groupBadges;
+    QSet<QUuid> m_selectedGroups;   ///< Groups whose badges are accented.
+    void onBadgeHover(const QUuid& groupId, bool hovered);
+    void updateBadgeAccents();
 };

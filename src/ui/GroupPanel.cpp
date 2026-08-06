@@ -1,193 +1,501 @@
 #include "GroupPanel.h"
 
-#include <QTreeWidget>
-#include <QTreeWidgetItem>
-#include <QHeaderView>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QScrollArea>
+#include <QLabel>
+#include <QCheckBox>
+#include <QToolButton>
+#include <QPushButton>
+#include <QMenu>
+#include <QInputDialog>
+#include <QDrag>
+#include <QMimeData>
+#include <QApplication>
+#include <QDropEvent>
 #include <QKeyEvent>
+#include <QUndoStack>
+#include <QFrame>
+#include <QEvent>
 
-#include "canvas/CanvasScene.h"
+#include "IconHelper.h"
 #include "parametric/ParamDocument.h"
-#include "parametric/GroupModel.h"
-#include "tools/LinePropertyDialog.h"
-#include "ui/SerialDelegate.h"
+#include "parametric/Block.h"
+#include "parametric/Segment.h"
+#include "parametric/Serial.h"
+#include "document/commands/GroupCommands.h"
 
-GroupPanel::GroupPanel(cad::param::ParamDocument* paramDoc, CanvasScene* scene,
-                       QWidget* parent)
+namespace {
+
+/// Drag-drop MIME type for reordering the group list.
+constexpr char kGroupMime[] = "application/x-gcad-group";
+
+/// One group card: [checkbox] [caret] [serial tag] [name] [count pill]
+/// + a collapsible member preview. The card body click selects the whole
+/// group; dragging reorders the list; Enter/Delete work on focus.
+class GroupCard : public QFrame
+{
+    Q_OBJECT
+
+public:
+    GroupCard(cad::param::ParamDocument* doc, const QUuid& groupId, QWidget* parent)
+        : QFrame(parent)
+        , m_doc(doc)
+        , m_groupId(groupId)
+    {
+        setObjectName(QStringLiteral("GroupCard"));
+        // Pure selector rules only (bare declarations mixed with :hover rules
+        // break Qt's stylesheet parser — see LayerPanel's SegmentRow note).
+        m_baseStyle =
+            "QFrame#GroupCard { background: #FFFFFF; border: 1px solid #E5E8E8;"
+            "  border-radius: 8px; }"
+            "QFrame#GroupCard:hover { border: 1px solid #AED6F1; background: #FBFDFF; }";
+        m_dropStyle =
+            "QFrame#GroupCard { background: #EBF5FB; border: 2px dashed #2E86C1;"
+            "  border-radius: 8px; }";
+        setStyleSheet(m_baseStyle);
+        setCursor(Qt::PointingHandCursor);
+        setContextMenuPolicy(Qt::CustomContextMenu);
+        setFocusPolicy(Qt::StrongFocus);
+        setAttribute(Qt::WA_StyledBackground, true);
+
+        auto* outer = new QVBoxLayout(this);
+        outer->setContentsMargins(8, 6, 10, 6);
+        outer->setSpacing(4);
+
+        // ── Row 1: checkbox / caret / tag / name / count ──
+        auto* row = new QHBoxLayout();
+        row->setSpacing(6);
+
+        m_check = new QCheckBox(this);
+        m_check->setCursor(Qt::PointingHandCursor);
+        connect(m_check, &QCheckBox::toggled, this,
+                [this](bool on) { emit checkChanged(m_groupId, on); });
+        row->addWidget(m_check);
+
+        m_caret = new QToolButton(this);
+        m_caret->setCheckable(true);
+        m_caret->setCursor(Qt::PointingHandCursor);
+        m_caret->setFixedSize(16, 16);
+        m_caret->setStyleSheet(
+            "QToolButton { background: transparent; border: none; border-radius: 3px; }"
+            "QToolButton:hover { background: #EBF5FB; }");
+        m_caret->setIcon(cad::ui::IconHelper::iconByName(
+            QStringLiteral("caret-right"), QColor(0x7F, 0x8C, 0x8D)));
+        m_caret->setIconSize(QSize(12, 12));
+        connect(m_caret, &QToolButton::toggled, this, [this](bool on) {
+            m_caret->setIcon(cad::ui::IconHelper::iconByName(
+                on ? QStringLiteral("caret-down") : QStringLiteral("caret-right"),
+                QColor(0x7F, 0x8C, 0x8D)));
+            m_memberBox->setVisible(on);
+        });
+        row->addWidget(m_caret);
+
+        // Serial tag badge.
+        QString serial, name;
+        if (const auto* g = doc ? doc->findGroup(groupId) : nullptr) {
+            serial = g->serial;
+            name = g->name;
+        }
+        auto* tagLbl = new QLabel(cad::param::Serial::tag(serial), this);
+        tagLbl->setToolTip(serial);
+        tagLbl->setStyleSheet(
+            "QLabel { font-family: Consolas, monospace; font-size: 11px;"
+            "  color: #5D6D7E; background: #F4F6F7; border-radius: 3px;"
+            "  padding: 1px 4px; }");
+        row->addWidget(tagLbl);
+
+        // Group name (or muted placeholder when unnamed).
+        auto* nameLbl = new QLabel(this);
+        if (name.isEmpty()) {
+            nameLbl->setText(QString::fromUtf8("\xe6\x9c\xaa\xe5\x91\xbd\xe5\x90\x8d"));  // 未命名
+            nameLbl->setStyleSheet(
+                "QLabel { font-size: 12px; color: #BDC3C7; background: transparent; }");
+        } else {
+            nameLbl->setText(name);
+            nameLbl->setStyleSheet(
+                "QLabel { font-size: 12px; color: #34495E; background: transparent; }");
+        }
+        row->addWidget(nameLbl, 1);
+
+        // Member count pill.
+        const int count = doc ? doc->blocksInGroup(groupId).size() : 0;
+        auto* countLbl = new QLabel(
+            QString::fromUtf8("%1 \xe6\x9d\xa1").arg(count), this);  // N 条
+        countLbl->setStyleSheet(
+            "QLabel { font-size: 11px; color: #2E86C1; background: #EBF5FB;"
+            "  border-radius: 8px; padding: 1px 7px; }");
+        row->addWidget(countLbl);
+        outer->addLayout(row);
+
+        // ── Row 2: member preview (collapsed by default) ──
+        m_memberBox = new QWidget(this);
+        m_memberLayout = new QVBoxLayout(m_memberBox);
+        m_memberLayout->setContentsMargins(26, 2, 4, 2);
+        m_memberLayout->setSpacing(2);
+        m_memberBox->setVisible(false);
+        if (doc) {
+            for (const QUuid& memberId : doc->blocksInGroup(groupId)) {
+                const cad::param::Block* b = doc->findBlock(memberId);
+                if (!b) continue;
+                QString segSerial, segName;
+                if (!b->segments.empty()) {
+                    segSerial = b->segments.front().serial;
+                    segName = b->segments.front().name;
+                }
+                auto* mrow = new QWidget(m_memberBox);
+                auto* mlay = new QHBoxLayout(mrow);
+                mlay->setContentsMargins(0, 0, 0, 0);
+                mlay->setSpacing(6);
+                auto* mtag = new QLabel(cad::param::Serial::tag(segSerial), mrow);
+                mtag->setToolTip(segSerial);
+                mtag->setStyleSheet(
+                    "QLabel { font-family: Consolas, monospace; font-size: 10px;"
+                    "  color: #95A5A6; background: transparent; }");
+                mlay->addWidget(mtag);
+                auto* mname = new QLabel(segName.isEmpty()
+                    ? QString::fromUtf8("\xe2\x80\x94") : segName, mrow);  // —
+                mname->setStyleSheet(
+                    "QLabel { font-size: 11px; color: #5D6D7E; background: transparent; }");
+                mlay->addWidget(mname, 1);
+                m_memberLayout->addWidget(mrow);
+            }
+        }
+        outer->addWidget(m_memberBox);
+    }
+
+    [[nodiscard]] QUuid groupId() const { return m_groupId; }
+
+    /// Visual feedback while a drag hovers over this card (reorder target).
+    void setDropHighlight(bool on)
+    {
+        setStyleSheet(on ? m_dropStyle : m_baseStyle);
+    }
+
+signals:
+    void clicked(const QUuid& groupId);              ///< Card body click / Enter.
+    void dissolveRequested(const QUuid& groupId);    ///< Delete key.
+    void checkChanged(const QUuid& groupId, bool on);///< Batch checkbox.
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            m_pressPos = event->pos();
+            m_pressed = true;
+            m_dragStarted = false;
+            setFocus();   // keyboard navigation target
+        }
+        QFrame::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (m_pressed && !m_dragStarted
+            && (event->buttons() & Qt::LeftButton)
+            && (event->pos() - m_pressPos).manhattanLength()
+                   > QApplication::startDragDistance()) {
+            m_dragStarted = true;
+            auto* mime = new QMimeData;
+            mime->setData(QString::fromLatin1(kGroupMime), m_groupId.toByteArray());
+            auto* drag = new QDrag(this);
+            drag->setMimeData(mime);
+            drag->exec(Qt::MoveAction);
+        }
+        QFrame::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (m_pressed && !m_dragStarted && event->button() == Qt::LeftButton
+            && rect().contains(event->pos()))
+            emit clicked(m_groupId);
+        m_pressed = false;
+        m_dragStarted = false;
+        QFrame::mouseReleaseEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            emit clicked(m_groupId);
+        else if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
+            emit dissolveRequested(m_groupId);
+        QFrame::keyPressEvent(event);
+    }
+
+private:
+    cad::param::ParamDocument* m_doc = nullptr;
+    QUuid m_groupId;
+    QString m_baseStyle;
+    QString m_dropStyle;
+    QCheckBox* m_check = nullptr;
+    QToolButton* m_caret = nullptr;
+    QWidget* m_memberBox = nullptr;
+    QVBoxLayout* m_memberLayout = nullptr;
+    QPoint m_pressPos;
+    bool m_pressed = false;
+    bool m_dragStarted = false;
+};
+
+} // namespace
+
+GroupPanel::GroupPanel(cad::param::ParamDocument* doc, QWidget* parent)
     : QWidget(parent)
-    , m_paramDoc(paramDoc)
-    , m_scene(scene)
+    , m_doc(doc)
 {
     setupUi();
 
-    // Group registry changes (attach/detach/add/remove, rename) rebuild the tree.
-    if (m_paramDoc)
-        connect(m_paramDoc, &cad::param::ParamDocument::groupsChanged,
-                this, &GroupPanel::refresh);
-    // Segment name / angle edits (no topology change) also refresh the labels.
-    if (m_scene)
-        connect(m_scene, &CanvasScene::groupInfoChanged,
-                this, &GroupPanel::refresh);
-
+    if (m_doc) {
+        // QueuedConnection: groupsChanged can fire from within a command's
+        // redo while the panel is mid-refresh — rebuilding synchronously
+        // would delete the widgets being iterated (LayerPanel known pitfall).
+        connect(m_doc, &cad::param::ParamDocument::groupsChanged,
+                this, &GroupPanel::refresh, Qt::QueuedConnection);
+        connect(m_doc, &cad::param::ParamDocument::documentReset,
+                this, &GroupPanel::refresh, Qt::QueuedConnection);
+    }
     refresh();
 }
 
 void GroupPanel::setupUi()
 {
-    m_tree = new QTreeWidget(this);
-    m_tree->setColumnCount(3);
-    m_tree->setHeaderLabels({QString::fromUtf8("ID"),
-                             QString::fromUtf8("名称"),
-                             QString::fromUtf8("数量")});
-    m_tree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_tree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    // Two-color readable serials in the ID column.
-    m_tree->setItemDelegateForColumn(0, new cad::ui::SerialDelegate(m_tree));
-    // Inline name editing via F2 / typing (mouse double-click is handled manually
-    // to avoid clashing with "double-click opens dialog").
-    m_tree->setEditTriggers(QAbstractItemView::EditKeyPressed);
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
 
-    m_tree->installEventFilter(this);
+    // Header: title + count pill + batch dissolve.
+    auto* header = new QWidget(this);
+    auto* headerLay = new QHBoxLayout(header);
+    headerLay->setContentsMargins(12, 10, 12, 6);
+    headerLay->setSpacing(8);
+    auto* title = new QLabel(QString::fromUtf8("\xe7\xbb\x84"), header);  // 组
+    title->setStyleSheet("font-size: 13px; font-weight: bold; color: #34495E;");
+    headerLay->addWidget(title);
+    m_countLabel = new QLabel(QStringLiteral("0"), header);
+    m_countLabel->setStyleSheet(
+        "font-size: 11px; color: #7F8C8D; background: #F4F6F7;"
+        "border-radius: 8px; padding: 1px 7px;");
+    headerLay->addWidget(m_countLabel);
+    headerLay->addStretch(1);
+    m_batchBtn = new QPushButton(
+        QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe9\x80\x89\xe4\xb8\xad"), header);  // 解散选中
+    m_batchBtn->setCursor(Qt::PointingHandCursor);
+    m_batchBtn->setStyleSheet(
+        "QPushButton { font-size: 11px; color: #2E86C1; background: #EBF5FB;"
+        "  border: 1px solid #AED6F1; border-radius: 10px; padding: 3px 10px; }"
+        "QPushButton:hover { background: #D6EAF8; }"
+        "QPushButton:disabled { color: #BDC3C7; background: #F4F6F7; border-color: #E5E8E8; }");
+    m_batchBtn->setEnabled(false);
+    connect(m_batchBtn, &QPushButton::clicked, this, &GroupPanel::dissolveCheckedGroups);
+    headerLay->addWidget(m_batchBtn);
+    outer->addWidget(header);
 
-    connect(m_tree, &QTreeWidget::itemClicked,
-            this, &GroupPanel::onItemClicked);
-    connect(m_tree, &QTreeWidget::itemDoubleClicked,
-            this, &GroupPanel::onItemDoubleClicked);
-    connect(m_tree, &QTreeWidget::itemChanged,
-            this, &GroupPanel::onItemChanged);
+    // Scrollable card list.
+    m_scroll = new QScrollArea(this);
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_container = new QWidget();
+    m_container->setAcceptDrops(true);
+    m_container->installEventFilter(this);
+    m_listLayout = new QVBoxLayout(m_container);
+    m_listLayout->setContentsMargins(10, 4, 10, 10);
+    m_listLayout->setSpacing(6);
+    m_listLayout->addStretch(1);
+    m_scroll->setWidget(m_container);
+    outer->addWidget(m_scroll, 1);
 
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(m_tree);
+    // Empty-state hint.
+    m_emptyHint = new QLabel(
+        QString::fromUtf8("\xe5\xa4\x9a\xe9\x80\x89\xe7\xba\xbf\xe6\xae\xb5"
+                          "\xe5\x90\x8e\xe5\x8f\xb3\xe9\x94\xae\xe7\xa1\xae"
+                          "\xe8\xae\xa4\xef\xbc\x8c\xe5\x86\x8d\xe5\x8f\xb3"
+                          "\xe9\x94\xae\xe5\x8d\xb3\xe5\x8f\xaf\xe6\x88\x90"
+                          "\xe7\xbb\x84"),  // 多选线段后右键确认，再右键即可成组
+        m_container);
+    m_emptyHint->setWordWrap(true);
+    m_emptyHint->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    m_emptyHint->setStyleSheet("font-size: 12px; color: #B0BEC5; padding: 24px 12px;");
+    m_listLayout->addWidget(m_emptyHint);
 }
 
 void GroupPanel::refresh()
 {
-    if (!m_tree || !m_paramDoc) return;
+    if (!m_doc || !m_listLayout) return;
 
-    m_refreshing = true;
-    m_tree->clear();
-
-    for (const auto& group : m_paramDoc->groups()) {
-        auto* gItem = new QTreeWidgetItem(m_tree);
-        gItem->setData(0, cad::ui::SerialRole, group.serial);
-        gItem->setText(0, group.serial);
-        gItem->setText(1, group.name);
-        gItem->setData(0, RoleGroupId, group.id);
-        gItem->setData(0, RoleIsGroup, true);
-        gItem->setFlags(gItem->flags() | Qt::ItemIsEditable);
-
-        const QList<QUuid> members = m_paramDoc->blocksInGroup(group.id);
-        gItem->setText(2, QString::number(members.size())
-                              + QString::fromUtf8("根"));
-
-        if (!members.isEmpty()) {
-            const cad::param::GroupNode root =
-                cad::param::buildGroupTree(*m_paramDoc, members.first());
-            addMemberNode(root, gItem);
+    // Drop the drop-target highlight (cards may be stale) and every card.
+    m_dropTarget = nullptr;
+    while (m_listLayout->count() > 0) {
+        QLayoutItem* item = m_listLayout->takeAt(0);
+        if (QWidget* w = item->widget()) {
+            if (w != m_emptyHint)
+                w->deleteLater();
         }
-        gItem->setExpanded(true);
+        delete item;
     }
+    m_listLayout->addWidget(m_emptyHint);
+    m_cards.clear();
+    m_checked.clear();
+    updateBatchButton();
 
-    m_refreshing = false;
-}
+    const auto& groups = m_doc->groups();
+    m_countLabel->setText(QString::number(groups.size()));
+    m_emptyHint->setVisible(groups.empty());
 
-void GroupPanel::addMemberNode(const cad::param::GroupNode& node,
-                               QTreeWidgetItem* parent)
-{
-    auto* item = new QTreeWidgetItem(parent);
-    item->setData(0, cad::ui::SerialRole, node.serial);
-    item->setText(0, node.serial);
-    item->setText(1, node.name);
-    item->setData(0, RoleBlockId, node.blockId);
-    item->setData(0, RoleSegmentId, node.segmentId);
-    item->setData(0, RoleIsGroup, false);
-    item->setFlags(item->flags() | Qt::ItemIsEditable);
-
-    for (const auto& child : node.children)
-        addMemberNode(child, item);
-}
-
-void GroupPanel::onItemClicked(QTreeWidgetItem* item, int column)
-{
-    (void)column;
-    if (!item || !m_scene) return;
-    if (item->data(0, RoleIsGroup).toBool()) return;  // group row: no canvas select
-    const QUuid blockId = item->data(0, RoleBlockId).toUuid();
-    if (!blockId.isNull())
-        m_scene->selectBlock(blockId);  // selected segment turns red on canvas
-}
-
-void GroupPanel::onItemDoubleClicked(QTreeWidgetItem* item, int column)
-{
-    if (!item) return;
-
-    // Double-clicking the name cell edits it in place.
-    if (column == 1) {
-        m_tree->editItem(item, 1);
-        return;
+    for (const auto& g : groups) {
+        auto* card = new GroupCard(m_doc, g.id, m_container);
+        connect(card, &GroupCard::clicked, this, [this, gid = g.id] {
+            emit selectGroupRequested(m_doc->blocksInGroup(gid));
+        });
+        connect(card, &GroupCard::dissolveRequested, this,
+                [this](const QUuid& gid) { dissolveGroup(gid); });
+        connect(card, &GroupCard::checkChanged, this, [this](const QUuid& gid, bool on) {
+            if (on) m_checked.insert(gid);
+            else    m_checked.remove(gid);
+            updateBatchButton();
+        });
+        connect(card, &QWidget::customContextMenuRequested, this,
+                [card, this, gid = g.id](const QPoint& p) {
+                    showGroupMenu(card->mapToGlobal(p), gid);
+                });
+        m_listLayout->addWidget(card);
+        m_cards.append(card);
     }
-
-    // Double-clicking a member's ID cell opens the segment property dialog.
-    if (item->data(0, RoleIsGroup).toBool()) return;
-    if (!m_paramDoc || !m_scene) return;
-    const QUuid blockId = item->data(0, RoleBlockId).toUuid();
-    const QUuid segmentId = item->data(0, RoleSegmentId).toUuid();
-    if (blockId.isNull() || segmentId.isNull()) return;
-
-    cad::tools::LinePropertyDialog dlg(blockId, segmentId, m_paramDoc, m_scene, this);
-    dlg.exec();
-    refresh();
+    m_listLayout->addStretch(1);
 }
 
-void GroupPanel::onItemChanged(QTreeWidgetItem* item, int column)
+bool GroupPanel::eventFilter(QObject* watched, QEvent* event)
 {
-    if (m_refreshing || column != 1 || !item || !m_paramDoc) return;
-
-    const QString newName = item->text(1).trimmed();
-    if (item->data(0, RoleIsGroup).toBool()) {
-        const QUuid gid = item->data(0, RoleGroupId).toUuid();
-        m_paramDoc->setGroupName(gid, newName);  // emits groupsChanged -> refresh
-    } else {
-        const QUuid blockId = item->data(0, RoleBlockId).toUuid();
-        const QUuid segId = item->data(0, RoleSegmentId).toUuid();
-        if (auto* b = m_paramDoc->findBlock(blockId)) {
-            if (auto* s = b->findSegment(segId)) {
-                s->name = newName;
-                if (m_scene) {
-                    m_scene->refreshAllBlockItems();
-                    m_scene->notifyGroupInfoChanged();  // emits groupInfoChanged -> refresh
-                }
+    // ── Drag-drop on the container: reorder the group list. ──
+    if (watched == m_container) {
+        switch (event->type()) {
+        case QEvent::DragEnter: {
+            auto* de = static_cast<QDragEnterEvent*>(event);
+            if (de->mimeData()->hasFormat(QString::fromLatin1(kGroupMime))) {
+                de->acceptProposedAction();
+                return true;
             }
+            return false;
         }
-    }
-}
-
-bool GroupPanel::eventFilter(QObject* obj, QEvent* event)
-{
-    if (obj == m_tree && event->type() == QEvent::KeyPress) {
-        auto* ke = static_cast<QKeyEvent*>(event);
-        if (ke->key() == Qt::Key_Delete || ke->key() == Qt::Key_Backspace) {
-            kickOutSelected();
+        case QEvent::DragMove: {
+            auto* dm = static_cast<QDragMoveEvent*>(event);
+            if (!dm->mimeData()->hasFormat(QString::fromLatin1(kGroupMime)))
+                return false;
+            QWidget* target = cardAt(dm->position().toPoint());
+            if (target != m_dropTarget) {
+                if (auto* c = qobject_cast<GroupCard*>(m_dropTarget))
+                    c->setDropHighlight(false);
+                m_dropTarget = target;
+                if (auto* c = qobject_cast<GroupCard*>(m_dropTarget))
+                    c->setDropHighlight(true);
+            }
+            dm->acceptProposedAction();
             return true;
         }
+        case QEvent::DragLeave:
+            if (auto* c = qobject_cast<GroupCard*>(m_dropTarget))
+                c->setDropHighlight(false);
+            m_dropTarget = nullptr;
+            return false;
+        case QEvent::Drop: {
+            auto* de = static_cast<QDropEvent*>(event);
+            if (!de->mimeData()->hasFormat(QString::fromLatin1(kGroupMime)))
+                return false;
+            if (auto* c = qobject_cast<GroupCard*>(m_dropTarget))
+                c->setDropHighlight(false);
+            m_dropTarget = nullptr;
+
+            const QUuid gid = QUuid::fromString(
+                QString::fromUtf8(de->mimeData()->data(QString::fromLatin1(kGroupMime))));
+            const QWidget* target = cardAt(de->position().toPoint());
+            int fromIdx = -1, toIdx = -1;
+            for (int i = 0; i < m_cards.size(); ++i) {
+                if (qobject_cast<GroupCard*>(m_cards[i])->groupId() == gid)
+                    fromIdx = i;
+                if (m_cards[i] == target)
+                    toIdx = i;
+            }
+            if (fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx && m_doc)
+                m_doc->moveGroup(fromIdx, toIdx);   // groupsChanged → refresh
+            de->acceptProposedAction();
+            return true;
+        }
+        default:
+            break;
+        }
     }
-    return QWidget::eventFilter(obj, event);
+    return QWidget::eventFilter(watched, event);
 }
 
-void GroupPanel::kickOutSelected()
+QWidget* GroupPanel::cardAt(const QPoint& pos) const
 {
-    QTreeWidgetItem* item = m_tree->currentItem();
-    if (!item || !m_paramDoc) return;
-    if (item->data(0, RoleIsGroup).toBool()) return;  // only segments can be kicked out
-
-    const QUuid blockId = item->data(0, RoleBlockId).toUuid();
-    if (blockId.isNull()) return;
-
-    // Remove every attachment of this block; recomputeGroups() then dissolves
-    // any sub-chain that drops below two segments. Geometry is preserved.
-    m_paramDoc->removeAttachmentsOfBlock(blockId);  // emits groupsChanged -> refresh
-    if (m_scene)
-        m_scene->refreshAllBlockItems();
+    for (QWidget* card : m_cards) {
+        if (card->isVisible() && card->geometry().contains(pos))
+            return card;
+    }
+    return nullptr;
 }
+
+void GroupPanel::showGroupMenu(const QPoint& globalPos, const QUuid& groupId)
+{
+    QMenu menu;
+    QAction* actRename   = menu.addAction(QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d"));    // 重命名
+    QAction* actDissolve = menu.addAction(QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe7\xbb\x84"));    // 解散组
+    QAction* picked = menu.exec(globalPos);
+    if (picked == actRename)          renameGroup(groupId);
+    else if (picked == actDissolve)   dissolveGroup(groupId);
+}
+
+void GroupPanel::renameGroup(const QUuid& groupId)
+{
+    if (!m_doc) return;
+    const auto* g = m_doc->findGroup(groupId);
+    if (!g) return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this,
+        QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d\xe7\xbb\x84"),   // 重命名组
+        QString::fromUtf8("\xe7\xbb\x84\xe5\x90\x8d\xe7\xa7\xb0"),               // 组名称
+        QLineEdit::Normal, g->name, &ok);
+    if (ok) {
+        if (m_undoStack)
+            m_undoStack->push(new cad::cmd::RenameGroupCommand(m_doc, groupId, name.trimmed()));
+        else
+            m_doc->setGroupName(groupId, name.trimmed());
+    }
+}
+
+void GroupPanel::dissolveGroup(const QUuid& groupId)
+{
+    if (!m_doc) return;
+    if (m_undoStack)
+        m_undoStack->push(new cad::cmd::UngroupCommand(m_doc, groupId));
+    else
+        m_doc->dissolveGroup(groupId);
+}
+
+void GroupPanel::dissolveCheckedGroups()
+{
+    if (!m_doc || m_checked.isEmpty()) return;
+    if (m_undoStack) {
+        // One undo step for the whole batch (批量解散).
+        m_undoStack->beginMacro(
+            QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe9\x80\x89\xe4\xb8\xad\xe7\xbb\x84"));  // 解散选中组
+        for (const QUuid& gid : m_checked)
+            m_undoStack->push(new cad::cmd::UngroupCommand(m_doc, gid));
+        m_undoStack->endMacro();
+    } else {
+        for (const QUuid& gid : m_checked)
+            m_doc->dissolveGroup(gid);
+    }
+    m_checked.clear();
+    updateBatchButton();
+}
+
+void GroupPanel::updateBatchButton()
+{
+    if (m_batchBtn)
+        m_batchBtn->setEnabled(!m_checked.isEmpty());
+}
+
+#include "GroupPanel.moc"

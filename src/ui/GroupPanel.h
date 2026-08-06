@@ -2,61 +2,72 @@
 
 #include <QWidget>
 #include <QUuid>
+#include <QList>
+#include <QSet>
 
-namespace cad::param {
-class ParamDocument;
-struct GroupNode;
-}
+class QScrollArea;
+class QVBoxLayout;
+class QLabel;
+class QPushButton;
+class QUndoStack;
 
-class CanvasScene;
-class QTreeWidget;
-class QTreeWidgetItem;
+namespace cad::param { class ParamDocument; }
 
-/// Panel page managing attachment groups ("大组"), hosted inside SidePanel.
+/// Panel page managing user groups (成组), hosted inside SidePanel (组 tab).
 ///
-/// Each group is shown as a top-level row (readable G-serial + editable group
-/// name + member count); its member segments are nested below as a leader→
-/// follower tree (readable L-serial + editable segment name).
-///   • Click a segment row  → select it on canvas (turns red).
-///   • Double-click ID cell → open the segment property dialog.
-///   • Edit the name cell   → renames the group / segment (synced everywhere).
-///   • Delete key on a row  → kick the segment out of its group (keeps geometry).
+/// Card-based design (matches the LayerPanel visual language):
+///   - Each group card: [batch checkbox] [expand caret] [serial tag]
+///     [name] [member count pill]; expanded cards preview member rows.
+///   - Click card body → select the WHOLE group on canvas.
+///   - Drag a card → reorder the group list (persisted via groups order).
+///   - Right-click card → rename / dissolve (解散组).
+///   - Batch toolbar: 解散选中 dissolves every checked group (one undo macro).
+///   - Keyboard on a focused card: Enter = select group, Delete = dissolve.
+///
+/// The panel is a viewer/operator only — protection guards live in the
+/// tools; undo goes through UngroupCommand.
 class GroupPanel : public QWidget
 {
     Q_OBJECT
 
 public:
-    GroupPanel(cad::param::ParamDocument* paramDoc, CanvasScene* scene,
-               QWidget* parent = nullptr);
+    explicit GroupPanel(cad::param::ParamDocument* doc, QWidget* parent = nullptr);
+
+    void setUndoStack(QUndoStack* stack) { m_undoStack = stack; }
+
+signals:
+    /// Card body clicked / Enter: the host window should activate the
+    /// selection tool and select+confirm exactly these blocks.
+    void selectGroupRequested(const QList<QUuid>& blockIds);
 
 public slots:
-    /// Rebuild the tree from the document's group registry.
+    /// Rebuild all group cards from the document's group registry.
     void refresh();
 
 protected:
-    /// Captures the Delete key to kick a segment out of its group.
-    bool eventFilter(QObject* obj, QEvent* event) override;
-
-private slots:
-    void onItemClicked(QTreeWidgetItem* item, int column);
-    void onItemDoubleClicked(QTreeWidgetItem* item, int column);
-    void onItemChanged(QTreeWidgetItem* item, int column);
+    /// Intercept card clicks / drag-drop on the container / card keys.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
-    /// Item data roles (SerialRole lives in SerialDelegate.h at UserRole+100).
-    enum Role {
-        RoleGroupId   = Qt::UserRole,      ///< Group id (group rows).
-        RoleBlockId   = Qt::UserRole + 1,  ///< Block id (member rows).
-        RoleSegmentId = Qt::UserRole + 2,  ///< Segment id (member rows).
-        RoleIsGroup   = Qt::UserRole + 3,  ///< bool: true for group rows.
-    };
-
     void setupUi();
-    void addMemberNode(const cad::param::GroupNode& node, QTreeWidgetItem* parent);
-    void kickOutSelected();
+    void showGroupMenu(const QPoint& globalPos, const QUuid& groupId);
+    void renameGroup(const QUuid& groupId);
+    void dissolveGroup(const QUuid& groupId);
+    void dissolveCheckedGroups();
+    void updateBatchButton();
+    /// The card whose geometry contains @p pos (container coords), or null.
+    [[nodiscard]] QWidget* cardAt(const QPoint& pos) const;
 
-    cad::param::ParamDocument* m_paramDoc = nullptr;
-    CanvasScene* m_scene = nullptr;
-    QTreeWidget* m_tree = nullptr;
-    bool m_refreshing = false;  ///< Guards against itemChanged during rebuild.
+    cad::param::ParamDocument* m_doc = nullptr;
+    QUndoStack* m_undoStack = nullptr;
+
+    QScrollArea* m_scroll      = nullptr;
+    QWidget*     m_container   = nullptr;
+    QVBoxLayout* m_listLayout  = nullptr;
+    QLabel*      m_countLabel  = nullptr;   ///< Header pill: total group count.
+    QLabel*      m_emptyHint   = nullptr;   ///< Shown when no groups exist.
+    QPushButton* m_batchBtn    = nullptr;   ///< 解散选中 (batch dissolve).
+    QList<QWidget*> m_cards;                ///< Cards in layout order.
+    QSet<QUuid>  m_checked;                 ///< Groups selected for batch ops.
+    QWidget*     m_dropTarget  = nullptr;   ///< Card under the drag cursor.
 };

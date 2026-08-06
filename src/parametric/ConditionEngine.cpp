@@ -34,25 +34,54 @@ double ConditionEngine::applyConditions(double baseCm,
 ExpressionEvaluator::Result ConditionEngine::evaluate(
     const QString& expr,
     const QHash<QString, double>& baseValues,
-    const QHash<QString, QList<Condition>>& condByName)
+    const QHash<QString, QList<Condition>>& condByName,
+    EvalContext* ctx)
 {
+    // Per-pass memo: within one resolve pass the variable map is constant,
+    // so identical expression texts always yield identical results. This
+    // deduplicates the many points/attachments sharing the same formula.
+    if (ctx) {
+        auto mit = ctx->memo.constFind(expr);
+        if (mit != ctx->memo.constEnd())
+            return mit.value();
+
+        // Lazy case-folding index (lower -> exact key) over the pass's
+        // variable map: exact-name misses then resolve in O(1) instead of a
+        // linear scan. Built once; a lookup miss falls back to the scan, so
+        // keys added mid-pass (e.g. by measurements) stay resolvable.
+        if (!ctx->normBuilt) {
+            ctx->normBuilt = true;
+            for (auto it = baseValues.cbegin(); it != baseValues.cend(); ++it) {
+                const QString lower = it.key().toLower();
+                if (!ctx->normLookup.contains(lower))
+                    ctx->normLookup.insert(lower, it.key());
+            }
+        }
+    }
+
+    ExpressionEvaluator::Result r;
+
     // Standalone reference to a conditioned formula -> use its adjusted value.
-    const QString stand = ExpressionEvaluator::standaloneIdentifier(expr);
-    if (!stand.isEmpty()) {
-        const auto cit = condByName.constFind(stand);
+    const auto& ce = ExpressionEvaluator::compiled(expr);
+    if (ce.ok && ce.isStandalone) {
+        const auto cit = condByName.constFind(ce.standaloneName);
         if (cit != condByName.constEnd()) {
-            const auto bit = baseValues.constFind(stand);
+            const auto bit = baseValues.constFind(ce.standaloneName);
             const double base = (bit != baseValues.constEnd()) ? bit.value() : 0.0;
-            ExpressionEvaluator::Result r;
             r.ok = true;
             r.value = applyConditions(base, cit.value(), baseValues);
-            return r;
         }
     }
 
     // Composite (or unconditioned) expression -> plain evaluation against base
     // values, so conditions never propagate into a larger expression.
-    return ExpressionEvaluator::evaluate(expr, baseValues);
+    if (!r.ok)
+        r = ExpressionEvaluator::execute(ce, baseValues,
+                                         ctx ? &ctx->normLookup : nullptr);
+
+    if (ctx)
+        ctx->memo.insert(expr, r);
+    return r;
 }
 
 } // namespace cad::param

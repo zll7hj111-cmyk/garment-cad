@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 namespace cad::geo {
@@ -69,6 +70,17 @@ struct Vec2 {
     static constexpr Vec2 zero() { return {0.0, 0.0}; }
     static constexpr Vec2 unitX() { return {1.0, 0.0}; }
     static constexpr Vec2 unitY() { return {0.0, 1.0}; }
+
+    // --- Geometric utilities ---
+    /// Shortest distance from point p to the segment [a, b].
+    static double distanceToSegment(const Vec2& p, const Vec2& a, const Vec2& b) {
+        const Vec2 ab = b - a;
+        const double lenSq = ab.lengthSquared();
+        if (lenSq < 1e-12)
+            return p.distanceTo(a);
+        const double t = std::clamp((p - a).dot(ab) / lenSq, 0.0, 1.0);
+        return p.distanceTo(a + ab * t);
+    }
 };
 
 // --- Free operators ---

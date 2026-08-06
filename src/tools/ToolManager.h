@@ -1,11 +1,13 @@
 #pragma once
 
 #include <QObject>
+#include <QMetaObject>
 #include <memory>
 
 class CanvasScene;
 class QGraphicsSceneMouseEvent;
 class QKeyEvent;
+class QUndoStack;
 
 namespace cad::param { class ParamDocument; }
 
@@ -17,6 +19,12 @@ class Tool;
 enum class ToolType {
     Select,
     SmartPen,
+    CurveEdit,
+    Rotate,
+    Break,
+    Intersection,
+    Measure,
+    AngleMeasure,
 };
 
 /// Manages tool lifecycle and dispatches input events to the active tool.
@@ -28,7 +36,12 @@ public:
     explicit ToolManager(CanvasScene* scene, QObject* parent = nullptr);
     ~ToolManager() override;
 
-    void setParamDocument(cad::param::ParamDocument* paramDoc) { m_paramDoc = paramDoc; }
+    /// Inject the document / undo stack. The default tool is activated in the
+    /// constructor (before injection), so these re-bind the active tool —
+    /// otherwise it would keep operating on null pointers until the user
+    /// switches tools manually.
+    void setParamDocument(cad::param::ParamDocument* paramDoc);
+    void setUndoStack(QUndoStack* stack);
 
     /// Switch to a tool by type (creates and activates it).
     void switchTool(ToolType type);
@@ -53,8 +66,10 @@ signals:
 private:
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
+    QUndoStack* m_undoStack = nullptr;
     std::unique_ptr<Tool> m_activeTool;
     ToolType m_activeType = ToolType::Select;
+    QMetaObject::Connection m_activeLayerConn;  ///< Clears selection on layer switch.
 };
 
 } // namespace cad::tools

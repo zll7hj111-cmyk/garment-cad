@@ -33,10 +33,14 @@ public:
     ///                    (conditions NOT applied).
     /// @param condByName  formulaName -> its conditions (only formulas whose
     ///                    conditions are enabled and non-empty).
+    /// @param ctx         Optional per-pass memo: when the variable map is
+    ///                    constant (e.g. inside one Resolver pass), identical
+    ///                    expression texts execute only once per pass.
     [[nodiscard]] static ExpressionEvaluator::Result evaluate(
         const QString& expr,
         const QHash<QString, double>& baseValues,
-        const QHash<QString, QList<Condition>>& condByName);
+        const QHash<QString, QList<Condition>>& condByName,
+        EvalContext* ctx = nullptr);
 };
 
 } // namespace cad::param

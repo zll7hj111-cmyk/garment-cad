@@ -1,14 +1,44 @@
 #include "BlockItem.h"
+#include "CanvasScene.h"
+#include "CanvasAnimator.h"
+#include "CanvasStyle.h"
+#include "CurveItem.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
 #include <QBrush>
 #include <QFont>
+#include <QGraphicsSceneHoverEvent>
+#include <QGraphicsView>
+#include <QSet>
 #include <QStyleOptionGraphicsItem>
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
+#include "parametric/PerfProbe.h"
 #include "geometry/Units.h"   // cad::geo::Coord
+#include "geometry/CurveMath.h"
+
+#include <cmath>
+#include <limits>
+
+namespace {
+
+/// Shared font instances — creating a QFont per label per frame is expensive
+/// (font engine resolution). Pixel-size fonts are device-independent.
+const QFont& nameFont()
+{
+    static QFont f = [] { QFont fnt; fnt.setPixelSize(10); return fnt; }();
+    return f;
+}
+const QFont& labelFont()
+{
+    static QFont f = [] { QFont fnt; fnt.setPixelSize(11); return fnt; }();
+    return f;
+}
+
+} // namespace
 
 BlockItem::BlockItem(const QUuid& blockId, cad::param::ParamDocument* doc,
                      QGraphicsItem* parent)
@@ -20,6 +50,7 @@ BlockItem::BlockItem(const QUuid& blockId, cad::param::ParamDocument* doc,
     // Dragging is driven by ToolSelect (whole attachment group moves as a rigid
     // body), so the item itself is not individually movable.
     setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
+    setAcceptHoverEvents(true);
     setZValue(1.0);
 
     rebuildCache();
@@ -30,83 +61,228 @@ QRectF BlockItem::boundingRect() const
     return m_cachedBounds.adjusted(-10, -10, 10, 10);
 }
 
+QPainterPath BlockItem::shape() const
+{
+    // Pick tolerance in scene units: screen px ÷ view zoom (same conversion
+    // as the hover threshold, so picking and hover agree).
+    const CanvasStyle* style = nullptr;
+    if (auto* cs = qobject_cast<CanvasScene*>(scene()))
+        style = cs->style();
+
+    double pxToLocal = 1.0;
+    if (scene() && !scene()->views().isEmpty()) {
+        const qreal m11 = scene()->views().first()->transform().m11();
+        if (std::abs(m11) > 1e-9)
+            pxToLocal = 1.0 / std::abs(m11);
+    }
+    const double tol = (style ? style->hoverRadiusPx() : 8.0) * pxToLocal;
+
+    // Return the cached path when the tolerance has not changed enough to
+    // matter (sub-pixel difference). Rebuilding the stroked path for every
+    // hover/collision query is the single largest CPU cost on mouse-move.
+    if (m_cachedShapeTol > 0.0 &&
+        std::abs(tol - m_cachedShapeTol) < m_cachedShapeTol * 0.02)
+        return m_cachedShape;
+
+    QPainterPath path;
+    QPainterPathStroker stroker;
+    stroker.setWidth(tol * 2.0);
+    stroker.setCapStyle(Qt::RoundCap);
+    GCAD_PERF_SCOPE("shape.rebuild");
+    for (const auto& lc : m_lines) {
+        QPainterPath seg;
+        seg.moveTo(lc.p1);
+        seg.lineTo(lc.p2);
+        path.addPath(stroker.createStroke(seg));
+    }
+    // Curves contribute through their OWN child items (CurveItem::shape) —
+    // the framework hit-tests them independently, so the block shape only
+    // covers lines and points.
+    // Points contribute only their visual disc (they are tiny; the segment
+    // band already covers their surroundings for block-level picking).
+    // PICK radius is unified at 2.5 for ALL point kinds — deliberately larger
+    // than the 0.8 visual radius so grabbing stays finger-friendly.
+    for (const auto& pc : m_points) {
+        const double rPx = 2.5;
+        const double r = rPx * pxToLocal;
+        path.addEllipse(pc.pos, r, r);
+    }
+
+    m_cachedShape = path;
+    m_cachedShapeTol = tol;
+    return path;
+}
+
 void BlockItem::paint(QPainter* painter,
                       const QStyleOptionGraphicsItem* /*option*/,
                       QWidget* /*widget*/)
 {
-    const bool selected = isSelected();
+    GCAD_PERF_SCOPE("paint");
+    // Obtain animator from scene (may be null in edge cases).
+    CanvasAnimator* animator = nullptr;
+    const CanvasStyle* style = nullptr;
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+        animator = cs->animator();
+        style    = cs->style();
+    }
 
-    // Draw segments
-    for (const auto& lc : m_lines) {
-        QPen linePen;
-        if (selected) {
-            linePen = QPen(QColor(220, 40, 40), lc.weight + 0.6);
-        } else if (m_groupHighlight) {
-            linePen = QPen(QColor(0, 120, 215, 130), lc.weight + 0.4);
+    // A block on a hidden layer is not painted at all (setVisible(false) also
+    // keeps it out of hit-testing, but guard here too for safety).
+    if (m_layerMode == LayerMode::Hidden)
+        return;
+
+    // Non-active visible layer: render as a gray, semi-transparent reference.
+    const bool grayed = (m_layerMode == LayerMode::Grayed);
+    const QColor kGray(0x9E, 0x9E, 0x9E);
+    if (grayed)
+        painter->setOpacity(0.4);
+
+    // Draw segments — the hovered one is drawn LAST so its highlight sits on
+    // top of sibling segments instead of being buried under them.
+    // Hidden segments (lc.visible == false) are painted only when transiently
+    // revealed (hovered or leader-highlighted), in a ghost style.
+    constexpr int kGhostAlpha = 110;  ///< Alpha for transiently-revealed hidden lines.
+    auto drawSegment = [&](const LineCache& lc) {
+        const bool ghost = !lc.visible;
+        EntityPaintParams pp;
+        if (animator) {
+            pp = animator->lineParams(const_cast<BlockItem*>(this), lc.id,
+                                      lc.color, lc.weight);
         } else {
-            linePen = QPen(lc.color, lc.weight);
+            // Fallback: resolve state directly without animation.
+            pp.lineColor  = lc.color;
+            pp.lineWidth  = lc.weight;
+            pp.labelColor = QColor(100, 100, 100);
         }
+
+        QPen linePen(pp.lineColor, pp.lineWidth);
         linePen.setCosmetic(true);
         linePen.setStyle(lc.penStyle);
+        // Leader-candidate override: teal recolor only ("connection" family),
+        // same width — consistent with the hover-recolors-only language.
+        if (lc.id == m_leaderEntity && style)
+            linePen.setColor(style->attachmentNodeColor);
+        // Grayed layers keep the highlight on hovered/leader segments — the
+        // affordance that lets the user aim a connection; everything else
+        // falls back to the gray reference tint.
+        if (grayed && lc.id != m_leaderEntity && lc.id != m_hoveredEntity)
+            linePen.setColor(kGray);
+        if (ghost) {
+            QColor c = linePen.color();
+            c.setAlpha(kGhostAlpha);
+            linePen.setColor(c);
+        }
         painter->setPen(linePen);
         painter->drawLine(lc.p1, lc.p2);
 
-        // Draw segment name if enabled
-        if (lc.showName && !lc.name.isEmpty()) {
+        // Draw segment name if enabled (suppressed on grayed reference layers).
+        if (lc.showName && !lc.name.isEmpty() && !grayed) {
             QPointF mid((lc.p1.x() + lc.p2.x()) / 2.0,
                         (lc.p1.y() + lc.p2.y()) / 2.0);
-            QPen textPen = selected ? QPen(QColor(220, 40, 40))
-                                    : QPen(QColor(100, 100, 100));
+            QColor nameColor = pp.labelColor;
+            if (ghost) nameColor.setAlpha(kGhostAlpha);
+            QPen textPen(nameColor);
             textPen.setCosmetic(true);
             painter->setPen(textPen);
-            QFont font;
-            font.setPixelSize(10);
-            painter->setFont(font);
+            painter->setFont(nameFont());
             painter->drawText(mid + QPointF(4, -4), lc.name);
         }
 
-        // Draw segment length label if enabled
-        if (lc.showLength && !lc.lengthText.isEmpty()) {
+        // Draw segment length label if enabled (suppressed on grayed layers).
+        if (lc.showLength && !lc.lengthText.isEmpty() && !grayed) {
             QPointF mid((lc.p1.x() + lc.p2.x()) / 2.0,
                         (lc.p1.y() + lc.p2.y()) / 2.0);
-            QPen textPen = selected ? QPen(QColor(220, 40, 40))
-                                    : QPen(QColor(0, 110, 60));
+            QColor lenColor = animator ? pp.lengthLabelColor : QColor(0, 110, 60);
+            if (ghost) lenColor.setAlpha(kGhostAlpha);
+            QPen textPen(lenColor);
             textPen.setCosmetic(true);
             painter->setPen(textPen);
-            QFont font;
-            font.setPixelSize(10);
-            painter->setFont(font);
-            // Offset below the name label to avoid overlap
+            painter->setFont(nameFont());
             painter->drawText(mid + QPointF(4, 12), lc.lengthText);
         }
+    };
+
+    const LineCache* hoveredLine = nullptr;
+    const LineCache* leaderLine  = nullptr;
+    for (const auto& lc : m_lines) {
+        if (lc.id == m_hoveredEntity) {
+            hoveredLine = &lc;
+            continue;
+        }
+        if (lc.id == m_leaderEntity) {
+            leaderLine = &lc;
+            continue;
+        }
+        if (!lc.visible) continue;  // hidden and not revealed — skip painting
+        drawSegment(lc);
     }
+    // Highlighted segments last: leader below, hovered on top. Both are drawn
+    // even when hidden (ghosted) so a hover can reveal a hidden segment.
+    if (leaderLine)
+        drawSegment(*leaderLine);
+    if (hoveredLine)
+        drawSegment(*hoveredLine);
+
+    // Curves are painted by their OWN child items (CurveItem::paint) —
+    // each handles its hover/ghost/grayed/leader states itself.
 
     // Draw points
     for (const auto& pc : m_points) {
-        if (pc.isAuxiliary) {
-            QPen auxPen = selected ? QPen(QColor(220, 40, 40), 1.0)
-                                   : QPen(QColor(150, 80, 0), 1.0);
-            auxPen.setCosmetic(true);
-            painter->setPen(auxPen);
-            painter->setBrush(Qt::NoBrush);
-            painter->drawEllipse(pc.pos, 3.0, 3.0);
+        EntityPaintParams pp;
+        if (animator) {
+            pp = animator->pointParams(const_cast<BlockItem*>(this), pc.id,
+                                       pc.isAuxiliary);
         } else {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(selected ? QColor(220, 40, 40)
-                              : m_groupHighlight ? QColor(0, 120, 215, 130)
-                                                 : QColor(30, 30, 30));
-            painter->drawEllipse(pc.pos, 2.5, 2.5);
+            pp.pointFill   = pc.isAuxiliary ? QColor(67, 160, 71) : QColor(30, 30, 30);
+            pp.pointRadius = 0.8;   // unified marker size (all point kinds)
+            pp.labelColor  = QColor(80, 80, 80);
         }
 
-        // Draw label
-        if (pc.showLabel && !pc.label.isEmpty()) {
-            QPen textPen = selected ? QPen(QColor(220, 40, 40))
-                                    : QPen(QColor(80, 80, 80));
+        // Curve anchors (曲线点) render as a small ETCAD-style pink disc —
+        // compact like ETCAD's curve points, distinct from endpoints/aux points.
+        // Visual radius is intentionally much smaller than the PICK radius
+        // (shape() keeps 2.5 for anchors): the hit area must stay finger-friendly
+        // even though the dot is now a subtle marker.
+        if (pc.isCurveAnchor) {
+            pp.pointFill   = QColor(0xE9, 0x1E, 0x63);  // ETCAD pink
+            pp.pointRadius = 0.8;   // 原 2.0 → 缩小一半多；命中范围不变 (shape() 2.5)
+        }
+
+        // Hovered point: enlarged + teal — the "this is a grab/connect point"
+        // affordance (same highlight language as hovered lines).
+        if (pc.id == m_hoveredPointId) {
+            pp.pointFill   = QColor(38, 166, 154);
+            pp.pointRadius = 1.6;
+        }
+
+        // Both point kinds render as solid discs; auxiliary points are
+        // distinguished by their green fill (绿色实心小圆) and slightly
+        // larger radius. Grayed layers keep the teal on the hovered point.
+        if (grayed && pc.id != m_hoveredPointId)
+            pp.pointFill = kGray;
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(pp.pointFill);
+        painter->drawEllipse(pc.pos, pp.pointRadius, pp.pointRadius);
+
+        // Anchor ring marking a connection point (attachment node). Locked
+        // connections use the amber ring (锁定连接视觉区分).
+        if (pc.isAttachmentNode && style && style->attachmentRingWidth > 0.0) {
+            QPen ringPen(pc.isLockedNode ? style->lockedAttachmentColor
+                                         : style->attachmentNodeColor,
+                         style->attachmentRingWidth);
+            ringPen.setCosmetic(true);
+            painter->setPen(ringPen);
+            painter->setBrush(Qt::NoBrush);
+            const double r = pp.pointRadius + style->attachmentRingGap;
+            painter->drawEllipse(pc.pos, r, r);
+        }
+
+        // Draw label (suppressed on grayed reference layers).
+        if (pc.showLabel && !pc.label.isEmpty() && !grayed) {
+            QPen textPen(pp.labelColor);
             textPen.setCosmetic(true);
             painter->setPen(textPen);
-            QFont font;
-            font.setPixelSize(11);
-            painter->setFont(font);
+            painter->setFont(labelFont());
             painter->drawText(pc.pos + QPointF(5, -5), pc.label);
         }
     }
@@ -119,11 +295,81 @@ void BlockItem::updateFromBlock()
     update();
 }
 
-void BlockItem::setGroupHighlight(bool on)
+void BlockItem::syncFromBlock()
 {
-    if (m_groupHighlight == on)
+    if (!m_doc) return;
+    const cad::param::Block* block = m_doc->findBlock(m_blockId);
+    if (!block) return;
+
+    // Full rebuild required when:
+    //  - rotation changed (local-scene mapping of every cached point shifts);
+    //  - internal geometry changed (resolve moved points inside the block,
+    //    e.g. a variable edit re-positioned an auxiliary point);
+    //  - point count changed (a point was added or removed while the rest
+    //    stayed put — without this, deleted points linger in the cache).
+    // Pure translation keeps all local coordinates identical: just slide the
+    // item (O(1), no alloc).
+    if (std::abs(block->transform.rotation - m_lastRotation) > 1e-9 ||
+        block->geometryEpoch != m_lastGeometryEpoch ||
+        block->points.size() != m_lastPointCount) {
+        updateFromBlock();
         return;
-    m_groupHighlight = on;
+    }
+
+    const QPointF newPos = cad::geo::Coord::toScene(block->transform.origin);
+    if (pos() != newPos)
+        setPos(newPos);  // triggers scene re-index + repaint of old/new area
+}
+
+void BlockItem::setLeaderHighlight(const QUuid& segmentId)
+{
+    if (m_leaderEntity == segmentId) return;
+    m_leaderEntity = segmentId;
+    // Curves may also be the leader candidate (teal recolor, see CurveItem).
+    for (auto* ci : m_curveItems)
+        ci->setLeader(segmentId == ci->curveId());
+    update();
+}
+
+void BlockItem::setToolSelected(bool selected)
+{
+    if (m_toolSelected == selected) return;
+    m_toolSelected = selected;
+
+    // Push the new state to the animator so the red highlight animates in/out.
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+        CanvasAnimator* anim = cs->animator();
+        for (const auto& lc : m_lines)
+            anim->setState(this, lc.id,
+                           static_cast<EntityState>(resolveState(lc.id)));
+        for (auto* ci : m_curveItems)
+            anim->setState(this, ci->curveId(),
+                           static_cast<EntityState>(resolveState(ci->curveId())));
+        for (const auto& pc : m_points)
+            anim->setState(this, pc.id,
+                           static_cast<EntityState>(resolveState(pc.id)));
+    }
+    update();
+}
+
+void BlockItem::setToolLocked(bool locked)
+{
+    if (m_toolLocked == locked) return;
+    m_toolLocked = locked;
+
+    // Push the new state to the animator so the bold weight animates in/out.
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+        CanvasAnimator* anim = cs->animator();
+        for (const auto& lc : m_lines)
+            anim->setState(this, lc.id,
+                           static_cast<EntityState>(resolveState(lc.id)));
+        for (auto* ci : m_curveItems)
+            anim->setState(this, ci->curveId(),
+                           static_cast<EntityState>(resolveState(ci->curveId())));
+        for (const auto& pc : m_points)
+            anim->setState(this, pc.id,
+                           static_cast<EntityState>(resolveState(pc.id)));
+    }
     update();
 }
 
@@ -142,32 +388,433 @@ QVariant BlockItem::itemChange(GraphicsItemChange change, const QVariant& value)
         }
     }
     if (change == ItemPositionHasChanged) {
-        // No cache rebuild needed — geometry is in local coords, item pos handles offset.
+        update();
+    }
+    if (change == ItemSelectedHasChanged) {
+        // Selection state changed — push new states to animator.
+        if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+            CanvasAnimator* anim = cs->animator();
+            for (const auto& lc : m_lines) {
+                const EntityState st = static_cast<EntityState>(resolveState(lc.id));
+                anim->setState(this, lc.id, st);
+            }
+            for (auto* ci : m_curveItems) {
+                const EntityState st = static_cast<EntityState>(resolveState(ci->curveId()));
+                anim->setState(this, ci->curveId(), st);
+            }
+            for (const auto& pc : m_points) {
+                const EntityState st = static_cast<EntityState>(resolveState(pc.id));
+                anim->setState(this, pc.id, st);
+            }
+        }
         update();
     }
     return QGraphicsObject::itemChange(change, value);
 }
 
+// ---------------------------------------------------------------------------
+// Hover handling
+// ---------------------------------------------------------------------------
+
+void BlockItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event)
+{
+    // Only snap-eligible layers are hoverable (grayed WORKING layers stay
+    // hoverable so connections can be aimed; a grayed auxiliary layer is
+    // reference-only — same policy as layerSnappable()).
+    if (m_layerMode == LayerMode::Hidden) {
+        event->accept();
+        return;
+    }
+    const auto* block = m_doc ? m_doc->findBlock(m_blockId) : nullptr;
+    if (!block || !m_doc->layerSnappable(block->layer)) {
+        event->accept();
+        return;
+    }
+
+    // Convert hover threshold from screen px to scene units.
+    const double threshold = hoverThreshold();
+
+    const QPointF localPos = event->pos();
+    // Point hover has TOP priority: near a point → highlight it (and clear
+    // any line hover). Points are tiny, so without this the cursor gives no
+    // "this is a grab/connect point" affordance — users had to rely on
+    // intuition to aim at endpoints.
+    const QUuid pointHit = hitTestPoint(localPos, threshold);
+    if (!pointHit.isNull()) {
+        if (m_hoveredPointId != pointHit) { m_hoveredPointId = pointHit; update(); }
+        if (!m_hoveredEntity.isNull())
+            updateHoverState(QUuid());
+        event->accept();
+        return;
+    }
+    if (!m_hoveredPointId.isNull()) { m_hoveredPointId = QUuid(); update(); }
+
+    // A curve child under the cursor keeps its own highlight (the child
+    // already notified us via onCurveHover); line hover must not override it.
+    if (!m_curvesUnderCursor.isEmpty()) {
+        // Safety: if a line highlight somehow survived the arbitration, drop it.
+        if (!m_hoveredEntity.isNull() && !isCurveId(m_hoveredEntity))
+            updateHoverState(QUuid());
+        event->accept();
+        return;
+    }
+    const QUuid hit = hitTest(localPos, threshold);
+    updateHoverState(hit);
+    event->accept();
+}
+
+void BlockItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event)
+{
+    if (!m_hoveredPointId.isNull()) { m_hoveredPointId = QUuid(); update(); }
+    updateHoverState(QUuid());  // Clear hover
+    event->accept();
+}
+
+/// Pick tolerance in scene units: screen px ÷ view zoom.
+double BlockItem::hoverThreshold() const
+{
+    double threshold = 8.0;  // default
+    if (auto* cs = qobject_cast<CanvasScene*>(scene()))
+        threshold = cs->style()->hoverRadiusPx();
+    if (scene() && !scene()->views().isEmpty()) {
+        const qreal m11 = scene()->views().first()->transform().m11();
+        if (std::abs(m11) > 1e-9)
+            threshold /= std::abs(m11);
+    }
+    return threshold;
+}
+
+QUuid BlockItem::hitTestPoint(const QPointF& localPos, double radius) const
+{
+    QUuid best;
+    double bestDistSq = radius * radius;
+    for (const auto& pc : m_points) {
+        const double dx = pc.pos.x() - localPos.x();
+        const double dy = pc.pos.y() - localPos.y();
+        const double d = dx * dx + dy * dy;
+        if (d < bestDistSq) {
+            bestDistSq = d;
+            best = pc.id;
+        }
+    }
+    return best;
+}
+
+void BlockItem::updateHoverState(const QUuid& newHover)
+{
+    if (newHover == m_hoveredEntity)
+        return;
+
+    auto* cs = qobject_cast<CanvasScene*>(scene());
+    if (!cs) {
+        m_hoveredEntity = newHover;
+        update();
+        return;
+    }
+    CanvasAnimator* anim = cs->animator();
+
+    const QUuid oldHover = m_hoveredEntity;
+    // Update FIRST so resolveState() sees the new hover target.
+    m_hoveredEntity = newHover;
+
+    // Group-hover broadcast (成组悬停): the FIRST hovered entity nominates this
+    // block as the group-hover source; losing the last hover withdraws it.
+    if (oldHover.isNull() && !newHover.isNull())
+        cs->setGroupHoverSource(m_blockId);
+    else if (!oldHover.isNull() && newHover.isNull())
+        cs->setGroupHoverSource(QUuid());
+
+    // Lift the whole block above siblings while something in it is hovered,
+    // so the recolored entity is never buried under an overlapping block.
+    setZValue(newHover.isNull() ? 1.0 : 1.5);
+
+    // Old hovered entity reverts to its non-hover state.
+    if (!oldHover.isNull()) {
+        const EntityState st = static_cast<EntityState>(resolveState(oldHover));
+        anim->setState(this, oldHover, st);
+    }
+
+    // New hovered entity gets hover state (unless overridden by selection).
+    if (!newHover.isNull()) {
+        const EntityState st = static_cast<EntityState>(resolveState(newHover));
+        anim->setState(this, newHover, st);
+    }
+
+    update();
+}
+
+// ---------------------------------------------------------------------------
+// Curve-child hover arbitration (曲线拆子item: 悬停仲裁)
+// ---------------------------------------------------------------------------
+
+void BlockItem::onCurveHover(CurveItem* item, const QPointF& localPos)
+{
+    m_curvesUnderCursor.insert(item);
+
+    // A line closer than HALF the threshold still wins over the curve
+    // (matches the legacy hitTest ordering, where curves scored a constant
+    // approxDist = threshold * 0.5).
+    const double threshold = hoverThreshold();
+    double lineDist = 0.0;
+    const QUuid lineHit = hitTest(localPos, threshold, &lineDist);
+    if (!lineHit.isNull() && lineDist < threshold * 0.5) {
+        item->setHoveredByParent(false);
+        updateHoverState(lineHit);
+        return;
+    }
+
+    // Curve wins: restore the previous entity, then highlight the curve.
+    const QUuid oldHover = m_hoveredEntity;
+    m_hoveredEntity = item->curveId();
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+        // First hover on this block → group-hover broadcast (same as
+        // updateHoverState).
+        if (oldHover.isNull())
+            cs->setGroupHoverSource(m_blockId);
+        CanvasAnimator* anim = cs->animator();
+        if (!oldHover.isNull())
+            anim->setState(this, oldHover,
+                           static_cast<EntityState>(resolveState(oldHover)));
+        anim->setState(this, item->curveId(),
+                       static_cast<EntityState>(EntityState::Hover));
+    }
+    setZValue(1.5);  // lift the block above siblings (same as updateHoverState)
+    update();
+}
+
+void BlockItem::onCurveHoverLeave(CurveItem* item)
+{
+    m_curvesUnderCursor.remove(item);
+    item->setHoveredByParent(false);
+    if (m_hoveredEntity == item->curveId())
+        updateHoverState(QUuid());  // clear — hoverMoveEvent re-arbitrates
+}
+
+bool BlockItem::isCurveId(const QUuid& entityId) const
+{
+    for (auto* ci : m_curveItems)
+        if (ci->curveId() == entityId) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Scene hit-test helper (曲线拆子item: 场景命中上溯)
+// ---------------------------------------------------------------------------
+
+BlockItem* BlockItem::containingItem(QGraphicsItem* item)
+{
+    for (QGraphicsItem* cur = item; cur; cur = cur->parentItem())
+        if (auto* bi = qgraphicsitem_cast<BlockItem*>(cur))
+            return bi;
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// State resolution
+// ---------------------------------------------------------------------------
+
+int BlockItem::resolveState(const QUuid& entityId) const
+{
+    // Priority: Locked > Selected > GroupHover > Hover > Normal.
+    // Locked = confirmed selection (bold), driven by m_toolLocked.
+    // Selection is driven by the tool-managed flag (m_toolSelected) rather
+    // than Qt's isSelected(), giving the selection tool full manual control.
+    if (m_toolLocked)
+        return static_cast<int>(EntityState::Locked);
+    if (m_toolSelected)
+        return static_cast<int>(EntityState::Selected);
+    // Group-hover (成组悬停): a sibling member is under the cursor — the whole
+    // group lights up so it reads as one unit.
+    if (m_groupHovered)
+        return static_cast<int>(EntityState::Hover);
+    if (entityId == m_hoveredEntity && !m_hoveredEntity.isNull())
+        return static_cast<int>(EntityState::Hover);
+    return static_cast<int>(EntityState::Normal);
+}
+
+void BlockItem::setGroupHovered(bool hovered)
+{
+    if (m_groupHovered == hovered) return;
+    m_groupHovered = hovered;
+
+    // Push the new target state into the animator for every line entity
+    // (same pattern as updateHoverState) — otherwise the animated paint
+    // params stay stale.
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+        CanvasAnimator* anim = cs->animator();
+        for (const auto& lc : m_lines)
+            anim->setState(this, lc.id,
+                           static_cast<EntityState>(resolveState(lc.id)));
+    }
+    // Curve children share the hover visual via the parent-driven flag.
+    for (CurveItem* ci : m_curveItems)
+        ci->setHoveredByParent(hovered || !m_hoveredEntity.isNull());
+    update();
+}
+
+// ---------------------------------------------------------------------------
+// Hit testing
+// ---------------------------------------------------------------------------
+
+QUuid BlockItem::hitTest(const QPointF& localPos, double threshold,
+                         double* bestDistOut) const
+{
+    // Points are deliberately NOT hover targets: they are tiny snap anchors,
+    // and every point interaction (double-click edit, pen-tool connection via
+    // SnapEngine) goes through segments or the document directly. Hovering
+    // only ever highlights segments — no contention at endpoints.
+    // Curves are hit-tested by their OWN child items (CurveItem::shape).
+    double bestDist = threshold;
+    QUuid bestId;
+
+    // Test line segments.
+    for (const auto& lc : m_lines) {
+        // Distance from point to line segment.
+        const double ax = lc.p1.x(), ay = lc.p1.y();
+        const double bx = lc.p2.x(), by = lc.p2.y();
+        const double px = localPos.x(), py = localPos.y();
+
+        const double abx = bx - ax, aby = by - ay;
+        const double apx = px - ax, apy = py - ay;
+        const double lenSq = abx * abx + aby * aby;
+
+        double t = 0.0;
+        if (lenSq > 1e-12)
+            t = std::clamp((apx * abx + apy * aby) / lenSq, 0.0, 1.0);
+
+        const double cx = ax + t * abx - px;
+        const double cy = ay + t * aby - py;
+        const double dist = std::sqrt(cx * cx + cy * cy);
+
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestId = lc.id;
+        }
+    }
+
+    if (bestDistOut)
+        *bestDistOut = bestDist;
+    return bestId;
+}
+
 void BlockItem::rebuildCache()
 {
+    GCAD_PERF_EVENT("cache.rebuild");
     m_lines.clear();
+    m_hoveredPointId = QUuid();  // cache rebuild drops transient hover state
+    // Curve children are rebuilt from scratch (their geometry may be stale).
+    // Deleting them also drops any in-flight hover report — a mid-rebuild
+    // cursor position will simply re-trigger hover after the rebuild.
+    m_curvesUnderCursor.clear();
+    for (auto* ci : m_curveItems) delete ci;  // child items leave the scene
+    m_curveItems.clear();
     m_points.clear();
     m_cachedBounds = QRectF();
+    m_cachedShapeTol = -1.0;  // invalidate shape cache (geometry changed)
 
     if (!m_doc) return;
 
     const cad::param::Block* block = m_doc->findBlock(m_blockId);
     if (!block) return;
 
+    // Track rotation so syncFromBlock() can detect rigid-body rotation.
+    m_lastRotation = block->transform.rotation;
+    m_lastGeometryEpoch = block->geometryEpoch;
+    m_lastPointCount = block->points.size();
+
     // Item position = block origin in scene coords.
     // All cached geometry is LOCAL (relative to block origin).
     cad::geo::Vec2 origin = block->transform.origin;
     setPos(cad::geo::Coord::toScene(origin));
 
-    // Build line cache from segments
+    // Build line cache from segments.
+    // Hidden segments (seg.visible == false) are deliberately KEPT in the cache
+    // so they still contribute to shape()/hitTest() — the user must be able to
+    // hover (transient reveal) and double-click them to re-open properties and
+    // turn visibility back on. They are simply not painted unless hovered.
     for (const auto& seg : block->segments) {
-        if (!seg.visible) continue;
+        // --- Curve segment ---
+        if (seg.isCurve()) {
+            // Frame-level Bézier cache: spans, flattened polyline, label
+            // midpoint/tangent and exact arc length are built ONCE per resolve
+            // pass (Block::rebuildCurveCache) and shared with the snap engine /
+            // tangent handles. This rebuild only applies rotation + Y-flip — no
+            // re-solve, no re-flatten, no re-integration.
+            const cad::param::CurveSpanEntry* entry = block->curveSpanEntry(seg.id);
+            if (!entry || entry->spans.empty()) continue;
+            const auto& anchors = entry->anchors;
 
+            // Convert to local scene coords: apply block transform (rotation),
+            // subtract world origin, then Y-flip — same as point cache below.
+            // cos/sin hoisted: the flatten polyline has dozens of points and
+            // each would otherwise recompute the rotation trig.
+            const double rot = block->transform.rotation;
+            const double cosR = std::cos(rot), sinR = std::sin(rot);
+            auto toLocal = [&](const cad::geo::Vec2& localPos) -> QPointF {
+                const double rx = localPos.x * cosR - localPos.y * sinR;
+                const double ry = localPos.x * sinR + localPos.y * cosR;
+                return cad::geo::Coord::toScene(rx, ry);
+            };
+
+            // Render the curve as a dense POLYLINE (Seamly2D technique): the
+            // Bézier spans were flattened ONCE per resolve into discrete
+            // points (0.1 mm tolerance — below visual resolution at any zoom).
+            // Painting line segments is far cheaper than a cubic QPainterPath
+            // — the rasterizer / GL backend draws lines directly, while cubic
+            // segments are recursively subdivided and triangulated on EVERY
+            // repaint.
+            const auto& flat = entry->flatLocal;
+            if (flat.empty()) continue;
+            QPainterPath curvePath;
+            curvePath.moveTo(toLocal(flat.front()));
+            for (size_t fi = 1; fi < flat.size(); ++fi)
+                curvePath.lineTo(toLocal(flat[fi]));
+
+            // Hit-test shape: coarse control-polygon polyline through the anchor
+            // points (Seamly2D technique). Stroking a few straight segments is far
+            // cheaper than stroking the full Bézier path, and is ample for
+            // hover/pick accuracy.
+            QPainterPath shapePath;
+            shapePath.moveTo(toLocal(anchors[0]));
+            for (size_t pi = 1; pi < anchors.size(); ++pi)
+                shapePath.lineTo(toLocal(anchors[pi]));
+
+            // Label position: parametric midpoint (t = 0.5), cached at resolve
+            // time. For smooth garment curves this is visually close to the
+            // arc-length midpoint but avoids the expensive arc-length bisection
+            // on every rebuild (the length text below uses the exact cached
+            // length).
+            const QPointF labelPos = toLocal(entry->labelLocal);
+            const cad::geo::Vec2& midTan = entry->labelLocalDir;
+            // Rotate tangent by block rotation for correct label orientation.
+            const cad::geo::Vec2 worldTan(midTan.x * cosR - midTan.y * sinR,
+                                           midTan.x * sinR + midTan.y * cosR);
+            const double labelAngle = std::atan2(-worldTan.y, worldTan.x);  // scene Y-flip
+
+            // Pre-format arc-length label (exact arc length, cached at resolve).
+            QString lenText;
+            if (seg.showLength)
+                lenText = cad::geo::Units::formatLength(entry->arcLengthMm);
+
+            Qt::PenStyle ps = Qt::SolidLine;
+            if (seg.lineStyle == cad::param::LineStyle::Dashed) ps = Qt::DashLine;
+            else if (seg.lineStyle == cad::param::LineStyle::Dotted) ps = Qt::DotLine;
+
+            // The curve renders as its OWN child item: the framework hit-tests,
+            // hovers and repaints it independently (no per-frame stroker scans
+            // in the parent). The rigid-body transform still comes from the
+            // parent — this child only holds local coordinates.
+            auto* curveItem = new CurveItem(this, CurveItem::Data{
+                seg.id, curvePath, shapePath, labelPos, labelAngle,
+                seg.color, seg.weight, ps, seg.name,
+                seg.showName, seg.showLength, lenText, seg.visible});
+            m_curveItems.push_back(curveItem);
+
+            m_cachedBounds |= curveItem->boundingRect();
+            continue;
+        }
+
+        // --- Straight-line segment (existing logic) ---
         cad::geo::Vec2 w1 = block->worldPos(seg.startPointId);
         cad::geo::Vec2 w2 = block->worldPos(seg.endPointId);
 
@@ -190,8 +837,8 @@ void BlockItem::rebuildCache()
             }
         }
 
-        m_lines.push_back({p1, p2, seg.color, seg.weight, ps, seg.name,
-                           seg.showName, seg.showLength, lenText});
+        m_lines.push_back({seg.id, p1, p2, seg.color, seg.weight, ps, seg.name,
+                           seg.showName, seg.showLength, lenText, seg.visible});
 
         QRectF lineBounds = QRectF(p1, p2).normalized();
         QPointF mid((p1.x() + p2.x()) / 2.0, (p1.y() + p2.y()) / 2.0);
@@ -204,13 +851,32 @@ void BlockItem::rebuildCache()
         m_cachedBounds |= lineBounds;
     }
 
+    // Collect the points of this block that participate in a connection
+    // (either side — leader or follower) so they get the anchor-ring marker.
+    // LOCKED connections get the amber ring (锁定连接视觉区分).
+    QSet<QUuid> attachmentPoints;
+    QSet<QUuid> lockedPoints;
+    for (const auto& att : m_doc->attachments()) {
+        if (att.fromBlockId == m_blockId) {
+            attachmentPoints.insert(att.fromPointId);
+            if (att.isLocked) lockedPoints.insert(att.fromPointId);
+        }
+        if (att.toBlockId == m_blockId) {
+            attachmentPoints.insert(att.toPointId);
+            if (att.isLocked) lockedPoints.insert(att.toPointId);
+        }
+    }
+
     // Build point cache
     for (const auto& pt : block->points) {
         if (!pt.visible || !pt.resolved) continue;
 
         cad::geo::Vec2 w = block->transform.toWorld(pt.resolvedPos);
         QPointF pos = cad::geo::Coord::toScene(w.x - origin.x, w.y - origin.y);  // local scene coords
-        m_points.push_back({pos, pt.isAuxiliary, pt.name, pt.showName});
+        m_points.push_back({pt.id, pos, pt.isAuxiliary, pt.name, pt.showName,
+                            attachmentPoints.contains(pt.id),
+                            pt.constraint == cad::param::PointConstraint::CurveAnchor,
+                            lockedPoints.contains(pt.id)});
 
         // Include label area in bounds to prevent ghosting during drag
         QRectF ptBounds(pos - QPointF(6, 6), pos + QPointF(6, 6));
@@ -218,5 +884,35 @@ void BlockItem::rebuildCache()
             ptBounds |= QRectF(pos + QPointF(5, -16), pos + QPointF(5 + pt.name.length() * 8, 4));
         }
         m_cachedBounds |= ptBounds;
+    }
+
+    // Layer display mode: a manually hidden layer is not painted nor pickable;
+    // any non-active layer renders GRAYED — including the auxiliary layer,
+    // whose construction geometry stays visible as a reference draft (only
+    // the active layer is full color). Hover feedback follows SNAP eligibility
+    // (layerSnappable): grayed WORKING layers stay hoverable so connections
+    // can be aimed from the auxiliary layer; a grayed auxiliary layer is
+    // reference-only (never a hover/snap target).
+    if (!m_doc->layerVisible(block->layer)) {
+        m_layerMode = LayerMode::Hidden;
+    } else if (block->layer != m_doc->activeLayer()) {
+        m_layerMode = LayerMode::Grayed;
+    } else {
+        m_layerMode = LayerMode::Normal;
+    }
+    const bool snapEligible = m_doc->layerSnappable(block->layer);
+    setVisible(m_layerMode != LayerMode::Hidden);
+    setAcceptHoverEvents(snapEligible);
+    // A layer-mode flip may leave a stale hover highlight behind — drop it.
+    if (!m_hoveredEntity.isNull() || !m_hoveredPointId.isNull()) {
+        m_hoveredEntity = QUuid();
+        m_hoveredPointId = QUuid();
+    }
+    // Curve children mirror the layer display mode (grayed reference layers
+    // render at reduced opacity; hidden layers suppress everything via the
+    // parent's visibility) and the hover eligibility.
+    for (auto* ci : m_curveItems) {
+        ci->setGrayed(m_layerMode == LayerMode::Grayed);
+        ci->setAcceptHoverEvents(snapEligible);
     }
 }

@@ -1,4 +1,5 @@
 #include "OriginCrosshair.h"
+#include "CanvasScene.h"
 
 #include <QPainter>
 #include <QPen>
@@ -21,7 +22,11 @@ void OriginCrosshair::paint(QPainter* painter,
                             const QStyleOptionGraphicsItem* option,
                             QWidget* /*widget*/)
 {
-    QPen pen(QColor(200, 200, 200), 1.0);
+    QColor color(200, 200, 200);
+    if (auto* cs = qobject_cast<CanvasScene*>(scene()))
+        color = cs->style()->crosshairColor;
+
+    QPen pen(color, 1.0);
     pen.setCosmetic(true); // Line width stays 1px regardless of zoom
     painter->setPen(pen);
 

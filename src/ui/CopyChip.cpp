@@ -36,13 +36,32 @@ CopyChip::CopyChip(Variant variant, QWidget* parent)
     connect(m_clickTimer, &QTimer::timeout, this, &CopyChip::copyText);
     connect(m_edit, &QLineEdit::editingFinished, this, &CopyChip::commitEdit);
 
+    // Reference names are uppercase by convention: convert live as the user
+    // types (typing "b" immediately shows "B"), preserving the caret position.
+    if (m_variant == Variant::Ref) {
+        connect(m_edit, &QLineEdit::textChanged, this, [this](const QString& text) {
+            const QString up = text.toUpper();
+            if (up != text) {
+                const int cursor = m_edit->cursorPosition();
+                m_edit->blockSignals(true);
+                m_edit->setText(up);
+                m_edit->setCursorPosition(cursor);
+                m_edit->blockSignals(false);
+            }
+        });
+    }
+
     applyStyle();
     updateDisplay();
 }
 
 void CopyChip::setText(const QString& text)
 {
-    m_text = text;
+    // Reference names are uppercase by convention (separates them from the
+    // lowercase reserved function names cos/sin/tan).
+    const QString t = (m_variant == Variant::Ref) ? text.toUpper() : text;
+    if (t == m_text) return;   // no-op guard: sync paths call this every frame
+    m_text = t;
     updateDisplay();
 }
 
@@ -124,17 +143,22 @@ void CopyChip::applyStyle()
 
 void CopyChip::updateDisplay()
 {
-    applyStyle();
-    if (m_text.isEmpty()) {
-        m_label->setText(m_placeholder);
-        m_label->setStyleSheet(
-            "QLabel { font-size: 11px; color: #ABB2B9; background: transparent;"
-            "  padding: 0 2px; }"
-            "QLabel:hover { background: #F8F9F9; border-radius: 2px; }");
-    } else {
-        m_label->setText(m_text);
+    // setStyleSheet() re-parses rules and re-polishes the panel — it must run
+    // ONLY when the placeholder/normal state flips, never on every sync frame.
+    const bool showPlaceholder = m_text.isEmpty();
+    if (showPlaceholder != m_placeholderStyled) {
+        m_placeholderStyled = showPlaceholder;
+        if (showPlaceholder) {
+            m_label->setStyleSheet(
+                "QLabel { font-size: 11px; color: #ABB2B9; background: transparent;"
+                "  padding: 0 2px; }"
+                "QLabel:hover { background: #F8F9F9; border-radius: 2px; }");
+        } else {
+            applyStyle();
+        }
     }
-    m_label->setToolTip(m_text.isEmpty()
+    m_label->setText(showPlaceholder ? m_placeholder : m_text);
+    m_label->setToolTip(showPlaceholder
         ? QString::fromUtf8("双击编辑")
         : QString::fromUtf8("单击复制 · 双击编辑"));
 }
@@ -142,7 +166,9 @@ void CopyChip::updateDisplay()
 void CopyChip::enterEdit()
 {
     m_edit->setText(m_text);
-    m_edit->setGeometry(m_label->geometry());
+    QRect geo = m_label->geometry();
+    geo.adjust(-3, -1, 3, 1);  // compensate for border + padding so text isn't clipped
+    m_edit->setGeometry(geo);
     m_edit->show();
     m_edit->raise();
     m_edit->setFocus();
@@ -153,7 +179,9 @@ void CopyChip::commitEdit()
 {
     if (!m_edit->isVisible())
         return;
-    const QString t = m_edit->text().trimmed();
+    QString t = m_edit->text().trimmed();
+    if (m_variant == Variant::Ref)
+        t = t.toUpper();
     m_edit->hide();
     const bool changed = (t != m_text);
     m_text = t;
@@ -172,7 +200,11 @@ void CopyChip::copyText()
     m_label->setStyleSheet(
         "QLabel { font-size: 11px; font-weight: bold; color: #1E8449;"
         "  background: #E9F7EF; border-radius: 2px; padding: 0 2px; }");
-    QTimer::singleShot(800, this, [this]() { updateDisplay(); });
+    QTimer::singleShot(800, this, [this]() {
+        applyStyle();      // undo the flash style, then refresh the text
+        m_placeholderStyled = false;
+        updateDisplay();
+    });
 }
 
 } // namespace cad::ui
