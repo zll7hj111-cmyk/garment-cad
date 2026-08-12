@@ -72,3 +72,23 @@ temp_save/
 /rgb_scan.txt
 /row1_content.txt
 /vborder.txt
+
+# ── Impeccable runtime data (plugin removed) ──
+.impeccable/
+
+# ── AGPL third-party sources for study (CC0 assets will be extracted to assets/) ──
+/third_party/makehuman-src/
+
+# ── Debug/log artifacts from iterative builds & probes ──
+*.log
+*_tree.json
+/seg_*.txt
+/gg_*.txt
+/tg_*.txt
+/_bisect.cpp
+/_show*.py
+/_strip*.py
+
+# Debug dumps / scratch experiments
+gcad_tree_dump.txt
+demo3d/

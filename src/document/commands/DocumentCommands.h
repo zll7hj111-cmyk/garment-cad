@@ -106,7 +106,7 @@ class BakeMeasureCopyCommand : public QUndoCommand
 public:
     BakeMeasureCopyCommand(cad::param::ParamDocument* doc,
                            const QUuid& sourceMeasureBlockId,
-                           int targetLayerIndex,
+                           const QUuid& targetLayerId,
                            QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;

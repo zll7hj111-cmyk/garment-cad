@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QList>
@@ -12,17 +12,21 @@
 #include "parametric/AngleMeasureVariable.h"
 
 class QVBoxLayout;
-class QScrollArea;
+class ElaScrollArea;
 class QStackedWidget;
-class QTabBar;
-class QLabel;
-class QPushButton;
-class QToolButton;
+class ElaTabBar;
+class ElaText;
+class ElaPushButton;
+class ElaToolButton;
 class QFrame;
 class QUndoStack;
 class VirtualCardList;
 
 namespace cad::param { class ParamDocument; }
+
+namespace cad::ui {
+class FormulaTabModel;
+class MeasureTab;
 
 /// Sidebar page with two sub-tabs:
 ///   Tab 0 "尺寸变量": plain value variables (editable cards)
@@ -34,8 +38,12 @@ class VariablePanel : public QWidget
 
 public:
     explicit VariablePanel(cad::param::ParamDocument* doc, QWidget* parent = nullptr);
+    ~VariablePanel() override;
 
-    void setUndoStack(QUndoStack* stack) { m_undoStack = stack; }
+    void setUndoStack(QUndoStack* stack);
+
+    /// Rebuild theme-token driven styles after a theme change (light/dark).
+    void applyTheme();
 
 signals:
     /// Emitted when the user clicks a linked card (highlight source on canvas).
@@ -48,17 +56,9 @@ protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
-    /// One display row of the formula tab (card or group header).
-    struct FormulaRow {
-        bool  isHeader = false;
-        QUuid id;         ///< Formula id (card) or group id (header).
-        QUuid groupId;    ///< Owning group (cards only).
-        int   localIndex = 0;  ///< Group-local ordinal (cards only).
-    };
-
     void setupUi();
-    QWidget* buildListPage(QScrollArea*& scrollOut, QWidget*& containerOut,
-                           VirtualCardList*& hostOut, QLabel*& emptyHintOut,
+    QWidget* buildListPage(ElaScrollArea*& scrollOut, QWidget*& containerOut,
+                           VirtualCardList*& hostOut, ElaText*& emptyHintOut,
                            const QString& emptyText);
 
     /// Wire the virtualized hosts' row factories / binders to the card types.
@@ -69,7 +69,6 @@ private:
     void syncVariableCards();
     void syncFormulaCards();
     void syncLinkedCards();
-    void syncMeasureCards();
 
     void onAddClicked();
     void addNewVariable();
@@ -86,8 +85,6 @@ private:
     void computeFormulaDropSlot(int y, QUuid& groupId, int& localIndex,
                                 int& indicatorY) const;
     void computeGroupDropSlot(int y, int& insertIndex, int& indicatorY) const;
-    void moveFormulaTo(const QUuid& formulaId, const QUuid& targetGroupId,
-                       int targetLocalIndex);
 
     void onVariableDeleted(const QUuid& id);
     void onVariableEdited(const cad::param::Variable& var);
@@ -96,10 +93,6 @@ private:
     void onConditionsEditRequested(const QUuid& id);
     void onLinkedDeleted(const QUuid& id);
     void onLinkedEdited(const cad::param::LinkedVariable& lv);
-    void onMeasureDeleted(const QUuid& id);
-    void onMeasureEdited(const cad::param::MeasureVariable& mv);
-    void onAngleMeasureDeleted(const QUuid& id);
-    void onAngleMeasureEdited(const cad::param::AngleMeasureVariable& am);
 
     void updateCountLabel();
     [[nodiscard]] QString nextRefName() const;
@@ -107,37 +100,36 @@ private:
     cad::param::ParamDocument* m_doc = nullptr;
     QUndoStack* m_undoStack = nullptr;
 
-    QTabBar*        m_tabBar = nullptr;
+    /// Formula tab display-order model (rows + group/move operations).
+    cad::ui::FormulaTabModel* m_formulaModel = nullptr;
+
+    ElaTabBar*        m_tabBar = nullptr;
     QStackedWidget* m_stack = nullptr;
-    QPushButton*    m_addBtn = nullptr;
-    QToolButton*    m_addGroupBtn = nullptr;  ///< "新建分组" (formula tab only).
-    QLabel*         m_countLabel = nullptr;
+    ElaPushButton*    m_addBtn = nullptr;
+    ElaToolButton*    m_addGroupBtn = nullptr;  ///< "新建分组" (formula tab only).
+    ElaText*        m_countLabel = nullptr;
 
     // Tab 0: plain variables
-    QScrollArea* m_varScroll = nullptr;
+    ElaScrollArea* m_varScroll = nullptr;
     QWidget*     m_varContainer = nullptr;
     VirtualCardList* m_varHost = nullptr;
-    QLabel*      m_varEmptyHint = nullptr;
+    ElaText*     m_varEmptyHint = nullptr;
 
     // Tab 1: formulas
-    QScrollArea* m_formulaScroll = nullptr;
+    ElaScrollArea* m_formulaScroll = nullptr;
     QWidget*     m_formulaContainer = nullptr;
     VirtualCardList* m_formulaHost = nullptr;
-    QLabel*      m_formulaEmptyHint = nullptr;
+    ElaText*     m_formulaEmptyHint = nullptr;
     QFrame*      m_dropIndicator = nullptr;   ///< 2px insert line during drags.
 
     // Tab 2: linked variables
-    QScrollArea* m_linkedScroll = nullptr;
+    ElaScrollArea* m_linkedScroll = nullptr;
     QWidget*     m_linkedContainer = nullptr;
     VirtualCardList* m_linkedHost = nullptr;
-    QLabel*      m_linkedEmptyHint = nullptr;
+    ElaText*     m_linkedEmptyHint = nullptr;
 
-    // Tab 3: measure variables
-    QScrollArea* m_measureScroll = nullptr;
-    QWidget*     m_measureContainer = nullptr;
-    VirtualCardList* m_measureHost = nullptr;
-    QLabel*      m_measureEmptyHint = nullptr;
-
-    /// Display-order row descriptors of the formula tab (cards + headers).
-    QVector<FormulaRow> m_formulaRows;
+    /// Tab 3: measure variables (length + angle cards, extracted).
+    MeasureTab* m_measureTab = nullptr;
 };
+
+} // namespace cad::ui

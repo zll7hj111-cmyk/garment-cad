@@ -1,12 +1,12 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
 #include <QPoint>
 
-class QLabel;
-class QLineEdit;
-class QToolButton;
+class ElaText;
+class ElaLineEdit;
+class ElaToolButton;
 class QTimer;
 
 /// Collapsible section header for one formula group in the variable panel.
@@ -62,12 +62,13 @@ private:
     QUuid m_groupId;
     bool  m_collapsed = false;
     bool  m_dragging = false;    ///< True once a drag actually started.
+    bool  m_dropping = false;    ///< Drop-target highlight (QSS attribute).
     QPoint m_pressPos;
     bool  m_pressed = false;
 
-    QLabel*      m_caret = nullptr;
-    QLabel*      m_nameLabel = nullptr;
-    QLineEdit*   m_nameEdit = nullptr;
-    QLabel*      m_countLabel = nullptr;
-    QToolButton* m_dissolveBtn = nullptr;
+    ElaText*     m_caret = nullptr;
+    ElaText*     m_nameLabel = nullptr;
+    ElaLineEdit*   m_nameEdit = nullptr;
+    ElaText*     m_countLabel = nullptr;
+    ElaToolButton* m_dissolveBtn = nullptr;
 };

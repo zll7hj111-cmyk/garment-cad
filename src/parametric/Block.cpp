@@ -610,6 +610,10 @@ geo::Vec2 Block::worldPos(const QUuid& pointId) const
 
 ParamPoint* Block::findPoint(const QUuid& pointId)
 {
+    // Defensive, symmetric with findSegment(): the index can lag only if
+    // someone mutated `points` without addPoint()/rebuildPointIndex().
+    if (m_pointIndex.size() != static_cast<int>(points.size()))
+        rebuildPointIndex();
     auto it = m_pointIndex.find(pointId);
     if (it == m_pointIndex.end()) return nullptr;
     return &points[it.value()];
@@ -617,6 +621,8 @@ ParamPoint* Block::findPoint(const QUuid& pointId)
 
 const ParamPoint* Block::findPoint(const QUuid& pointId) const
 {
+    if (m_pointIndex.size() != static_cast<int>(points.size()))
+        rebuildPointIndex();
     auto it = m_pointIndex.find(pointId);
     if (it == m_pointIndex.end()) return nullptr;
     return &points[it.value()];
@@ -636,7 +642,7 @@ Segment* Block::findSegment(const QUuid& segmentId)
 const Segment* Block::findSegment(const QUuid& segmentId) const
 {
     if (m_segmentIndex.size() != static_cast<int>(segments.size()))
-        const_cast<Block*>(this)->rebuildSegmentIndex();
+        rebuildSegmentIndex();
     auto it = m_segmentIndex.find(segmentId);
     if (it == m_segmentIndex.end()) return nullptr;
     return &segments[it.value()];
@@ -889,7 +895,7 @@ QUuid Block::addSegment(Segment seg)
     return id;
 }
 
-void Block::rebuildPointIndex()
+void Block::rebuildPointIndex() const
 {
     m_pointIndex.clear();
     m_pointIndex.reserve(static_cast<int>(points.size()));
@@ -897,7 +903,7 @@ void Block::rebuildPointIndex()
         m_pointIndex.insert(points[i].id, i);
 }
 
-void Block::rebuildSegmentIndex()
+void Block::rebuildSegmentIndex() const
 {
     m_segmentIndex.clear();
     m_segmentIndex.reserve(static_cast<int>(segments.size()));

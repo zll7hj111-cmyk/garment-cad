@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QHash>
@@ -6,7 +6,7 @@
 #include <QUuid>
 #include <functional>
 
-class QScrollArea;
+class ElaScrollArea;
 
 /// Virtualized vertical host for rich card widgets.
 ///
@@ -29,7 +29,7 @@ public:
     explicit VirtualCardList(QWidget* parent = nullptr);
 
     /// Hook the owning scroll area: its scrollbar + viewport drive the window.
-    void init(QScrollArea* area);
+    void init(ElaScrollArea* area);
     void setProviders(Factory factory, Binder binder);
 
     /// Replace the row structure. Rows whose key survives keep their cached
@@ -68,7 +68,7 @@ private:
     void remeasureRow(const QUuid& key);
     int  contentWidth() const;
 
-    QScrollArea* m_area = nullptr;
+    ElaScrollArea* m_area = nullptr;
 
     Factory m_factory;
     Binder  m_binder;

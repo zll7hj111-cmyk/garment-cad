@@ -1,9 +1,9 @@
-#include "LinkedCard.h"
+﻿#include "LinkedCard.h"
 
 #include <cmath>
-#include <QLabel>
-#include <QLineEdit>
-#include <QToolButton>
+#include "ElaText.h"
+#include "ElaLineEdit.h"
+#include "ElaToolButton.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QStyleOption>
@@ -67,12 +67,12 @@ void LinkedCard::refreshValue(double valueMm, bool dangling)
         m_danglingStyled = dangling;
         if (dangling) {
             m_valueLabel->setStyleSheet(
-                "font-size: 11px; font-weight: bold; color: #E74C3C; background: transparent;");
+                "font-size: 11px; font-weight: bold; background: transparent;");
             m_valueLabel->setToolTip(QStringLiteral("源线段已被删除"));
         } else {
             m_valueLabel->setStyleSheet(
                 "font-family: 'Consolas','Courier New',monospace;"
-                "font-size: 12px; font-weight: bold; color: #21618C; background: transparent;");
+                "font-size: 12px; font-weight: bold; background: transparent;");
             m_valueLabel->setToolTip(QString());
         }
     }
@@ -95,9 +95,9 @@ void LinkedCard::syncFromModel(const cad::param::LinkedVariable& lv,
     refreshValue(lv.value, lv.dangling);
 }
 
-void LinkedCard::paintEvent(QPaintEvent*)
+void LinkedCard::paintEvent(QPaintEvent* event)
 {
-    QStyleOption opt;
+        QStyleOption opt;
     opt.initFrom(this);
     QPainter p(this);
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
@@ -129,15 +129,7 @@ void LinkedCard::setupUi(const cad::param::LinkedVariable& lv,
                          const QString& sourceLabel, bool alternate)
 {
     setObjectName(QStringLiteral("LinkedCard"));
-    const QString bg = alternate ? QStringLiteral("#F7F9FA") : QStringLiteral("#FFFFFF");
-    setStyleSheet(QStringLiteral(
-        "QWidget#LinkedCard {"
-        "  background-color: %1;"
-        "  border: 1px solid #E0E4E8;"
-        "  border-radius: 6px;"
-        "}"
-        "QWidget#LinkedCard:hover { border: 1px solid #80CBC4; }"
-    ).arg(bg));
+    (void)alternate;  // ElaScrollPageArea paints the card from the active theme.
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
@@ -152,22 +144,22 @@ void LinkedCard::setupUi(const cad::param::LinkedVariable& lv,
     m_nameChip->setText(lv.name);
     header->addWidget(m_nameChip, 1);
 
-    m_valueLabel = new QLabel(this);
+    m_valueLabel = new ElaText(QString(), 13, this);
     m_valueLabel->setStyleSheet(
         "font-family: 'Consolas','Courier New',monospace;"
-        "font-size: 12px; font-weight: bold; color: #21618C; background: transparent;");
+        "font-size: 12px; font-weight: bold; background: transparent;");
     refreshValue(lv.value, lv.dangling);
     header->addWidget(m_valueLabel, 0);
 
     // Lock icon (read-only indicator)
-    m_lockIcon = new QLabel(this);
+    m_lockIcon = new ElaText(QString(), 13, this);
     m_lockIcon->setText(QStringLiteral("\xF0\x9F\x94\x92"));  // 🔒
     m_lockIcon->setStyleSheet("font-size: 10px; background: transparent;");
     m_lockIcon->setToolTip(QStringLiteral("自动测量，不可编辑"));
     m_lockIcon->setFixedWidth(16);
     header->addWidget(m_lockIcon, 0);
 
-    m_deleteBtn = new QToolButton(this);
+    m_deleteBtn = new ElaToolButton(this);
     m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
         QStringLiteral("trash"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
     m_deleteBtn->setIconSize(QSize(12, 12));
@@ -175,9 +167,6 @@ void LinkedCard::setupUi(const cad::param::LinkedVariable& lv,
     m_deleteBtn->setFixedSize(20, 20);
     m_deleteBtn->setCursor(Qt::PointingHandCursor);
     m_deleteBtn->setVisible(false);
-    m_deleteBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: none; border-radius: 10px; }"
-        "QToolButton:hover { background: #E74C3C; }");
     header->addWidget(m_deleteBtn, 0);
 
     mainLayout->addLayout(header);
@@ -196,21 +185,15 @@ void LinkedCard::setupUi(const cad::param::LinkedVariable& lv,
     m_refChip->setFixedWidth(72);
     detailLayout->addWidget(m_refChip, 0);
 
-    m_sourceInfo = new QLabel(m_detail);
+    m_sourceInfo = new ElaText(QString(), 13, m_detail);
     m_sourceInfo->setText(sourceLabel);
-    m_sourceInfo->setStyleSheet(
-        "font-size: 11px; color: #78909C; background: transparent;");
+    m_sourceInfo->setStyleSheet("font-size: 11px; background: transparent;");
     m_sourceInfo->setToolTip(QStringLiteral("测量来源（只读）"));
     detailLayout->addWidget(m_sourceInfo, 0);
 
-    m_commentEdit = new QLineEdit(lv.comment, m_detail);
+    m_commentEdit = new ElaLineEdit(m_detail);     m_commentEdit->setText(lv.comment);
     m_commentEdit->setPlaceholderText(QStringLiteral("注释…"));
     m_commentEdit->setFixedHeight(22);
-    m_commentEdit->setStyleSheet(
-        "QLineEdit { font-size: 11px; font-style: italic; color: #85929E;"
-        "  background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 0 6px; }"
-        "QLineEdit:hover { border: 1px solid #B0BEC5; background: #FFF; }"
-        "QLineEdit:focus { border: 1px solid #26A69A; background: #FFF; }");
     detailLayout->addWidget(m_commentEdit, 1);
 
     mainLayout->addWidget(m_detail);

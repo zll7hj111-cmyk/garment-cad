@@ -327,7 +327,7 @@ QJsonObject blockJson(const Block& b) {
         {"rotation", b.transform.rotation},
         {"isClosed", b.isClosed},
         {"isBridge", b.isBridge},
-        {"layer", b.layer},
+        {"layer", uuidStr(b.layer)},
         {"endTargetBlockId", uuidStr(b.endTargetBlockId)},
         {"endTargetPointId", uuidStr(b.endTargetPointId)},
         {"endTargetOffset", b.endTargetOffset},
@@ -336,7 +336,8 @@ QJsonObject blockJson(const Block& b) {
         {"segments", segs},
     };
 }
-Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
+Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr,
+                int* legacyLayerIndex = nullptr) {
     Block b;
     b.id = uuidFrom(o["id"].toString());
     b.name = o["name"].toString();
@@ -344,7 +345,18 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     b.transform.rotation = o["rotation"].toDouble();
     b.isClosed = o["isClosed"].toBool();
     b.isBridge = o["isBridge"].toBool();  // Optional since v3 — defaults to false.
-    b.layer = o["layer"].toInt(0);        // Optional — defaults to layer 0.
+    // Layer reference: stable Layer::id string (current format) or a legacy
+    // integer index (pre-id files). Legacy indices are reported through
+    // @p legacyLayerIndex and remapped to layer ids by the caller once the
+    // layer registry is restored.
+    const QJsonValue layerVal = o["layer"];
+    if (legacyLayerIndex)
+        *legacyLayerIndex = -1;
+    if (layerVal.isString()) {
+        b.layer = uuidFrom(layerVal.toString());   // Missing/empty = null id.
+    } else if (legacyLayerIndex) {
+        *legacyLayerIndex = layerVal.toInt(0);     // Legacy index (default 0).
+    }
     b.endTargetBlockId = uuidFrom(o["endTargetBlockId"].toString());
     b.endTargetPointId = uuidFrom(o["endTargetPointId"].toString());
     b.endTargetOffset = o["endTargetOffset"].toDouble();
@@ -385,7 +397,14 @@ Attachment attachmentFrom(const QJsonObject& o) {
     a.toSegmentId = uuidFrom(o["toSegmentId"].toString());
     a.followerAngle = o["followerAngle"].toDouble();
     a.followerAngleFormula = o["followerAngleFormula"].toString();
-    a.rotationMode = static_cast<RotationMode>(o["rotationMode"].toInt(0));
+    // Validate the enum range — a corrupted file can carry any int here and
+    // would otherwise fall into an unexpected branch (ArcLength checks etc.).
+    // Unlike the string-based enums (point/segment/line-style), this one was
+    // serialized as a raw int; unknown values degrade to the Angle default.
+    const int mode = o["rotationMode"].toInt(0);
+    a.rotationMode = (mode >= static_cast<int>(RotationMode::Angle)
+                      && mode <= static_cast<int>(RotationMode::ArcLength))
+        ? static_cast<RotationMode>(mode) : RotationMode::Angle;
     a.arcLength = o["arcLength"].toDouble();
     a.arcLengthFormula = o["arcLengthFormula"].toString();
     a.isPin = o["isPin"].toBool();  // Optional since v3 — defaults to false.
@@ -478,6 +497,7 @@ FormulaGroup formulaGroupFrom(const QJsonObject& o) {
 // ─── Layer ───
 QJsonObject layerJson(const Layer& l) {
     return {
+        {"id", uuidStr(l.id)},
         {"name", l.name},
         {"visible", l.visible},
         {"type", l.type == LayerType::Auxiliary ? "auxiliary" : "working"},
@@ -485,6 +505,11 @@ QJsonObject layerJson(const Layer& l) {
 }
 Layer layerFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     Layer l;
+    // Files without per-layer ids (pre-id format) keep the generated id —
+    // block layer references are remapped index→id by the caller.
+    const QUuid fileId = uuidFrom(o["id"].toString());
+    if (!fileId.isNull())
+        l.id = fileId;
     l.name = o["name"].toString();
     l.visible = o["visible"].toBool(true);
     const QString typeStr = o["type"].toString();
@@ -605,7 +630,7 @@ QJsonObject DocumentSerializer::serialize(const ParamDocument& doc)
     for (const auto& l : doc.layers())
         layersArr.append(layerJson(l));
     docObj["layers"] = layersArr;
-    docObj["activeLayer"] = doc.activeLayer();
+    docObj["activeLayer"] = uuidStr(doc.activeLayer());
 
     // Free points
     QJsonArray fpArr;
@@ -689,46 +714,86 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
         docObj["lineSeq"].toInt(1),
         docObj["groupSeq"].toInt(1));
 
-    // Canvas layers (restore before blocks: blocks reference layers by index).
+    // Canvas layers (restore before blocks: blocks reference layers by id).
     // Legacy migration: files written before the auxiliary calculation layer
-    // have no aux layer — one is inserted at index 0 and every block shifts
-    // up by one (their old layer 0 was a WORKING layer). Files without any
-    // "layers" array keep the default pair created by clear() and get the
-    // same block shift.
+    // have no aux layer — one is inserted first and every legacy block layer
+    // INDEX shifts up by one (their old layer 0 was a WORKING layer). Files
+    // without any "layers" array keep the default pair created by clear()
+    // and get the same shift.
     bool legacyShift = false;
     if (docObj.contains(QStringLiteral("layers"))) {
-        doc.layers().clear();
+        std::vector<Layer> restored;
         for (const auto& v : docObj["layers"].toArray())
-            doc.layers().push_back(layerFrom(v.toObject(), warnings));
-        if (doc.layers().empty())
-            doc.layers().push_back(Layer{QStringLiteral("图层 1"), true});
+            restored.push_back(layerFrom(v.toObject(), warnings));
+        if (restored.empty()) {
+            Layer fallback;
+            fallback.name = QStringLiteral("图层 1");
+            restored.push_back(std::move(fallback));
+        }
         bool hasAux = false;
-        for (const auto& l : doc.layers())
+        for (const auto& l : restored)
             if (l.type == LayerType::Auxiliary) { hasAux = true; break; }
         if (!hasAux) {
-            doc.layers().insert(doc.layers().begin(),
-                Layer{QStringLiteral("辅助层"), true, LayerType::Auxiliary});
+            Layer aux;
+            aux.name = QStringLiteral("辅助层");
+            aux.type = LayerType::Auxiliary;
+            restored.insert(restored.begin(), std::move(aux));
             legacyShift = true;
         }
+        doc.replaceLayersRaw(std::move(restored));
     } else {
         legacyShift = true;  // default pair already contains the aux layer
     }
-    // Default active layer (field missing) = first working layer.
-    doc.setActiveLayer(qBound(0, docObj["activeLayer"].toInt(1) + (legacyShift ? 1 : 0),
-                              doc.layerCount() - 1));
+    // Active layer: stable id string (current format) or a legacy int index.
+    // Default (field missing) = first working layer.
+    const QJsonValue activeVal = docObj["activeLayer"];
+    if (activeVal.isString()) {
+        doc.setActiveLayer(uuidFrom(activeVal.toString()));
+    } else {
+        const int idx = qBound(0, activeVal.toInt(1) + (legacyShift ? 1 : 0),
+                               doc.layerCount() - 1);
+        doc.setActiveLayer(doc.layers()[static_cast<size_t>(idx)].id);
+    }
 
-    // Blocks (raw, no resolve)
-    for (const auto& v : docObj["blocks"].toArray())
-        doc.addBlockRaw(blockFrom(v.toObject(), warnings));
+    // Blocks (raw, no resolve). Legacy integer layer indices are collected
+    // and remapped to the restored layers' stable ids below.
+    struct LegacyLayerRef { QUuid blockId; int oldIndex; };
+    std::vector<LegacyLayerRef> legacyLayerRefs;
+    for (const auto& v : docObj["blocks"].toArray()) {
+        int legacyIdx = -1;
+        Block b = blockFrom(v.toObject(), warnings, &legacyIdx);
+        const QUuid blockId = doc.addBlockRaw(std::move(b));
+        if (legacyIdx >= 0)
+            legacyLayerRefs.push_back({blockId, legacyIdx});
+    }
 
-    // Legacy migration: shift block layer indices above the inserted aux layer.
-    if (legacyShift)
-        for (auto& b : doc.blocks())
-            ++b.layer;
+    // Legacy migration: map old layer indices (shifted above the inserted aux
+    // layer) onto the restored layers' stable ids.
+    for (const auto& ref : legacyLayerRefs) {
+        const int idx = qBound(0, ref.oldIndex + (legacyShift ? 1 : 0),
+                               doc.layerCount() - 1);
+        if (auto* b = doc.blockById(ref.blockId))
+            b->layer = doc.layers()[static_cast<size_t>(idx)].id;
+    }
 
-    // Clamp any out-of-range layer index (corrupt/legacy file safety).
-    for (auto& b : doc.blocks())
-        b.layer = qBound(0, b.layer, doc.layerCount() - 1);
+    // Validate block layer refs: unknown ids (corrupt file / stale legacy
+    // index) fall back to the first working layer, reported one by one
+    // (逐条报告, no silent degradation).
+    for (const auto& bc : doc.blocks()) {
+        if (bc.layer.isNull())
+            continue;  // Missing layer field: addBlock-style defaulting below.
+        if (doc.layerIndex(bc.layer) >= 0)
+            continue;
+        if (warnings)
+            warnings->append(QString::fromUtf8("线段块 %1 引用的图层 %2 不存在，已移到第一个工作层")
+                                 .arg(bc.name, uuidStr(bc.layer)));
+        if (auto* b = doc.blockById(bc.id))
+            b->layer = doc.firstWorkingLayerId();
+    }
+    for (const auto& bc : doc.blocks())
+        if (bc.layer.isNull())
+            if (auto* b = doc.blockById(bc.id))
+                b->layer = doc.firstWorkingLayerId();
 
     // Free points
     for (const auto& v : docObj["freePoints"].toArray())
@@ -774,14 +839,12 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
     doc.restoreGroups(std::move(validGroups), std::move(blockGroup));
 
     // Variables
-    for (const auto& v : varObj["variables"].toArray()) {
-        auto var = variableFrom(v.toObject());
-        doc.variables().push_back(std::move(var));
-    }
+    for (const auto& v : varObj["variables"].toArray())
+        doc.restoreVariableRaw(variableFrom(v.toObject()));
 
     // Formula groups (restore before formulas so membership can be validated)
     for (const auto& v : varObj["formulaGroups"].toArray())
-        doc.formulaGroups().push_back(formulaGroupFrom(v.toObject()));
+        doc.restoreFormulaGroupRaw(formulaGroupFrom(v.toObject()));
 
     // Formulas
     for (const auto& v : varObj["formulas"].toArray()) {
@@ -789,26 +852,20 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
         // Drop a dangling group reference (group missing from the file).
         if (!f.groupId.isNull() && !doc.findFormulaGroup(f.groupId))
             f.groupId = QUuid();
-        doc.formulas().push_back(std::move(f));
+        doc.restoreFormulaRaw(std::move(f));
     }
 
     // Linked variables
-    for (const auto& v : varObj["linkedVars"].toArray()) {
-        auto lv = linkedFrom(v.toObject());
-        doc.linkedVars().push_back(std::move(lv));
-    }
+    for (const auto& v : varObj["linkedVars"].toArray())
+        doc.restoreLinkedRaw(linkedFrom(v.toObject()));
 
     // Measure variables
-    for (const auto& v : varObj["measureVars"].toArray()) {
-        auto mv = measureFrom(v.toObject());
-        doc.measureVars().push_back(std::move(mv));
-    }
+    for (const auto& v : varObj["measureVars"].toArray())
+        doc.restoreMeasureRaw(measureFrom(v.toObject()));
 
     // Angle measure variables
-    for (const auto& v : varObj["angleMeasures"].toArray()) {
-        auto am = angleMeasureFrom(v.toObject());
-        doc.angleMeasures().push_back(std::move(am));
-    }
+    for (const auto& v : varObj["angleMeasures"].toArray())
+        doc.restoreAngleMeasureRaw(angleMeasureFrom(v.toObject()));
 
     // Recompute formulas (syncs parameters + resolves all blocks)
     doc.recomputeFormulas();

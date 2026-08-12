@@ -1,17 +1,18 @@
-#include "GroupPanel.h"
+﻿#include "GroupPanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QScrollArea>
-#include <QLabel>
-#include <QCheckBox>
-#include <QToolButton>
-#include <QPushButton>
+#include "ElaScrollArea.h"
+#include "ElaText.h"
+#include "ElaCheckBox.h"
+#include "ElaToolButton.h"
+#include "ElaPushButton.h"
 #include <QMenu>
 #include <QInputDialog>
 #include <QDrag>
 #include <QMimeData>
 #include <QApplication>
+#include <QStyle>
 #include <QDropEvent>
 #include <QKeyEvent>
 #include <QUndoStack>
@@ -44,16 +45,8 @@ public:
         , m_groupId(groupId)
     {
         setObjectName(QStringLiteral("GroupCard"));
-        // Pure selector rules only (bare declarations mixed with :hover rules
-        // break Qt's stylesheet parser — see LayerPanel's SegmentRow note).
-        m_baseStyle =
-            "QFrame#GroupCard { background: #FFFFFF; border: 1px solid #E5E8E8;"
-            "  border-radius: 8px; }"
-            "QFrame#GroupCard:hover { border: 1px solid #AED6F1; background: #FBFDFF; }";
-        m_dropStyle =
-            "QFrame#GroupCard { background: #EBF5FB; border: 2px dashed #2E86C1;"
-            "  border-radius: 8px; }";
-        setStyleSheet(m_baseStyle);
+        // Card frame / hover / drop state come from the global theme QSS
+        // (objectName + [dropping] attribute selector) — mode-aware.
         setCursor(Qt::PointingHandCursor);
         setContextMenuPolicy(Qt::CustomContextMenu);
         setFocusPolicy(Qt::StrongFocus);
@@ -67,19 +60,17 @@ public:
         auto* row = new QHBoxLayout();
         row->setSpacing(6);
 
-        m_check = new QCheckBox(this);
+        m_check = new ElaCheckBox(this);
         m_check->setCursor(Qt::PointingHandCursor);
         connect(m_check, &QCheckBox::toggled, this,
                 [this](bool on) { emit checkChanged(m_groupId, on); });
         row->addWidget(m_check);
 
-        m_caret = new QToolButton(this);
+        m_caret = new ElaToolButton(this);
         m_caret->setCheckable(true);
         m_caret->setCursor(Qt::PointingHandCursor);
         m_caret->setFixedSize(16, 16);
-        m_caret->setStyleSheet(
-            "QToolButton { background: transparent; border: none; border-radius: 3px; }"
-            "QToolButton:hover { background: #EBF5FB; }");
+        m_caret->setObjectName(QStringLiteral("groupCaret"));
         m_caret->setIcon(cad::ui::IconHelper::iconByName(
             QStringLiteral("caret-right"), QColor(0x7F, 0x8C, 0x8D)));
         m_caret->setIconSize(QSize(12, 12));
@@ -97,34 +88,24 @@ public:
             serial = g->serial;
             name = g->name;
         }
-        auto* tagLbl = new QLabel(cad::param::Serial::tag(serial), this);
+        auto* tagLbl = new ElaText(cad::param::Serial::tag(serial), 13, this);
+        tagLbl->setObjectName(QStringLiteral("groupCardTag"));
         tagLbl->setToolTip(serial);
-        tagLbl->setStyleSheet(
-            "QLabel { font-family: Consolas, monospace; font-size: 11px;"
-            "  color: #5D6D7E; background: #F4F6F7; border-radius: 3px;"
-            "  padding: 1px 4px; }");
         row->addWidget(tagLbl);
 
         // Group name (or muted placeholder when unnamed).
-        auto* nameLbl = new QLabel(this);
-        if (name.isEmpty()) {
-            nameLbl->setText(QString::fromUtf8("\xe6\x9c\xaa\xe5\x91\xbd\xe5\x90\x8d"));  // 未命名
-            nameLbl->setStyleSheet(
-                "QLabel { font-size: 12px; color: #BDC3C7; background: transparent; }");
-        } else {
-            nameLbl->setText(name);
-            nameLbl->setStyleSheet(
-                "QLabel { font-size: 12px; color: #34495E; background: transparent; }");
-        }
+        auto* nameLbl = new ElaText(QString(), 13, this);
+        nameLbl->setObjectName(QStringLiteral("groupCardName"));
+        nameLbl->setProperty("dimmed", name.isEmpty());
+        nameLbl->setText(name.isEmpty()
+            ? QString::fromUtf8("\xe6\x9c\xaa\xe5\x91\xbd\xe5\x90\x8d")  // 未命名
+            : name);
         row->addWidget(nameLbl, 1);
 
         // Member count pill.
         const int count = doc ? doc->blocksInGroup(groupId).size() : 0;
-        auto* countLbl = new QLabel(
-            QString::fromUtf8("%1 \xe6\x9d\xa1").arg(count), this);  // N 条
-        countLbl->setStyleSheet(
-            "QLabel { font-size: 11px; color: #2E86C1; background: #EBF5FB;"
-            "  border-radius: 8px; padding: 1px 7px; }");
+        auto* countLbl = new ElaText(QString::fromUtf8("%1 \xe6\x9d\xa1").arg(count), 13, this);  // N 条
+        countLbl->setObjectName(QStringLiteral("groupCardCount"));
         row->addWidget(countLbl);
         outer->addLayout(row);
 
@@ -147,16 +128,13 @@ public:
                 auto* mlay = new QHBoxLayout(mrow);
                 mlay->setContentsMargins(0, 0, 0, 0);
                 mlay->setSpacing(6);
-                auto* mtag = new QLabel(cad::param::Serial::tag(segSerial), mrow);
+                auto* mtag = new ElaText(cad::param::Serial::tag(segSerial), 13, mrow);
+                mtag->setObjectName(QStringLiteral("memberTag"));
                 mtag->setToolTip(segSerial);
-                mtag->setStyleSheet(
-                    "QLabel { font-family: Consolas, monospace; font-size: 10px;"
-                    "  color: #95A5A6; background: transparent; }");
                 mlay->addWidget(mtag);
-                auto* mname = new QLabel(segName.isEmpty()
-                    ? QString::fromUtf8("\xe2\x80\x94") : segName, mrow);  // —
-                mname->setStyleSheet(
-                    "QLabel { font-size: 11px; color: #5D6D7E; background: transparent; }");
+                auto* mname = new ElaText(segName.isEmpty()
+                    ? QString::fromUtf8("\xe2\x80\x94") : segName, 13, mrow);  // —
+                mname->setObjectName(QStringLiteral("memberName"));
                 mlay->addWidget(mname, 1);
                 m_memberLayout->addWidget(mrow);
             }
@@ -169,7 +147,11 @@ public:
     /// Visual feedback while a drag hovers over this card (reorder target).
     void setDropHighlight(bool on)
     {
-        setStyleSheet(on ? m_dropStyle : m_baseStyle);
+        if (m_dropping == on) return;
+        m_dropping = on;
+        setProperty("dropping", on);
+        style()->unpolish(this);
+        style()->polish(this);
     }
 
 signals:
@@ -227,8 +209,7 @@ protected:
 private:
     cad::param::ParamDocument* m_doc = nullptr;
     QUuid m_groupId;
-    QString m_baseStyle;
-    QString m_dropStyle;
+    bool  m_dropping = false;    ///< Drop-target highlight (QSS attribute).
     QCheckBox* m_check = nullptr;
     QToolButton* m_caret = nullptr;
     QWidget* m_memberBox = nullptr;
@@ -269,30 +250,24 @@ void GroupPanel::setupUi()
     auto* headerLay = new QHBoxLayout(header);
     headerLay->setContentsMargins(12, 10, 12, 6);
     headerLay->setSpacing(8);
-    auto* title = new QLabel(QString::fromUtf8("\xe7\xbb\x84"), header);  // 组
-    title->setStyleSheet("font-size: 13px; font-weight: bold; color: #34495E;");
+    auto* title = new ElaText(QString::fromUtf8("\xe7\xbb\x84"), 13, header);  // 组
+    title->setObjectName(QStringLiteral("groupPanelTitle"));
     headerLay->addWidget(title);
-    m_countLabel = new QLabel(QStringLiteral("0"), header);
-    m_countLabel->setStyleSheet(
-        "font-size: 11px; color: #7F8C8D; background: #F4F6F7;"
-        "border-radius: 8px; padding: 1px 7px;");
+    m_countLabel = new ElaText(QStringLiteral("0"), 13, header);
+    m_countLabel->setObjectName(QStringLiteral("groupPanelCount"));
     headerLay->addWidget(m_countLabel);
     headerLay->addStretch(1);
-    m_batchBtn = new QPushButton(
+    m_batchBtn = new ElaPushButton(
         QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe9\x80\x89\xe4\xb8\xad"), header);  // 解散选中
     m_batchBtn->setCursor(Qt::PointingHandCursor);
-    m_batchBtn->setStyleSheet(
-        "QPushButton { font-size: 11px; color: #2E86C1; background: #EBF5FB;"
-        "  border: 1px solid #AED6F1; border-radius: 10px; padding: 3px 10px; }"
-        "QPushButton:hover { background: #D6EAF8; }"
-        "QPushButton:disabled { color: #BDC3C7; background: #F4F6F7; border-color: #E5E8E8; }");
+    m_batchBtn->setObjectName(QStringLiteral("groupBatchBtn"));
     m_batchBtn->setEnabled(false);
     connect(m_batchBtn, &QPushButton::clicked, this, &GroupPanel::dissolveCheckedGroups);
     headerLay->addWidget(m_batchBtn);
     outer->addWidget(header);
 
     // Scrollable card list.
-    m_scroll = new QScrollArea(this);
+    m_scroll = new ElaScrollArea(this);
     m_scroll->setWidgetResizable(true);
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_container = new QWidget();
@@ -306,16 +281,15 @@ void GroupPanel::setupUi()
     outer->addWidget(m_scroll, 1);
 
     // Empty-state hint.
-    m_emptyHint = new QLabel(
-        QString::fromUtf8("\xe5\xa4\x9a\xe9\x80\x89\xe7\xba\xbf\xe6\xae\xb5"
+    m_emptyHint = new ElaText(QString::fromUtf8("\xe5\xa4\x9a\xe9\x80\x89\xe7\xba\xbf\xe6\xae\xb5"
                           "\xe5\x90\x8e\xe5\x8f\xb3\xe9\x94\xae\xe7\xa1\xae"
                           "\xe8\xae\xa4\xef\xbc\x8c\xe5\x86\x8d\xe5\x8f\xb3"
                           "\xe9\x94\xae\xe5\x8d\xb3\xe5\x8f\xaf\xe6\x88\x90"
-                          "\xe7\xbb\x84"),  // 多选线段后右键确认，再右键即可成组
+                          "\xe7\xbb\x84"), 13, // 多选线段后右键确认，再右键即可成组
         m_container);
     m_emptyHint->setWordWrap(true);
     m_emptyHint->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-    m_emptyHint->setStyleSheet("font-size: 12px; color: #B0BEC5; padding: 24px 12px;");
+    m_emptyHint->setObjectName(QStringLiteral("groupEmptyHint"));
     m_listLayout->addWidget(m_emptyHint);
 }
 
@@ -415,8 +389,15 @@ bool GroupPanel::eventFilter(QObject* watched, QEvent* event)
                 if (m_cards[i] == target)
                     toIdx = i;
             }
-            if (fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx && m_doc)
-                m_doc->moveGroup(fromIdx, toIdx);   // groupsChanged → refresh
+            if (fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx && m_doc) {
+                // Undoable: the order is persisted, so a plain moveGroup
+                // would silently break the dirty flag (save → drag → close).
+                if (m_undoStack)
+                    m_undoStack->push(new cad::cmd::MoveGroupCommand(
+                        m_doc, fromIdx, toIdx));
+                else
+                    m_doc->moveGroup(fromIdx, toIdx);
+            }   // groupsChanged → refresh
             de->acceptProposedAction();
             return true;
         }

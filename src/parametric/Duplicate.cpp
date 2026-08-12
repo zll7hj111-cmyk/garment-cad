@@ -20,6 +20,17 @@ QUuid remap(const QHash<QUuid, QUuid>& idMap, const QUuid& id)
     return idMap.value(id, id);
 }
 
+/// Remap an id that points INSIDE the copied set; references outside the set
+/// are CLEARED. A clone must never depend on geometry outside the copied set:
+/// an outside endTarget/follow would pull the clone toward the original block
+/// (the same rule RotateCopyGesture applies by clearing them), and an outside
+/// interpRefPointId would never resolve (findPoint misses the fresh UUIDs).
+QUuid remapOrClear(const QHash<QUuid, QUuid>& idMap, const QUuid& id)
+{
+    if (id.isNull()) return id;
+    return idMap.value(id, QUuid());
+}
+
 
 /// Linked variable (关联变量) tracking the length of an ORIGINAL segment:
 /// reuse the published one, else one already queued in this result, else
@@ -83,7 +94,20 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
             pt.refPointB     = remap(idMap, pt.refPointB);
             pt.hostSegmentId = remap(idMap, pt.hostSegmentId);
             pt.interAimPointId = remap(idMap, pt.interAimPointId);
+            // Curve-anchor follow + interpolated measurement reference: only
+            // references INSIDE the copied set survive (outside ones are
+            // cleared — see remapOrClear).
+            pt.followBlockId = remapOrClear(idMap, pt.followBlockId);
+            pt.followPointId = pt.followBlockId.isNull()
+                ? QUuid() : remapOrClear(idMap, pt.followPointId);
+            pt.interpRefPointId = remapOrClear(idMap, pt.interpRefPointId);
         }
+        // Endpoint-aim constraint (终点指向): a target outside the copied set
+        // would drag the clone back on every resolve — clear it (same rule as
+        // RotateCopyGesture); an inside target keeps the relative aim.
+        clone.endTargetBlockId = remapOrClear(idMap, clone.endTargetBlockId);
+        clone.endTargetPointId = clone.endTargetBlockId.isNull()
+            ? QUuid() : remapOrClear(idMap, clone.endTargetPointId);
         for (auto& seg : clone.segments) {
             seg.startPointId = remap(idMap, seg.startPointId);
             seg.endPointId   = remap(idMap, seg.endPointId);

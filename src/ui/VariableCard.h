@@ -1,14 +1,14 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
 
 #include "parametric/Variable.h"
 
-class QLineEdit;
+class ElaLineEdit;
 class QDoubleSpinBox;
-class QToolButton;
-class QLabel;
+class ElaToolButton;
+class ElaText;
 
 namespace cad::ui { class CopyChip; }
 
@@ -48,11 +48,11 @@ private:
     QUuid m_id;
 
     cad::ui::CopyChip* m_nameChip = nullptr;
-    QLabel*          m_valueLabel = nullptr;
-    QToolButton*     m_deleteBtn = nullptr;
+    ElaText*         m_valueLabel = nullptr;
+    ElaToolButton*     m_deleteBtn = nullptr;
 
     QWidget*         m_detail = nullptr;
     cad::ui::CopyChip* m_refChip = nullptr;
     QDoubleSpinBox*  m_valueSpin = nullptr;
-    QLineEdit*       m_commentEdit = nullptr;
+    ElaLineEdit*       m_commentEdit = nullptr;
 };

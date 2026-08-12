@@ -1,9 +1,9 @@
-#include "MeasureCard.h"
+﻿#include "MeasureCard.h"
 
 #include <cmath>
-#include <QLabel>
-#include <QLineEdit>
-#include <QToolButton>
+#include "ElaText.h"
+#include "ElaLineEdit.h"
+#include "ElaToolButton.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QStyleOption>
@@ -69,12 +69,12 @@ void MeasureCard::refreshValue(double valueMm, bool dangling)
         m_danglingStyled = dangling;
         if (dangling) {
             m_valueLabel->setStyleSheet(
-                "font-size: 11px; font-weight: bold; color: #E74C3C; background: transparent;");
+                "font-size: 11px; font-weight: bold; background: transparent;");
             m_valueLabel->setToolTip(QStringLiteral("测量来源点已被删除"));
         } else {
             m_valueLabel->setStyleSheet(
                 "font-family: 'Consolas','Courier New',monospace;"
-                "font-size: 12px; font-weight: bold; color: #B45309; background: transparent;");
+                "font-size: 12px; font-weight: bold; background: transparent;");
             m_valueLabel->setToolTip(QString());
         }
     }
@@ -105,9 +105,9 @@ void MeasureCard::setIndex(int n)
         m_indexLabel->setText(text);
 }
 
-void MeasureCard::paintEvent(QPaintEvent*)
+void MeasureCard::paintEvent(QPaintEvent* event)
 {
-    QStyleOption opt;
+        QStyleOption opt;
     opt.initFrom(this);
     QPainter p(this);
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
@@ -139,15 +139,7 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
                           const QString& sourceLabel, bool alternate)
 {
     setObjectName(QStringLiteral("MeasureCard"));
-    const QString bg = alternate ? QStringLiteral("#FBF7F0") : QStringLiteral("#FFFFFF");
-    setStyleSheet(QStringLiteral(
-        "QWidget#MeasureCard {"
-        "  background-color: %1;"
-        "  border: 1px solid #E0E4E8;"
-        "  border-radius: 6px;"
-        "}"
-        "QWidget#MeasureCard:hover { border: 1px solid #FFCC80; }"
-    ).arg(bg));
+    (void)alternate;  // ElaScrollPageArea paints the card from the active theme.
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
@@ -157,9 +149,8 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     auto* header = new QHBoxLayout();
     header->setSpacing(6);
 
-    m_indexLabel = new QLabel(this);
-    m_indexLabel->setStyleSheet(
-        "font-size: 11px; color: #B45309; background: transparent;");
+    m_indexLabel = new ElaText(QString(), 13, this);
+    m_indexLabel->setStyleSheet("font-size: 11px; background: transparent;");
     m_indexLabel->setToolTip(QStringLiteral("测量序号（视图行号）"));
     header->addWidget(m_indexLabel, 0);
 
@@ -168,21 +159,21 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     m_nameChip->setText(mv.name);
     header->addWidget(m_nameChip, 1);
 
-    m_valueLabel = new QLabel(this);
+    m_valueLabel = new ElaText(QString(), 13, this);
     m_valueLabel->setStyleSheet(
         "font-family: 'Consolas','Courier New',monospace;"
-        "font-size: 12px; font-weight: bold; color: #B45309; background: transparent;");
+        "font-size: 12px; font-weight: bold; background: transparent;");
     refreshValue(mv.value, mv.dangling);
     header->addWidget(m_valueLabel, 0);
 
-    m_lockIcon = new QLabel(this);
+    m_lockIcon = new ElaText(QString(), 13, this);
     m_lockIcon->setText(QStringLiteral("\xF0\x9F\x94\x92"));  // 🔒
     m_lockIcon->setStyleSheet("font-size: 10px; background: transparent;");
     m_lockIcon->setToolTip(QStringLiteral("自动测量，不可编辑"));
     m_lockIcon->setFixedWidth(16);
     header->addWidget(m_lockIcon, 0);
 
-    m_deleteBtn = new QToolButton(this);
+    m_deleteBtn = new ElaToolButton(this);
     m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
         QStringLiteral("trash"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
     m_deleteBtn->setIconSize(QSize(12, 12));
@@ -190,9 +181,6 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     m_deleteBtn->setFixedSize(20, 20);
     m_deleteBtn->setCursor(Qt::PointingHandCursor);
     m_deleteBtn->setVisible(false);
-    m_deleteBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: none; border-radius: 10px; }"
-        "QToolButton:hover { background: #E74C3C; }");
     header->addWidget(m_deleteBtn, 0);
 
     mainLayout->addLayout(header);
@@ -211,21 +199,15 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     m_refChip->setFixedWidth(72);
     detailLayout->addWidget(m_refChip, 0);
 
-    m_sourceInfo = new QLabel(m_detail);
+    m_sourceInfo = new ElaText(QString(), 13, m_detail);
     m_sourceInfo->setText(sourceLabel);
-    m_sourceInfo->setStyleSheet(
-        "font-size: 11px; color: #78909C; background: transparent;");
+    m_sourceInfo->setStyleSheet("font-size: 11px; background: transparent;");
     m_sourceInfo->setToolTip(QStringLiteral("测量来源：两个点（只读）"));
     detailLayout->addWidget(m_sourceInfo, 0);
 
-    m_commentEdit = new QLineEdit(mv.comment, m_detail);
+    m_commentEdit = new ElaLineEdit(m_detail);     m_commentEdit->setText(mv.comment);
     m_commentEdit->setPlaceholderText(QStringLiteral("注释…"));
     m_commentEdit->setFixedHeight(22);
-    m_commentEdit->setStyleSheet(
-        "QLineEdit { font-size: 11px; font-style: italic; color: #85929E;"
-        "  background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 0 6px; }"
-        "QLineEdit:hover { border: 1px solid #B0BEC5; background: #FFF; }"
-        "QLineEdit:focus { border: 1px solid #FF9800; background: #FFF; }");
     detailLayout->addWidget(m_commentEdit, 1);
 
     mainLayout->addWidget(m_detail);

@@ -29,45 +29,12 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
-#include "LinePropertyDialog.h"
 #include "QuickAuxDialog.h"
+#include "LeaderCandidatePicker.h"
 #include "document/commands/BlockCommands.h"
 #include "document/commands/DocumentCommands.h"
 
 namespace cad::tools {
-
-namespace {
-
-/// Toast text when a freshly established attachment crosses layers (合法方向:
-/// aux follower → working leader): "已建立跨层连接（测量层→操作层1）" with
-/// the real layer names. Empty for same-layer connections.
-QString crossLayerToast(const cad::param::ParamDocument* doc,
-                        int fromLayer, int toLayer)
-{
-    if (!doc || fromLayer < 0 || toLayer < 0) return QString();
-    if (doc->isAuxLayer(fromLayer) == doc->isAuxLayer(toLayer)) return QString();
-    const auto& layers = doc->layers();
-    auto name = [&layers](int idx) {
-        return (idx >= 0 && idx < static_cast<int>(layers.size()))
-            ? layers[static_cast<size_t>(idx)].name : QStringLiteral("?");
-    };
-    return QString::fromUtf8("\xe5\xb7\xb2\xe5\xbb\xba\xe7\xab\x8b"
-                             "\xe8\xb7\xa8\xe5\xb1\x82\xe8\xbf\x9e\xe6\x8e\xa5"
-                             "\xef\xbc\x88%1\u2192%2\xef\xbc\x89")  // 已建立跨层连接（%1→%2）
-        .arg(name(fromLayer), name(toLayer));
-}
-
-/// True when the attachment with @p attId is actually present in the document
-/// (commands may reject the edge — only toast for genuinely established ones).
-bool attachmentEstablished(const cad::param::ParamDocument* doc, const QUuid& attId)
-{
-    if (!doc || attId.isNull()) return false;
-    for (const auto& a : doc->attachments())
-        if (a.id == attId) return true;
-    return false;
-}
-
-} // namespace
 
 // ---------------------------------------------------------------------------
 // HudItem
@@ -137,6 +104,11 @@ void ToolSmartPen::activate(CanvasScene& scene, cad::param::ParamDocument* param
     m_angleSnap = false;
     m_startSnap.reset();
     m_currentSnap.reset();
+    // (Re)create the extracted collaborators with the current context.
+    delete m_lineFactory;
+    delete m_leaderPicker;
+    m_lineFactory = new LineFactory(m_paramDoc, m_undoStack, m_scene);
+    m_leaderPicker = new LeaderCandidatePicker(m_scene, m_paramDoc);
 }
 
 bool ToolSmartPen::isBlankSpace(const QPointF& userPos) const
@@ -156,6 +128,10 @@ void ToolSmartPen::deactivate()
     if (m_auxDialog)
         m_auxDialog->close();  // WA_DeleteOnClose; finished(Rejected) → no-op
     cancelLine();
+    delete m_lineFactory;
+    m_lineFactory = nullptr;
+    delete m_leaderPicker;
+    m_leaderPicker = nullptr;
     m_scene    = nullptr;
     m_paramDoc = nullptr;
 }
@@ -207,7 +183,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         } else {
             m_startPoint = clickPos;
             m_startSnap.reset();
-            m_refDirDeg = 0.0;
+            m_leaderPicker->setRefDirDeg(0.0);
         }
         beginStroke(event->modifiers());
     }
@@ -238,7 +214,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
                 const cad::geo::Vec2 origStart = m_startPoint;
                 m_startPoint = endSnap->worldPos;
                 m_startSnap = endSnap;
-                m_refDirDeg = 0.0;
+                m_leaderPicker->setRefDirDeg(0.0);
                 commitLine(origStart, std::nullopt);
                 return;
             }
@@ -247,9 +223,9 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
             // A click on a candidate's body switches the construction-angle
             // reference instead of placing the endpoint.
             if (m_startSnap) {
-                const int idx = leaderCandidateAt(clickPos, zoom);
+                const int idx = m_leaderPicker->candidateAt(clickPos, zoom);
                 if (idx >= 0) {
-                    setLeaderIndex(idx);
+                    m_leaderPicker->setIndex(idx);
                     return;
                 }
             }
@@ -265,19 +241,20 @@ void ToolSmartPen::setupSnappedStart(const SnapResult& snap)
     m_startSnap  = snap;
     // Cache the leader segment's world "exit" direction so the HUD and
     // Shift snap can work in construction-angle (included angle) space.
-    // The exit direction makes 0° mean "continue straight along the
-    // leader" regardless of which leader endpoint is snapped.
-    m_refDirDeg = 0.0;
+    // 闭合基准（用户拍板 2026-08）：0° = 折叠重叠、180° = 直行延续，
+    // 与起点/终点吸附无关。
+    double refDirDeg = 0.0;
     if (const auto* lb = m_paramDoc->findBlock(snap.blockId))
-        m_refDirDeg = (lb->transform.rotation
-                       + lb->exitDirectionAtPoint(snap.pointId)) * 180.0 / M_PI;
+        refDirDeg = (lb->transform.rotation
+                     + lb->exitDirectionAtPoint(snap.pointId)) * 180.0 / M_PI;
     // Multiple segments may meet here (coincident points stack across
     // blocks). Collect them as leader candidates and auto-pick the
-    // first; the user can click a candidate's body or press Tab to
+    // first; the user can click a candidate's body or press W to
     // switch while the rubber band is live.
-    collectLeaderCandidates(snap);
-    if (!m_leaderCandidates.empty())
-        setLeaderIndex(0);
+    m_leaderPicker->collect(snap);
+    m_leaderPicker->setRefDirDeg(refDirDeg);
+    if (!m_leaderPicker->candidates().empty())
+        m_leaderPicker->setIndex(0);
 }
 
 void ToolSmartPen::beginStroke(Qt::KeyboardModifiers mods)
@@ -363,9 +340,10 @@ void ToolSmartPen::keyPress(QKeyEvent* event)
     else if (event->key() == Qt::Key_W) {
         // Cycle through leader candidates while the rubber band is live.
         // (W instead of Tab: Tab is a focus-navigation key and would move focus.)
-        if (m_state == State::Drawing && m_leaderCandidates.size() > 1) {
-            setLeaderIndex((m_leaderIndex + 1)
-                           % static_cast<int>(m_leaderCandidates.size()));
+        if (m_state == State::Drawing
+            && m_leaderPicker->candidates().size() > 1) {
+            m_leaderPicker->setIndex((m_leaderPicker->index() + 1)
+                % static_cast<int>(m_leaderPicker->candidates().size()));
             event->accept();
         }
     }
@@ -393,21 +371,20 @@ void ToolSmartPen::commitLine(const cad::geo::Vec2& end,
         return;
     }
 
-    QUuid blockId;
-    QUuid segmentId;
-
     if (m_startSnap && endSnap) {
         // Both ends pinned to existing points → bridge line (桥接线).
-        createBridgeLine(*m_startSnap, *endSnap);
+        m_lineFactory->createBridgeLine(*m_startSnap, *endSnap,
+                                        m_leaderPicker->index(),
+                                        m_leaderPicker->candidates());
     } else if (m_startSnap) {
-        createAttachedLine(*m_startSnap, end);
-        // Retrieve the last added block/segment IDs
-        // (createAttachedLine stores them internally via paramDoc)
+        m_lineFactory->createAttachedLine(*m_startSnap, end,
+                                          m_leaderPicker->index(),
+                                          m_leaderPicker->candidates());
     } else {
-        createFreeLine(m_startPoint, end);
+        m_lineFactory->createFreeLine(m_startPoint, end);
     }
 
-    clearLeaderState();  // after createAttachedLine — it reads m_leaderIndex
+    m_leaderPicker->clear();  // after createAttachedLine — it reads the index
     clearPreview();
     m_state = State::Idle;
     m_startSnap.reset();
@@ -416,316 +393,24 @@ void ToolSmartPen::commitLine(const cad::geo::Vec2& end,
     // addBlock/addAttachment already triggered resolveAll + refreshAllBlockItems
     // via ParamDocument signals — no manual re-resolve needed.
 
-    // Show property dialog for the last created block/segment
-    if (m_paramDoc && !m_paramDoc->blocks().empty()) {
-        auto& lastBlock = m_paramDoc->blocks().back();
-        blockId = lastBlock.id;
-        if (!lastBlock.segments.empty()) {
-            segmentId = lastBlock.segments.back().id;
-
-            // Find the parent widget for the dialog
-            QWidget* parentWidget = m_scene->views().isEmpty()
-                ? nullptr : m_scene->views().first();
-
-            // Modeless: user can still interact with panels while editing.
-            // isCreation=true: the smart pen just drew this line — 撤销全部
-            // in the dialog then means 取消线段创建 (delete the line).
-            auto* dlg = new LinePropertyDialog(blockId, segmentId, m_paramDoc,
-                                               m_scene, parentWidget,
-                                               /*isCreation=*/true);
-            dlg->setAttribute(Qt::WA_DeleteOnClose);
-            dlg->show();
-        }
-    }
-}
-
-void ToolSmartPen::createFreeLine(const cad::geo::Vec2& start, const cad::geo::Vec2& end)
-{
-    if (!m_paramDoc) return;
-
-    cad::param::Block block;
-    block.layer = m_paramDoc->activeLayer();
-    // Segment names default to empty; the user assigns them via the property
-    // dialog or the group panel.
-
-    // Block origin at start point (local (0,0) = start)
-    block.transform.origin = start;
-    block.transform.rotation = 0.0;
-
-    // Start point: Free at local (0,0)
-    cad::param::ParamPoint ptStart;
-    ptStart.constraint = cad::param::PointConstraint::Free;
-    ptStart.freePos = cad::geo::Vec2::zero();
-    QUuid startId = ptStart.id;
-
-    // End point: Polar relative to start
-    cad::geo::Vec2 delta = end - start;
-    double dist = delta.length();
-    double angleDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
-
-    cad::param::ParamPoint ptEnd;
-    ptEnd.constraint = cad::param::PointConstraint::Polar;
-    ptEnd.refPointId = startId;
-    ptEnd.distance = dist;
-    ptEnd.angle = angleDeg;
-    QUuid endId = ptEnd.id;
-
-    block.addPoint(std::move(ptStart));
-    block.addPoint(std::move(ptEnd));
-
-    // Segment connecting them
-    cad::param::Segment seg;
-    seg.startPointId = startId;
-    seg.endPointId = endId;
-    block.addSegment(std::move(seg));
-
-    if (m_undoStack) {
-        cad::param::Attachment dummy;
-        m_undoStack->push(new cad::cmd::DrawLineCommand(
-            m_paramDoc, std::move(block), dummy, false));
-    } else {
-        m_paramDoc->addBlock(std::move(block));
-    }
-}
-
-void ToolSmartPen::createAttachedLine(const SnapResult& snapStart, const cad::geo::Vec2& end)
-{
-    if (!m_paramDoc) return;
-
-    // Attachment target: the user-selected leader candidate (click/Tab during
-    // rubber band) wins; without candidates fall back to the raw snap result
-    // + auto-picked exit segment. Resolved first because the block origin must
-    // sit exactly on the point we actually attach to (coincident points from
-    // different blocks may differ by sub-pixel amounts).
-    QUuid toBlockId   = snapStart.blockId;
-    QUuid toPointId   = snapStart.pointId;
-    QUuid toSegmentId;
-    if (m_leaderIndex >= 0
-        && m_leaderIndex < static_cast<int>(m_leaderCandidates.size())) {
-        const LeaderCandidate& cand = m_leaderCandidates[m_leaderIndex];
-        toBlockId   = cand.blockId;
-        toPointId   = cand.pointId;
-        toSegmentId = cand.segmentId;
-    }
-
-    cad::geo::Vec2 startWorld = snapStart.worldPos;
-    double refWorldRad = 0.0;
-    if (const auto* targetBlock = m_paramDoc->findBlock(toBlockId)) {
-        startWorld = targetBlock->worldPos(toPointId);
-        if (toSegmentId.isNull())
-            toSegmentId = targetBlock->exitSegmentAtPoint(toPointId);
-        // Reference world direction = target block rotation + local exit
-        // direction. exitDirectionAtPoint handles snapping to either endpoint
-        // of the leader segment, orienting the reference so 0° always means
-        // "keep going straight". The leader segment is recorded explicitly
-        // (toSegmentId) so the reference never silently switches when the
-        // point gains more segments.
-        refWorldRad = targetBlock->transform.rotation
-                    + targetBlock->exitDirectionAtPoint(toPointId, toSegmentId);
-    }
-
-    cad::param::Block block;
-    block.layer = m_paramDoc->activeLayer();
-    // Segment names default to empty (see createFreeLine).
-
-    // Block origin at the attached point
-    block.transform.origin = startWorld;
-    block.transform.rotation = 0.0;
-
-    // Start point: Free at local (0,0) — coincides with snapped point
-    cad::param::ParamPoint ptStart;
-    ptStart.constraint = cad::param::PointConstraint::Free;
-    ptStart.freePos = cad::geo::Vec2::zero();
-    QUuid startId = ptStart.id;
-
-    // End point: Polar relative to start
-    cad::geo::Vec2 delta = end - startWorld;
-    double dist = delta.length();
-    double angleDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
-
-    cad::param::ParamPoint ptEnd;
-    ptEnd.constraint = cad::param::PointConstraint::Polar;
-    ptEnd.refPointId = startId;
-    ptEnd.distance = dist;
-    ptEnd.angle = angleDeg;
-    QUuid endId = ptEnd.id;
-
-    block.addPoint(std::move(ptStart));
-    block.addPoint(std::move(ptEnd));
-
-    cad::param::Segment seg;
-    seg.startPointId = startId;
-    seg.endPointId = endId;
-    block.addSegment(std::move(seg));
-
-    QUuid newBlockId = block.id;
-
-    cad::param::Attachment att;
-    att.fromBlockId = newBlockId;
-    att.fromPointId = startId;
-    att.toBlockId   = toBlockId;
-    att.toPointId   = toPointId;
-    att.toSegmentId = toSegmentId;
-
-    // Follower angle = new line's world angle - leader segment world direction
-    att.followerAngle = angleDeg - refWorldRad * 180.0 / M_PI;
-
-    // Cross-layer toast bookkeeping (captured BEFORE block is moved away).
-    const int fromLayer = block.layer;
-    const int toLayer = [&] {
-        const auto* leaderBlk = m_paramDoc->findBlock(toBlockId);
-        return leaderBlk ? leaderBlk->layer : -1;
-    }();
-    const QUuid attId = att.id;
-
-    if (m_undoStack) {
-        m_undoStack->push(new cad::cmd::DrawLineCommand(
-            m_paramDoc, std::move(block), att, true));
-    } else {
-        m_paramDoc->addBlock(std::move(block));
-        m_paramDoc->addAttachment(std::move(att));
-    }
-
-    // Toast at the creation site (closest to the user gesture); the id check
-    // guards against a rejected edge, and undo/redo replays never re-toast.
-    if (m_scene && attachmentEstablished(m_paramDoc, attId)) {
-        if (const QString toast = crossLayerToast(m_paramDoc, fromLayer, toLayer);
-            !toast.isEmpty())
-            m_scene->showToast(toast);
-    }
-}
-
-void ToolSmartPen::createBridgeLine(const SnapResult& snapStart,
-                                    const SnapResult& snapEnd)
-{
-    if (!m_paramDoc) return;
-
-    // Resolve the actual host points (leader candidate wins for the start).
-    QUuid startBlockId = snapStart.blockId;
-    QUuid startPointId = snapStart.pointId;
-    if (m_leaderIndex >= 0
-        && m_leaderIndex < static_cast<int>(m_leaderCandidates.size())) {
-        const LeaderCandidate& cand = m_leaderCandidates[m_leaderIndex];
-        startBlockId = cand.blockId;
-        startPointId = cand.pointId;
-    }
-
-    cad::geo::Vec2 startWorld = snapStart.worldPos;
-    if (const auto* hb = m_paramDoc->findBlock(startBlockId))
-        startWorld = hb->worldPos(startPointId);
-    cad::geo::Vec2 endWorld = snapEnd.worldPos;
-    if (const auto* hb = m_paramDoc->findBlock(snapEnd.blockId))
-        endWorld = hb->worldPos(snapEnd.pointId);
-
-    if (startWorld.distanceSquaredTo(endWorld) < 1e-10)
-        return;  // Both points on the same spot — nothing to draw.
-
-    // --- Measure variable: |P1 - P2| published as a formula parameter ---
-    cad::param::MeasureVariable mv;
-    mv.blockA = startBlockId;
-    mv.pointA = startPointId;
-    mv.blockB = snapEnd.blockId;
-    mv.pointB = snapEnd.pointId;
-    mv.value = startWorld.distanceTo(endWorld);
-    // Reference names are uppercase by convention (CopyChip force-uppercases
-    // them for display/editing); generate uppercase so the stored refName
-    // matches what the user sees and types back into formula fields.
-    mv.refName = QStringLiteral("M_") + cad::param::Serial::randomPrefix().toUpper();
-
-    // --- Free line (new bridge model): length = measure var, angle = world ---
-    cad::geo::Vec2 delta = endWorld - startWorld;
-    const double lenMm = delta.length();
-    const double worldAngleDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
-
-    cad::param::Block block;
-    block.layer = m_paramDoc->activeLayer();
-    block.transform.origin = startWorld;
-    block.transform.rotation = worldAngleDeg * M_PI / 180.0;
-    // The measurement belongs to this bridge line: deleting the line deletes
-    // the variable, and clicking the card highlights the line (not the hosts).
-    mv.ownerBlockId = block.id;
-
-    cad::param::ParamPoint ptStart;
-    ptStart.constraint = cad::param::PointConstraint::Free;
-    ptStart.freePos = cad::geo::Vec2::zero();
-    QUuid startId = ptStart.id;
-
-    // End point: Polar along local X (block rotation carries the world angle).
-    // Length is driven by the measure variable formula.
-    cad::param::ParamPoint ptEnd;
-    ptEnd.constraint = cad::param::PointConstraint::Polar;
-    ptEnd.refPointId = startId;
-    ptEnd.distance = lenMm;
-    ptEnd.distanceFormula = mv.refName;  // length = M_xxx
-    ptEnd.angle = 0.0;
-    QUuid endId = ptEnd.id;
-
-    block.addPoint(std::move(ptStart));
-    block.addPoint(std::move(ptEnd));
-
-    cad::param::Segment seg;
-    seg.startPointId = startId;
-    seg.endPointId = endId;
-    seg.lengthFormula = mv.refName;
-    block.addSegment(std::move(seg));
-
-    // --- Default follow (构造线默认跟随): start follows host A, end aims at
-    // host B. Both can be released later via the property dialog.
-    block.endTargetBlockId = snapEnd.blockId;
-    block.endTargetPointId = snapEnd.pointId;
-    block.endTargetOffset = 0.0;
-
-    std::optional<cad::param::Attachment> followAtt;
-    if (const auto* leader = m_paramDoc->findBlock(startBlockId)) {
-        cad::param::Attachment att;
-        att.fromBlockId = block.id;
-        att.fromPointId = startId;
-        att.toBlockId   = startBlockId;
-        att.toPointId   = startPointId;
-        att.toSegmentId = leader->exitSegmentAtPoint(startPointId);
-        // Back-solve the follower angle so the initial world direction is
-        // preserved: rotation = refWorld + followerAngle.
-        const double refWorldRad = leader->transform.rotation
-            + leader->exitDirectionAtPoint(startPointId, att.toSegmentId);
-        att.followerAngle = cad::geo::normalizeDeg180(worldAngleDeg
-            - refWorldRad * 180.0 / M_PI);
-        followAtt = std::move(att);
-    }
-
-    // Cross-layer toast bookkeeping (captured BEFORE block is moved away).
-    const int fromLayer = block.layer;
-    const int toLayer = followAtt
-        ? ([&] { const auto* l = m_paramDoc->findBlock(followAtt->toBlockId);
-                 return l ? l->layer : -1; })()
-        : -1;
-    const QUuid attId = followAtt ? followAtt->id : QUuid();
-
-    if (m_undoStack) {
-        m_undoStack->push(new cad::cmd::DrawMeasureLineCommand(
-            m_paramDoc, std::move(block), std::move(mv), std::move(followAtt)));
-    } else {
-        m_paramDoc->addMeasure(std::move(mv));
-        m_paramDoc->addBlock(std::move(block));
-        if (followAtt)
-            m_paramDoc->addAttachment(std::move(*followAtt));
-    }
-
-    // Toast at the creation site; the id check covers the command rejecting
-    // the follow attachment (DrawMeasureLineCommand::m_attAdded guard).
-    if (m_scene && attachmentEstablished(m_paramDoc, attId)) {
-        if (const QString toast = crossLayerToast(m_paramDoc, fromLayer, toLayer);
-            !toast.isEmpty())
-            m_scene->showToast(toast);
+    // Notify the host: the status-bar edit strip (SegmentEditBar) replaces the
+    // old creation dialog. blockId/segmentId = the last created block/segment.
+    if (m_scene && m_paramDoc && !m_paramDoc->blocks().empty()) {
+        const auto& lastBlock = m_paramDoc->blocks().back();
+        if (!lastBlock.segments.empty())
+            m_scene->notifyLineCreated(lastBlock.id, lastBlock.segments.back().id);
     }
 }
 
 void ToolSmartPen::cancelLine()
 {
-    clearLeaderState();
+    m_leaderPicker->clear();
     clearPreview();
     m_state = State::Idle;
     m_startSnap.reset();
     m_currentSnap.reset();
+    // Aborted stroke: withdraw the status-bar preview readout.
+    if (m_scene) m_scene->notifyLinePreview(0.0, 0.0);
 }
 
 void ToolSmartPen::clearPreview()
@@ -747,18 +432,35 @@ cad::geo::Vec2 ToolSmartPen::applyAngleSnap(const cad::geo::Vec2& raw) const
     if (dist < 1e-12) return raw;
 
     // Work in construction-angle space: angle relative to the leader segment.
-    // m_refDirDeg == 0 for a free line, so this degenerates to the world angle.
+    // refDirDeg == 0 for a free line, so this degenerates to the world angle.
+    const double refDirDeg = m_leaderPicker->refDirDeg();
     const double rawWorldDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
-    const double relDeg      = rawWorldDeg - m_refDirDeg;
+    const double relDeg      = rawWorldDeg - refDirDeg;
+
+    // 显示约定（2026-08 v3 定稿，与旋转工具 HUD 一致）：
+    // 附着 leader 时 = 带符号折角 [−180°, +180°]（折叠 0 / 垂直 ±90 /
+    // 直行 ±180：闭合基线 α = 180° − 相对角，符号 = 折向，与
+    // setupSnappedStart 注释一致）；
+    // 自由起点 = 水平基准绝对角（0~360° 逆时针为正，行业默认）。
+    auto displayOf = [&](double rel) {
+        if (m_startSnap.has_value()) {
+            double alpha = std::fmod(180.0 - rel, 360.0);
+            if (alpha < 0.0) alpha += 360.0;
+            return alpha > 180.0 ? alpha - 360.0 : alpha;
+        }
+        double d = std::fmod(rel, 360.0);
+        if (d < 0.0) d += 360.0;
+        return d;
+    };
 
     if (!m_angleSnap) {
-        m_snapAngleDeg = cad::geo::normalizeDeg180(relDeg);
+        m_snapAngleDeg = displayOf(relDeg);
         return raw;
     }
 
     const double snappedRel = std::round(relDeg / 45.0) * 45.0;
-    m_snapAngleDeg          = cad::geo::normalizeDeg180(snappedRel);
-    const double rad        = (snappedRel + m_refDirDeg) * M_PI / 180.0;
+    m_snapAngleDeg          = displayOf(snappedRel);
+    const double rad        = (snappedRel + refDirDeg) * M_PI / 180.0;
     return m_startPoint + cad::geo::Vec2(std::cos(rad) * dist, std::sin(rad) * dist);
 }
 
@@ -786,6 +488,10 @@ void ToolSmartPen::updatePreview(const cad::geo::Vec2& effectiveEnd)
                 : m_currentSnap->pointName);
     }
     m_hud->setText(text);
+
+    // Live readout for the status-bar preview (创建中只读读数).
+    if (m_scene)
+        m_scene->notifyLinePreview(cad::geo::Units::mmToCm(lenMm), m_snapAngleDeg);
 
     QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
     m_hud->moveToPoint(effectiveEnd, view);
@@ -834,7 +540,7 @@ void ToolSmartPen::updateSegMarker(const cad::geo::Vec2& worldPos)
     // point to a point on an incident segment would be degenerate anyway.
     QSet<QUuid> exclude;
     if (m_state == State::Drawing) {
-        for (const auto& cand : m_leaderCandidates)
+        for (const auto& cand : m_leaderPicker->candidates())
             exclude.insert(cand.segmentId);
     }
 
@@ -872,7 +578,6 @@ void ToolSmartPen::hideSegMarker()
         m_segMarker->setVisible(false);
 }
 
-
 void ToolSmartPen::openAuxDialog(const SegmentSnapResult& segSnap, bool forStart)
 {
     if (!m_paramDoc || m_auxDialog) return;
@@ -898,9 +603,10 @@ void ToolSmartPen::openAuxDialog(const SegmentSnapResult& segSnap, bool forStart
         ? m_scene->views().first() : nullptr;
     auto* dlg = new QuickAuxDialog(pt, block->findPoint(seg->startPointId),
                                    block->findPoint(seg->endPointId), parentWidget);
+    // NOTE: no WA_DeleteOnClose — the dialog schedules its own deleteLater()
+    // on close (ElaAppBar's default close path would destroy it mid-call).
     // NON-modal on purpose: the user must be able to switch to the variable
     // panel and copy a formula while this dialog stays open.
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
     m_auxDialog = dlg;
     m_auxDialogForStart = forStart;
     m_auxDialogSegSnap = segSnap;
@@ -932,6 +638,18 @@ void ToolSmartPen::onAuxDialogAccepted(const cad::param::ParamPoint& pt)
         beginStroke(Qt::NoModifier);
     } else {
         if (m_state != State::Drawing) return;  // safety: state drifted
+        // 起点自由 + 终点辅助点 = 翻转 (与 mousePress 终点吸附同一规则):
+        // 辅助点成为新线起点, 原起点位置成为自由终点, 然后走统一的起点
+        // 连接路径 —— 否则 commitLine 会退化成 createFreeLine, 连接根本
+        // 不建立 (无 Attachment → 拖动保护失效, 用户双击面板手动连才生效).
+        if (!m_startSnap) {
+            const cad::geo::Vec2 origStart = m_startPoint;
+            m_startPoint = snap->worldPos;
+            m_startSnap = snap;
+            m_leaderPicker->setRefDirDeg(0.0);
+            commitLine(origStart, std::nullopt);
+            return;
+        }
         commitLine(snap->worldPos, snap);
     }
 }
@@ -970,140 +688,11 @@ std::optional<SnapResult> ToolSmartPen::commitAuxPoint(
     };
 }
 
-// ---------------------------------------------------------------------------
-// Leader candidate selection
-// ---------------------------------------------------------------------------
-
-void ToolSmartPen::collectLeaderCandidates(const SnapResult& snap)
-{
-    clearLeaderState();
-    if (!m_paramDoc || !m_scene) return;
-
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
-    if (std::abs(zoom) < 1e-9) zoom = 1.0;
-    // Same reach as the snap itself: what looks like one point may be several
-    // coincident points from different blocks stacked on the same spot, and
-    // every segment incident to any of them is a valid angle reference.
-    const double tol = m_snapEngine.snapRadius / zoom;
-
-    struct Ranked {
-        LeaderCandidate cand;
-        int rank;   ///< Lower = preferred for the auto-pick.
-    };
-    std::vector<Ranked> ranked;
-    QSet<QUuid> seenSegments;
-
-    for (const auto& block : m_paramDoc->blocks()) {
-        for (const auto& pt : block.points) {
-            if (!pt.resolved) continue;
-            const cad::geo::Vec2 wp = block.transform.toWorld(pt.resolvedPos);
-            if (wp.distanceTo(snap.worldPos) > tol) continue;
-
-            for (const auto& seg : block.segments) {
-                const bool isEndpoint = (seg.startPointId == pt.id
-                                         || seg.endPointId == pt.id);
-                const bool isHost =
-                    (pt.constraint == cad::param::PointConstraint::Interpolated
-                     && pt.hostSegmentId == seg.id);
-                if (!isEndpoint && !isHost) continue;
-                if (seenSegments.contains(seg.id)) continue;
-                seenSegments.insert(seg.id);
-
-                // Auto-pick order: endpoint segments before host segments,
-                // then Outline < Internal < Auxiliary, then creation order
-                // (stable sort keeps document iteration order within a rank).
-                int rank = isEndpoint ? 0 : 100;
-                switch (seg.role) {
-                case cad::param::SegmentRole::Outline:   rank += 0; break;
-                case cad::param::SegmentRole::Internal:  rank += 1; break;
-                case cad::param::SegmentRole::Auxiliary: rank += 2; break;
-                }
-                ranked.push_back({{block.id, pt.id, seg.id}, rank});
-            }
-        }
-    }
-
-    std::stable_sort(ranked.begin(), ranked.end(),
-                     [](const Ranked& a, const Ranked& b) {
-                         return a.rank < b.rank;
-                     });
-
-    m_leaderCandidates.reserve(ranked.size());
-    for (const auto& r : ranked)
-        m_leaderCandidates.push_back(r.cand);
-}
-
-void ToolSmartPen::setLeaderIndex(int index)
-{
-    if (index < 0 || index >= static_cast<int>(m_leaderCandidates.size()))
-        return;
-
-    // Move the teal highlight to the new candidate's block item.
-    if (m_scene && !m_highlightBlockId.isNull()) {
-        if (auto* item = m_scene->findBlockItem(m_highlightBlockId))
-            item->setLeaderHighlight(QUuid());
-    }
-
-    m_leaderIndex = index;
-    const LeaderCandidate& cand = m_leaderCandidates[index];
-    m_highlightBlockId = cand.blockId;
-    if (m_scene) {
-        if (auto* item = m_scene->findBlockItem(cand.blockId))
-            item->setLeaderHighlight(cand.segmentId);
-    }
-
-    // Re-anchor construction-angle space (HUD / Shift snap / final followerAngle)
-    // on the new leader's exit direction.
-    if (m_paramDoc) {
-        if (const auto* lb = m_paramDoc->findBlock(cand.blockId))
-            m_refDirDeg = (lb->transform.rotation
-                           + lb->exitDirectionAtPoint(cand.pointId, cand.segmentId))
-                          * 180.0 / M_PI;
-    }
-}
-
-void ToolSmartPen::clearLeaderState()
-{
-    if (m_scene && !m_highlightBlockId.isNull()) {
-        if (auto* item = m_scene->findBlockItem(m_highlightBlockId))
-            item->setLeaderHighlight(QUuid());
-    }
-    m_highlightBlockId = QUuid();
-    m_leaderCandidates.clear();
-    m_leaderIndex = -1;
-}
-
-int ToolSmartPen::leaderCandidateAt(const cad::geo::Vec2& worldPos,
-                                    double zoom) const
-{
-    if (!m_paramDoc) return -1;
-    if (std::abs(zoom) < 1e-9) zoom = 1.0;
-    // Same pick tolerance as segment hover — the two gestures should feel
-    // identical (hoverRadiusPx is the shared interaction token).
-    const double tol = (m_scene ? m_scene->style()->hoverRadiusPx() : 8.0) / zoom;
-
-    int best = -1;
-    double bestDist = tol;
-    for (int i = 0; i < static_cast<int>(m_leaderCandidates.size()); ++i) {
-        const LeaderCandidate& cand = m_leaderCandidates[i];
-        const auto* block = m_paramDoc->findBlock(cand.blockId);
-        if (!block) continue;
-        const auto* seg = block->findSegment(cand.segmentId);
-        if (!seg) continue;
-        const auto* a = block->findPoint(seg->startPointId);
-        const auto* b = block->findPoint(seg->endPointId);
-        if (!a || !b || !a->resolved || !b->resolved) continue;
-        const cad::geo::Vec2 wa = block->transform.toWorld(a->resolvedPos);
-        const cad::geo::Vec2 wb = block->transform.toWorld(b->resolvedPos);
-        const double d = cad::geo::Vec2::distanceToSegment(worldPos, wa, wb);
-        if (d <= bestDist) {
-            bestDist = d;
-            best = i;
-        }
-    }
-    return best;
-}
-
 } // namespace cad::tools
+
+
+
+
+
+
+

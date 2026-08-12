@@ -1,4 +1,4 @@
-#include <QtTest>
+﻿#include <QtTest>
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -14,6 +14,7 @@
 using namespace cad::param;
 using cad::geo::Vec2;
 using cad::test::makeLine;
+using cad::test::layerIdAt;
 
 /// End-to-end regression test for the select tool's W key (多选 ↔ 单选 toggle):
 /// a REAL QKeyEvent travels CanvasView::keyPressEvent → ToolManager::dispatch
@@ -26,12 +27,13 @@ class TestSelectWKey : public QObject
 private slots:
     void wTogglesMultiSelectionThroughFullEventChain();
     void ctrlDragCopiesAfterConfirm();
+    void multiSelectMarqueeSelectsBothLines();
 };
 
 void TestSelectWKey::wTogglesMultiSelectionThroughFullEventChain()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);            // makeLine blocks live on layer 0
+    doc.setActiveLayer(layerIdAt(doc, 1));  // makeLine blocks land on the first working layer
     CanvasScene scene(&doc);
 
     // Two horizontal lines, stacked vertically: A at y=0, B at y=-50.
@@ -118,7 +120,7 @@ void TestSelectWKey::wTogglesMultiSelectionThroughFullEventChain()
 void TestSelectWKey::ctrlDragCopiesAfterConfirm()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
 
     auto a = makeLine(doc, 100.0);
@@ -176,6 +178,65 @@ void TestSelectWKey::ctrlDragCopiesAfterConfirm()
     // Clone landed at origin + (120, 0): same shape, new position.
     QVERIFY(clone->transform.origin.distanceTo(Vec2(120.0, 0.0)) < 1e-6);
     QVERIFY(orig->segments.size() == clone->segments.size());
+}
+
+// 多选模式下空白处拖拽必须显示并应用框选（回归：手势提取时丢失了
+// setState(Marquee)，导致 mouseMove/mouseRelease 不进 Marquee 分支——
+// 框选框不更新、释放不应用，表现为“W 进多选后框选消失”）。
+void TestSelectWKey::multiSelectMarqueeSelectsBothLines()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+
+    auto a = makeLine(doc, 100.0);
+    auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos,
+                         Qt::MouseButton btn, Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        const Qt::MouseButtons buttons = (type == QEvent::MouseButtonRelease)
+            ? Qt::NoButton : (btn | (mods & Qt::ControlModifier ? Qt::LeftButton
+                                                                 : Qt::NoButton));
+        QMouseEvent ev(type, pos, global, btn, buttons, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    auto* itemA = scene.findBlockItem(a.blockId);
+    auto* itemB = scene.findBlockItem(b.blockId);
+    QVERIFY(itemA);
+    QVERIFY(itemB);
+
+    // W → 多选模式，然后从空白处（左上方）拖框到右下，覆盖两条线。
+    QKeyEvent key(QEvent::KeyPress, Qt::Key_W, Qt::NoModifier);
+    QApplication::sendEvent(&view, &key);
+    QTest::qWait(20);
+
+    const QPoint start = vp(-150.0, 120.0);   // empty space above both lines
+    const QPoint end   = vp(220.0, -180.0);    // covers A (y=0) and B (y=-50)
+    sendMouse(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(0.0, -20.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, end, Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoModifier);
+
+    // Both lines are selected by the marquee toggle.
+    QVERIFY(itemA->toolSelected());
+    QVERIFY(itemB->toolSelected());
 }
 
 QTEST_MAIN(TestSelectWKey)

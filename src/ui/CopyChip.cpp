@@ -1,10 +1,11 @@
-#include "CopyChip.h"
+﻿#include "CopyChip.h"
 
-#include <QLabel>
-#include <QLineEdit>
+#include "ElaText.h"
+#include "ElaLineEdit.h"
 #include <QVBoxLayout>
 #include <QClipboard>
 #include <QApplication>
+#include <QStyle>
 #include <QTimer>
 #include <QMouseEvent>
 #include <QKeyEvent>
@@ -20,13 +21,25 @@ CopyChip::CopyChip(Variant variant, QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_label = new QLabel(this);
+    m_label = new ElaText(QString(), 13, this);
+    m_label->setObjectName(QStringLiteral("chipLabel"));
+    m_label->setProperty("variant", variantKey());
     m_label->setCursor(Qt::PointingHandCursor);
     m_label->installEventFilter(this);
     layout->addWidget(m_label);
 
     // Edit overlay: hidden, positioned on top of label when editing.
-    m_edit = new QLineEdit(this);
+    m_edit = new ElaLineEdit(this);
+    // ElaLineEdit's constructor hard-codes setFixedHeight(35), which would
+    // defeat enterEdit()'s setGeometry(label rect): the overlay would stay
+    // 35px tall while the chip row is only ~18px, pushing the text ~8px
+    // below the label baseline (visible as "text squeezed down + clipped"
+    // while typing) and jittering on focus-in. Lift the constraint so the
+    // overlay matches the label's geometry exactly.
+    m_edit->setMinimumHeight(0);
+    m_edit->setMaximumHeight(QWIDGETSIZE_MAX);
+    m_edit->setObjectName(QStringLiteral("chipEdit"));
+    m_edit->setProperty("variant", variantKey());
     m_edit->hide();
     m_edit->installEventFilter(this);
 
@@ -51,7 +64,13 @@ CopyChip::CopyChip(Variant variant, QWidget* parent)
         });
     }
 
-    applyStyle();
+    // Reference chips center their content; styles live in the global theme
+    // QSS (chipLabel / chipEdit + [variant] attribute selector).
+    if (m_variant == Variant::Ref) {
+        m_label->setAlignment(Qt::AlignCenter);
+        m_edit->setAlignment(Qt::AlignCenter);
+    }
+
     updateDisplay();
 }
 
@@ -111,51 +130,16 @@ bool CopyChip::eventFilter(QObject* obj, QEvent* event)
     return QWidget::eventFilter(obj, event);
 }
 
-void CopyChip::applyStyle()
-{
-    switch (m_variant) {
-    case Variant::Name:
-    case Variant::Formula:
-        m_label->setStyleSheet(
-            "QLabel { font-size: 12px; font-weight: bold; color: #C0392B;"
-            "  background: transparent; padding: 0 2px; }"
-            "QLabel:hover { background: #FDEDEC; border-radius: 2px; }");
-        m_edit->setStyleSheet(
-            "QLineEdit { font-size: 12px; font-weight: bold; color: #C0392B;"
-            "  background: #FFFFFF; border: 1px solid #3498DB;"
-            "  border-radius: 2px; padding: 0 2px; }");
-        break;
-    case Variant::Ref:
-        m_label->setAlignment(Qt::AlignCenter);
-        m_label->setStyleSheet(
-            "QLabel { font-family: 'Consolas','Courier New',monospace;"
-            "  font-size: 11px; color: #1A5276; background: #EBF5FB;"
-            "  border-radius: 2px; padding: 0 2px; }"
-            "QLabel:hover { background: #D6EAF8; }");
-        m_edit->setAlignment(Qt::AlignCenter);
-        m_edit->setStyleSheet(
-            "QLineEdit { font-family: 'Consolas','Courier New',monospace;"
-            "  font-size: 11px; color: #1A5276; background: #FFFFFF;"
-            "  border: 1px solid #3498DB; border-radius: 2px; padding: 0 2px; }");
-        break;
-    }
-}
-
 void CopyChip::updateDisplay()
 {
-    // setStyleSheet() re-parses rules and re-polishes the panel — it must run
-    // ONLY when the placeholder/normal state flips, never on every sync frame.
+    // The placeholder/normal look is a QSS attribute (chipLabel[placeholder])
+    // — flip the property and re-polish only when it actually changes.
     const bool showPlaceholder = m_text.isEmpty();
     if (showPlaceholder != m_placeholderStyled) {
         m_placeholderStyled = showPlaceholder;
-        if (showPlaceholder) {
-            m_label->setStyleSheet(
-                "QLabel { font-size: 11px; color: #ABB2B9; background: transparent;"
-                "  padding: 0 2px; }"
-                "QLabel:hover { background: #F8F9F9; border-radius: 2px; }");
-        } else {
-            applyStyle();
-        }
+        m_label->setProperty("placeholder", showPlaceholder);
+        m_label->style()->unpolish(m_label);
+        m_label->style()->polish(m_label);
     }
     m_label->setText(showPlaceholder ? m_placeholder : m_text);
     m_label->setToolTip(showPlaceholder
@@ -198,13 +182,23 @@ void CopyChip::copyText()
 
     m_label->setText(QString::fromUtf8("✓ 已复制"));
     m_label->setStyleSheet(
-        "QLabel { font-size: 11px; font-weight: bold; color: #1E8449;"
+        "QLabel { font-size: 11px; font-weight: bold; color: #16A34A;"
         "  background: #E9F7EF; border-radius: 2px; padding: 0 2px; }");
     QTimer::singleShot(800, this, [this]() {
-        applyStyle();      // undo the flash style, then refresh the text
+        m_label->setStyleSheet(QString());  // clear the flash, back to global QSS
         m_placeholderStyled = false;
         updateDisplay();
     });
+}
+
+QString CopyChip::variantKey() const
+{
+    switch (m_variant) {
+    case Variant::Name:    return QStringLiteral("name");
+    case Variant::Ref:     return QStringLiteral("ref");
+    case Variant::Formula: return QStringLiteral("formula");
+    }
+    return QStringLiteral("name");
 }
 
 } // namespace cad::ui

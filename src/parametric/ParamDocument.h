@@ -1,10 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <QObject>
 #include <QUuid>
 #include <QHash>
 #include <QSet>
 #include <QUndoStack>
+#include <memory>
 #include <vector>
 
 #include "parametric/Block.h"
@@ -23,8 +24,20 @@
 
 namespace cad::param {
 
+class LayerRegistry;
+class VariableStore;
+class MeasurementStore;
+class GroupRegistry;
+
 /// The parametric document holds all Blocks, free points, attachments,
 /// and global parameters. It manages resolve and undo/redo.
+///
+/// Facade over the geometry core (blocks / attachments / free points /
+/// parameters / resolve pipeline) and four sub-domain registries:
+/// LayerRegistry (canvas layers + dirty marking), VariableStore (variables /
+/// formulas / formula groups), MeasurementStore (linked / measure / angle
+/// measures) and GroupRegistry (user groups). Sub-domain signals are
+/// re-emitted unchanged so observers keep a single connection point.
 class ParamDocument : public QObject
 {
     Q_OBJECT
@@ -107,7 +120,6 @@ public:
 
     /// Delete-impact report for @p id (prediction, no mutation).
     [[nodiscard]] DeleteImpact deleteImpactReport(const QUuid& id) const;
-    [[nodiscard]] std::vector<Block>& blocks() { return m_blocks; }
     [[nodiscard]] const std::vector<Block>& blocks() const { return m_blocks; }
     /// O(1) block lookup by id (returns nullptr if not found).
     [[nodiscard]] Block* blockById(const QUuid& id);
@@ -129,7 +141,7 @@ public:
     /// measurement variable (see wouldCreateMeasureValueCycle).
     bool addAttachment(Attachment att);
     void removeAttachment(const QUuid& id);
-    /// Toggle the LOCKED flag of an existing attachment (锁定连接). Locked
+    /// Toggle the 拖动保护 flag of an existing attachment. Protected
     /// connections are welded: dragging cannot tear them apart, and dragging
     /// either side moves the whole pair. Resolves once.
     void setAttachmentLocked(const QUuid& id, bool locked);
@@ -148,11 +160,24 @@ public:
     /// revalidating restored state would let later edits win the undo race.
     void addAttachmentsRaw(const std::vector<Attachment>& atts);
     [[nodiscard]] const std::vector<Attachment>& attachments() const { return m_attachments; }
+    /// Find an attachment by id. The mutable overload is the ONLY authorized
+    /// in-place attachment edit channel (e.g. welding a follower angle during
+    /// an aim-release back-solve); structural add/remove still goes through
+    /// addAttachment()/removeAttachment().
+    [[nodiscard]] Attachment* findAttachment(const QUuid& id);
+    [[nodiscard]] const Attachment* findAttachment(const QUuid& id) const;
 
     /// Remove every attachment that references the given block (as leader or
     /// follower). Used to "kick a segment out of its group" while keeping the
     /// block geometry. Returns the number of attachments removed.
     int removeAttachmentsOfBlock(const QUuid& blockId);
+
+    /// 撤销全部 (dialog reject): drop every non-pin follower attachment of
+    /// @p fromBlockId and restore @p followerAtt VERBATIM if set (keeps the
+    /// snapshot's isLocked — 快照完整性). Resolves once; the caller drives
+    /// the UI refresh.
+    void restoreFollowerAttachment(const QUuid& fromBlockId,
+                                   const std::optional<Attachment>& followerAtt);
 
     /// Bridge blocks (Block::isBridge) that have a pin attachment TO the given
     /// host block. Deleting the host releases these bridges (they lose a pin
@@ -166,20 +191,28 @@ public:
     [[nodiscard]] QString newLineSerial();
     [[nodiscard]] QString newGroupSerial();
 
+    // --- Sub-domain registry access (read-only escape hatch) ---
+    /// Read-only views of the sub-domain registries. Mutations MUST go
+    /// through the facade methods (checked paths) or the explicit *Raw
+    /// restore APIs (trusted batch pipelines) — no writable container
+    /// reference leaves the facade.
+    [[nodiscard]] const LayerRegistry& layerRegistry() const;
+    [[nodiscard]] const VariableStore& variableStore() const;
+    [[nodiscard]] const MeasurementStore& measurementStore() const;
+    [[nodiscard]] const GroupRegistry& groupRegistry() const;
+
     // --- Variables (plain value variables) ---
     void addVariable(Variable var);
     void removeVariable(const QUuid& id);
     void updateVariable(const Variable& var);
-    [[nodiscard]] const std::vector<Variable>& variables() const { return m_variables; }
-    [[nodiscard]] std::vector<Variable>& variables() { return m_variables; }
+    [[nodiscard]] const std::vector<Variable>& variables() const;
     [[nodiscard]] Variable* findVariable(const QUuid& id);
 
     // --- Formula variables ---
     void addFormula(FormulaVariable formula);
     void removeFormula(const QUuid& id);
     void updateFormula(const FormulaVariable& formula);
-    [[nodiscard]] const std::vector<FormulaVariable>& formulas() const { return m_formulas; }
-    [[nodiscard]] std::vector<FormulaVariable>& formulas() { return m_formulas; }
+    [[nodiscard]] const std::vector<FormulaVariable>& formulas() const;
     [[nodiscard]] FormulaVariable* findFormula(const QUuid& id);
 
     /// Re-evaluate all formulas against current variables, update cached values,
@@ -199,47 +232,52 @@ public:
     /// local index within that group's display sequence.
     void moveFormula(const QUuid& formulaId, const QUuid& targetGroupId,
                      int targetLocalIndex);
-    [[nodiscard]] const std::vector<FormulaGroup>& formulaGroups() const { return m_formulaGroups; }
-    [[nodiscard]] std::vector<FormulaGroup>& formulaGroups() { return m_formulaGroups; }
+    [[nodiscard]] const std::vector<FormulaGroup>& formulaGroups() const;
     [[nodiscard]] FormulaGroup* findFormulaGroup(const QUuid& groupId);
 
     // --- Canvas layers (selection/visibility filter + aux calculation layer) ---
-    /// The layer registry. Blocks reference layers by index (Block::layer).
-    /// Index 0 is always the single auxiliary calculation layer; the rest are
-    /// working layers. Always contains at least two layers.
-    [[nodiscard]] const std::vector<Layer>& layers() const { return m_layers; }
-    [[nodiscard]] std::vector<Layer>& layers() { return m_layers; }
-    [[nodiscard]] int layerCount() const { return static_cast<int>(m_layers.size()); }
-    /// Append a WORKING layer and return its index. Emits layersChanged().
-    int addLayer(const QString& name);
-    /// Remove a layer: its blocks move to the layer below (clamped so they
-    /// never fall into the auxiliary layer) and every higher layer's index
-    /// shifts down by one. The auxiliary layer and the last working layer
-    /// cannot be removed (no-op). Emits layersChanged().
-    void removeLayer(int index);
-    void renameLayer(int index, const QString& name);   ///< Emits layersChanged().
+    /// The layer registry in DISPLAY ORDER. Element 0 is always the single
+    /// auxiliary calculation layer; the rest are working layers. Always
+    /// contains at least two layers. Blocks reference layers by STABLE id
+    /// (Block::layer = Layer::id), never by display row.
+    [[nodiscard]] const std::vector<Layer>& layers() const;
+    [[nodiscard]] int layerCount() const;
+    /// Display row of @p layerId (-1 when absent).
+    [[nodiscard]] int layerIndex(const QUuid& layerId) const;
+    /// Layer with @p layerId (nullptr when absent).
+    [[nodiscard]] const Layer* layerById(const QUuid& layerId) const;
+    /// Id of the (single) auxiliary calculation layer.
+    [[nodiscard]] QUuid auxLayerId() const;
+    /// Id of the first working layer (always present).
+    [[nodiscard]] QUuid firstWorkingLayerId() const;
+    /// Append a WORKING layer and return its id. Emits layersChanged().
+    QUuid addLayer(const QString& name);
+    /// Remove a layer: its blocks move to the layer below (never into the
+    /// auxiliary layer) and the layer record is dropped. Other blocks keep
+    /// their stable layer ids untouched. The auxiliary layer and the last
+    /// working layer cannot be removed (no-op).
+    void removeLayer(const QUuid& layerId);
+    /// Re-insert a layer record at display row @p index (undo support; the
+    /// record keeps its original id).
+    void insertLayerAt(int index, Layer layer);
+    void renameLayer(const QUuid& layerId, const QString& name);
     /// Toggle layer visibility. Hiding the active layer auto-switches the
     /// active layer to the nearest visible one. Emits layersChanged() (and
     /// activeLayerChanged() if the active layer moved).
-    void setLayerVisible(int index, bool visible);
-    [[nodiscard]] bool layerVisible(int index) const;
-    [[nodiscard]] int activeLayer() const { return m_activeLayer; }
-    void setActiveLayer(int index);   ///< Emits activeLayerChanged().
+    void setLayerVisible(const QUuid& layerId, bool visible);
+    [[nodiscard]] bool layerVisible(const QUuid& layerId) const;
+    [[nodiscard]] QUuid activeLayer() const;
+    void setActiveLayer(const QUuid& layerId);
 
-    /// True when layer @p index is the auxiliary calculation layer.
-    [[nodiscard]] bool isAuxLayer(int index) const {
-        return index >= 0 && index < layerCount()
-            && m_layers[static_cast<size_t>(index)].type == LayerType::Auxiliary;
-    }
+    /// True when @p layerId is the auxiliary calculation layer.
+    [[nodiscard]] bool isAuxLayer(const QUuid& layerId) const;
     /// True when the block lives on the auxiliary layer.
     [[nodiscard]] bool isAuxBlock(const Block& b) const { return isAuxLayer(b.layer); }
     /// Effective visibility for RENDERING. Any non-active layer renders
     /// GRAYED (BlockItem::LayerMode::Grayed) — including the auxiliary layer,
     /// so its construction geometry stays visible as a reference draft.
     /// Only layers manually hidden (layerVisible == false) are not rendered.
-    [[nodiscard]] bool layerEffectivelyVisible(int index) const {
-        return layerVisible(index);
-    }
+    [[nodiscard]] bool layerEffectivelyVisible(const QUuid& layerId) const;
 
     /// Whether the layer's points/segments may be SNAP targets. Non-active
     /// WORKING layers stay snappable (grayed reference — new geometry can
@@ -248,27 +286,16 @@ public:
     /// and snapping to it would produce a cross-group attachment that
     /// addAttachment() rejects — snap targets must never be connectable
     /// (capture the cursor, then fail to connect = interaction trap).
-    [[nodiscard]] bool layerSnappable(int index) const {
-        if (!layerVisible(index)) return false;
-        if (index == m_activeLayer) return true;
-        return !isAuxLayer(index);
-    }
+    [[nodiscard]] bool layerSnappable(const QUuid& layerId) const;
 
     // --- Layered dirty marking (resolve pipeline optimisation) ---
     /// Mark the layer group (aux vs working) containing layer @p index as
     /// needing re-resolution. Accumulates until consumed by resolveAll().
     /// Hot paths (per-frame drags) call this to narrow the resolve scope;
     /// un-annotated resolveAll() calls fall back to full re-resolution.
-    void invalidateLayer(int index) {
-        if (isAuxLayer(index)) m_auxDirty = true;
-        else m_workingDirty = true;
-        m_dirtyAnnotated = true;
-    }
+    void invalidateLayer(const QUuid& layerId);
     /// Mark every layer group dirty (variable edits, structural changes).
-    void invalidateAllLayers() {
-        m_auxDirty = m_workingDirty = true;
-        m_dirtyAnnotated = true;
-    }
+    void invalidateAllLayers();
 
     /// True when the document contains at least one cross-layer attachment
     /// (aux follower → working leader). Maintained incrementally so resolve
@@ -279,9 +306,8 @@ public:
     // --- Linked variables (geometric measurements) ---
     void addLinked(LinkedVariable lv);
     void removeLinked(const QUuid& id);
-    void updateLinked(const LinkedVariable& lv);  ///< Rename / comment edit.
-    [[nodiscard]] const std::vector<LinkedVariable>& linkedVars() const { return m_linkedVars; }
-    [[nodiscard]] std::vector<LinkedVariable>& linkedVars() { return m_linkedVars; }
+    void updateLinked(const LinkedVariable& lv);
+    [[nodiscard]] const std::vector<LinkedVariable>& linkedVars() const;
     [[nodiscard]] LinkedVariable* findLinked(const QUuid& id);
     /// Find a linked variable by its source segment (nullptr if not published).
     [[nodiscard]] LinkedVariable* findLinkedBySource(const QUuid& blockId,
@@ -299,7 +325,7 @@ public:
     // --- Measure variables (two-point distance measurements) ---
     void addMeasure(MeasureVariable mv);
     void removeMeasure(const QUuid& id);
-    void updateMeasure(const MeasureVariable& mv);  ///< Rename / comment edit.
+    void updateMeasure(const MeasureVariable& mv);
     /// Sync the measure variable's display name from its owning block's segment
     /// name (测量对象名称 → 测量变量名称). No-op when the block owns no measure
     /// variable or the name is unchanged.
@@ -308,12 +334,10 @@ public:
     // --- Angle measure variables (two-segment relative angle) ---
     void addAngleMeasure(AngleMeasureVariable am);
     void removeAngleMeasure(const QUuid& id);
-    void updateAngleMeasure(const AngleMeasureVariable& am);  ///< Rename / comment edit.
-    [[nodiscard]] const std::vector<AngleMeasureVariable>& angleMeasures() const { return m_angleMeasures; }
-    [[nodiscard]] std::vector<AngleMeasureVariable>& angleMeasures() { return m_angleMeasures; }
+    void updateAngleMeasure(const AngleMeasureVariable& am);
+    [[nodiscard]] const std::vector<AngleMeasureVariable>& angleMeasures() const;
     [[nodiscard]] AngleMeasureVariable* findAngleMeasure(const QUuid& id);
-    [[nodiscard]] const std::vector<MeasureVariable>& measureVars() const { return m_measureVars; }
-    [[nodiscard]] std::vector<MeasureVariable>& measureVars() { return m_measureVars; }
+    [[nodiscard]] const std::vector<MeasureVariable>& measureVars() const;
     [[nodiscard]] MeasureVariable* findMeasure(const QUuid& id);
     /// Reverse lookup: the measure variable OWNED by @p ownerBlockId (the
     /// measurement line created together with it), nullptr when the block
@@ -363,7 +387,7 @@ public:
     /// batch restore). A record with the same id is replaced; members not
     /// present in the document are skipped. Emits groupsChanged().
     void restoreGroup(Group group, const QList<QUuid>& memberIds);
-    [[nodiscard]] const std::vector<Group>& groups() const { return m_groups; }
+    [[nodiscard]] const std::vector<Group>& groups() const;
     [[nodiscard]] Group* findGroup(const QUuid& groupId);
     /// Group id the block currently belongs to (null if ungrouped).
     [[nodiscard]] QUuid groupOfBlock(const QUuid& blockId) const;
@@ -408,6 +432,18 @@ public:
     void addAttachmentRaw(Attachment att);
     /// Add a free point without emitting signals (for batch restore).
     void addFreePointRaw(ParamPoint pt);
+    // --- Silent batch restore for the variable/measurement sub-domains ---
+    /// (deserializer only — no signals, no recompute/resolve; finishRestore()
+    /// + the caller's resolveAll() own the eventual refresh).
+    void replaceLayersRaw(std::vector<Layer> layers);
+    void restoreVariableRaw(Variable var);
+    void restoreFormulaRaw(FormulaVariable formula);
+    void restoreFormulaGroupRaw(FormulaGroup group);
+    /// Re-insert a formula group at registry position @p index (undo replay).
+    void insertFormulaGroupAt(int index, FormulaGroup group);
+    void restoreLinkedRaw(LinkedVariable lv);
+    void restoreMeasureRaw(MeasureVariable mv);
+    void restoreAngleMeasureRaw(AngleMeasureVariable am);
     /// Emit all UI-refresh signals after a batch restore (deserialization).
     /// Creates canvas items for every restored block and rebuilds the
     /// variable / formula / group panels. Call once, after recomputeFormulas().
@@ -419,6 +455,20 @@ public:
 
     // --- Undo/Redo ---
     [[nodiscard]] QUndoStack* undoStack() const { return m_undoStack; }
+
+    // --- Internal sub-domain hooks (VariableStore / MeasurementStore) ---
+    /// Publish a single parameter entry (cm domain) without resolving. The
+    /// caller's pipeline is responsible for the eventual resolveAll().
+    void publishParameter(const QString& name, double cmValue);
+    /// Remove a parameter entry without resolving.
+    void removeParameterEntry(const QString& name);
+    /// Batch-publish parameter entries without resolving (caller resolves once).
+    void publishParamsRaw(const QHash<QString, double>& cmValues);
+    /// Aux-layer blocks whose transform can move together with the working
+    /// layers — the followers (transitively) of cross-layer attachments.
+    /// Empty when there are no cross-layer attachments (fast path). Used by
+    /// MeasurementStore to defeat the skipAuxSource measurement cache.
+    [[nodiscard]] QSet<QUuid> collectMobileAuxBlocks() const;
 
 signals:
     void blockAdded(const QUuid& blockId);
@@ -450,50 +500,30 @@ signals:
     /// (add/remove/rename/visibility, or a block's layer assignment).
     void layersChanged();
     /// Emitted when the active canvas layer switches.
-    void activeLayerChanged(int index);
+    void activeLayerChanged(const QUuid& layerId);
 
 private:
     QHash<QString, double>       m_parameters;
     QSet<QString>                m_formulaParamNames;  ///< Param names contributed by formula variables.
     QHash<QString, QList<Condition>> m_conditioned;    ///< formulaName -> conditions (standalone semantics).
-    std::vector<ParamPoint>     m_freePoints;
-    std::vector<Block>          m_blocks;
-    QHash<QUuid, int>           m_blockIndex;   ///< blockId -> index in m_blocks (O(1) lookup)
-    std::vector<Attachment>     m_attachments;
+    std::vector<ParamPoint>      m_freePoints;
+    std::vector<Block>           m_blocks;
+    QHash<QUuid, int>            m_blockIndex;   ///< blockId -> index in m_blocks (O(1) lookup)
+    std::vector<Attachment>      m_attachments;
     std::vector<ResolveDiagnostic> m_diagnostics;  ///< Issues from the last resolve pass.
-    QUndoStack*                 m_undoStack = nullptr;
+    QUndoStack*                  m_undoStack = nullptr;
 
     // --- Readable serial counters (monotonic, never reused) ---
     int m_nextPointSeq = 1;
     int m_nextLineSeq  = 1;
     int m_nextGroupSeq = 1;
 
-    // --- Variables & Formulas ---
-    std::vector<Variable>        m_variables;
-    std::vector<FormulaVariable> m_formulas;
-    std::vector<FormulaGroup>    m_formulaGroups;  ///< Panel folders for formulas.
-    std::vector<LinkedVariable>  m_linkedVars;
-    std::vector<MeasureVariable> m_measureVars;
-    std::vector<AngleMeasureVariable> m_angleMeasures;
-
-    // --- User group registry (authored via createGroup; membership lock) ---
-    std::vector<Group>   m_groups;       ///< Active groups (each has >= 2 members).
-    QHash<QUuid, QUuid>  m_blockGroup;   ///< blockId -> groupId.
-    /// Reverse membership index (groupId -> member block ids, insertion
-    /// order). Kept in sync with m_blockGroup so blocksInGroup() is
-    /// O(members) instead of a full-table scan.
-    QHash<QUuid, QList<QUuid>> m_groupMembers;
-
-    // --- Canvas layers ---
-    std::vector<Layer>   m_layers;       ///< Layer registry (index = layer id).
-    int                  m_activeLayer = 0;
-
-    // --- Layered dirty marking ---
-    bool m_auxDirty = true;        ///< Aux layer needs re-resolution.
-    bool m_workingDirty = true;    ///< Working layers need re-resolution.
-    bool m_dirtyAnnotated = false; ///< True when the caller narrowed the scope
-                                   ///< via invalidateLayer()/invalidateAllLayers();
-                                   ///< false = conservative full re-resolve.
+    // --- Sub-domain registries (facade; PIMPL-style: forward-declared and
+    // heap-owned so ParamDocument.h does not drag in the registry headers) ---
+    std::unique_ptr<LayerRegistry>    m_layerRegistry;
+    std::unique_ptr<VariableStore>    m_variableStore;
+    std::unique_ptr<MeasurementStore> m_measureStore;
+    std::unique_ptr<GroupRegistry>    m_groupRegistry;
 
     /// Number of cross-layer attachments (aux follower → working leader,
     /// the only permitted direction). 0 = the aux/working boundary is sealed
@@ -506,20 +536,6 @@ private:
     /// the attachment list changes (m_followersDirty).
     mutable QHash<QUuid, QList<QUuid>> m_followersOf;
     mutable bool m_followersDirty = true;
-
-    // ── Formula dependency graph cache (公式拓扑序) ──
-    /// Topological evaluation order over m_formulas, rebuilt ONLY when the
-    /// formula set/expressions change (variable edits reuse it — building
-    /// the graph costs more than evaluating the formulas it orders).
-    /// m_formulaAcyclic == false means a cycle was found: recomputeFormulas
-    /// falls back to the legacy bounded fixpoint (bit-for-bit unchanged).
-    mutable bool m_formulaDepsDirty = true;
-    mutable std::vector<int> m_formulaOrder;
-    mutable bool m_formulaAcyclic = true;
-
-    /// Rebuild m_formulaOrder via Kahn's algorithm over formula-name
-    /// references (case-insensitive, matching the evaluator's fallback).
-    void rebuildFormulaOrder() const;
 
     /// Recount m_crossLayerCount from scratch over the current attachments.
     /// Structural mutation paths only (never per-frame); used wherever the
@@ -536,13 +552,6 @@ private:
     /// edges crossing the aux/working boundary (same-layer behaviour stays
     /// bit-for-bit unchanged); lightweight: subtree BFS + leader-chain walk.
     [[nodiscard]] bool wouldCreateMeasureValueCycle(const Attachment& candidate) const;
-
-    /// Aux-layer blocks whose transform can move together with the working
-    /// layers — the followers (transitively) of cross-layer attachments.
-    /// Empty when m_crossLayerCount == 0 (fast path). Used to defeat the
-    /// skipAuxSource measurement cache: geometry of these blocks changes in
-    /// Phase 3 even though they live on the aux layer.
-    [[nodiscard]] QSet<QUuid> collectMobileAuxBlocks() const;
 
     /// Release any bridge block that no longer has both of its position pins
     /// (a pin was detached or its host block was deleted). Instead of deleting

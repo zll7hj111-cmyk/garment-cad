@@ -21,12 +21,12 @@ MakeGroupCommand::MakeGroupCommand(cad::param::ParamDocument* doc,
     // Pre-validate (same rules as createGroup): >= 2 members, all present,
     // same layer, none already grouped. Invalid → redo/undo are no-ops.
     if (memberIds.size() < 2) return;
-    int layer = -1;
+    QUuid layer;
     for (const QUuid& id : memberIds) {
         const auto* b = doc->findBlock(id);
         if (!b) return;
         if (!doc->groupOfBlock(id).isNull()) return;
-        if (layer < 0) layer = b->layer;
+        if (layer.isNull()) layer = b->layer;
         else if (b->layer != layer) return;
     }
     m_valid = true;
@@ -116,6 +116,31 @@ void RenameGroupCommand::undo()
 {
     if (m_valid && m_doc)
         m_doc->setGroupName(m_groupId, m_oldName);
+}
+
+// ─── MoveGroupCommand ───
+
+MoveGroupCommand::MoveGroupCommand(cad::param::ParamDocument* doc,
+                                   int fromIndex, int toIndex,
+                                   QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_from(fromIndex)
+    , m_to(toIndex)
+{
+    setText(QStringLiteral("\xe7\xa7\xbb\xe5\x8a\xa8\xe5\x88\x86\xe7\xbb\x84"));  // 移动分组
+}
+
+void MoveGroupCommand::redo()
+{
+    if (m_doc && m_from >= 0 && m_to >= 0)
+        m_doc->moveGroup(m_from, m_to);
+}
+
+void MoveGroupCommand::undo()
+{
+    if (m_doc && m_from >= 0 && m_to >= 0)
+        m_doc->moveGroup(m_to, m_from);
 }
 
 } // namespace cad::cmd

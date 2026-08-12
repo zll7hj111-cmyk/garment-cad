@@ -185,16 +185,15 @@ void RemoveFormulaGroupCommand::redo() { m_doc->removeFormulaGroup(m_group.id); 
 void RemoveFormulaGroupCommand::undo()
 {
     // Restore the group at its original registry position...
-    auto& groups = m_doc->formulaGroups();
-    const int pos = qBound(0, m_groupIndex, static_cast<int>(groups.size()));
-    groups.insert(groups.begin() + pos, m_group);
+    const int pos = qBound(0, m_groupIndex,
+                           static_cast<int>(m_doc->formulaGroups().size()));
+    m_doc->insertFormulaGroupAt(pos, m_group);
     // ...and re-attach the former members (relative order is untouched by
     // dissolution, so restoring groupId is enough).
     for (const auto& id : m_memberIds) {
         if (auto* f = m_doc->findFormula(id))
             f->groupId = m_group.id;
     }
-    emit m_doc->formulaGroupsChanged();
     emit m_doc->formulasChanged();
 }
 
@@ -302,6 +301,19 @@ AddMeasureCommand::AddMeasureCommand(cad::param::ParamDocument* doc,
 
 void AddMeasureCommand::redo() { m_doc->addMeasure(m_mv); }
 void AddMeasureCommand::undo() { m_doc->removeMeasure(m_mv.id); }
+
+// ─── AddAngleMeasureCommand ───
+
+AddAngleMeasureCommand::AddAngleMeasureCommand(
+    cad::param::ParamDocument* doc, cad::param::AngleMeasureVariable am,
+    QUndoCommand* parent)
+    : QUndoCommand(parent), m_doc(doc), m_am(std::move(am))
+{
+    setText(QStringLiteral("添加角度测量"));
+}
+
+void AddAngleMeasureCommand::redo() { m_doc->addAngleMeasure(m_am); }
+void AddAngleMeasureCommand::undo() { m_doc->removeAngleMeasure(m_am.id); }
 
 // ─── RemoveMeasureCommand ───
 

@@ -1,14 +1,15 @@
-#include "VariablePanel.h"
+﻿#include "VariablePanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QScrollArea>
+#include "ElaScrollArea.h"
 #include <QScrollBar>
 #include <QStackedWidget>
-#include <QTabBar>
-#include <QPushButton>
-#include <QToolButton>
-#include <QLabel>
+#include "ElaTabBar.h"
+#include "ElaPushButton.h"
+#include "ElaToolButton.h"
+#include "ElaText.h"
+#include "Theme.h"
 #include <QFrame>
 #include <QRect>
 #include <QTimer>
@@ -24,9 +25,10 @@
 #include "FormulaCard.h"
 #include "FormulaGroupHeader.h"
 #include "LinkedCard.h"
-#include "MeasureCard.h"
-#include "AngleMeasureCard.h"
+#include "MeasureTab.h"
 #include "ConditionDialog.h"
+#include "FormulaTabModel.h"
+#include "FormulaTabModel.h"
 #include "IconHelper.h"
 #include "VirtualCardList.h"
 #include "parametric/ParamDocument.h"
@@ -51,41 +53,6 @@ QString linkedSourceLabel(const cad::param::ParamDocument* doc,
 }
 
 /// Build a "点A ↔ 点B" source label from a measure variable's two points.
-QString measureSourceLabel(const cad::param::ParamDocument* doc,
-                           const cad::param::MeasureVariable& mv)
-{
-    auto pointLabel = [doc](const QUuid& blockId, const QUuid& pointId) -> QString {
-        const auto* blk = doc->findBlock(blockId);
-        const auto* pt = blk ? blk->findPoint(pointId) : nullptr;
-        if (!pt) return QStringLiteral("?");
-        QString s = pt->serial;
-        if (!pt->name.isEmpty())
-            s += QStringLiteral("·") + pt->name;
-        return s;
-    };
-    return pointLabel(mv.blockA, mv.pointA)
-         + QStringLiteral(" \u2194 ")
-         + pointLabel(mv.blockB, mv.pointB);
-}
-
-/// Build a "线A ∠ 线B" source label from an angle measure variable's two segments.
-QString angleSourceLabel(const cad::param::ParamDocument* doc,
-                         const cad::param::AngleMeasureVariable& am)
-{
-    auto segLabel = [doc](const QUuid& blockId, const QUuid& segmentId) -> QString {
-        const auto* blk = doc->findBlock(blockId);
-        const auto* seg = blk ? blk->findSegment(segmentId) : nullptr;
-        if (!seg) return QStringLiteral("?");
-        QString s = seg->serial;
-        if (!seg->name.isEmpty())
-            s += QStringLiteral("·") + seg->name;
-        return s;
-    };
-    return segLabel(am.blockA, am.segmentA)
-         + QStringLiteral(" \u2220 ")
-         + segLabel(am.blockB, am.segmentB);
-}
-
 /// Number of formulas currently assigned to a group.
 int formulaGroupMemberCount(const cad::param::ParamDocument* doc, const QUuid& groupId)
 {
@@ -95,12 +62,12 @@ int formulaGroupMemberCount(const cad::param::ParamDocument* doc, const QUuid& g
             ++count;
     return count;
 }
-
 } // namespace
-
+namespace cad::ui {
 VariablePanel::VariablePanel(cad::param::ParamDocument* doc, QWidget* parent)
     : QWidget(parent)
     , m_doc(doc)
+    , m_formulaModel(new cad::ui::FormulaTabModel(doc))
 {
     setMinimumWidth(280);
 
@@ -117,32 +84,53 @@ VariablePanel::VariablePanel(cad::param::ParamDocument* doc, QWidget* parent)
             this, &VariablePanel::syncFormulaCards);
     connect(m_doc, &cad::param::ParamDocument::linkedVarsChanged,
             this, &VariablePanel::syncLinkedCards);
-    connect(m_doc, &cad::param::ParamDocument::measureVarsChanged,
-            this, &VariablePanel::syncMeasureCards);
-    connect(m_doc, &cad::param::ParamDocument::angleMeasureVarsChanged,
-            this, &VariablePanel::syncMeasureCards);
     connect(m_doc, &cad::param::ParamDocument::resolved,
             this, &VariablePanel::syncLinkedCards);
-    connect(m_doc, &cad::param::ParamDocument::resolved,
-            this, &VariablePanel::syncMeasureCards);
+}
+
+VariablePanel::~VariablePanel()
+{
+    delete m_formulaModel;
+}
+
+void VariablePanel::applyTheme()
+{
+    // The recessed list areas bake surface2 at construction; re-derive them.
+    // findChildren by objectName also covers the MeasureTab instances
+    // (they reuse the same names), so one pass restyles every list page.
+    const QString scrollQss = QStringLiteral(
+        "QScrollArea { background: %1; border: none; }")
+        .arg(cad::ui::Theme::tokens().surface2.name());
+    const QString containerQss = QStringLiteral("background: %1;")
+        .arg(cad::ui::Theme::tokens().surface2.name());
+    for (ElaScrollArea* sa : findChildren<ElaScrollArea*>(QStringLiteral("cardListArea")))
+        sa->setStyleSheet(scrollQss);
+    for (QWidget* c : findChildren<QWidget*>(QStringLiteral("cardListContainer")))
+        c->setStyleSheet(containerQss);
+    if (m_measureTab)
+        m_measureTab->sync();
+}
+
+void VariablePanel::setUndoStack(QUndoStack* stack)
+{
+    m_undoStack = stack;
+    m_formulaModel->setUndoStack(stack);
+    if (m_measureTab) m_measureTab->setUndoStack(stack);
 }
 
 void VariablePanel::setupUi()
 {
-    setStyleSheet("background: #FFFFFF;");
-
     auto* wrapperLayout = new QVBoxLayout(this);
     wrapperLayout->setContentsMargins(0, 0, 0, 0);
     wrapperLayout->setSpacing(0);
 
     // ===== Header: tabs + count + add =====
     auto* header = new QWidget(this);
-    header->setStyleSheet("background: #FFFFFF;");
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(8, 6, 10, 0);
     headerLayout->setSpacing(8);
 
-    m_tabBar = new QTabBar(header);
+    m_tabBar = new ElaTabBar(header);
     m_tabBar->addTab(QStringLiteral("\u5c3a\u5bf8"));    // 尺寸
     m_tabBar->addTab(QStringLiteral("\u516c\u5f0f"));    // 公式
     m_tabBar->addTab(QStringLiteral("\u5173\u8054"));    // 关联
@@ -150,53 +138,36 @@ void VariablePanel::setupUi()
     m_tabBar->setExpanding(false);
     m_tabBar->setDrawBase(false);
     m_tabBar->setCursor(Qt::PointingHandCursor);
-    m_tabBar->setStyleSheet(
-        "QTabBar::tab {"
-        "  font-size: 12px; color: #7F8C8D;"
-        "  background: transparent; border: none;"
-        "  padding: 8px 10px; margin-right: 4px;"
-        "}"
-        "QTabBar::tab:selected {"
-        "  font-weight: bold; color: #2E86C1;"
-        "  border-bottom: 2px solid #2E86C1;"
-        "}"
-        "QTabBar::tab:hover:!selected { color: #34495E; }");
+    // Fixed tabs: ElaTabBar defaults to closable/movable — the × would
+    // delete the stacked page via onTabCloseRequested. Disable it here.
+    m_tabBar->setTabsClosable(false);
+    m_tabBar->setMovable(false);
+    m_tabBar->setAcceptDrops(false);
+    // Tab look comes from the global theme (underline style, accent active).
     headerLayout->addWidget(m_tabBar);
 
-    m_countLabel = new QLabel(header);
-    m_countLabel->setStyleSheet(
-        "font-size: 11px; color: #85929E; background: #EAECEE;"
-        "border-radius: 8px; padding: 1px 8px;");
+    m_countLabel = new ElaText(QString(), 13, header);
+    m_countLabel->setObjectName(QStringLiteral("panelCountPill"));
     headerLayout->addWidget(m_countLabel);
 
     headerLayout->addStretch();
 
-    m_addGroupBtn = new QToolButton(header);
+    m_addGroupBtn = new ElaToolButton(header);
     m_addGroupBtn->setIcon(cad::ui::IconHelper::iconByName(
-        QStringLiteral("tree-structure"), QColor(0x2E, 0x86, 0xC1)));
+        QStringLiteral("tree-structure"), QColor(0x2F, 0x6F, 0xED)));
     m_addGroupBtn->setIconSize(QSize(14, 14));
     m_addGroupBtn->setToolTip(QStringLiteral("新建分组"));
     m_addGroupBtn->setFixedSize(26, 26);
     m_addGroupBtn->setCursor(Qt::PointingHandCursor);
     m_addGroupBtn->setVisible(false);  // Formula tab only.
-    m_addGroupBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid #AED6F1;"
-        "  border-radius: 5px; }"
-        "QToolButton:hover { background: #EBF5FB; border: 1px solid #2E86C1; }");
+    m_addGroupBtn->setObjectName(QStringLiteral("outlineToolButton"));
     headerLayout->addWidget(m_addGroupBtn);
 
-    m_addBtn = new QPushButton(QStringLiteral("添加"), header);
+    m_addBtn = new ElaPushButton(QStringLiteral("添加"), header);
     m_addBtn->setIcon(cad::ui::IconHelper::iconByName(QStringLiteral("plus"), Qt::white));
     m_addBtn->setIconSize(QSize(12, 12));
     m_addBtn->setCursor(Qt::PointingHandCursor);
-    m_addBtn->setStyleSheet(
-        "QPushButton {"
-        "  font-size: 12px; font-weight: bold; color: #FFFFFF;"
-        "  background-color: #2E86C1; border: none; border-radius: 5px;"
-        "  padding: 5px 14px;"
-        "}"
-        "QPushButton:hover { background-color: #2874A6; }"
-        "QPushButton:pressed { background-color: #1B4F72; }");
+    m_addBtn->setObjectName(QStringLiteral("primaryButton"));
     headerLayout->addWidget(m_addBtn);
 
     wrapperLayout->addWidget(header);
@@ -205,7 +176,7 @@ void VariablePanel::setupUi()
     auto* sep = new QFrame(this);
     sep->setFrameShape(QFrame::HLine);
     sep->setFixedHeight(1);
-    sep->setStyleSheet("background: #E5E8E8; border: none;");
+    sep->setObjectName(QStringLiteral("divider"));
     wrapperLayout->addWidget(sep);
 
     // ===== Stacked pages =====
@@ -224,16 +195,30 @@ void VariablePanel::setupUi()
     m_formulaContainer->installEventFilter(this);
     m_dropIndicator = new QFrame(m_formulaContainer);
     m_dropIndicator->setFixedHeight(2);
-    m_dropIndicator->setStyleSheet("background: #2E86C1; border: none;");
+    m_dropIndicator->setObjectName(QStringLiteral("accentBar"));
     m_dropIndicator->setVisible(false);
 
     m_stack->addWidget(buildListPage(
         m_linkedScroll, m_linkedContainer, m_linkedHost, m_linkedEmptyHint,
         QStringLiteral("暂无关联参数\n右键点击线段 →「发布长度参数」\n或在属性对话框中点击「发布」")));
 
-    m_stack->addWidget(buildListPage(
-        m_measureScroll, m_measureContainer, m_measureHost, m_measureEmptyHint,
-        QStringLiteral("暂无测量变量\n使用智能笔连接两个点时自动创建\n（测量两点间距离）\n或使用「角度测量」工具测量两线夹角")));
+    // Tab 3: measure variables (length + angle cards, extracted).
+    // Create the tab HERE — a missing new left m_measureTab null and crashed
+    // in QStackedWidget::addWidget (access violation at startup).
+    m_measureTab = new MeasureTab(m_doc, this);
+    m_stack->addWidget(m_measureTab);
+    connect(m_measureTab, &MeasureTab::highlightBlockRequested,
+            this, &VariablePanel::highlightBlockRequested);
+    connect(m_measureTab, &MeasureTab::highlightMeasureRequested,
+            this, &VariablePanel::highlightMeasureRequested);
+    // Measure data flow: must be wired AFTER the tab exists — connecting to
+    // a null receiver would silently never fire (the tab would stay empty).
+    connect(m_doc, &cad::param::ParamDocument::measureVarsChanged,
+            m_measureTab, &MeasureTab::sync);
+    connect(m_doc, &cad::param::ParamDocument::angleMeasureVarsChanged,
+            m_measureTab, &MeasureTab::sync);
+    connect(m_doc, &cad::param::ParamDocument::resolved,
+            m_measureTab, &MeasureTab::sync);
 
     setupCardProviders();
 
@@ -254,32 +239,31 @@ void VariablePanel::setupUi()
     updateCountLabel();
 }
 
-QWidget* VariablePanel::buildListPage(QScrollArea*& scrollOut, QWidget*& containerOut,
-                                      VirtualCardList*& hostOut, QLabel*& emptyHintOut,
+QWidget* VariablePanel::buildListPage(ElaScrollArea*& scrollOut, QWidget*& containerOut,
+                                      VirtualCardList*& hostOut, ElaText*& emptyHintOut,
                                       const QString& emptyText)
 {
-    scrollOut = new QScrollArea(this);
+    scrollOut = new ElaScrollArea(this);
     scrollOut->setWidgetResizable(true);
     scrollOut->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scrollOut->setFrameShape(QFrame::NoFrame);
-    scrollOut->setStyleSheet(
-        "QScrollArea { background: #F0F2F5; border: none; }"
-        "QScrollBar:vertical { width: 8px; background: transparent; }"
-        "QScrollBar::handle:vertical {"
-        "  background: #CCD1D1; border-radius: 4px; min-height: 30px; }"
-        "QScrollBar::handle:vertical:hover { background: #AAB7B8; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }");
+    // Recessed list background (theme-token driven).
+    scrollOut->setStyleSheet(QStringLiteral(
+        "QScrollArea { background: %1; border: none; }")
+        .arg(cad::ui::Theme::tokens().surface2.name()));
+    scrollOut->setObjectName(QStringLiteral("cardListArea"));
 
     containerOut = new QWidget();
-    containerOut->setStyleSheet("background: #F0F2F5;");
+    containerOut->setStyleSheet(QStringLiteral(
+        "background: %1;").arg(cad::ui::Theme::tokens().surface2.name()));
+    containerOut->setObjectName(QStringLiteral("cardListContainer"));
     auto* layout = new QVBoxLayout(containerOut);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    emptyHintOut = new QLabel(emptyText, containerOut);
+    emptyHintOut = new ElaText(emptyText, 13, containerOut);
     emptyHintOut->setAlignment(Qt::AlignCenter);
-    emptyHintOut->setStyleSheet(
-        "font-size: 12px; color: #ABB2B9; background: transparent; padding: 40px 0;");
+    emptyHintOut->setObjectName(QStringLiteral("dimText"));
     layout->addWidget(emptyHintOut);
 
     // Virtualized card host: list margins live inside the host, and only
@@ -319,9 +303,9 @@ void VariablePanel::setupCardProviders()
     // ---- Tab 1: formulas (cards + group headers) ----
     m_formulaHost->setProviders(
         [this](int row) -> QWidget* {
-            if (row < 0 || row >= m_formulaRows.size())
+            if (row < 0 || row >= m_formulaModel->rows().size())
                 return nullptr;
-            const FormulaRow& fr = m_formulaRows[row];
+            const cad::ui::FormulaTabModel::Row& fr = m_formulaModel->rows()[row];
             if (fr.isHeader) {
                 const auto* g = m_doc->findFormulaGroup(fr.id);
                 if (!g)
@@ -353,9 +337,9 @@ void VariablePanel::setupCardProviders()
             return card;
         },
         [this](int row, QWidget* w) {
-            if (row < 0 || row >= m_formulaRows.size())
+            if (row < 0 || row >= m_formulaModel->rows().size())
                 return;
-            const FormulaRow& fr = m_formulaRows[row];
+            const cad::ui::FormulaTabModel::Row& fr = m_formulaModel->rows()[row];
             if (fr.isHeader) {
                 const auto* g = m_doc->findFormulaGroup(fr.id);
                 if (!g)
@@ -399,64 +383,7 @@ void VariablePanel::setupCardProviders()
                 linked[row], linkedSourceLabel(m_doc, linked[row]));
         });
 
-    // ---- Tab 3: measure variables (length + angle cards) ----
-    m_measureHost->setProviders(
-        [this](int row) -> QWidget* {
-            const auto& measures = m_doc->measureVars();
-            const auto& angles = m_doc->angleMeasures();
-            const int m = static_cast<int>(measures.size());
-            if (row < 0 || row >= m + static_cast<int>(angles.size()))
-                return nullptr;
-            if (row < m) {
-                auto* card = new MeasureCard(measures[row],
-                    measureSourceLabel(m_doc, measures[row]),
-                    row % 2 == 1, m_measureHost);
-                card->setIndex(row + 1);
-                connect(card, &MeasureCard::deleteRequested,
-                        this, &VariablePanel::onMeasureDeleted);
-                connect(card, &MeasureCard::edited,
-                        this, &VariablePanel::onMeasureEdited);
-                // The card emits its own measure id — flash the measured
-                // points precisely (falls back to a whole-block flash in
-                // MainWindow when the points are missing/unresolved).
-                connect(card, &MeasureCard::sourceClicked,
-                        this, &VariablePanel::highlightMeasureRequested);
-                return card;
-            }
-            const int ai = row - m;
-            auto* card = new AngleMeasureCard(angles[ai],
-                angleSourceLabel(m_doc, angles[ai]),
-                ai % 2 == 1, m_measureHost);
-            card->setIndex(ai + 1);
-            connect(card, &AngleMeasureCard::deleteRequested,
-                    this, &VariablePanel::onAngleMeasureDeleted);
-            connect(card, &AngleMeasureCard::edited,
-                    this, &VariablePanel::onAngleMeasureEdited);
-            connect(card, &AngleMeasureCard::sourceClicked,
-                    this, &VariablePanel::highlightBlockRequested);
-            return card;
-        },
-        [this](int row, QWidget* w) {
-            const auto& measures = m_doc->measureVars();
-            const auto& angles = m_doc->angleMeasures();
-            const int m = static_cast<int>(measures.size());
-            if (row < 0 || row >= m + static_cast<int>(angles.size()))
-                return;
-            if (row < m) {
-                auto* card = static_cast<MeasureCard*>(w);
-                card->syncFromModel(
-                    measures[row], measureSourceLabel(m_doc, measures[row]));
-                card->setIndex(row + 1);
-            } else {
-                const int ai = row - m;
-                auto* card = static_cast<AngleMeasureCard*>(w);
-                card->syncFromModel(
-                    angles[ai], angleSourceLabel(m_doc, angles[ai]));
-                card->setIndex(ai + 1);
-            }
-        });
 }
-
 // ============================================================
 // Add
 // ============================================================
@@ -668,66 +595,24 @@ void VariablePanel::onConditionsEditRequested(const QUuid& id)
 
 void VariablePanel::onGroupToggled(const QUuid& groupId)
 {
-    // View state: not undoable, but persisted with the document.
-    if (const auto* g = m_doc->findFormulaGroup(groupId))
-        m_doc->setFormulaGroupCollapsed(groupId, !g->collapsed);
+    m_formulaModel->toggleCollapsed(groupId);
 }
 
 void VariablePanel::onGroupRenamed(const QUuid& groupId, const QString& newName)
 {
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::RenameFormulaGroupCommand(m_doc, groupId, newName));
-    else
-        m_doc->renameFormulaGroup(groupId, newName);
+    m_formulaModel->rename(groupId, newName);
 }
 
 void VariablePanel::onGroupDissolved(const QUuid& groupId)
 {
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::RemoveFormulaGroupCommand(m_doc, groupId));
-    else
-        m_doc->removeFormulaGroup(groupId);
+    m_formulaModel->dissolve(groupId);
 }
 
 void VariablePanel::onFormulaDroppedOnHeader(const QUuid& formulaId, const QUuid& groupId)
 {
     // Dropping on the header appends to the end of that group.
-    int count = 0;
-    for (const auto& f : m_doc->formulas())
-        if (f.groupId == groupId)
-            ++count;
-    moveFormulaTo(formulaId, groupId, count);
-}
-
-void VariablePanel::moveFormulaTo(const QUuid& formulaId, const QUuid& targetGroupId,
-                                  int targetLocalIndex)
-{
-    const auto* f = m_doc->findFormula(formulaId);
-    if (!f)
-        return;
-
-    // Current local index within its own group.
-    int curLocal = 0;
-    for (const auto& other : m_doc->formulas()) {
-        if (other.id == formulaId)
-            break;
-        if (other.groupId == f->groupId)
-            ++curLocal;
-    }
-
-    if (f->groupId == targetGroupId) {
-        // Drop slots are pre-removal; account for the card leaving its slot.
-        if (targetLocalIndex > curLocal)
-            --targetLocalIndex;
-        if (targetLocalIndex == curLocal)
-            return;  // No-op drop.
-    }
-
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::MoveFormulaCommand(
-            m_doc, formulaId, targetGroupId, targetLocalIndex));
-    else
-        m_doc->moveFormula(formulaId, targetGroupId, targetLocalIndex);
+    m_formulaModel->moveFormula(formulaId, groupId,
+                               m_formulaModel->formulaCountIn(groupId));
 }
 
 void VariablePanel::computeFormulaDropSlot(int y, QUuid& groupId, int& localIndex,
@@ -743,7 +628,7 @@ void VariablePanel::computeFormulaDropSlot(int y, QUuid& groupId, int& localInde
     // works even for rows outside the materialization window.
     QUuid curSection;
     int count = 0;
-    for (int i = 0; i < static_cast<int>(m_formulaRows.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(m_formulaModel->rows().size()); ++i) {
         const QRect geo = m_formulaHost->rowRect(i).translated(hostPos);
         if (y < geo.center().y()) {
             // Insert before this row: still in the section seen so far.
@@ -752,7 +637,7 @@ void VariablePanel::computeFormulaDropSlot(int y, QUuid& groupId, int& localInde
             indicatorY = geo.top() - 4;
             return;
         }
-        const FormulaRow& fr = m_formulaRows[i];
+        const cad::ui::FormulaTabModel::Row& fr = m_formulaModel->rows()[i];
         if (fr.isHeader) {
             curSection = fr.id;
             count = 0;
@@ -773,8 +658,8 @@ void VariablePanel::computeGroupDropSlot(int y, int& insertIndex, int& indicator
     indicatorY = hostPos.y() + 8;
 
     int idx = 0;
-    for (int i = 0; i < static_cast<int>(m_formulaRows.size()); ++i) {
-        const FormulaRow& fr = m_formulaRows[i];
+    for (int i = 0; i < static_cast<int>(m_formulaModel->rows().size()); ++i) {
+        const cad::ui::FormulaTabModel::Row& fr = m_formulaModel->rows()[i];
         if (!fr.isHeader)
             continue;
         const QRect geo = m_formulaHost->rowRect(i).translated(hostPos);
@@ -786,8 +671,8 @@ void VariablePanel::computeGroupDropSlot(int y, int& insertIndex, int& indicator
         ++idx;
     }
     insertIndex = idx;
-    if (!m_formulaRows.isEmpty()) {
-        const QRect geo = m_formulaHost->rowRect(m_formulaRows.size() - 1)
+    if (!m_formulaModel->rows().isEmpty()) {
+        const QRect geo = m_formulaHost->rowRect(m_formulaModel->rows().size() - 1)
                               .translated(hostPos);
         indicatorY = geo.bottom() + 2;
     }
@@ -846,7 +731,7 @@ bool VariablePanel::eventFilter(QObject* obj, QEvent* event)
             int local = 0;
             computeFormulaDropSlot(y, gid, local, indicatorY);
             if (!id.isNull())
-                moveFormulaTo(id, gid, local);
+                m_formulaModel->moveFormula(id, gid, local);
             e->acceptProposedAction();
             return true;
         }
@@ -904,42 +789,11 @@ void VariablePanel::syncVariableCards()
 
 void VariablePanel::syncFormulaCards()
 {
-    const auto& formulas = m_doc->formulas();
-    const auto& groups = m_doc->formulaGroups();
-
-    // Display order: ungrouped section first, then per-group header + members.
-    // Members of collapsed groups get no rows at all (virtualization makes
-    // hiding them free — no widgets, no visibility bookkeeping).
-    QVector<FormulaRow> rows;
-    QVector<QUuid> keys;
-    rows.reserve(static_cast<int>(formulas.size() + groups.size()));
-    keys.reserve(rows.capacity());
-
-    int local = 0;
-    for (const auto& f : formulas) {
-        if (f.groupId.isNull()) {
-            rows.append({false, f.id, QUuid(), local++});
-            keys.append(f.id);
-        }
-    }
-    for (const auto& g : groups) {
-        rows.append({true, g.id, QUuid(), 0});
-        keys.append(g.id);
-        if (g.collapsed)
-            continue;
-        local = 0;
-        for (const auto& f : formulas) {
-            if (f.groupId == g.id) {
-                rows.append({false, f.id, g.id, local++});
-                keys.append(f.id);
-            }
-        }
-    }
-
-    // Descriptors must be in place before setRows(): the host's factory /
-    // binder closures read them during materialization.
-    m_formulaRows = rows;
-    m_formulaHost->setRows(keys);
+    // Rebuild the display-order descriptors, then hand the key list to the
+    // virtualized host (structural change → rebuild window; identical keys
+    // → in-place rebind only, preserving focus & scroll).
+    m_formulaModel->rebuild();
+    m_formulaHost->setRows(m_formulaModel->keys());
     updateCountLabel();
 }
 
@@ -959,64 +813,6 @@ void VariablePanel::syncLinkedCards()
 // Measure variables (测量变量)
 // ============================================================
 
-void VariablePanel::syncMeasureCards()
-{
-    GCAD_PERF_SCOPE("ui.syncMeasure");
-    const auto& measures = m_doc->measureVars();
-    const auto& angles = m_doc->angleMeasures();
-
-    QVector<QUuid> keys;
-    keys.reserve(static_cast<int>(measures.size() + angles.size()));
-    for (const auto& mv : measures)
-        keys.append(mv.id);
-    for (const auto& am : angles)
-        keys.append(am.id);
-    m_measureHost->setRows(keys);
-    updateCountLabel();
-}
-
-void VariablePanel::onMeasureDeleted(const QUuid& id)
-{
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::RemoveMeasureCommand(m_doc, id));
-    else
-        m_doc->removeMeasure(id);
-}
-
-void VariablePanel::onMeasureEdited(const cad::param::MeasureVariable& mv)
-{
-    // Skip no-op edits.
-    if (const auto* cur = m_doc->findMeasure(mv.id)) {
-        if (cur->name == mv.name && cur->comment == mv.comment)
-            return;
-    }
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::SetMeasureCommand(m_doc, mv));
-    else
-        m_doc->updateMeasure(mv);
-}
-
-void VariablePanel::onAngleMeasureDeleted(const QUuid& id)
-{
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::RemoveAngleMeasureCommand(m_doc, id));
-    else
-        m_doc->removeAngleMeasure(id);
-}
-
-void VariablePanel::onAngleMeasureEdited(const cad::param::AngleMeasureVariable& am)
-{
-    // Skip no-op edits.
-    if (const auto* cur = m_doc->findAngleMeasure(am.id)) {
-        if (cur->name == am.name && cur->comment == am.comment)
-            return;
-    }
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::SetAngleMeasureCommand(m_doc, am));
-    else
-        m_doc->updateAngleMeasure(am);
-}
-
 void VariablePanel::updateCountLabel()
 {
     const int tab = m_tabBar->currentIndex();
@@ -1031,6 +827,5 @@ void VariablePanel::updateCountLabel()
     m_formulaEmptyHint->setVisible(m_doc->formulas().empty()
                                    && m_doc->formulaGroups().empty());
     m_linkedEmptyHint->setVisible(m_doc->linkedVars().empty());
-    m_measureEmptyHint->setVisible(m_doc->measureVars().empty()
-                                   && m_doc->angleMeasures().empty());
 }
+} // namespace cad::ui

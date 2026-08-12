@@ -28,6 +28,9 @@ public:
     void setToolManager(cad::tools::ToolManager* tm) { m_toolManager = tm; }
     void setParamDoc(cad::param::ParamDocument* doc) { m_paramDoc = doc; }
     [[nodiscard]] double zoomFactor() const;
+    /// Apply the pattern-paper ground color. Called by CanvasScene::setStyle
+    /// (the single authoritative theme-switch path) and the constructor.
+    void applyCanvasBackground(const QColor& c);
 
 signals:
     void mouseScenePosChanged(qreal x, qreal y);
@@ -41,6 +44,9 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
+    /// Release hold-to-show overrides (N/L) when focus leaves the canvas —
+    /// the key-up would otherwise be lost while the user interacts elsewhere.
+    void focusOutEvent(QFocusEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void showEvent(QShowEvent* event) override;
     /// Keep Tab as a tool key (leader-candidate cycling) instead of letting
@@ -64,6 +70,7 @@ private:
     bool   m_useGl = false;     ///< OpenGL viewport requested (GCAD_ENABLE_GL=1).
     QPoint m_lastMousePos;
 
+    CanvasScene* m_scene = nullptr;
     cad::tools::ToolManager* m_toolManager = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
 

@@ -18,7 +18,7 @@ namespace DocumentFile {
 /// File extension for garment CAD documents.
 inline constexpr const char* kExtension = ".gcad";
 /// File filter string for QFileDialog.
-inline constexpr const char* kFilter = "Garment CAD (*.gcad)";
+inline constexpr const char* kFilter = "WildWind Pattern (*.gcad)";
 
 /// Save the document to a .gcad file (ZIP + JSON).
 /// Writes to a temp file first, then renames (crash-safe).

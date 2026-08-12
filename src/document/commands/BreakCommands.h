@@ -13,7 +13,7 @@ namespace cad::cmd {
 /// Break a segment at an auxiliary (Interpolated) point that lies exactly on
 /// the segment (no offset). The original block keeps the front portion; a NEW
 /// block is created for the back portion, connected via an Attachment with
-/// follower angle 0° (continue straight).
+/// follower angle 180° (straight continuation; 闭合基准 2026-08: 0° = 折叠).
 ///
 /// Formula splitting:
 ///   front = "(orig)*percent" [+constant]
@@ -47,6 +47,13 @@ private:
     cad::param::Block m_origBlockSnapshot;
     std::vector<cad::param::Attachment> m_removedAttachments;
     QUuid m_newBlockId;
+
+    // Auto-published front-length measurement (RefChain/Freeze break): the
+    // back formula becomes "orig − M_front" so the total length stays exactly
+    // conserved while the front half moves dynamically.
+    QUuid m_publishedLinkedId;   ///< Newly created variable (empty = reused an
+                                 ///< existing publication of this segment).
+    QString m_publishedRefName;  ///< refName used by the back formula.
 };
 
 } // namespace cad::cmd

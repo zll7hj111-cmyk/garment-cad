@@ -1,6 +1,6 @@
 #include "VirtualCardList.h"
 
-#include <QScrollArea>
+#include "ElaScrollArea.h"
 #include <QScrollBar>
 #include <QApplication>
 #include <QTimer>
@@ -15,7 +15,7 @@ VirtualCardList::VirtualCardList(QWidget* parent)
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 }
 
-void VirtualCardList::init(QScrollArea* area)
+void VirtualCardList::init(ElaScrollArea* area)
 {
     m_area = area;
     if (!m_area)

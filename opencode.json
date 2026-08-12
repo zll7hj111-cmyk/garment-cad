@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "codebase-memory": {
+      "type": "local",
+      "command": ["C:\\Users\\Administrator\\AppData\\Local\\Programs\\codebase-memory-mcp\\codebase-memory-mcp.exe"],
+      "enabled": true
+    },
+    "codegraph": {
+      "type": "local",
+      "command": ["cgc", "mcp", "start"],
+      "environment": {
+        "PYTHONIOENCODING": "utf-8"
+      },
+      "enabled": true
+    }
+  },
+  "lsp": {
+    "clangd": {
+      "command": [
+        "C:\\Users\\Administrator\\AppData\\Local\\Programs\\clangd\\clangd_22.1.6\\bin\\clangd.exe",
+        "--background-index",
+        "--compile-commands-dir=E:\\garment-cad\\build\\clangd"
+      ],
+      "extensions": [".cpp", ".h", ".hpp"]
+    }
+  }
+}

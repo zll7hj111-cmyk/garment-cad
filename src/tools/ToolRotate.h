@@ -2,6 +2,7 @@
 
 #include <QUuid>
 #include <QString>
+#include <QPointer>
 
 #include "Tool.h"
 #include "geometry/Vec2.h"
@@ -18,6 +19,8 @@ namespace cad::param { struct Attachment; }
 namespace cad::tools {
 
 class AngleHud;
+class RotateCopyGesture;
+class RotateGizmo;
 
 /// Rotate tool interaction state machine.
 enum class RotateState {
@@ -56,6 +59,10 @@ enum class RotateState {
 class ToolRotate : public Tool
 {
 public:
+    /// Release the angle HUD (parented to the viewport; ToolManager rebuilds
+    /// this tool on every switch, so without this each switch would leak one).
+    ~ToolRotate() override;
+
     void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
     void deactivate() override;
 
@@ -107,22 +114,6 @@ private:
     /// Shared restore-then-replay commit (used by mouse release AND HUD Enter).
     void commitCurrent();
 
-    // ── Rotate-copy gesture (Ctrl+drag 旋转复制) ──
-    /// Ctrl+press on the target: clone the block, attach the clone BACK to
-    /// the original (pivot point), then rotate the clone relative to the
-    /// original's current direction. Preview clone lives in the doc until
-    /// release (undoable) or Esc (discarded).
-    void beginRotateCopy(const cad::geo::Vec2& pos);
-    /// Release: drop the preview clone, replay ONE undo step with the final
-    /// relative angle. Zero-angle releases discard the copy (转回原位=不复制).
-    void commitRotateCopy();
-    /// Esc: drop the preview clone and return to Ready (original untouched).
-    void cancelRotateCopy();
-    /// Remove the live preview clone (attachment + block + linked vars).
-    void removeCopyPreview();
-    /// Reset copy state; m_state back to Ready.
-    void finishRotateCopy();
-
     /// Apply an effective angle (degrees): connected → followerAngle (formula
     /// cleared), free → block transform (pivot held fixed).
     void applyAngleDeg(double deg);
@@ -157,10 +148,14 @@ private:
     /// Sync the HUD text to the current effective angle (signals blocked).
     void refreshHudText();
 
-    // ── Protractor gizmo ──
-    void buildGizmo();    ///< Pivot ring + reference dash + arc + label.
-    void updateGizmo();   ///< Refresh arc/label for the current angle.
+    // ── Protractor gizmo (extracted: RotateGizmo) ──
+    /// Rebuild the gizmo around the current pivot/reference direction.
+    void buildGizmo();    ///< Pivot ring + reference dash + arc.
+    void updateGizmo();   ///< Refresh arc/dash for the current angle.
     void removeGizmo();
+    /// Original line's current world direction (deg) about the pivot — the
+    /// rotate-copy base: the clone's relative 0° = overlap with the original.
+    [[nodiscard]] double originalWorldRotDeg() const;
 
     // ── Hit testing / helpers ──
     [[nodiscard]] QUuid hitBlock(const cad::geo::Vec2& worldPos) const;
@@ -187,6 +182,9 @@ private:
     QUuid m_attId;                 ///< Follower attachment id (connected mode).
     cad::geo::Vec2 m_pivot;        ///< Rotation centre (world, mm).
     double m_refWorldRad = 0.0;    ///< Reference direction (rad): leader exit dir (connected) or 0 (free).
+
+    // Rotate-copy gesture (Ctrl+drag 旋转复制)
+    RotateCopyGesture* m_copyGesture = nullptr;
 
     // ── Anchor point (锚心: 起点 ↔ 终点) ──
     bool  m_anchorIsEnd = false;   ///< Anchor on the END point (default: start).
@@ -216,33 +214,19 @@ private:
     double m_dragCursorAngle0 = 0.0;  ///< Cursor polar angle at drag start (rad).
     double m_dragAngle0 = 0.0;        ///< Effective angle at drag start (deg).
 
-    // ── Rotate-copy state (Ctrl+drag 旋转复制) ──
-    bool m_copyMode = false;                 ///< Rotating a preview clone.
-    cad::param::DuplicateResult m_copyResult; ///< Pristine clone for the command.
-    QUuid m_cloneBlockId;                    ///< Preview clone block.
-    QUuid m_cloneAttId;                      ///< Preview clone→original attachment.
-    QUuid m_pivotPointId;                    ///< Original pivot point (挂接点).
-    QUuid m_clonePivotPointId;               ///< Clone-side counterpart of the pivot.
-    QUuid m_leaderSegmentId;                 ///< Original exit segment at the pivot
-                                             ///< (construction-angle reference).
-    double m_copyRefWorldRad = 0.0;          ///< Original's world direction at copy
-                                             ///< start (rad) — the clone rotates
-                                             ///< relative to THIS.
-
-    // Gizmo items (owned; added to the scene).
-    QGraphicsEllipseItem*     m_pivotRing = nullptr;
-    QGraphicsPathItem*        m_refLine   = nullptr;
-    QGraphicsPathItem*        m_arc       = nullptr;
-    QGraphicsSimpleTextItem*  m_label     = nullptr;
+    // Gizmo (extracted: RotateGizmo owns the items).
+    RotateGizmo* m_gizmo = nullptr;
 
     // Angle HUD.
-    AngleHud* m_hud = nullptr;
+    QPointer<AngleHud> m_hud;
     bool m_hudValid = true;
 
     // Endpoint aim snap state.
     QUuid m_aimBlockId;              ///< Candidate target block (null = none).
     QUuid m_aimPointId;              ///< Candidate target point.
     QGraphicsEllipseItem* m_aimRing = nullptr;  ///< Highlight ring on the candidate.
+
+    friend class RotateCopyGesture;
 };
 
 } // namespace cad::tools

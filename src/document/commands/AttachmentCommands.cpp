@@ -72,10 +72,12 @@ void RemoveAttachmentCommand::undo()
         m_doc->removeBlock(m_bridge.id);
         m_doc->addBlock(m_bridge);
         for (const auto& a : m_bridgeAtts)
-            m_doc->addAttachment(a);
+            m_doc->addAttachmentRaw(a);  // verbatim (keep snapshot isLocked)
+        m_doc->resolveAll();
         return;
     }
-    m_doc->addAttachment(m_att);
+    m_doc->addAttachmentRaw(m_att);  // verbatim (keep snapshot isLocked)
+    m_doc->resolveAll();
 }
 
 // ─── SetFollowerAngleCommand ───
@@ -115,32 +117,24 @@ SetFollowerAngleCommand::SetFollowerAngleCommand(cad::param::ParamDocument* doc,
 
 void SetFollowerAngleCommand::redo()
 {
-    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_doc->attachments());
-    for (auto& a : atts) {
-        if (a.id == m_attId) {
-            a.followerAngle = m_newAngle;
-            a.followerAngleFormula = m_newFormula;
-            a.rotationMode = m_newMode;
-            a.arcLength = m_newArcLength;
-            a.arcLengthFormula = m_newArcFormula;
-            break;
-        }
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->followerAngle = m_newAngle;
+        a->followerAngleFormula = m_newFormula;
+        a->rotationMode = m_newMode;
+        a->arcLength = m_newArcLength;
+        a->arcLengthFormula = m_newArcFormula;
     }
     m_doc->resolveAll();
 }
 
 void SetFollowerAngleCommand::undo()
 {
-    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_doc->attachments());
-    for (auto& a : atts) {
-        if (a.id == m_attId) {
-            a.followerAngle = m_oldAngle;
-            a.followerAngleFormula = m_oldFormula;
-            a.rotationMode = m_oldMode;
-            a.arcLength = m_oldArcLength;
-            a.arcLengthFormula = m_oldArcFormula;
-            break;
-        }
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->followerAngle = m_oldAngle;
+        a->followerAngleFormula = m_oldFormula;
+        a->rotationMode = m_oldMode;
+        a->arcLength = m_oldArcLength;
+        a->arcLengthFormula = m_oldArcFormula;
     }
     m_doc->resolveAll();
 }

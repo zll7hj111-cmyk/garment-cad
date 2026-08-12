@@ -1,14 +1,15 @@
-#include "LayerPanel.h"
+﻿#include "LayerPanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QScrollArea>
+#include "ElaScrollArea.h"
 #include <QScrollBar>
-#include <QToolButton>
-#include <QLabel>
-#include <QLineEdit>
-#include <QMenu>
-#include <QMessageBox>
+#include "ElaToolButton.h"
+#include "ElaText.h"
+#include "ElaLineEdit.h"
+#include "ElaMenu.h"
+#include "ElaMsgBox.h"
+#include "Theme.h"
 #include <QUndoStack>
 #include <QFrame>
 #include <QEvent>
@@ -43,17 +44,15 @@ cad::cmd::SetSegmentPropertyCommand::Props propsFrom(const cad::param::Segment& 
 // ---------------------------------------------------------------------------
 // Eye toggle button (visibility switch with icon states)
 // ---------------------------------------------------------------------------
-class EyeToggle : public QToolButton
+class EyeToggle : public ElaToolButton
 {
 public:
     EyeToggle(QWidget* parent = nullptr)
-        : QToolButton(parent)
+        : ElaToolButton(parent)
     {
         setFixedSize(22, 22);
         setCursor(Qt::PointingHandCursor);
-        setStyleSheet(
-            "QToolButton { background: transparent; border: none; border-radius: 11px; }"
-            "QToolButton:hover { background: #EBF5FB; }");
+        setIsTransparent(true);
         setCheckable(true);
         connect(this, &QToolButton::toggled, this, &EyeToggle::syncIcon);
         syncIcon();
@@ -89,9 +88,10 @@ public:
         // "QWidget:hover" rule made Qt's stylesheet parser reject the whole
         // string ("Could not parse stylesheet"), which flooded the console and
         // burned CPU on every LayerPanel rebuild (i.e. every resolve).
-        setStyleSheet(
+        setStyleSheet(QStringLiteral(
             "QWidget#SegmentRow { background: transparent; border-radius: 4px; }"
-            "QWidget#SegmentRow:hover { background: #F4F6F7; }");
+            "QWidget#SegmentRow:hover { background: %1; }")
+            .arg(cad::ui::Theme::tokens().surface2.name()));
         setContextMenuPolicy(Qt::CustomContextMenu);
 
         auto* lay = new QHBoxLayout(this);
@@ -103,29 +103,29 @@ public:
         lay->addWidget(m_eye);
 
         // Name (or muted dash when unnamed).
-        auto* nameLbl = new QLabel(this);
+        auto* nameLbl = new ElaText(QString(), 13, this);
         m_nameLbl = nameLbl;
         if (seg.name.isEmpty()) {
             nameLbl->setText(QStringLiteral("\u2014"));  // —
-            nameLbl->setStyleSheet("font-size: 12px; color: #BDC3C7; background: transparent;");
+            nameLbl->setStyleSheet("font-size: 12px; background: transparent;");
         } else {
             nameLbl->setText(seg.name);
-            nameLbl->setStyleSheet("font-size: 12px; color: #34495E; background: transparent;");
+            nameLbl->setStyleSheet("font-size: 12px; background: transparent;");
         }
         lay->addWidget(nameLbl, 1);
 
         // Serial tag badge (monospace, blue-gray chip).
-        auto* tagLbl = new QLabel(cad::param::Serial::tag(seg.serial), this);
+        auto* tagLbl = new ElaText(cad::param::Serial::tag(seg.serial), 13, this);
         tagLbl->setToolTip(seg.serial);
         tagLbl->setStyleSheet(
             "font-family: 'Consolas','Courier New',monospace;"
-            "font-size: 10px; color: #5D6D7E; background: #ECEFF1;"
+            "font-size: 10px; background: transparent;"
             "border-radius: 3px; padding: 1px 5px;");
         lay->addWidget(tagLbl);
 
         // Dim the row when the segment is individually hidden.
         if (!seg.visible)
-            nameLbl->setStyleSheet("font-size: 12px; color: #B0BEC5; background: transparent;");
+            nameLbl->setStyleSheet("font-size: 12px; background: transparent;");
         (void)layerHidden;
     }
 
@@ -141,17 +141,13 @@ public:
         m_eye->setChecked(visible);
         m_eye->blockSignals(false);
         m_nameLbl->setText(name.isEmpty() ? QStringLiteral("—") : name);
-        m_nameLbl->setStyleSheet(QStringLiteral(
-            "font-size: 12px; color: %1; background: transparent;")
-            .arg(visible ? (name.isEmpty() ? QStringLiteral("#BDC3C7")
-                                           : QStringLiteral("#34495E"))
-                         : QStringLiteral("#B0BEC5")));
+        m_nameLbl->setStyleSheet("font-size: 12px; background: transparent;");
     }
 
 private:
     QUuid m_blockId;
     EyeToggle* m_eye = nullptr;
-    QLabel* m_nameLbl = nullptr;
+    ElaText* m_nameLbl = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -174,6 +170,7 @@ public:
         , m_isActive(isActive)
     {
         setObjectName(QStringLiteral("LayerCard"));
+        const auto& tk = cad::ui::Theme::tokens();
         setStyleSheet(QStringLiteral(
             "QFrame#LayerCard {"
             "  background: %1;"
@@ -181,9 +178,9 @@ public:
             "  border-radius: 7px;"
             "}"
             "QFrame#LayerCard:hover { border: 1px solid %3; }")
-            .arg(isActive ? QStringLiteral("#F6FBFF") : QStringLiteral("#FFFFFF"))
-            .arg(isActive ? QStringLiteral("#AED6F1") : QStringLiteral("#E0E4E8"))
-            .arg(isActive ? QStringLiteral("#5DADE2") : QStringLiteral("#B0C4DE")));
+            .arg(isActive ? tk.accentTint.name() : tk.surface.name())
+            .arg(isActive ? tk.accent.name() : tk.border.name())
+            .arg(isActive ? tk.accentStrong.name() : tk.borderStrong.name()));
 
         auto* outer = new QHBoxLayout(this);
         outer->setContentsMargins(0, 0, 0, 0);
@@ -194,9 +191,9 @@ public:
         accent->setFixedWidth(4);
         accent->setStyleSheet(QStringLiteral(
             "background: %1; border-top-left-radius: 7px; border-bottom-left-radius: 7px;")
-            .arg(isAux ? QStringLiteral("#F39C12")
-                       : (isActive ? QStringLiteral("#2E86C1")
-                                   : (visible ? QStringLiteral("#B0BEC5") : QStringLiteral("#E0E0E0")))));
+            .arg(isAux ? tk.warning.name()
+                       : (isActive ? tk.accent.name()
+                                   : (visible ? tk.borderStrong.name() : tk.border.name()))));
         outer->addWidget(accent);
 
         // Content column.
@@ -209,7 +206,7 @@ public:
         auto* header = new QHBoxLayout();
         header->setSpacing(4);
 
-        m_collapseBtn = new QToolButton(this);
+        m_collapseBtn = new ElaToolButton(this);
         m_collapseBtn->setIcon(cad::ui::IconHelper::iconByName(
             QStringLiteral("caret-down"), QColor(0x7F, 0x8C, 0x8D)));
         m_collapseBtn->setIconSize(QSize(10, 10));
@@ -217,51 +214,50 @@ public:
         m_collapseBtn->setCursor(Qt::PointingHandCursor);
         m_collapseBtn->setStyleSheet(
             "QToolButton { background: transparent; border: none; border-radius: 9px; }"
-            "QToolButton:hover { background: #EAECEE; }");
+            "QToolButton:hover { background: " + tk.surface2.name() + "; }");
         header->addWidget(m_collapseBtn);
 
         m_eye = new EyeToggle(this);
         m_eye->setChecked(visible);
         header->addWidget(m_eye);
 
-        m_nameLabel = new QLabel(name, this);
+        m_nameLabel = new ElaText(name, 13, this);
         m_nameLabel->setCursor(Qt::PointingHandCursor);
         m_nameLabel->setToolTip(QString::fromUtf8(
             "\u5355\u51fb\u8bbe\u4e3a\u6d3b\u52a8\u5c42 \u00b7 \u53cc\u51fb\u91cd\u547d\u540d"));
         // 单击设为活动层 · 双击重命名
         m_nameLabel->setStyleSheet(QStringLiteral(
-            "font-size: 12px; font-weight: %1; color: %2; background: transparent; padding: 2px 0;")
-            .arg(isActive ? QStringLiteral("bold") : QStringLiteral("normal"))
-            .arg(isActive ? QStringLiteral("#1B4F72") : QStringLiteral("#34495E")));
+            "font-size: 12px; font-weight: %1; background: transparent; padding: 2px 0;")
+            .arg(isActive ? QStringLiteral("bold") : QStringLiteral("normal")));
         header->addWidget(m_nameLabel, 1);
 
         // Auxiliary-layer badge (always shown, amber chip).
         if (isAux) {
-            auto* auxBadge = new QLabel(QString::fromUtf8("\u8f85"), this);  // 辅
+            auto* auxBadge = new ElaText(QString::fromUtf8("\u8f85"), 13, this);  // 辅
             auxBadge->setToolTip(QString::fromUtf8(
                 "\u8f85\u52a9\u8ba1\u7b97\u5c42\uff1a\u753b\u6784\u9020\u51e0\u4f55\u6c42\u503c\uff0c"
                 "\u53d1\u5e03\u6d4b\u91cf\u53c2\u6570\u4f9b\u5de5\u4f5c\u5c42\u4f7f\u7528"));
             // 辅助计算层：画构造几何求值，发布测量参数供工作层使用
             auxBadge->setStyleSheet(
-                "font-size: 10px; font-weight: bold; color: #935E09;"
-                "background: #FDEBD0; border-radius: 4px; padding: 1px 6px;");
+                "font-size: 10px; font-weight: bold;"
+                "background: transparent; border-radius: 4px; padding: 1px 6px;");
             header->addWidget(auxBadge);
         }
 
         // Active badge.
         if (isActive) {
-            auto* badge = new QLabel(QString::fromUtf8("\u6d3b\u52a8"), this);  // 活动
+            auto* badge = new ElaText(QString::fromUtf8("\u6d3b\u52a8"), 13, this);  // 活动
             badge->setStyleSheet(
-                "font-size: 10px; font-weight: bold; color: #2E86C1;"
-                "background: #D6EAF8; border-radius: 4px; padding: 1px 6px;");
+                "font-size: 10px; font-weight: bold;"
+                "background: transparent; border-radius: 4px; padding: 1px 6px;");
             header->addWidget(badge);
         }
 
         // Count pill.
-        auto* countPill = new QLabel(QStringLiteral("%1").arg(segCount), this);
+        auto* countPill = new ElaText(QStringLiteral("%1").arg(segCount), 13, this);
         m_countPill = countPill;
         countPill->setStyleSheet(
-            "font-size: 10px; color: #85929E; background: #EAECEE;"
+            "font-size: 10px; background: transparent;"
             "border-radius: 8px; padding: 1px 7px;");
         countPill->setToolTip(QString::fromUtf8("%1 \u6761\u7ebf\u6bb5"));  // %1 条线段
         header->addWidget(countPill);
@@ -335,7 +331,7 @@ public:
 
     [[nodiscard]] int layerIndex() const { return m_index; }
     [[nodiscard]] EyeToggle* eye() const { return m_eye; }
-    [[nodiscard]] QLabel* nameLabel() const { return m_nameLabel; }
+    [[nodiscard]] ElaText* nameLabel() const { return m_nameLabel; }
     [[nodiscard]] QToolButton* collapseBtn() const { return m_collapseBtn; }
     [[nodiscard]] QWidget* segList() const { return m_segList; }
 
@@ -352,10 +348,8 @@ public:
         // Simulate opacity by overriding the name label color (cheap, no
         // QGraphicsOpacityEffect which breaks child hover styles).
         m_nameLabel->setStyleSheet(QStringLiteral(
-            "font-size: 12px; font-weight: %1; color: %2; background: transparent; padding: 2px 0;")
-            .arg(m_isActive ? QStringLiteral("bold") : QStringLiteral("normal"))
-            .arg(dimmed ? QStringLiteral("#B0BEC5")
-                        : (m_isActive ? QStringLiteral("#1B4F72") : QStringLiteral("#34495E"))));
+            "font-size: 12px; font-weight: %1; background: transparent; padding: 2px 0;")
+            .arg(m_isActive ? QStringLiteral("bold") : QStringLiteral("normal")));
     }
 
 private:
@@ -363,8 +357,8 @@ private:
     bool m_isActive;
     QToolButton* m_collapseBtn = nullptr;
     EyeToggle* m_eye = nullptr;
-    QLabel* m_nameLabel = nullptr;
-    QLabel* m_countPill = nullptr;
+    ElaText* m_nameLabel = nullptr;
+    ElaText* m_countPill = nullptr;
     QWidget* m_segList = nullptr;
     QVBoxLayout* m_segListLayout = nullptr;
 };
@@ -384,7 +378,7 @@ LayerPanel::LayerPanel(cad::param::ParamDocument* doc, QWidget* parent)
     connect(m_doc, &cad::param::ParamDocument::layersChanged,
             this, &LayerPanel::refresh, Qt::QueuedConnection);
     connect(m_doc, &cad::param::ParamDocument::activeLayerChanged,
-            this, [this](int) { refresh(); }, Qt::QueuedConnection);
+            this, [this](const QUuid&) { refresh(); }, Qt::QueuedConnection);
     // Blocks being added/removed changes per-layer membership counts.
     connect(m_doc, &cad::param::ParamDocument::structureChanged,
             this, &LayerPanel::refresh, Qt::QueuedConnection);
@@ -398,7 +392,8 @@ LayerPanel::LayerPanel(cad::param::ParamDocument* doc, QWidget* parent)
 
 void LayerPanel::setupUi()
 {
-    setStyleSheet("background: #FFFFFF;");
+    const auto& tk = cad::ui::Theme::tokens();
+    setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -406,34 +401,37 @@ void LayerPanel::setupUi()
 
     // ===== Header: title + count pill + add button =====
     auto* header = new QWidget(this);
-    header->setStyleSheet("background: #FFFFFF;");
+    m_header = header;
+    header->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(10, 6, 10, 4);
     headerLayout->setSpacing(8);
 
-    auto* title = new QLabel(QString::fromUtf8("\u56fe\u5c42"), header);  // 图层
-    title->setStyleSheet("font-size: 13px; font-weight: bold; color: #2C3E50;");
+    auto* title = new ElaText(QString::fromUtf8("\u56fe\u5c42"), 13, header);  // 图层
+    title->setStyleSheet("font-size: 13px; font-weight: bold;");
     headerLayout->addWidget(title);
 
-    m_countLabel = new QLabel(header);
+    m_countLabel = new ElaText(QString(), 13, header);
     m_countLabel->setStyleSheet(
-        "font-size: 11px; color: #85929E; background: #EAECEE;"
+        "font-size: 11px; background: transparent;"
         "border-radius: 8px; padding: 1px 8px;");
     headerLayout->addWidget(m_countLabel);
 
     headerLayout->addStretch();
 
-    auto* addBtn = new QToolButton(header);
+    auto* addBtn = new ElaToolButton(header);
+    m_addBtn = addBtn;
     addBtn->setIcon(cad::ui::IconHelper::iconByName(
-        QStringLiteral("plus"), QColor(0x2E, 0x86, 0xC1)));
+        QStringLiteral("plus"), tk.accent));
     addBtn->setIconSize(QSize(13, 13));
     addBtn->setToolTip(QString::fromUtf8("\u65b0\u5efa\u56fe\u5c42"));  // 新建图层
     addBtn->setFixedSize(26, 26);
     addBtn->setCursor(Qt::PointingHandCursor);
-    addBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid #AED6F1;"
+    addBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { background: transparent; border: 1px solid %1;"
         "  border-radius: 5px; }"
-        "QToolButton:hover { background: #EBF5FB; border: 1px solid #2E86C1; }");
+        "QToolButton:hover { background: %2; border: 1px solid %3; }")
+        .arg(tk.accent.name(), tk.accentTint.name(), tk.accentStrong.name()));
     connect(addBtn, &QToolButton::clicked, this, &LayerPanel::onAddLayerClicked);
     headerLayout->addWidget(addBtn);
 
@@ -441,25 +439,27 @@ void LayerPanel::setupUi()
 
     // ===== Separator =====
     auto* sep = new QFrame(this);
+    m_sep = sep;
     sep->setFrameShape(QFrame::HLine);
     sep->setFixedHeight(1);
-    sep->setStyleSheet("background: #E5E8E8; border: none;");
+    sep->setStyleSheet(QStringLiteral("background: %1; border: none;").arg(tk.border.name()));
     layout->addWidget(sep);
 
     // ===== Scrollable card list =====
-    m_scroll = new QScrollArea(this);
+    m_scroll = new ElaScrollArea(this);
     m_scroll->setWidgetResizable(true);
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_scroll->setStyleSheet(
-        "QScrollArea { background: #FAFBFC; border: none; }"
+    m_scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea { background: %1; border: none; }"
         "QScrollBar:vertical { width: 6px; background: transparent; }"
-        "QScrollBar::handle:vertical { background: #D5DBDB; border-radius: 3px; }"
-        "QScrollBar::handle:vertical:hover { background: #AEB6BF; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }");
+        "QScrollBar::handle:vertical { background: %2; border-radius: 3px; }"
+        "QScrollBar::handle:vertical:hover { background: %3; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }")
+        .arg(tk.surface2.name(), tk.borderStrong.name(), tk.text3.name()));
 
     m_container = new QWidget(m_scroll);
-    m_container->setStyleSheet("background: #FAFBFC;");
+    m_container->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface2.name()));
     m_listLayout = new QVBoxLayout(m_container);
     m_listLayout->setContentsMargins(8, 8, 8, 8);
     m_listLayout->setSpacing(8);
@@ -469,13 +469,42 @@ void LayerPanel::setupUi()
     layout->addWidget(m_scroll, 1);
 
     // ===== Empty hint (overlay label) =====
-    m_emptyHint = new QLabel(QString::fromUtf8(
-        "\u4f7f\u7528\u667a\u80fd\u7b14\u7ed8\u5236\u7ebf\u6761\u540e\n\u5c06\u5728\u6b64\u663e\u793a\u56fe\u5c42\u5185\u5bb9"), m_container);
+    m_emptyHint = new ElaText(QString::fromUtf8(
+        "\u4f7f\u7528\u667a\u80fd\u7b14\u7ed8\u5236\u7ebf\u6761\u540e\n\u5c06\u5728\u6b64\u663e\u793a\u56fe\u5c42\u5185\u5bb9"), 13, m_container);
     // 使用智能笔绘制线条后\n将在此显示图层内容
     m_emptyHint->setAlignment(Qt::AlignCenter);
-    m_emptyHint->setStyleSheet("color: #B0BEC5; font-size: 12px; background: transparent;");
+    m_emptyHint->setStyleSheet("font-size: 12px; background: transparent;");
     m_emptyHint->setVisible(false);
     m_listLayout->insertWidget(0, m_emptyHint);
+}
+
+void LayerPanel::applyTheme()
+{
+    const auto& tk = cad::ui::Theme::tokens();
+    setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
+    if (m_header)
+        m_header->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
+    if (m_addBtn) {
+        m_addBtn->setIcon(cad::ui::IconHelper::iconByName(
+            QStringLiteral("plus"), tk.accent));
+        m_addBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { background: transparent; border: 1px solid %1;"
+            "  border-radius: 5px; }"
+            "QToolButton:hover { background: %2; border: 1px solid %3; }")
+            .arg(tk.accent.name(), tk.accentTint.name(), tk.accentStrong.name()));
+    }
+    if (m_sep)
+        m_sep->setStyleSheet(QStringLiteral("background: %1; border: none;").arg(tk.border.name()));
+    m_scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea { background: %1; border: none; }"
+        "QScrollBar:vertical { width: 6px; background: transparent; }"
+        "QScrollBar::handle:vertical { background: %2; border-radius: 3px; }"
+        "QScrollBar::handle:vertical:hover { background: %3; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }")
+        .arg(tk.surface2.name(), tk.borderStrong.name(), tk.text3.name()));
+    m_container->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface2.name()));
+    // Cards bake token colors at construction — rebuild them.
+    refresh();
 }
 
 void LayerPanel::refresh()
@@ -496,11 +525,13 @@ void LayerPanel::refresh()
     m_cards.clear();
 
     const auto& layers = m_doc->layers();
-    const int active = m_doc->activeLayer();
+    const QUuid active = m_doc->activeLayer();
 
-    // Prune stale collapse state (layer removal shifts indices).
+    // Prune stale collapse state (layer removal drops ids).
     for (auto it = m_collapsed.begin(); it != m_collapsed.end();)
-        if (*it >= static_cast<int>(layers.size())) it = m_collapsed.erase(it);
+        if (std::none_of(layers.begin(), layers.end(),
+                         [&](const auto& l) { return l.id == *it; }))
+            it = m_collapsed.erase(it);
         else ++it;
 
     m_countLabel->setText(QStringLiteral("%1").arg(layers.size()));
@@ -517,15 +548,15 @@ void LayerPanel::refresh()
         // Gather member segments.
         std::vector<LayerCard::SegmentInfo> segs;
         for (const auto& b : m_doc->blocks()) {
-            if (b.layer != i || b.segments.empty())
+            if (b.layer != layer.id || b.segments.empty())
                 continue;
             const auto& s = b.segments.front();
             segs.push_back({b.id, s.name, s.serial, s.visible});
         }
 
         auto* card = new LayerCard(i, layer.name, layer.visible,
-                                   i == active, static_cast<int>(segs.size()),
-                                   m_doc->isAuxLayer(i), m_container);
+                                   layer.id == active, static_cast<int>(segs.size()),
+                                   m_doc->isAuxLayer(layer.id), m_container);
         m_cards.append(card);
 
         // Segment rows.
@@ -549,17 +580,17 @@ void LayerPanel::refresh()
         }
 
         // Header interactions.
-        connect(card->eye(), &EyeToggle::toggled, this, [this, i](bool on) {
-            m_doc->setLayerVisible(i, on);
+        connect(card->eye(), &EyeToggle::toggled, this, [this, id = layer.id](bool on) {
+            m_doc->setLayerVisible(id, on);
         });
-        card->setCollapsed(m_collapsed.contains(i));
-        connect(card->collapseBtn(), &QToolButton::clicked, this, [this, card, i] {
+        card->setCollapsed(m_collapsed.contains(layer.id));
+        connect(card->collapseBtn(), &QToolButton::clicked, this, [this, card, id = layer.id] {
             const bool nowCollapsed = card->segList()->isVisible();
             card->setCollapsed(nowCollapsed);
             if (nowCollapsed)
-                m_collapsed.insert(i);
+                m_collapsed.insert(id);
             else
-                m_collapsed.remove(i);
+                m_collapsed.remove(id);
         });
 
         // Click name → activate layer; double-click → rename.
@@ -609,7 +640,7 @@ void LayerPanel::syncFromDoc()
         QSet<QUuid> want;
         int count = 0;
         for (const auto& b : m_doc->blocks()) {
-            if (b.layer != i || b.segments.empty()) continue;
+            if (b.layer != layer.id || b.segments.empty()) continue;
             const auto& s = b.segments.front();
             want.insert(b.id);
             ++count;
@@ -638,10 +669,11 @@ void LayerPanel::syncFromDoc()
 bool LayerPanel::eventFilter(QObject* watched, QEvent* event)
 {
     // Handle click / double-click on layer name labels.
-    if (auto* lbl = qobject_cast<QLabel*>(watched)) {
+    if (auto* lbl = qobject_cast<ElaText*>(watched)) {
         if (event->type() == QEvent::MouseButtonPress) {
             const int idx = lbl->property("layerIndex").toInt();
-            m_doc->setActiveLayer(idx);
+            if (idx >= 0 && idx < m_doc->layerCount())
+                m_doc->setActiveLayer(m_doc->layers()[idx].id);
             return true;
         }
         if (event->type() == QEvent::MouseButtonDblClick) {
@@ -653,7 +685,7 @@ bool LayerPanel::eventFilter(QObject* watched, QEvent* event)
     return QWidget::eventFilter(watched, event);
 }
 
-void LayerPanel::startRename(int layerIndex, QLabel* nameLabel)
+void LayerPanel::startRename(int layerIndex, ElaText* nameLabel)
 {
     if (layerIndex < 0 || layerIndex >= m_doc->layerCount())
         return;
@@ -665,11 +697,8 @@ void LayerPanel::startRename(int layerIndex, QLabel* nameLabel)
 
     const QString oldName = m_doc->layers()[layerIndex].name;
 
-    auto* edit = new QLineEdit(oldName, host);
-    edit->setStyleSheet(
-        "QLineEdit { font-size: 12px; font-weight: bold; color: #1B4F72;"
-        "  border: 1px solid #2E86C1; border-radius: 3px; padding: 1px 4px;"
-        "  background: #FFFFFF; }");
+    auto* edit = new ElaLineEdit(host);
+    edit->setText(oldName);
     const QRect geo = nameLabel->geometry();
     edit->setGeometry(geo.x() - 2, geo.y() - 2,
                       qMax(geo.width() + 30, 120), geo.height() + 4);
@@ -687,7 +716,7 @@ void LayerPanel::startRename(int layerIndex, QLabel* nameLabel)
             if (m_undoStack)
                 m_undoStack->push(new cad::cmd::RenameLayerCommand(m_doc, layerIndex, newName));
             else
-                m_doc->renameLayer(layerIndex, newName);
+                m_doc->renameLayer(m_doc->layers()[layerIndex].id, newName);
         }
     });
 }
@@ -698,19 +727,14 @@ void LayerPanel::startRename(int layerIndex, QLabel* nameLabel)
 
 void LayerPanel::showLayerMenu(const QPoint& globalPos, int layerIndex)
 {
-    QMenu menu(this);
-    menu.setStyleSheet(
-        "QMenu { font-size: 12px; border: 1px solid #E0E4E8; border-radius: 6px;"
-        "  padding: 4px; background: #FFFFFF; }"
-        "QMenu::item { padding: 5px 20px; border-radius: 4px; }"
-        "QMenu::item:selected { background: #EBF5FB; color: #1B4F72; }"
-        "QMenu::item:disabled { color: #B0BEC5; }");
+    ElaMenu menu(this);
 
     auto* rename = menu.addAction(QString::fromUtf8("\u91cd\u547d\u540d"));  // 重命名
     menu.addSeparator();
     auto* del = menu.addAction(QString::fromUtf8("\u5220\u9664\u56fe\u5c42"));  // 删除图层
     // The auxiliary calculation layer cannot be deleted.
-    del->setEnabled(!m_doc->isAuxLayer(layerIndex) && m_doc->layerCount() > 2);
+    del->setEnabled(!m_doc->isAuxLayer(m_doc->layers()[layerIndex].id)
+                    && m_doc->layerCount() > 2);
 
     QAction* chosen = menu.exec(globalPos);
     if (!chosen) return;
@@ -730,27 +754,19 @@ void LayerPanel::showLayerMenu(const QPoint& globalPos, int layerIndex)
 
 void LayerPanel::showSegmentMenu(const QPoint& globalPos, const QUuid& blockId)
 {
-    QMenu menu(this);
-    menu.setStyleSheet(
-        "QMenu { font-size: 12px; border: 1px solid #E0E4E8; border-radius: 6px;"
-        "  padding: 4px; background: #FFFFFF; }"
-        "QMenu::item { padding: 5px 20px; border-radius: 4px; }"
-        "QMenu::item:selected { background: #EBF5FB; color: #1B4F72; }"
-        "QMenu::item:disabled { color: #B0BEC5; }"
-        "QMenu::separator { height: 1px; background: #E5E8E8; margin: 3px 8px; }");
+    ElaMenu menu(this);
 
     // Move-to-layer submenu. Blocks never cross the aux/working boundary:
     // the auxiliary layer is sealed (its content is created and stays there).
     auto* moveMenu = menu.addMenu(QString::fromUtf8("\u79fb\u52a8\u5230\u56fe\u5c42"));  // 移动到图层
-    moveMenu->setStyleSheet(menu.styleSheet());
-    const int curLayer = m_doc->findBlock(blockId)
-                             ? m_doc->findBlock(blockId)->layer : -1;
-    const bool curIsAux = m_doc->isAuxLayer(curLayer);
+    const auto* blk = m_doc->findBlock(blockId);
+    const QUuid curLayer = blk ? blk->layer : QUuid();
+    const bool curIsAux = !curLayer.isNull() && m_doc->isAuxLayer(curLayer);
     QList<QAction*> targets;
     for (int i = 0; i < m_doc->layerCount(); ++i) {
-        if (i == curLayer)
+        if (m_doc->layers()[i].id == curLayer)
             continue;
-        if (m_doc->isAuxLayer(i) != curIsAux)
+        if (m_doc->isAuxLayer(m_doc->layers()[i].id) != curIsAux)
             continue;  // sealed boundary
         auto* act = moveMenu->addAction(m_doc->layers()[i].name);
         act->setData(i);
@@ -779,7 +795,7 @@ void LayerPanel::onAddLayerClicked()
     // Number working layers only (the sealed aux layer is not counted).
     int workingCount = 0;
     for (int i = 0; i < m_doc->layerCount(); ++i)
-        if (!m_doc->isAuxLayer(i)) ++workingCount;
+        if (!m_doc->isAuxLayer(m_doc->layers()[i].id)) ++workingCount;
     const QString name = QString::fromUtf8("\u56fe\u5c42 %1").arg(workingCount + 1);
     if (m_undoStack)
         m_undoStack->push(new cad::cmd::AddLayerCommand(m_doc, name));
@@ -787,30 +803,30 @@ void LayerPanel::onAddLayerClicked()
         m_doc->addLayer(name);
 
     // New layer becomes active (so the user can immediately draw on it).
-    m_doc->setActiveLayer(m_doc->layerCount() - 1);
+    m_doc->setActiveLayer(m_doc->layers().back().id);
 }
 
 void LayerPanel::deleteLayer(int index)
 {
-    if (m_doc->layerCount() <= 2 || m_doc->isAuxLayer(index))
+    if (m_doc->layerCount() <= 2 || m_doc->isAuxLayer(m_doc->layers()[index].id))
         return;  // Aux layer and the last working layer are undeletable.
 
     // Confirm if the layer is non-empty.
     int count = 0;
     for (const auto& b : m_doc->blocks())
-        if (b.layer == index)
+        if (b.layer == m_doc->layers()[index].id)
             ++count;
     if (count > 0) {
-        const auto ans = QMessageBox::question(this, QString::fromUtf8("\u5220\u9664\u56fe\u5c42"),
-            QString::fromUtf8("\u8be5\u56fe\u5c42\u6709 %1 \u6761\u7ebf\u6bb5\uff0c\u5c06\u79fb\u81f3\u4e0b\u65b9\u56fe\u5c42\u3002\u786e\u5b9a\u5220\u9664\uff1f").arg(count));
-        if (ans != QMessageBox::Yes)
+        const bool ok = cad::ui::ElaMsgBox::question(this, QString::fromUtf8("删除图层"),
+            QString::fromUtf8("该图层有 %1 条线段，将移至下方图层。确定删除？").arg(count));
+        if (!ok)
             return;
     }
 
     if (m_undoStack)
         m_undoStack->push(new cad::cmd::RemoveLayerCommand(m_doc, index));
     else
-        m_doc->removeLayer(index);
+        m_doc->removeLayer(m_doc->layers()[index].id);
 }
 
 void LayerPanel::deleteBlock(const QUuid& blockId)
@@ -852,7 +868,7 @@ void LayerPanel::moveBlockToLayer(const QUuid& blockId, int targetLayer)
         m_undoStack->push(new cad::cmd::MoveBlockToLayerCommand(m_doc, blockId, targetLayer));
     else {
         if (auto* b = m_doc->findBlock(blockId)) {
-            b->layer = targetLayer;
+            b->layer = m_doc->layers()[targetLayer].id;
             emit m_doc->layersChanged();
         }
     }

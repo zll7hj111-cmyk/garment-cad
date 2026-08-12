@@ -7,8 +7,9 @@ namespace cad::param {
 /// Back-solve the follower angle (followerAngle, degrees) that preserves the
 /// follower's current world direction when attaching to a leader.
 ///
-/// The Resolver drives:  rotation = refWorld + angle·π/180 − localDir
-/// so:                   angle = (rotation + localDir − refWorld)·180/π
+/// The Resolver drives (closed base, 闭合基准 2026-08 定稿):
+///     rotation = refWorld + π − angle·π/180 − localDir
+/// so:           angle = (refWorld + π − rotation − localDir)·180/π
 ///
 /// @param followerRotRad  Follower block's transform.rotation (radians).
 /// @param localDirRad     Follower's exit direction at the attach point (radians,
@@ -20,8 +21,8 @@ inline double backSolveFollowerAngle(double followerRotRad,
                                          double localDirRad,
                                          double refWorldRad)
 {
-    return cad::geo::normalizeDeg180(
-        cad::geo::radToDeg(followerRotRad + localDirRad - refWorldRad));
+    return cad::geo::normalizeDeg180(cad::geo::radToDeg(
+        refWorldRad + cad::geo::kPi - followerRotRad - localDirRad));
 }
 
 } // namespace cad::param

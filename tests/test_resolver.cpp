@@ -46,9 +46,9 @@ private slots:
     void curveAnchorResolvesOnChord();
     void curveAnchorFollowsEndpoints();
     void curveAnchorKeepsFullOffsetNearEndpoint();
-    void arcLengthZeroMeansReverse180();
-    void arcLengthFullTurnSameAsAngleZero();
-    void arcLengthQuarterTurnMatchesAngle270();
+    void arcLengthZeroMeansFoldBack0();
+    void arcLengthHalfCircleMeansStraight180();
+    void arcLengthQuarterTurnMatchesAngle90();
 };
 
 void TestResolver::freePointsResolve()
@@ -319,13 +319,14 @@ void TestResolver::attachmentAtLeaderStartContinuesStraight()
     QUuid block1Id = block1.id;
     QUuid block2Id = block2.id;
 
-    // Snap the follower's C onto the leader's START point A, followerAngle = 0.
+    // Snap the follower's C onto the leader's START point A, followerAngle =
+    // 180 (闭合基准 2026-08: 180° = 沿 leader 直行延续)。
     Attachment att;
     att.fromBlockId = block2Id;
     att.fromPointId = idC;
     att.toBlockId = block1Id;
     att.toPointId = idA;
-    att.followerAngle = 0.0;
+    att.followerAngle = 180.0;
 
     std::vector<Block> blocks;
     blocks.push_back(std::move(block1));
@@ -401,7 +402,7 @@ void TestResolver::explicitLeaderSegmentDisambiguates()
     att.fromPointId = idE;
     att.toBlockId = leader.id;
     att.toPointId = idB;
-    att.followerAngle = 0.0;
+    att.followerAngle = 180.0;   // 闭合基准: 180° = 直行延续
 
     // Case 1: legacy (null toSegmentId) — scan finds s1, whose exit direction
     // at its END point B is 0 deg -> F lands at (150, 0).
@@ -1307,12 +1308,13 @@ void TestResolver::curveAnchorKeepsFullOffsetNearEndpoint()
     QCOMPARE(std::abs(pos.y - 20.0) < 1e-6, true);   // full offset preserved (no taper)
 }
 
-void TestResolver::arcLengthZeroMeansReverse180()
+void TestResolver::arcLengthZeroMeansFoldBack0()
 {
-    // Arc-length mode measures the arc from the leader's REVERSE direction
-    // (弧长 0 = 角度 180°). Leader A(0,0)→B(100,0) (exit dir 0°); follower
-    // C(0,0)→D(50,0) snapped at B with arcLength = 0 → follower points
-    // 180° (back along the leader): D lands at (50, 0).
+    // Arc-length mode measures from the CLOSED position (弧长 0 = 角度 0° =
+    // 两线折叠重叠, 闭合基准, 用户拍板 2026-08 定稿), sweeping so that
+    // πr = 180° = straight continuation. Leader A(0,0)→B(100,0) (exit dir
+    // 0°); follower C(0,0)→D(50,0) snapped at B with arcLength = 0 →
+    // follower folds back onto the leader (0°): D lands at (50, 0).
     Block leader;
     ParamPoint pA; pA.name="A"; pA.constraint=PointConstraint::Free; pA.freePos={0.0,0.0};
     QUuid idA = leader.addPoint(pA);
@@ -1333,7 +1335,7 @@ void TestResolver::arcLengthZeroMeansReverse180()
     att.fromBlockId=follower.id; att.fromPointId=idC;
     att.toBlockId=leader.id; att.toPointId=idB;
     att.rotationMode = RotationMode::ArcLength;
-    att.arcLength = 0.0;   // 弧长 0 → 角度 180°
+    att.arcLength = 0.0;   // 弧长 0 → 角度 0° (fold back onto the leader)
 
     std::vector<Block> blocks;
     blocks.push_back(std::move(leader));
@@ -1343,15 +1345,16 @@ void TestResolver::arcLengthZeroMeansReverse180()
 
     const Block& rf = blocks[1];
     Vec2 dWorld = rf.worldPos(idD);
-    QVERIFY(std::abs(dWorld.x - 50.0) < 1e-6);   // 180°: back along the leader
+    QVERIFY(std::abs(dWorld.x - 50.0) < 1e-6);   // 0°: folded back along the leader
     QVERIFY(std::abs(dWorld.y) < 1e-6);
-    QVERIFY(std::abs(rf.transform.rotation - M_PI) < 1e-9);
+    QVERIFY(std::abs(cad::geo::normalizeRad(rf.transform.rotation - M_PI)) < 1e-9);
 }
 
-void TestResolver::arcLengthFullTurnSameAsAngleZero()
+void TestResolver::arcLengthHalfCircleMeansStraight180()
 {
-    // arcLength = π·radius (a full half-circle worth of arc) → 角度 0°:
-    // follower continues straight along the leader (same as followerAngle=0).
+    // arcLength = π·radius (a full half-circle worth of arc) → 角度 180°:
+    // the follower continues straight along the leader (弧长 = πr = 180° =
+    // 延伸直行, 闭合基准). D lands at (150, 0).
     Block leader;
     ParamPoint pA; pA.name="A"; pA.constraint=PointConstraint::Free; pA.freePos={0.0,0.0};
     QUuid idA = leader.addPoint(pA);
@@ -1372,7 +1375,7 @@ void TestResolver::arcLengthFullTurnSameAsAngleZero()
     att.fromBlockId=follower.id; att.fromPointId=idC;
     att.toBlockId=leader.id; att.toPointId=idB;
     att.rotationMode = RotationMode::ArcLength;
-    att.arcLength = M_PI * 50.0;  // radius = follower length = 50mm; πr → 0°
+    att.arcLength = M_PI * 50.0;  // radius = follower length = 50mm; πr → 180°
 
     std::vector<Block> blocks;
     blocks.push_back(std::move(leader));
@@ -1382,15 +1385,15 @@ void TestResolver::arcLengthFullTurnSameAsAngleZero()
 
     const Block& rf = blocks[1];
     Vec2 dWorld = rf.worldPos(idD);
-    QVERIFY(std::abs(dWorld.x - 150.0) < 1e-6);   // 0°: straight continuation
+    QVERIFY(std::abs(dWorld.x - 150.0) < 1e-6);   // 180°: straight continuation
     QVERIFY(std::abs(dWorld.y) < 1e-6);
-    // rotation = 2π numerically (angle π + arc/radius = π + π); equivalent to 0.
-    QVERIFY(std::abs(cad::geo::normalizeRad(rf.transform.rotation)) < 1e-9);
+    QVERIFY(std::abs(rf.transform.rotation) < 1e-9);
 }
 
-void TestResolver::arcLengthQuarterTurnMatchesAngle270()
+void TestResolver::arcLengthQuarterTurnMatchesAngle90()
 {
-    // arcLength = π/2·radius → 角度 180°+90° = 270°: follower points −Y.
+    // arcLength = π/2·radius → 弧长角 90° → 角度 90°（闭合基准, 0° = 折叠,
+    // 90° = 垂直）: follower points +Y.
     Block leader;
     ParamPoint pA; pA.name="A"; pA.constraint=PointConstraint::Free; pA.freePos={0.0,0.0};
     QUuid idA = leader.addPoint(pA);
@@ -1421,9 +1424,9 @@ void TestResolver::arcLengthQuarterTurnMatchesAngle270()
 
     const Block& rf = blocks[1];
     Vec2 dWorld = rf.worldPos(idD);
-    QVERIFY(std::abs(dWorld.x - 100.0) < 1e-6);   // 270°: down from B
-    QVERIFY(std::abs(dWorld.y + 50.0) < 1e-6);
-    QVERIFY(std::abs(rf.transform.rotation - 1.5 * M_PI) < 1e-9);
+    QVERIFY(std::abs(dWorld.x - 100.0) < 1e-6);   // 90°: up from B
+    QVERIFY(std::abs(dWorld.y - 50.0) < 1e-6);
+    QVERIFY(std::abs(rf.transform.rotation - 0.5 * M_PI) < 1e-9);
 }
 
 QTEST_GUILESS_MAIN(TestResolver)

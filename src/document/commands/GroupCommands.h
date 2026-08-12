@@ -72,4 +72,22 @@ private:
     bool m_valid = false;
 };
 
+/// Reorder the group registry (panel drag-sort). The order is persisted in
+/// the file, so the move must be undoable to keep the dirty flag honest.
+/// moveGroup removes @p fromIndex and inserts at @p toIndex; the reverse
+/// move restores the original order.
+class MoveGroupCommand : public QUndoCommand
+{
+public:
+    MoveGroupCommand(cad::param::ParamDocument* doc, int fromIndex, int toIndex,
+                     QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    int m_from = -1;
+    int m_to = -1;
+};
+
 } // namespace cad::cmd

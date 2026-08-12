@@ -1,13 +1,13 @@
-#include "FormulaCard.h"
+﻿#include "FormulaCard.h"
 
 #include "CopyChip.h"
 #include "IconHelper.h"
 #include "geometry/Units.h"
 
-#include <QLineEdit>
-#include <QLabel>
-#include <QToolButton>
-#include <QCheckBox>
+#include "ElaLineEdit.h"
+#include "ElaText.h"
+#include "ElaToolButton.h"
+#include "ElaCheckBox.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QStyleOption>
@@ -75,13 +75,13 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
         m_valueLabel->setToolTip(QStringLiteral("计算结果（只读）"));
         m_valueLabel->setStyleSheet(
             "font-family: 'Consolas','Courier New',monospace;"
-            "font-size: 12px; font-weight: bold; color: #1E8449; background: transparent;");
+            "font-size: 12px; font-weight: bold; background: transparent;");
     } else {
         m_valueLabel->setText(QStringLiteral("\u2717"));  // ✗
         m_valueLabel->setToolTip(error);
         m_valueLabel->setStyleSheet(
             "font-family: 'Consolas','Courier New',monospace;"
-            "font-size: 12px; font-weight: bold; color: #C0392B; background: transparent;");
+            "font-size: 12px; font-weight: bold; background: transparent;");
     }
 }
 
@@ -141,10 +141,10 @@ void FormulaCard::updateCondRow()
 
     if (has) {
         m_condInfo->setText(QStringLiteral("(%1条)").arg(m_conditions.size()));
-        m_condInfo->setStyleSheet("font-size: 10px; color: #6C3483; background: transparent;");
+        m_condInfo->setStyleSheet("font-size: 10px; background: transparent;");
     } else {
         m_condInfo->setText(QString::fromUtf8("（双击添加）"));
-        m_condInfo->setStyleSheet("font-size: 10px; color: #ABB2B9; background: transparent;");
+        m_condInfo->setStyleSheet("font-size: 10px; background: transparent;");
     }
 }
 
@@ -224,15 +224,7 @@ bool FormulaCard::eventFilter(QObject* obj, QEvent* event)
 void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alternate)
 {
     setObjectName(QStringLiteral("FormulaCard"));
-    const QString bg = alternate ? QStringLiteral("#F7F9FA") : QStringLiteral("#FFFFFF");
-    setStyleSheet(QStringLiteral(
-        "QWidget#FormulaCard {"
-        "  background-color: %1;"
-        "  border: 1px solid #E0E4E8;"
-        "  border-radius: 6px;"
-        "}"
-        "QWidget#FormulaCard:hover { border: 1px solid #C39BD3; }"
-    ).arg(bg));
+    (void)alternate;  // ElaScrollPageArea paints the card from the active theme.
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
@@ -242,15 +234,15 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     auto* header = new QHBoxLayout();
     header->setSpacing(6);
 
-    m_indexLabel = new QLabel(this);
+    m_indexLabel = new ElaText(QString(), 13, this);
     m_indexLabel->setAlignment(Qt::AlignCenter);
     m_indexLabel->setFixedWidth(18);
     m_indexLabel->setCursor(Qt::OpenHandCursor);
     m_indexLabel->setToolTip(QStringLiteral("拖动排序"));
     m_indexLabel->setStyleSheet(
-        "QLabel { font-size: 10px; font-weight: bold; color: #ABB2B9;"
+        "QLabel { font-size: 10px; font-weight: bold;"
         "  background: transparent; border-radius: 3px; }"
-        "QLabel:hover { background: #EAECEE; color: #5D6D7E; }");
+        "QLabel:hover { background: rgba(0,0,0,0.06); }");
     m_indexLabel->installEventFilter(this);
     header->addWidget(m_indexLabel, 0);
 
@@ -259,18 +251,18 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     m_nameChip->setText(formula.name);
     header->addWidget(m_nameChip, 1);
 
-    m_valueLabel = new QLabel(this);
+    m_valueLabel = new ElaText(QString(), 13, this);
     m_valueLabel->setStyleSheet(
         "font-family: 'Consolas','Courier New',monospace;"
-        "font-size: 12px; color: #85929E; background: transparent;");
+        "font-size: 12px; background: transparent;");
     header->addWidget(m_valueLabel, 0);
 
-    m_condDot = new QLabel(QStringLiteral("\u25CF"), this);  // ●
-    m_condDot->setStyleSheet("font-size: 8px; color: #8E44AD; background: transparent;");
+    m_condDot = new ElaText(QStringLiteral("\u25CF"), 13, this);  // ●
+    m_condDot->setStyleSheet("font-size: 8px; background: transparent;");
     m_condDot->setVisible(false);
     header->addWidget(m_condDot, 0);
 
-    m_deleteBtn = new QToolButton(this);
+    m_deleteBtn = new ElaToolButton(this);
     m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
         QStringLiteral("trash"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
     m_deleteBtn->setIconSize(QSize(12, 12));
@@ -278,9 +270,6 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     m_deleteBtn->setFixedSize(20, 20);
     m_deleteBtn->setCursor(Qt::PointingHandCursor);
     m_deleteBtn->setVisible(false);
-    m_deleteBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: none; border-radius: 10px; }"
-        "QToolButton:hover { background: #E74C3C; }");
     header->addWidget(m_deleteBtn, 0);
 
     mainLayout->addLayout(header);
@@ -293,34 +282,24 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     detailLayout->setSpacing(3);
 
     // Expression.
-    m_exprEdit = new QLineEdit(formula.expression, m_detail);
+    m_exprEdit = new ElaLineEdit(m_detail);     m_exprEdit->setText(formula.expression);
     m_exprEdit->setPlaceholderText(QStringLiteral("表达式，如: 胸围/2+6"));
     m_exprEdit->setFixedHeight(22);
     m_exprEdit->setStyleSheet(
-        "QLineEdit { font-family: 'Consolas','Courier New',monospace;"
-        "  font-size: 12px; color: #4A235A;"
-        "  background: #F8F5FB; border: 1px solid #E8DAEF; border-radius: 4px; padding: 0 6px; }"
-        "QLineEdit:hover { background: #FFF; }"
-        "QLineEdit:focus { border: 1px solid #8E44AD; background: #FFF; }"
-        "QLineEdit:disabled { color: #ABB2B9; background: #F2F3F4; border: 1px solid #E5E8E8; }");
+        "font-family: 'Consolas','Courier New',monospace; font-size: 12px;");
     detailLayout->addWidget(m_exprEdit);
 
     // Actual value + condition row (compact).
     auto* optRow = new QHBoxLayout();
     optRow->setSpacing(4);
 
-    m_actualEdit = new QLineEdit(m_detail);
+    m_actualEdit = new ElaLineEdit(m_detail);
     if (formula.actualValueCm.has_value())
         m_actualEdit->setText(QString::number(*formula.actualValueCm, 'f', 2));
     m_actualEdit->setPlaceholderText(QStringLiteral("实际值(留空=按公式)"));
     m_actualEdit->setFixedHeight(22);
     m_actualEdit->setFixedWidth(68);
     m_actualEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_actualEdit->setStyleSheet(
-        "QLineEdit { font-family: 'Consolas','Courier New',monospace;"
-        "  font-size: 12px; font-weight: bold; color: #1E8449;"
-        "  background: #FAFBFC; border: 1px solid #D5DBDB; border-radius: 4px; padding: 0 4px; }"
-        "QLineEdit:focus { border: 1px solid #1E8449; background: #FFF; }");
     optRow->addWidget(m_actualEdit, 0);
 
     // Condition widgets (inline, compact).
@@ -332,18 +311,15 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     condLayout->setContentsMargins(0, 0, 0, 0);
     condLayout->setSpacing(3);
 
-    m_condCheck = new QCheckBox(QString::fromUtf8("条件"), m_condRow);
+    m_condCheck = new ElaCheckBox(QString::fromUtf8("条件"), m_condRow);
     m_condCheck->setCursor(Qt::PointingHandCursor);
-    m_condCheck->setStyleSheet(
-        "QCheckBox { font-size: 11px; color: #6C3483; }"
-        "QCheckBox:disabled { color: #ABB2B9; }");
     condLayout->addWidget(m_condCheck, 0);
 
-    m_condInfo = new QLabel(m_condRow);
+    m_condInfo = new ElaText(QString(), 13, m_condRow);
     m_condInfo->installEventFilter(this);
     condLayout->addWidget(m_condInfo, 1);
 
-    m_condEditBtn = new QToolButton(m_condRow);
+    m_condEditBtn = new ElaToolButton(m_condRow);
     m_condEditBtn->setIcon(cad::ui::IconHelper::iconByName(
         QStringLiteral("funnel"), QColor(0x6C, 0x34, 0x83)));
     m_condEditBtn->setIconSize(QSize(12, 12));
@@ -351,24 +327,15 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     m_condEditBtn->setFixedSize(20, 20);
     m_condEditBtn->setCursor(Qt::PointingHandCursor);
     m_condEditBtn->setToolTip(QStringLiteral("编辑条件"));
-    m_condEditBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: 1px solid #D7BDE2;"
-        "  border-radius: 4px; }"
-        "QToolButton:hover { background: #F4ECF7; border: 1px solid #8E44AD; }");
     condLayout->addWidget(m_condEditBtn, 0);
 
     optRow->addWidget(m_condRow, 1);
     detailLayout->addLayout(optRow);
 
     // Comment.
-    m_commentEdit = new QLineEdit(formula.comment, m_detail);
+    m_commentEdit = new ElaLineEdit(m_detail);     m_commentEdit->setText(formula.comment);
     m_commentEdit->setPlaceholderText(QStringLiteral("注释…"));
     m_commentEdit->setFixedHeight(22);
-    m_commentEdit->setStyleSheet(
-        "QLineEdit { font-size: 11px; font-style: italic; color: #85929E;"
-        "  background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 0 6px; }"
-        "QLineEdit:hover { border: 1px solid #B0BEC5; background: #FFF; }"
-        "QLineEdit:focus { border: 1px solid #8E44AD; background: #FFF; }");
     detailLayout->addWidget(m_commentEdit);
 
     mainLayout->addWidget(m_detail);

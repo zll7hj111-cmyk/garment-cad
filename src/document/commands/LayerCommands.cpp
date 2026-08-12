@@ -1,4 +1,4 @@
-#include "LayerCommands.h"
+﻿#include "LayerCommands.h"
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -18,92 +18,99 @@ AddLayerCommand::AddLayerCommand(cad::param::ParamDocument* doc, const QString& 
 
 void AddLayerCommand::redo()
 {
-    m_index = m_doc->addLayer(m_name);
+    if (m_layerId.isNull()) {
+        m_layerId = m_doc->addLayer(m_name);
+    } else {
+        // Re-add after undo: re-insert the record under its ORIGINAL stable
+        // id (快照完整性 — nothing else may reference a brand-new id).
+        cad::param::Layer l;
+        l.id = m_layerId;
+        l.name = m_name;
+        m_doc->insertLayerAt(m_doc->layerCount(), std::move(l));
+    }
     // A newly created layer becomes the active one. Doing it inside redo()
     // (rather than only in the UI slot) means a Ctrl+Y redo of "新建图层"
     // re-activates the layer, so subsequently drawn lines land on it.
-    m_doc->setActiveLayer(m_index);
+    m_doc->setActiveLayer(m_layerId);
 }
 
 void AddLayerCommand::undo()
 {
-    m_doc->removeLayer(m_index);
-    // removeLayer() clamps/shifts m_activeLayer on its own, but that does NOT
-    // bring back the pre-command active layer (e.g. removing the just-added
-    // top layer clamps to the new top instead of the original) — restore the
-    // snapshot (快照完整性).
-    m_doc->setActiveLayer(qBound(0, m_oldActive, m_doc->layerCount() - 1));
+    m_doc->removeLayer(m_layerId);
+    // removeLayer() re-targets the active layer on its own, but that does NOT
+    // bring back the pre-command active layer — restore the snapshot
+    // (快照完整性). The snapshot id is still valid (adding never removes).
+    m_doc->setActiveLayer(m_oldActive);
 }
 
 // ─── RemoveLayerCommand ───
 
-RemoveLayerCommand::RemoveLayerCommand(cad::param::ParamDocument* doc, int index,
+RemoveLayerCommand::RemoveLayerCommand(cad::param::ParamDocument* doc, int row,
                                        QUndoCommand* parent)
-    : QUndoCommand(parent), m_doc(doc), m_index(index)
+    : QUndoCommand(parent), m_doc(doc), m_row(row)
 {
     setText(QStringLiteral("删除图层"));
-    if (doc)
-        m_oldActive = doc->activeLayer();
+    if (!doc)
+        return;
+    m_oldActive = doc->activeLayer();
     const auto& layers = doc->layers();
-    if (index >= 0 && index < static_cast<int>(layers.size()))
-        m_layer = layers[index];
-    for (const auto& b : doc->blocks()) {
-        if (b.layer == index)
-            m_memberIds.append(b.id);
+    if (row >= 0 && row < static_cast<int>(layers.size())) {
+        m_layer = layers[static_cast<size_t>(row)];
+        for (const auto& b : doc->blocks()) {
+            if (b.layer == m_layer.id)
+                m_memberIds.append(b.id);
+        }
     }
 }
 
-void RemoveLayerCommand::redo() { m_doc->removeLayer(m_index); }
+void RemoveLayerCommand::redo() { m_doc->removeLayer(m_layer.id); }
 
 void RemoveLayerCommand::undo()
 {
-    auto& layers = m_doc->layers();
-    const int pos = qBound(0, m_index, static_cast<int>(layers.size()));
-    layers.insert(layers.begin() + pos, m_layer);
-
-    // Shift blocks at/above the re-inserted slot up by one, then put the
-    // former members back into their original layer.
-    for (auto& b : m_doc->blocks()) {
-        if (b.layer >= pos)
-            ++b.layer;
-    }
+    // Re-insert the record at its original display row (stable id kept) —
+    // no other block reference was disturbed by the removal, so ONLY the
+    // former members need to move back into the restored layer.
+    m_doc->insertLayerAt(m_row, m_layer);
     for (const auto& id : m_memberIds) {
         if (auto* b = m_doc->findBlock(id))
-            b->layer = pos;
+            b->layer = m_layer.id;
     }
 
     emit m_doc->layersChanged();
 
-    // redo's removeLayer() already re-adjusted m_activeLayer for the shrunk
-    // list; undo re-inserted the layer, so put the active layer back to the
-    // pre-removal snapshot (快照完整性 — the model-level adjustment does not
-    // reverse to the original index in general).
-    m_doc->setActiveLayer(qBound(0, m_oldActive, m_doc->layerCount() - 1));
+    // redo's removeLayer() already re-targeted the active layer for the
+    // shrunk list; put it back to the pre-removal snapshot (快照完整性).
+    m_doc->setActiveLayer(m_oldActive);
 }
 
 // ─── RenameLayerCommand ───
 
-RenameLayerCommand::RenameLayerCommand(cad::param::ParamDocument* doc, int index,
+RenameLayerCommand::RenameLayerCommand(cad::param::ParamDocument* doc, int row,
                                        const QString& newName, QUndoCommand* parent)
-    : QUndoCommand(parent), m_doc(doc), m_index(index), m_newName(newName)
+    : QUndoCommand(parent), m_doc(doc), m_newName(newName)
 {
     setText(QStringLiteral("重命名图层"));
     const auto& layers = doc->layers();
-    if (index >= 0 && index < static_cast<int>(layers.size()))
-        m_oldName = layers[index].name;
+    if (row >= 0 && row < static_cast<int>(layers.size())) {
+        m_layerId = layers[static_cast<size_t>(row)].id;
+        m_oldName = layers[static_cast<size_t>(row)].name;
+    }
 }
 
-void RenameLayerCommand::redo() { m_doc->renameLayer(m_index, m_newName); }
-void RenameLayerCommand::undo() { m_doc->renameLayer(m_index, m_oldName); }
+void RenameLayerCommand::redo() { m_doc->renameLayer(m_layerId, m_newName); }
+void RenameLayerCommand::undo() { m_doc->renameLayer(m_layerId, m_oldName); }
 
 // ─── MoveBlockToLayerCommand ───
 
 MoveBlockToLayerCommand::MoveBlockToLayerCommand(cad::param::ParamDocument* doc,
-                                                 const QUuid& blockId, int targetLayer,
+                                                 const QUuid& blockId, int row,
                                                  QUndoCommand* parent)
-    : QUndoCommand(parent), m_doc(doc), m_blockId(blockId), m_newLayer(targetLayer)
+    : QUndoCommand(parent), m_doc(doc), m_blockId(blockId)
 {
     setText(QStringLiteral("移动到其他图层"));
+    const auto& layers = doc->layers();
+    if (row >= 0 && row < static_cast<int>(layers.size()))
+        m_newLayer = layers[static_cast<size_t>(row)].id;
     if (const auto* b = doc->findBlock(blockId))
         m_oldLayer = b->layer;
 }
@@ -123,5 +130,22 @@ void MoveBlockToLayerCommand::undo()
         emit m_doc->layersChanged();
     }
 }
+
+// ─── SetLayerVisibleCommand ───
+
+SetLayerVisibleCommand::SetLayerVisibleCommand(cad::param::ParamDocument* doc,
+                                               const QUuid& layerId, bool visible,
+                                               QUndoCommand* parent)
+    : QUndoCommand(parent), m_doc(doc), m_layerId(layerId), m_newVisible(visible)
+{
+    setText(visible ? QStringLiteral("显示图层") : QStringLiteral("隐藏图层"));
+    m_oldVisible = doc->layerVisible(layerId);
+}
+
+void SetLayerVisibleCommand::redo()
+{ m_doc->setLayerVisible(m_layerId, m_newVisible); }
+
+void SetLayerVisibleCommand::undo()
+{ m_doc->setLayerVisible(m_layerId, m_oldVisible); }
 
 } // namespace cad::cmd

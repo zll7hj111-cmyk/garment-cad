@@ -34,7 +34,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                           const QHash<QString, QList<Condition>>& conditioned,
                           std::vector<ResolveDiagnostic>* diagnostics,
                           Scope scope,
-                          int auxLayerIndex,
+                          const QUuid& auxLayerId,
                           const QSet<QUuid>* affectedOnly)
 {
     if (diagnostics) diagnostics->clear();
@@ -50,8 +50,8 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             return false;
         switch (scope) {
         case Scope::All:         return true;
-        case Scope::AuxOnly:     return b.layer == auxLayerIndex;
-        case Scope::WorkingOnly: return b.layer != auxLayerIndex;
+        case Scope::AuxOnly:     return b.layer == auxLayerId;
+        case Scope::WorkingOnly: return b.layer != auxLayerId;
         }
         return true;
     };
@@ -239,18 +239,22 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     if (bridgesMoved && settleAttachments())
         report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
 
-    // Step 6/6b: cross-block intersection points and the interpolated points
+    // Step 6/6b/6c: cross-block intersection points and the interpolated points
     // that depend on them, in a SHARED bounded fixpoint. An intersection's ray
     // origin (refPointA) or aim point (interAimPointId) can live in ANOTHER
     // block; the aim may itself be an interpolated aux point whose reference
     // is a cross-block intersection — one Step-6 pass is NOT enough (the aim
     // only resolves during 6b, so the intersection would stay unresolved).
     // Loop both until no progress, bounded like the old Step 6b.
-    {
-    GCAD_PERF_SCOPE("r.intersect");
-    bool geoProgressed = false;
-    for (int pass = 0; pass < 4; ++pass) {
-        bool progressed = false;
+    //
+    // Extracted as a lambda so Step 7's endpoint-aim rotations (which rotate
+    // the TARGET segment of intersections on the same block) can re-run it —
+    // a stale local intersection drifts off the origin→borrow ray (用户回归:
+    // P612 在肩褶高 15/20 时不共线).
+    auto runIntersectionFixpoint = [&]() -> bool {
+        bool geoProgressed = false;
+        for (int pass = 0; pass < 4; ++pass) {
+            bool progressed = false;
 
     // --- Step 6: cross-block intersections ---
     for (auto& block : blocks) {
@@ -351,19 +355,32 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // --- Step 6b: interpolated points referencing (possibly fresh)
     // --- cross-block intersections as their measurement origin. Bounded
     // fixpoint handles chains (aux -> aux -> intersection).
+    //
+    // NOTE: re-evaluate ALL interpolated points, not only the unresolved ones.
+    // A point whose ref is a cross-block intersection resolved in Step 6 keeps
+    // resolved=true with a STALE position (Step 1 evaluated it against the
+    // OLD intersection), and skipping it would freeze the chain — the borrow
+    // point of P612 never followed parameter changes, so the intersection
+    // drifted off the origin→borrow ray (用户回归 2026-08: 肩褶高 15/20 时
+    // 交点不共线).
     for (auto& block : blocks) {
         if (!inScope(block)) continue;  // frozen group
-        int unresolvedBefore = 0;
+        std::vector<geo::Vec2> prevPos;
         for (const auto& p : block.points)
-            if (p.constraint == PointConstraint::Interpolated && !p.resolved)
-                ++unresolvedBefore;
-        if (unresolvedBefore == 0) continue;
+            if (p.constraint == PointConstraint::Interpolated)
+                prevPos.push_back(p.resolvedPos);
         block.resolveInterpolatedPoints(params, conditioned, &ctx);
-        int unresolvedAfter = 0;
-        for (const auto& p : block.points)
-            if (p.constraint == PointConstraint::Interpolated && !p.resolved)
-                ++unresolvedAfter;
-        if (unresolvedAfter < unresolvedBefore) progressed = true;
+        // Progress = ANY interpolated point moved (stale resolved=true values
+        // must re-enter the fixpoint so a following Step 6 re-aims against the
+        // fresh borrow point).
+        size_t k = 0;
+        for (const auto& p : block.points) {
+            if (p.constraint != PointConstraint::Interpolated) continue;
+            if (k < prevPos.size() && p.resolved
+                && p.resolvedPos.distanceSquaredTo(prevPos[k]) > 1e-9)
+                progressed = true;
+            ++k;
+        }
     }
 
     // --- Step 6c: other still-unresolved points (no reset). A Polar endpoint
@@ -383,7 +400,12 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         if (progressed) geoProgressed = true;
         if (!progressed) break;
     }
+        return geoProgressed;
+    };
 
+    {
+    GCAD_PERF_SCOPE("r.intersect");
+    const bool geoProgressed = runIntersectionFixpoint();
     // Step 6d: the cross-block fixpoint may have resolved points that are
     // attachment targets (e.g. a break endpoint Polar-referencing an aux point
     // that references a cross-block intersection). Re-settle the forest so
@@ -464,6 +486,17 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         if (!rotated && !unsettled) break;
     }
     }
+
+    // Step 7b: the aim rotations may have rotated the TARGET segments of
+    // cross-block intersections (their local coordinates were solved against
+    // the pre-rotation pose in Step 6). Re-run the intersection fixpoint so
+    // the points stay on the origin→borrow ray (用户回归: P612 在肩褶高
+    // 15/20 时不共线).
+    {
+        GCAD_PERF_SCOPE("r.intersect.7b");
+        if (runIntersectionFixpoint() && settleAttachments())
+            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+    }
 }
 
 bool Resolver::applyAttachment(Block& from, const Attachment& att,
@@ -505,24 +538,25 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // Local direction of the follower's attached segment (the one anchored at
     // fromPointId). The follower's own orientation is its start->end direction.
     // Its world segment direction equals from.transform.rotation + localDir, so
-    // to achieve the desired world direction (refWorld + followerAngle) we set:
-    //     rotation = refWorld + followerAngle - localDir
+    // to achieve the desired world direction (refWorld + π − angle, 闭合基准
+    // 2026-08: 0° = 折叠重叠、180° = 直行延续) we set:
+    //     rotation = refWorld + π − angle − localDir
     double localDir = from.directionAtPoint(att.fromPointId);
 
     // Evaluate follower angle: formula overrides numeric value.
     double angleRad;
     if (att.rotationMode == RotationMode::ArcLength) {
         // Arc-length mode: convert arc length to angle via radius = segment length.
-        // The arc is measured from the leader's REVERSE direction (弧长 0 = 角度
-        // 180°, ETCAD-style: from the fold-back point, sweeping CCW past the
-        // follower). So the effective angle = 180° + arc/radius.
+        // The arc starts at the CLOSED position (弧长 0 = 角度 0° = 两线折叠
+        // 重叠), sweeping so that πr = 180° = straight continuation (闭合基准,
+        // 用户拍板 2026-08 定稿, 与角度模式同基准): 弧长 0 = 0°, 弧长 πr = 180°.
         double arcMm = att.arcLength;
         if (!att.arcLengthFormula.isEmpty()) {
             auto r = ConditionEngine::evaluate(att.arcLengthFormula, params, conditioned, ctx);
             if (r.ok) arcMm = geo::Units::cmToMm(r.value);
         }
         const double radius = from.segmentLengthAtPoint(att.fromPointId);
-        angleRad = (radius > 1e-9) ? (M_PI + arcMm / radius) : M_PI;
+        angleRad = (radius > 1e-9) ? (arcMm / radius) : 0.0;
     } else {
         // Angle mode (default).
         double angleDeg = att.followerAngle;
@@ -533,7 +567,12 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         angleRad = angleDeg * M_PI / 180.0;
     }
 
-    double newRotation = refWorld + angleRad - localDir;
+    // Closed-base convention (闭合基准, 用户拍板 2026-08 定稿): followerAngle
+    // 0° = the follower folds back onto the leader (两线重叠), 90° = vertical,
+    // 180° = straight continuation along the leader's exit direction. The
+    // world direction is therefore refWorld + π − angleRad (mirror about the
+    // perpendicular), NOT refWorld + angleRad. Both rotation modes share it.
+    double newRotation = refWorld + M_PI - angleRad - localDir;
 
     // A block whose rotation is driven by an endpoint-aim constraint (endTarget,
     // applied in Step 7) must not have its rotation overwritten by the attachment

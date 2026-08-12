@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -6,10 +6,10 @@
 
 #include "parametric/FormulaVariable.h"
 
-class QLineEdit;
-class QLabel;
-class QToolButton;
-class QCheckBox;
+class ElaLineEdit;
+class ElaText;
+class ElaToolButton;
+class ElaCheckBox;
 
 namespace cad::ui { class CopyChip; }
 
@@ -65,21 +65,21 @@ private:
     QUuid m_id;
     QUuid m_groupId;  ///< Mirrors the model's group membership.
 
-    QLabel*          m_indexLabel = nullptr;  ///< Ordinal + drag handle.
+    ElaText*         m_indexLabel = nullptr;  ///< Ordinal + drag handle.
     QPoint           m_dragStartPos;
     cad::ui::CopyChip* m_nameChip = nullptr;
-    QLabel*          m_valueLabel = nullptr;
-    QLabel*          m_condDot = nullptr;   ///< Small dot indicator for conditions.
-    QToolButton*     m_deleteBtn = nullptr;
+    ElaText*         m_valueLabel = nullptr;
+    ElaText*         m_condDot = nullptr;   ///< Small dot indicator for conditions.
+    ElaToolButton*     m_deleteBtn = nullptr;
 
     QWidget*         m_detail = nullptr;
-    QLineEdit*       m_exprEdit = nullptr;
-    QLineEdit*       m_actualEdit = nullptr; ///< Actual value override (cm).
+    ElaLineEdit*       m_exprEdit = nullptr;
+    ElaLineEdit*       m_actualEdit = nullptr; ///< Actual value override (cm).
     QWidget*         m_condRow = nullptr;
-    QCheckBox*       m_condCheck = nullptr;
-    QLabel*          m_condInfo = nullptr;
-    QToolButton*     m_condEditBtn = nullptr;
-    QLineEdit*       m_commentEdit = nullptr;
+    ElaCheckBox*       m_condCheck = nullptr;
+    ElaText*         m_condInfo = nullptr;
+    ElaToolButton*     m_condEditBtn = nullptr;
+    ElaLineEdit*       m_commentEdit = nullptr;
     bool             m_condGuard = false;
 
     QList<cad::param::Condition> m_conditions;

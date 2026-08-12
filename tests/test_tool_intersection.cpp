@@ -1,4 +1,4 @@
-/// @file test_tool_intersection.cpp
+﻿/// @file test_tool_intersection.cpp
 /// Drives the ToolIntersection interaction flow end-to-end:
 ///   select target segment → select ray origin → hover an aim point (指向点)
 ///   → click commits an Intersection point whose ray points at the aim point.
@@ -23,6 +23,14 @@ using cad::geo::Vec2;
 
 namespace {
 
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
 /// One block on layer 0 with:
 ///   segment L: (0,0) → (100,0)          (target)
 ///   origin A:  (20,-40)                 (ray origin, below L)
@@ -40,9 +48,9 @@ struct Setup {
 
     Setup()
     {
-        doc.setActiveLayer(0);
+        doc.setActiveLayer(layerIdAt(doc, 0));
         Block block;
-        block.layer = 0;
+        block.layer = layerIdAt(doc, 0);
 
         ParamPoint p1;
         p1.constraint = PointConstraint::Free;
@@ -429,12 +437,12 @@ void TestToolIntersection::auxLayerAimPointWorks()
     // Working layer (1) active; the aim point lives on the aux layer (0),
     // which layerSnappable() normally excludes unless active.
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     CanvasView view(&scene);
 
     Block wb;
-    wb.layer = 1;
+    wb.layer = layerIdAt(doc, 1);
     ParamPoint p1;
     p1.constraint = PointConstraint::Free;
     p1.freePos = Vec2(0.0, 0.0);
@@ -459,7 +467,7 @@ void TestToolIntersection::auxLayerAimPointWorks()
     doc.addBlock(std::move(wb));
 
     Block ab;
-    ab.layer = 0;  // aux layer
+    ab.layer = layerIdAt(doc, 0);  // aux layer
     ParamPoint d;
     d.constraint = PointConstraint::Free;
     d.freePos = Vec2(90.0, 20.0);

@@ -16,6 +16,14 @@ using cad::geo::Vec2;
 
 namespace {
 
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
 /// Create a horizontal line block with an optional length formula.
 struct LineSetup {
     QUuid blockId;
@@ -100,6 +108,7 @@ private slots:
     void breakWithFormulaConstantAndRef();
     void breakWithFormulaConstantNoRef();
     void breakInheritsLayer();
+    void breakRefChainBackKeepsFormula();
 };
 
 // ---------------------------------------------------------------------------
@@ -175,7 +184,8 @@ void TestBreak::basicBreak()
     bool foundAtt = false;
     for (const auto& att : doc.attachments()) {
         if (att.fromBlockId == backBlockId && att.toBlockId == blockId) {
-            QCOMPARE(att.followerAngle, 0.0);
+            // 闭合基准: 180° = 打断后 back 沿 front 直行延续（BreakCommands 写入）
+            QCOMPARE(att.followerAngle, 180.0);
             QCOMPARE(att.toSegmentId, segId);
             foundAtt = true;
         }
@@ -681,7 +691,7 @@ void TestBreak::breakInheritsLayer()
     // Put the block on a working layer (not the default auxiliary layer 0).
     auto* blk = doc.findBlock(blockId);
     QVERIFY(blk);
-    blk->layer = 1;
+    blk->layer = layerIdAt(doc, 1);
     QCOMPARE(static_cast<int>(doc.blocks().size()), 1);
 
     QUuid auxId = addAuxPoint(doc, blockId, segId, 0.5);
@@ -694,7 +704,7 @@ void TestBreak::breakInheritsLayer()
     int backLayers = 0;
     for (const auto& b : doc.blocks())
         if (b.id != blockId) {
-            QCOMPARE(b.layer, 1);
+            QCOMPARE(b.layer, layerIdAt(doc, 1));
             ++backLayers;
         }
     QCOMPARE(backLayers, 1);
@@ -705,7 +715,153 @@ void TestBreak::breakInheritsLayer()
     cmd.redo();
     for (const auto& b : doc.blocks())
         if (b.id != blockId)
-            QCOMPARE(b.layer, 1);
+            QCOMPARE(b.layer, layerIdAt(doc, 1));
+}
+
+// ---------------------------------------------------------------------------
+// RefChain break (打断点通过引用链锚定在交点上): 前段保留 Polar 引用链,
+// 后段必须保留原公式的变量驱动 — back = (B/5) − 前段快照, 不再退化为
+// 纯数值 (用户要求: 原公式减去前半段表达式 = 后半段公式).
+// ---------------------------------------------------------------------------
+void TestBreak::breakRefChainBackKeepsFormula()
+{
+    ParamDocument doc;
+    doc.setParameter(QStringLiteral("B"), 100.0);   // B/5 = 20cm = 200mm
+    doc.setParameter(QStringLiteral("DART"), 3.0);  // 3cm = 30mm
+
+    // L: (0,0)→(200,0)，长度公式 B/5。
+    auto [blockId, startId, endId, segId] = makeLine(doc, 200.0, "B/5");
+
+    // 射线原点块（模拟真实 P489 的跨块交点）。
+    Block originBlock;
+    originBlock.transform.origin = Vec2(50.0, -50.0);
+    ParamPoint rayOrigin;
+    rayOrigin.constraint = PointConstraint::Free;
+    rayOrigin.freePos = Vec2::zero();
+    QUuid rayOriginId = rayOrigin.id;
+    QUuid originBlockId = originBlock.id;
+    originBlock.addPoint(std::move(rayOrigin));
+    doc.addBlock(std::move(originBlock));
+
+    auto* block = doc.findBlock(blockId);
+
+    // 交点 inter 在 x=50（射线 90°）。
+    ParamPoint inter;
+    inter.constraint = PointConstraint::Intersection;
+    inter.hostSegmentId = segId;
+    inter.isAuxiliary = true;
+    inter.refPointA = rayOriginId;
+    inter.interAngle = 90.0;
+    QUuid interId = inter.id;
+    block->addPoint(std::move(inter));
+    block->findSegment(segId)->auxPointIds.push_back(interId);
+
+    // mid: inter + 15mm → x=65。
+    ParamPoint mid;
+    mid.constraint = PointConstraint::Interpolated;
+    mid.hostSegmentId = segId;
+    mid.isAuxiliary = true;
+    mid.interpPercent = 0.0;
+    mid.interpConstant = 15.0;
+    mid.interpRefPointId = interId;
+    QUuid midId = mid.id;
+    block->addPoint(std::move(mid));
+    block->findSegment(segId)->auxPointIds.push_back(midId);
+
+    // bp: mid + DART(30mm) → x=95。
+    ParamPoint bp;
+    bp.constraint = PointConstraint::Interpolated;
+    bp.hostSegmentId = segId;
+    bp.isAuxiliary = true;
+    bp.interpPercent = 0.0;
+    bp.interpConstant = 0.0;
+    bp.interpConstantFormula = QStringLiteral("DART");
+    bp.interpRefPointId = midId;
+    QUuid bpId = bp.id;
+    block->addPoint(std::move(bp));
+    block->findSegment(segId)->auxPointIds.push_back(bpId);
+    doc.resolveAll();
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, bpId);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    // 前段：Polar 引用链保留（bp 引用 mid + DART 公式）。
+    const auto* frontBlk = doc.findBlock(blockId);
+    QVERIFY(frontBlk);
+    const auto* fep = frontBlk->findPoint(bpId);
+    QVERIFY(fep);
+    QCOMPARE(fep->constraint, PointConstraint::Polar);
+    QCOMPARE(fep->refPointId, midId);
+    QCOMPARE(fep->distanceFormula, QStringLiteral("DART"));
+
+    // 后段公式 = 原公式 − 前段测量变量（打断自动发布前段长度）。
+    const QString refName =
+        QStringLiteral("L") + frontBlk->segments[0].serial;
+    QUuid backBlockId;
+    for (const auto& b : doc.blocks())
+        if (b.id != blockId && b.id != originBlockId) backBlockId = b.id;
+    QVERIFY(!backBlockId.isNull());
+    const auto* backBlk = doc.findBlock(backBlockId);
+    QVERIFY(backBlk);
+    QCOMPARE(backBlk->segments[0].lengthFormula,
+             QStringLiteral("(B/5)-%1").arg(refName));
+
+    // 自动发布的测量变量存在（source = 前段，值 = 前段长度 95mm）。
+    const auto* lv = doc.findLinkedBySource(blockId, segId);
+    QVERIFY(lv);
+    QCOMPARE(lv->refName, refName);
+    QVERIFY2(std::abs(lv->value - 95.0) < 0.01,
+             qPrintable(QStringLiteral("published value %1").arg(lv->value)));
+
+    // 变量驱动：B=120 → B/5=24cm=240mm → 后段 = 240−95 = 145mm。
+    doc.setParameter(QStringLiteral("B"), 120.0);
+    backBlk = doc.findBlock(backBlockId);
+    const auto* bsp = backBlk->findPoint(backBlk->segments[0].startPointId);
+    const auto* bep = backBlk->findPoint(backBlk->segments[0].endPointId);
+    QVERIFY(bsp && bep && bsp->resolved && bep->resolved);
+    double backLen = bsp->resolvedPos.distanceTo(bep->resolvedPos);
+    QVERIFY2(std::abs(backLen - 145.0) < 0.01,
+             qPrintable(QStringLiteral("back len after B=120: %1").arg(backLen)));
+
+    // 严格守恒：DART=4 → 前段 95→105mm，后段必须自动补偿 240−105=135mm，
+    // 总长恒 = B/5 = 240mm（前段动态变化不再与后段脱节）。
+    doc.setParameter(QStringLiteral("DART"), 4.0);
+    const auto* fep2 = doc.findBlock(blockId)->findPoint(bpId);
+    QVERIFY(fep2 && fep2->resolved);
+    backBlk = doc.findBlock(backBlockId);
+    const auto* bsp2 = backBlk->findPoint(backBlk->segments[0].startPointId);
+    const auto* bep2 = backBlk->findPoint(backBlk->segments[0].endPointId);
+    QVERIFY(bsp2 && bep2 && bsp2->resolved && bep2->resolved);
+    const double frontLen = fep2->resolvedPos.distanceTo(
+        doc.findBlock(blockId)->findPoint(frontBlk->segments[0].startPointId)
+            ->resolvedPos);
+    const double backLen2 = bsp2->resolvedPos.distanceTo(bep2->resolvedPos);
+    QVERIFY2(std::abs(frontLen - 105.0) < 0.01,
+             qPrintable(QStringLiteral("front after DART=4: %1").arg(frontLen)));
+    QVERIFY2(std::abs(backLen2 - 135.0) < 0.01,
+             qPrintable(QStringLiteral("back after DART=4: %1").arg(backLen2)));
+    QVERIFY2(std::abs(frontLen + backLen2 - 240.0) < 0.02,
+             qPrintable(QStringLiteral("total %1").arg(frontLen + backLen2)));
+
+    // undo 一步恢复：原块还原、自动发布的变量被移除。
+    cmd.undo();
+    QCOMPARE(static_cast<int>(doc.blocks().size()), 2);  // L + origin
+    const auto* blk2 = doc.findBlock(blockId);
+    QVERIFY(blk2);
+    QCOMPARE(blk2->segments[0].lengthFormula, QStringLiteral("B/5"));
+    QVERIFY(doc.findLinkedBySource(blockId, segId) == nullptr);
+
+    // redo 重新发布（变量重建，公式一致）。
+    cmd.redo();
+    QCOMPARE(static_cast<int>(doc.blocks().size()), 3);
+    const auto* lv2 = doc.findLinkedBySource(blockId, segId);
+    QVERIFY(lv2);
+    QUuid backBlockId2;
+    for (const auto& b : doc.blocks())
+        if (b.id != blockId && b.id != originBlockId) backBlockId2 = b.id;
+    QCOMPARE(doc.findBlock(backBlockId2)->segments[0].lengthFormula,
+             QStringLiteral("(B/5)-%1").arg(refName));
 }
 
 QTEST_MAIN(TestBreak)

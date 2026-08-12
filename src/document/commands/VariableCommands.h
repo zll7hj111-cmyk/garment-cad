@@ -271,6 +271,21 @@ private:
     cad::param::MeasureVariable m_mv;
 };
 
+/// Add an angle measure variable (undoable counterpart of addAngleMeasure).
+class AddAngleMeasureCommand : public QUndoCommand
+{
+public:
+    AddAngleMeasureCommand(cad::param::ParamDocument* doc,
+                           cad::param::AngleMeasureVariable am,
+                           QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    cad::param::AngleMeasureVariable m_am;
+};
+
 /// Remove a length measure variable.
 class RemoveMeasureCommand : public QUndoCommand
 {

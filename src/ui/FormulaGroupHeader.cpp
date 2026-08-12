@@ -1,11 +1,11 @@
-#include "FormulaGroupHeader.h"
+﻿#include "FormulaGroupHeader.h"
 
 #include "FormulaCard.h"
 #include "IconHelper.h"
 
-#include <QLabel>
-#include <QLineEdit>
-#include <QToolButton>
+#include "ElaText.h"
+#include "ElaLineEdit.h"
+#include "ElaToolButton.h"
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QDragEnterEvent>
@@ -13,6 +13,7 @@
 #include <QMimeData>
 #include <QDrag>
 #include <QApplication>
+#include <QStyle>
 #include <QStyleOption>
 #include <QPainter>
 #include <QTimer>
@@ -38,34 +39,30 @@ FormulaGroupHeader::FormulaGroupHeader(const QUuid& groupId, const QString& name
     layout->setContentsMargins(6, 0, 4, 0);
     layout->setSpacing(5);
 
-    m_caret = new QLabel(this);
+    m_caret = new ElaText(QString(), 13, this);
     m_caret->setFixedSize(12, 12);
     m_caret->setStyleSheet("background: transparent;");
     layout->addWidget(m_caret, 0);
 
-    m_nameLabel = new QLabel(name, this);
+    m_nameLabel = new ElaText(name, 13, this);
+    m_nameLabel->setObjectName(QStringLiteral("groupName"));
     m_nameLabel->setToolTip(QStringLiteral("双击重命名"));
-    m_nameLabel->setStyleSheet(
-        "font-size: 12px; font-weight: bold; color: #34495E; background: transparent;");
     m_nameLabel->installEventFilter(this);
     layout->addWidget(m_nameLabel, 0);
 
-    m_nameEdit = new QLineEdit(this);
+    m_nameEdit = new ElaLineEdit(this);
     m_nameEdit->setFixedHeight(20);
-    m_nameEdit->setStyleSheet(
-        "QLineEdit { font-size: 12px; font-weight: bold; color: #34495E;"
-        "  background: #FFF; border: 1px solid #2E86C1; border-radius: 4px; padding: 0 4px; }");
+    m_nameEdit->setObjectName(QStringLiteral("groupNameEdit"));
     m_nameEdit->setVisible(false);
     layout->addWidget(m_nameEdit, 1);
 
-    m_countLabel = new QLabel(this);
-    m_countLabel->setStyleSheet(
-        "font-size: 11px; color: #85929E; background: transparent;");
+    m_countLabel = new ElaText(QString(), 13, this);
+    m_countLabel->setObjectName(QStringLiteral("groupCount"));
     layout->addWidget(m_countLabel, 0);
 
     layout->addStretch();
 
-    m_dissolveBtn = new QToolButton(this);
+    m_dissolveBtn = new ElaToolButton(this);
     m_dissolveBtn->setIcon(cad::ui::IconHelper::icon2State(
         QStringLiteral("x"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
     m_dissolveBtn->setIconSize(QSize(11, 11));
@@ -73,9 +70,7 @@ FormulaGroupHeader::FormulaGroupHeader(const QUuid& groupId, const QString& name
     m_dissolveBtn->setFixedSize(18, 18);
     m_dissolveBtn->setCursor(Qt::PointingHandCursor);
     m_dissolveBtn->setVisible(false);
-    m_dissolveBtn->setStyleSheet(
-        "QToolButton { background: transparent; border: none; border-radius: 9px; }"
-        "QToolButton:hover { background: #E74C3C; }");
+    m_dissolveBtn->setObjectName(QStringLiteral("dissolveBtn"));
     layout->addWidget(m_dissolveBtn, 0);
 
     connect(m_dissolveBtn, &QToolButton::clicked, this,
@@ -135,15 +130,12 @@ void FormulaGroupHeader::updateCaret()
 
 void FormulaGroupHeader::setDropHighlight(bool on)
 {
-    setStyleSheet(QStringLiteral(
-        "QWidget#FormulaGroupHeader {"
-        "  background-color: %1;"
-        "  border: 1px %2;"
-        "  border-radius: 5px;"
-        "}"
-        "QWidget#FormulaGroupHeader:hover { background-color: #E3E7EB; }")
-        .arg(on ? QStringLiteral("#D6EAF8") : QStringLiteral("#E9EDF0"),
-             on ? QStringLiteral("solid #2E86C1") : QStringLiteral("solid transparent")));
+    // Drop state is a QSS attribute (FormulaGroupHeader[dropping]) — mode-aware.
+    if (m_dropping == on) return;
+    m_dropping = on;
+    setProperty("dropping", on);
+    style()->unpolish(this);
+    style()->polish(this);
 }
 
 // ─── Mouse: click = toggle (deferred), drag = reorder ───

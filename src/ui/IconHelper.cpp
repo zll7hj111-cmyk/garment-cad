@@ -57,7 +57,7 @@ QIcon IconHelper::icon2State(const QString& name, const QColor& normal, const QC
 
 QIcon IconHelper::appIcon()
 {
-    return iconByName(QStringLiteral("t-shirt"), QColor(0x2E, 0x86, 0xC1));
+    return iconByName(QStringLiteral("t-shirt"), QColor(0x2F, 0x6F, 0xED));
 }
 
 } // namespace cad::ui

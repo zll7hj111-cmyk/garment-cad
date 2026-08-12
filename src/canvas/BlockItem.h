@@ -5,6 +5,8 @@
 #include <QUuid>
 #include <QSet>
 
+#include "parametric/Segment.h"  // cad::param::SegmentRole (LineCache default)
+
 namespace cad::param { class ParamDocument; class Block; }
 
 class CurveItem;
@@ -37,6 +39,14 @@ public:
                        QGraphicsItem* parent = nullptr);
 
     [[nodiscard]] const QUuid& blockId() const { return m_blockId; }
+
+    /// Public wrapper of the private hitTest(): nearest LINE entity id at
+    /// @p scenePos within the hover pick radius (screen px ÷ zoom). Null
+    /// QUuid when the position misses every segment.
+    [[nodiscard]] QUuid hitSegmentAtScene(const QPointF& scenePos) const
+    {
+        return hitTest(mapFromScene(scenePos), hoverThreshold());
+    }
 
     QRectF boundingRect() const override;
     /// Precise pick region: strokes around segments/points with a screen-space
@@ -100,7 +110,8 @@ private:
     struct LineCache {
         QUuid id;
         QPointF p1; QPointF p2;
-        QColor color;
+        QColor color;      ///< Data-driven color (raw from the segment).
+        cad::param::SegmentRole role = cad::param::SegmentRole::Outline;
         double weight;
         Qt::PenStyle penStyle;
         QString name;

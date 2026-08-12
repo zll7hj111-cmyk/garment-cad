@@ -1,23 +1,24 @@
-#include "ConditionDialog.h"
+﻿#include "ConditionDialog.h"
 
+#include "Theme.h"
 #include "parametric/ExpressionEvaluator.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QScrollArea>
-#include <QComboBox>
-#include <QCheckBox>
-#include <QDoubleSpinBox>
-#include <QPushButton>
-#include <QLabel>
-#include <QDialogButtonBox>
+#include "ElaScrollArea.h"
+#include "ElaComboBox.h"
+#include "ElaCheckBox.h"
+#include "ElaDoubleSpinBox.h"
+#include "ElaPushButton.h"
+#include "ElaText.h"
 #include <QFrame>
+#include "ui/ElaDialogButtons.h"
 
 namespace {
 
-QDoubleSpinBox* makeSpin(QWidget* parent, double value = 0.0)
+ElaDoubleSpinBox* makeSpin(QWidget* parent, double value = 0.0)
 {
-    auto* s = new QDoubleSpinBox(parent);
+    auto* s = new ElaDoubleSpinBox(parent);
     s->setRange(-99999.0, 99999.0);
     s->setDecimals(2);
     s->setSuffix(QStringLiteral(" cm"));
@@ -29,10 +30,12 @@ QDoubleSpinBox* makeSpin(QWidget* parent, double value = 0.0)
     return s;
 }
 
-QLabel* makeText(QWidget* parent, const QString& text)
+ElaText* makeText(QWidget* parent, const QString& text)
 {
-    auto* l = new QLabel(text, parent);
-    l->setStyleSheet("font-size: 12px; color: #5D6D7E; background: transparent;");
+    auto* l = new ElaText(text, 13, parent);
+    const auto& tk = cad::ui::Theme::tokens();
+    l->setStyleSheet(QStringLiteral("font-size: 12px; color: %1; background: transparent;")
+                         .arg(tk.text2.name()));
     return l;
 }
 
@@ -43,7 +46,7 @@ ConditionDialog::ConditionDialog(const QString& formulaName,
                                  const QList<cad::param::Condition>& conditions,
                                  const QHash<QString, double>& knownVars,
                                  QWidget* parent)
-    : QDialog(parent)
+    : ElaDialog(parent)
     , m_knownVars(knownVars)
 {
     setWindowTitle(QStringLiteral("条件修正 · %1").arg(
@@ -79,40 +82,45 @@ void ConditionDialog::setupUi(const QString& formulaName, const QString& express
     root->setContentsMargins(14, 12, 14, 12);
     root->setSpacing(8);
 
-    // Header / explanation.
-    auto* title = new QLabel(QStringLiteral("公式：%1").arg(
-        formulaName.isEmpty() ? QStringLiteral("（未命名）") : formulaName), this);
-    title->setStyleSheet("font-size: 13px; font-weight: bold; color: #6C3483;");
+    // Header / explanation — theme tokens (dark-mode safe).
+    const auto& tk = cad::ui::Theme::tokens();
+    auto* title = new ElaText(QStringLiteral("公式：%1").arg(
+        formulaName.isEmpty() ? QStringLiteral("（未命名）") : formulaName), 13, this);
+    title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: bold;"));
     root->addWidget(title);
 
-    auto* exprLbl = new QLabel(QStringLiteral("表达式：%1").arg(
-        expression.isEmpty() ? QStringLiteral("（空）") : expression), this);
-    exprLbl->setStyleSheet(
+    auto* exprLbl = new ElaText(QStringLiteral("表达式：%1").arg(
+        expression.isEmpty() ? QStringLiteral("（空）") : expression), 13, this);
+    exprLbl->setStyleSheet(QStringLiteral(
         "font-family: 'Consolas','Courier New',monospace;"
-        "font-size: 12px; color: #4A235A; background: #F8F5FB;"
-        "border: 1px solid #E8DAEF; border-radius: 4px; padding: 3px 6px;");
+        "font-size: 12px; background: %1;"
+        "border: 1px solid %2; border-radius: 4px; padding: 3px 6px;")
+        .arg(tk.surface2.name(), tk.border.name()));
     root->addWidget(exprLbl);
 
-    auto* hint = new QLabel(this);
+    auto* hint = new ElaText(QString(), 13, this);
     if (m_vars.isEmpty()) {
         hint->setText(QString::fromUtf8(
             "⚠ 表达式没有引用任何已知变量，无法设置条件。\n"
             "条件变量必须是表达式中用到的变量（名称或引用名）。"));
-        hint->setStyleSheet(
-            "font-size: 12px; color: #B9770E; background: #FEF9E7;"
-            "border: 1px solid #F9E79F; border-radius: 4px; padding: 6px;");
+        hint->setStyleSheet(QStringLiteral(
+            "font-size: 12px; background: %1;"
+            "border: 1px solid %2; border-radius: 4px; padding: 6px;")
+            .arg(QStringLiteral("rgba(%1,%2,%3,30)")
+                     .arg(tk.warning.red()).arg(tk.warning.green()).arg(tk.warning.blue()),
+                 QStringLiteral("rgba(%1,%2,%3,110)")
+                     .arg(tk.warning.red()).arg(tk.warning.green()).arg(tk.warning.blue())));
     } else {
         hint->setText(QString::fromUtf8(
             "当被监视的变量落在区间内时，对结果做修正。多条条件叠加。\n"
             "可选变量：%1").arg(m_vars.join(QStringLiteral("、"))));
-        hint->setStyleSheet(
-            "font-size: 11px; color: #85929E; background: transparent; padding: 2px 0;");
+        hint->setStyleSheet("font-size: 11px; background: transparent; padding: 2px 0;");
         hint->setWordWrap(true);
     }
     root->addWidget(hint);
 
     // Scrollable rows.
-    auto* scroll = new QScrollArea(this);
+    auto* scroll = new ElaScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
@@ -126,30 +134,18 @@ void ConditionDialog::setupUi(const QString& formulaName, const QString& express
     root->addWidget(scroll, 1);
 
     // Add button.
-    auto* addBtn = new QPushButton(QStringLiteral("＋ 添加条件"), this);
+    auto* addBtn = new ElaPushButton(QStringLiteral("＋ 添加条件"), this);
     addBtn->setCursor(Qt::PointingHandCursor);
     addBtn->setEnabled(!m_vars.isEmpty());
-    addBtn->setStyleSheet(
-        "QPushButton {"
-        "  font-size: 12px; color: #6C3483; background: #F4ECF7;"
-        "  border: 1px solid #D7BDE2; border-radius: 5px; padding: 5px 12px;"
-        "}"
-        "QPushButton:hover { background: #EBDEF0; border: 1px solid #8E44AD; }"
-        "QPushButton:disabled { color: #ABB2B9; background: #F4F6F7; border: 1px solid #E5E8E8; }");
     connect(addBtn, &QPushButton::clicked, this,
             [this]() { addRow(cad::param::Condition{}); });
     root->addWidget(addBtn, 0, Qt::AlignLeft);
 
     // Dialog buttons.
-    auto* box = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    if (auto* ok = box->button(QDialogButtonBox::Ok))
-        ok->setText(QStringLiteral("确定"));
-    if (auto* cancel = box->button(QDialogButtonBox::Cancel))
-        cancel->setText(QStringLiteral("取消"));
-    connect(box, &QDialogButtonBox::accepted, this, &ConditionDialog::collectAndAccept);
-    connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    root->addWidget(box);
+    const auto btns = cad::ui::makeDialogButtons(this);
+    QObject::disconnect(btns.ok, nullptr, this, nullptr);  // accept is replaced below
+    QObject::connect(btns.ok, &ElaPushButton::clicked, this, &ConditionDialog::collectAndAccept);
+    root->addWidget(btns.row);
 }
 
 ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& cond)
@@ -158,14 +154,16 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     row->cond = cond;
 
     row->widget = new QWidget(this);
-    row->widget->setStyleSheet(
-        "background: #FBFCFC; border: 1px solid #E5E8E8; border-radius: 6px;");
+    const auto& tk = cad::ui::Theme::tokens();
+    row->widget->setStyleSheet(QStringLiteral(
+        "background: %1; border: 1px solid %2; border-radius: 6px;")
+        .arg(tk.surface3.name(), tk.border.name()));
     auto* lay = new QHBoxLayout(row->widget);
     lay->setContentsMargins(8, 6, 8, 6);
     lay->setSpacing(5);
 
     // Watched variable.
-    row->watch = new QComboBox(row->widget);
+    row->watch = new ElaComboBox(row->widget);
     row->watch->addItems(m_vars);
     const int idx = m_vars.indexOf(cond.watchVar);
     row->watch->setCurrentIndex(idx >= 0 ? idx : 0);
@@ -174,7 +172,7 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     lay->addWidget(row->watch, 0);
 
     // Lower bound.
-    row->lowerOn = new QCheckBox(QStringLiteral("≥"), row->widget);
+    row->lowerOn = new ElaCheckBox(QStringLiteral("≥"), row->widget);
     row->lowerOn->setChecked(cond.lowerOn);
     row->lower = makeSpin(row->widget, cond.lower);
     row->lower->setEnabled(cond.lowerOn);
@@ -184,7 +182,7 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     lay->addWidget(row->lower, 0);
 
     // Upper bound.
-    row->upperOn = new QCheckBox(QStringLiteral("≤"), row->widget);
+    row->upperOn = new ElaCheckBox(QStringLiteral("≤"), row->widget);
     row->upperOn->setChecked(cond.upperOn);
     row->upper = makeSpin(row->widget, cond.upper);
     row->upper->setEnabled(cond.upperOn);
@@ -194,7 +192,7 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     lay->addWidget(row->upper, 0);
 
     // Mode.
-    row->mode = new QComboBox(row->widget);
+    row->mode = new ElaComboBox(row->widget);
     row->mode->addItem(QString::fromUtf8("一次性"), int(cad::param::AdjustMode::Flat));
     row->mode->addItem(QString::fromUtf8("逐档"), int(cad::param::AdjustMode::PerStep));
     row->mode->setCurrentIndex(cond.mode == cad::param::AdjustMode::PerStep ? 1 : 0);
@@ -215,16 +213,10 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     lay->addStretch();
 
     // Remove.
-    row->remove = new QPushButton(QStringLiteral("✕"), row->widget);
+    row->remove = new ElaPushButton(QStringLiteral("✕"), row->widget);
     row->remove->setFixedSize(22, 22);
     row->remove->setCursor(Qt::PointingHandCursor);
     row->remove->setToolTip(QString::fromUtf8("删除该条件"));
-    row->remove->setStyleSheet(
-        "QPushButton {"
-        "  font-size: 11px; color: #B0B0B0; background: transparent;"
-        "  border: none; border-radius: 11px;"
-        "}"
-        "QPushButton:hover { color: #FFFFFF; background: #E74C3C; }");
     connect(row->remove, &QPushButton::clicked, this,
             [this, row]() { removeRow(row); });
     lay->addWidget(row->remove, 0);

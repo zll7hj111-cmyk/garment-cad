@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 
-class QLineEdit;
-class QCheckBox;
-class QLabel;
-class QPushButton;
+class ElaLineEdit;
+class ElaCheckBox;
+class ElaText;
+class ElaPushButton;
 
 namespace cad::param { struct ParamPoint; }
 
@@ -61,13 +61,13 @@ signals:
 private:
     void onWorldAngleToggled(bool checked);
 
-    QLineEdit* m_editName      = nullptr;
-    QLabel*    m_lblOrigin     = nullptr;   ///< Read-only: ray origin point.
-    QLineEdit* m_editAngle     = nullptr;   ///< Angle (deg) or formula.
-    QCheckBox* m_chkWorldAngle = nullptr;   ///< Interpret angle field as world angle.
-    QCheckBox* m_chkShowName   = nullptr;
-    QLabel*    m_lblAim        = nullptr;   ///< Read-only: aim point (指向点).
-    QPushButton* m_btnClearAim = nullptr;   ///< Drop the aim link (back to angle mode).
+    ElaLineEdit* m_editName      = nullptr;
+    ElaText*   m_lblOrigin     = nullptr;   ///< Read-only: ray origin point.
+    ElaLineEdit* m_editAngle     = nullptr;   ///< Angle (deg) or formula.
+    ElaCheckBox* m_chkWorldAngle = nullptr;   ///< Interpret angle field as world angle.
+    ElaCheckBox* m_chkShowName   = nullptr;
+    ElaText*   m_lblAim        = nullptr;   ///< Read-only: aim point (指向点).
+    ElaPushButton* m_btnClearAim = nullptr;   ///< Drop the aim link (back to angle mode).
 
     double m_segWorldDir = 0.0;             ///< Target segment world direction (deg).
 };

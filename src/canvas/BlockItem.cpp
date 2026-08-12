@@ -37,6 +37,19 @@ const QFont& labelFont()
     static QFont f = [] { QFont fnt; fnt.setPixelSize(11); return fnt; }();
     return f;
 }
+/// Length annotations: monospace digits so drag readouts never jitter.
+const QFont& lengthFont()
+{
+    static QFont f = [] {
+        QFont fnt;
+        fnt.setFamilies({QStringLiteral("Consolas"),
+                         QStringLiteral("Courier New"),
+                         QStringLiteral("monospace")});
+        fnt.setPixelSize(10);
+        return fnt;
+    }();
+    return f;
+}
 
 } // namespace
 
@@ -121,9 +134,12 @@ void BlockItem::paint(QPainter* painter,
     // Obtain animator from scene (may be null in edge cases).
     CanvasAnimator* animator = nullptr;
     const CanvasStyle* style = nullptr;
+    bool forceName = false, forceLen = false;  // Hold-to-show (N/M keys).
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        animator = cs->animator();
-        style    = cs->style();
+        animator  = cs->animator();
+        style     = cs->style();
+        forceName = cs->forceShowName();
+        forceLen  = cs->forceShowLength();
     }
 
     // A block on a hidden layer is not painted at all (setVisible(false) also
@@ -144,13 +160,17 @@ void BlockItem::paint(QPainter* painter,
     constexpr int kGhostAlpha = 110;  ///< Alpha for transiently-revealed hidden lines.
     auto drawSegment = [&](const LineCache& lc) {
         const bool ghost = !lc.visible;
+        // Dark-mode adaptation: lift the data color to the role's
+        // light-on-dark family so ink lines stay legible on night paper.
+        const QColor paintColor = style ? style->displayColor(lc.role, lc.color)
+                                        : lc.color;
         EntityPaintParams pp;
         if (animator) {
             pp = animator->lineParams(const_cast<BlockItem*>(this), lc.id,
-                                      lc.color, lc.weight);
+                                      paintColor, lc.weight);
         } else {
             // Fallback: resolve state directly without animation.
-            pp.lineColor  = lc.color;
+            pp.lineColor  = paintColor;
             pp.lineWidth  = lc.weight;
             pp.labelColor = QColor(100, 100, 100);
         }
@@ -176,7 +196,7 @@ void BlockItem::paint(QPainter* painter,
         painter->drawLine(lc.p1, lc.p2);
 
         // Draw segment name if enabled (suppressed on grayed reference layers).
-        if (lc.showName && !lc.name.isEmpty() && !grayed) {
+        if ((lc.showName || forceName) && !lc.name.isEmpty() && !grayed) {
             QPointF mid((lc.p1.x() + lc.p2.x()) / 2.0,
                         (lc.p1.y() + lc.p2.y()) / 2.0);
             QColor nameColor = pp.labelColor;
@@ -189,15 +209,17 @@ void BlockItem::paint(QPainter* painter,
         }
 
         // Draw segment length label if enabled (suppressed on grayed layers).
-        if (lc.showLength && !lc.lengthText.isEmpty() && !grayed) {
+        if ((lc.showLength || forceLen) && !lc.lengthText.isEmpty() && !grayed) {
             QPointF mid((lc.p1.x() + lc.p2.x()) / 2.0,
                         (lc.p1.y() + lc.p2.y()) / 2.0);
-            QColor lenColor = animator ? pp.lengthLabelColor : QColor(0, 110, 60);
+            QColor lenColor = animator ? pp.lengthLabelColor
+                : (style ? style->labelColor(EntityState::Normal, true)
+                         : QColor(0, 110, 60));
             if (ghost) lenColor.setAlpha(kGhostAlpha);
             QPen textPen(lenColor);
             textPen.setCosmetic(true);
             painter->setPen(textPen);
-            painter->setFont(nameFont());
+            painter->setFont(lengthFont());
             painter->drawText(mid + QPointF(4, 12), lc.lengthText);
         }
     };
@@ -227,6 +249,7 @@ void BlockItem::paint(QPainter* painter,
     // each handles its hover/ghost/grayed/leader states itself.
 
     // Draw points
+    QSet<QString> drawnPointLabels;  ///< Labels already painted (dedup key).
     for (const auto& pc : m_points) {
         EntityPaintParams pp;
         if (animator) {
@@ -264,8 +287,8 @@ void BlockItem::paint(QPainter* painter,
         painter->setBrush(pp.pointFill);
         painter->drawEllipse(pc.pos, pp.pointRadius, pp.pointRadius);
 
-        // Anchor ring marking a connection point (attachment node). Locked
-        // connections use the amber ring (锁定连接视觉区分).
+        // Anchor ring marking a connection point (attachment node). Protected
+        // connections use the amber ring (拖动保护视觉区分).
         if (pc.isAttachmentNode && style && style->attachmentRingWidth > 0.0) {
             QPen ringPen(pc.isLockedNode ? style->lockedAttachmentColor
                                          : style->attachmentNodeColor,
@@ -277,8 +300,16 @@ void BlockItem::paint(QPainter* painter,
             painter->drawEllipse(pc.pos, r, r);
         }
 
-        // Draw label (suppressed on grayed reference layers).
-        if (pc.showLabel && !pc.label.isEmpty() && !grayed) {
+        // Draw label (suppressed on grayed reference layers). Overlapping
+        // points sharing the same name render ONE label (deduped by a
+        // 0.1 mm-grid position key).
+        if ((pc.showLabel || forceName) && !pc.label.isEmpty() && !grayed) {
+            const QString posKey = QString::number(qRound(pc.pos.x() * 10.0))
+                                 + QLatin1Char('|')
+                                 + QString::number(qRound(pc.pos.y() * 10.0));
+            if (drawnPointLabels.contains(posKey))
+                continue;
+            drawnPointLabels.insert(posKey);
             QPen textPen(pp.labelColor);
             textPen.setCosmetic(true);
             painter->setPen(textPen);
@@ -792,9 +823,9 @@ void BlockItem::rebuildCache()
             const double labelAngle = std::atan2(-worldTan.y, worldTan.x);  // scene Y-flip
 
             // Pre-format arc-length label (exact arc length, cached at resolve).
-            QString lenText;
-            if (seg.showLength)
-                lenText = cad::geo::Units::formatLength(entry->arcLengthMm);
+            // ALWAYS formatted — the hold-to-show force (L key) reveals the
+            // length even when seg.showLength is off.
+            const QString lenText = cad::geo::Units::formatLength(entry->arcLengthMm);
 
             Qt::PenStyle ps = Qt::SolidLine;
             if (seg.lineStyle == cad::param::LineStyle::Dashed) ps = Qt::DashLine;
@@ -806,7 +837,7 @@ void BlockItem::rebuildCache()
             // parent — this child only holds local coordinates.
             auto* curveItem = new CurveItem(this, CurveItem::Data{
                 seg.id, curvePath, shapePath, labelPos, labelAngle,
-                seg.color, seg.weight, ps, seg.name,
+                seg.color, seg.role, seg.weight, ps, seg.name,
                 seg.showName, seg.showLength, lenText, seg.visible});
             m_curveItems.push_back(curveItem);
 
@@ -826,9 +857,11 @@ void BlockItem::rebuildCache()
         if (seg.lineStyle == cad::param::LineStyle::Dashed) ps = Qt::DashLine;
         else if (seg.lineStyle == cad::param::LineStyle::Dotted) ps = Qt::DotLine;
 
-        // Pre-format the length label (internal mm → display cm).
+        // Pre-format the length label (internal mm → display cm). ALWAYS
+        // formatted — the hold-to-show force (L key) reveals the length even
+        // when seg.showLength is off.
         QString lenText;
-        if (seg.showLength) {
+        {
             const cad::param::ParamPoint* sp = block->findPoint(seg.startPointId);
             const cad::param::ParamPoint* ep = block->findPoint(seg.endPointId);
             if (sp && ep && sp->resolved && ep->resolved) {
@@ -837,8 +870,9 @@ void BlockItem::rebuildCache()
             }
         }
 
-        m_lines.push_back({seg.id, p1, p2, seg.color, seg.weight, ps, seg.name,
-                           seg.showName, seg.showLength, lenText, seg.visible});
+        m_lines.push_back({seg.id, p1, p2, seg.color, seg.role, seg.weight, ps,
+                           seg.name, seg.showName, seg.showLength, lenText,
+                           seg.visible});
 
         QRectF lineBounds = QRectF(p1, p2).normalized();
         QPointF mid((p1.x() + p2.x()) / 2.0, (p1.y() + p2.y()) / 2.0);
@@ -853,7 +887,7 @@ void BlockItem::rebuildCache()
 
     // Collect the points of this block that participate in a connection
     // (either side — leader or follower) so they get the anchor-ring marker.
-    // LOCKED connections get the amber ring (锁定连接视觉区分).
+    // PROTECTED connections get the amber ring (拖动保护视觉区分).
     QSet<QUuid> attachmentPoints;
     QSet<QUuid> lockedPoints;
     for (const auto& att : m_doc->attachments()) {

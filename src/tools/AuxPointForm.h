@@ -1,13 +1,13 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
 #include <vector>
 #include <utility>
 
-class QLineEdit;
-class QComboBox;
-class QCheckBox;
+class ElaLineEdit;
+class ElaComboBox;
+class ElaCheckBox;
 
 namespace cad::param { struct ParamPoint; }
 
@@ -61,14 +61,14 @@ signals:
     void directionChanged(bool fromEnd);
 
 private:
-    QLineEdit* m_editName         = nullptr;
-    QComboBox* m_cmbDir           = nullptr;   ///< 0 = 从起点, 1 = 从终点.
-    QComboBox* m_cmbRefPoint      = nullptr;   ///< Measurement reference point.
-    QLineEdit* m_editPercent      = nullptr;
-    QLineEdit* m_editConstant     = nullptr;   ///< cm input.
-    QLineEdit* m_editOffsetAngle  = nullptr;   ///< degrees, construction-angle semantics.
-    QLineEdit* m_editOffsetDist   = nullptr;   ///< cm input.
-    QCheckBox* m_chkShowName      = nullptr;
+    ElaLineEdit* m_editName         = nullptr;
+    ElaComboBox* m_cmbDir           = nullptr;   ///< 0 = 从起点, 1 = 从终点.
+    ElaComboBox* m_cmbRefPoint      = nullptr;   ///< Measurement reference point.
+    ElaLineEdit* m_editPercent      = nullptr;
+    ElaLineEdit* m_editConstant     = nullptr;   ///< cm input.
+    ElaLineEdit* m_editOffsetAngle  = nullptr;   ///< degrees, construction-angle semantics.
+    ElaLineEdit* m_editOffsetDist   = nullptr;   ///< cm input.
+    ElaCheckBox* m_chkShowName      = nullptr;
 };
 
 } // namespace cad::tools

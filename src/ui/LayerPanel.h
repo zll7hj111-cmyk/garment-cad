@@ -1,13 +1,15 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
 #include <QSet>
 
-class QScrollArea;
+class ElaScrollArea;
 class QVBoxLayout;
-class QLabel;
+class ElaText;
 class QUndoStack;
+class QFrame;
+class QToolButton;
 
 namespace cad::param { class ParamDocument; }
 
@@ -32,6 +34,9 @@ public:
     explicit LayerPanel(cad::param::ParamDocument* doc, QWidget* parent = nullptr);
 
     void setUndoStack(QUndoStack* stack) { m_undoStack = stack; }
+
+    /// Rebuild theme-token driven styles after a theme change (light/dark).
+    void applyTheme();
 
 public slots:
     /// Rebuild all layer cards from the document's layer registry.
@@ -62,17 +67,20 @@ private:
     void showSegmentMenu(const QPoint& globalPos, const QUuid& blockId);
 
     /// Begin inline rename of a layer name label.
-    void startRename(int layerIndex, QLabel* nameLabel);
+    void startRename(int layerIndex, ElaText* nameLabel);
 
     cad::param::ParamDocument* m_doc = nullptr;
     QUndoStack* m_undoStack = nullptr;
 
-    QScrollArea* m_scroll    = nullptr;
+    ElaScrollArea* m_scroll    = nullptr;
     QWidget*     m_container = nullptr;
     QVBoxLayout* m_listLayout = nullptr;
-    QLabel*      m_countLabel = nullptr;   ///< Header pill: total layer count.
-    QLabel*      m_emptyHint  = nullptr;   ///< Shown when no blocks exist at all.
-    QSet<int>    m_collapsed;              ///< Layer indices whose card is collapsed
+    ElaText*     m_countLabel = nullptr;   ///< Header pill: total layer count.
+    ElaText*     m_emptyHint  = nullptr;   ///< Shown when no blocks exist at all.
+    QWidget*     m_header     = nullptr;   ///< Header bar (styled from tokens).
+    QFrame*      m_sep        = nullptr;   ///< Header separator line.
+    QToolButton* m_addBtn     = nullptr;   ///< "new layer" header button.
+    QSet<QUuid>  m_collapsed;              ///< Layer ids whose card is collapsed
                                            ///< (persists across refreshes).
     /// Cards in layout order (index = layer index). The concrete type
     /// LayerCard lives in LayerPanel.cpp's anonymous namespace — stored as

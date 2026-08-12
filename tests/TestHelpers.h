@@ -144,4 +144,13 @@ inline double segmentLength(const ParamDocument& doc, const QUuid& blockId)
     return sp->resolvedPos.distanceTo(ep->resolvedPos);
 }
 
+/// Stable id of the display layer at @p row (test convenience: layers are
+/// id-referenced in the model, but tests think in display rows).
+inline QUuid layerIdAt(const ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
 } // namespace cad::test

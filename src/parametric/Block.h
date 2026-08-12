@@ -69,9 +69,11 @@ public:
     /// from internal shape changes (full cache rebuild).
     quint64 geometryEpoch = 0;
 
-    /// Canvas layer index (into ParamDocument::layers()). Pure selection /
-    /// visibility filter — does not affect solving, measurements or links.
-    int layer = 0;
+    /// Canvas layer — stable Layer::id reference (into ParamDocument::layers()).
+    /// Pure selection / visibility filter — does not affect solving,
+    /// measurements or links. Null only before assignment (addBlock clamps a
+    /// null layer to the first working layer; the aux layer is never default).
+    QUuid layer;
 
     std::vector<ParamPoint> points;    ///< Internal points (local coordinates).
     std::vector<Segment>    segments;  ///< Internal segments referencing points.
@@ -165,9 +167,9 @@ public:
     /// take to "keep going straight" if attached at that point.
     ///   - At the segment's END point:   start->end  (extend forward).
     ///   - At the segment's START point: end->start  (extend backward).
-    /// This is the reference direction for follower angles, so that
-    /// followerAngle == 0 always means "continue straight along the leader",
-    /// regardless of which endpoint is snapped. Returns 0 if no such segment
+    /// This is the reference direction for follower angles. 闭合基准（用户拍板
+    /// 2026-08）：followerAngle 0° = 两线折叠重叠、180° = 沿 leader 延伸直行，
+    /// 与起点/终点吸附无关。Returns 0 if no such segment
     /// exists or its endpoints are unresolved.
     [[nodiscard]] double exitDirectionAtPoint(const QUuid& pointId) const;
 
@@ -211,16 +213,19 @@ public:
     /// Add a segment and return its ID.
     QUuid addSegment(Segment seg);
 
-    /// Rebuild the internal point index (call after modifying points vector directly).
-    void rebuildPointIndex();
+    /// Rebuild the internal point index (call after modifying points vector
+    /// directly). Const: the index is a lazily-rebuilt mutable cache (same
+    /// convention as rebuildSegmentIndex).
+    void rebuildPointIndex() const;
 
     /// Rebuild the internal segment index (call after modifying the segments
     /// vector directly or regenerating segment IDs, e.g. duplicate clones).
-    void rebuildSegmentIndex();
+    /// Const: the index is a lazily-rebuilt mutable cache.
+    void rebuildSegmentIndex() const;
 
 private:
-    QHash<QUuid, int> m_pointIndex;  ///< pointId -> index in points vector
-    QHash<QUuid, int> m_segmentIndex;  ///< segmentId -> index in segments vector
+    mutable QHash<QUuid, int> m_pointIndex;  ///< pointId -> index (mutable cache).
+    mutable QHash<QUuid, int> m_segmentIndex;  ///< segmentId -> index (mutable cache).
 
     std::vector<CurveSpanEntry> m_curveSpans;  ///< Frame cache, rebuilt in resolve().
 

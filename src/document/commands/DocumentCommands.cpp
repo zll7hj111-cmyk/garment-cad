@@ -180,7 +180,7 @@ void DrawMeasureLineCommand::undo()
 
 BakeMeasureCopyCommand::BakeMeasureCopyCommand(cad::param::ParamDocument* doc,
                                                const QUuid& sourceMeasureBlockId,
-                                               int targetLayerIndex,
+                                               const QUuid& targetLayerId,
                                                QUndoCommand* parent)
     : QUndoCommand(parent)
     , m_doc(doc)
@@ -190,8 +190,8 @@ BakeMeasureCopyCommand::BakeMeasureCopyCommand(cad::param::ParamDocument* doc,
     if (!doc) return;
     // The target must be an existing WORKING layer (baking into the aux
     // calculation layer makes no sense).
-    if (targetLayerIndex < 0 || targetLayerIndex >= doc->layerCount()
-        || doc->isAuxLayer(targetLayerIndex))
+    if (targetLayerId.isNull() || doc->layerIndex(targetLayerId) < 0
+        || doc->isAuxLayer(targetLayerId))
         return;
 
     // The hit block must be a measurement line (owns a MeasureVariable).
@@ -213,7 +213,7 @@ BakeMeasureCopyCommand::BakeMeasureCopyCommand(cad::param::ParamDocument* doc,
     // Free line on the target layer, same block-building pattern as
     // ToolSmartPen::createBridgeLine — but with NO attachment, NO endTarget
     // and the measurement's OWNER left untouched (still the source line).
-    m_newBlock.layer = targetLayerIndex;
+    m_newBlock.layer = targetLayerId;
     m_newBlock.transform.origin = startWorld;
     m_newBlock.transform.rotation = std::atan2(delta.y, delta.x);
 

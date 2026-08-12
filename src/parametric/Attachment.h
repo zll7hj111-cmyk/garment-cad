@@ -56,8 +56,9 @@ struct Attachment {
                                ///< the FOLLOWER. Measured from the leader's exit
                                ///< direction at toPointId (the direction that
                                ///< continues the leader straight past that point).
-                               ///< 0 = continue straight along the leader, whether
-                               ///< snapped at the leader's start or end; CCW positive.
+                               ///< 闭合基准（用户拍板 2026-08）: 0° = 两线折叠
+                               ///< 重叠、90° = 垂直、180° = 沿 leader 延伸直行；
+                               ///< 起点/终点吸附同基准。
 
     QString followerAngleFormula;  ///< Optional formula overriding followerAngle when
                                  ///< non-empty. Evaluates to degrees (no unit
@@ -79,11 +80,11 @@ struct Attachment {
                          ///< pins. The resolver places both pinned points on their
                          ///< hosts and lets the bridge length/direction be passive.
 
-    bool isLocked = false;  ///< 锁定连接（强制连接）：拖动不可拆散，且拖动任一端时
-                            ///< 另一端（递归）一并整体移动 —— 焊接语义。辅助层线段
-                            ///< 建立的连接由 addAttachment 自动置位；工作层可由
-                            ///< 属性面板手动开关。锁定时拖动跟随线也不拆（普通连接
-                            ///< 拖跟随线拆散、拖宿主不拆）。
+    bool isLocked = false;  ///< 拖动保护 (焊接语义): 拖动不可拆散, 且拖动任一端时
+                            ///< 另一端 (递归) 一并整体移动。新建连接由 addAttachment
+                            ///< 统一默认置位 (只要建立跟随就保护); 辅助层线段建立的
+                            ///< 连接同样默认锁定。工作层可由属性面板手动开关。锁定
+                            ///< 时拖动跟随线也不拆 (普通连接拖跟随线拆散、拖宿主不拆)。
 };
 
 } // namespace cad::param

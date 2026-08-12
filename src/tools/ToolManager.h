@@ -63,6 +63,10 @@ public:
 signals:
     void activeToolChanged(ToolType type, const char* toolName);
 
+    /// Select tool picked a single segment to edit in the status-bar strip
+    /// (either blockId+segmentId for one segment, or both null = nothing).
+    void editTargetChanged(const QUuid& blockId, const QUuid& segmentId);
+
 private:
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;

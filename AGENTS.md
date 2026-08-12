@@ -1,26 +1,52 @@
-# AGENTS.md
+﻿# AGENTS.md
+
+## 经验库使用规则
+
+- **修 bug 前**：先 grep `TROUBLESHOOTING.md`（踩坑经验库，按需查阅，不注入会话）相关关键词，避免重踩已知坑。改快捷键前必查第 0 组登记表。
+- **修完清单外的新 bug**：根因 + 修复验证后追加到 `TROUBLESHOOTING.md` 对应主题分组。
+- **任务收尾防过时**：本任务若触碰了 AGENTS.md/TROUBLESHOOTING.md 中声明的事实（常量/命令/路径/文件/用例数），收尾时必须核对源码并更新对应条目；事实性条目应带源码引用（file:line），改动源码后同步修订。
+- **约定变更须同步**：改动了 AGENTS.md「架构原则/领域建模决策」声明的行为时，同步修订对应条目（决策属用户拍板，翻案前先确认）。
 
 ## 项目简介
 
-参数化服装 CAD 系统，基于 C++23 / Qt6 构建。通过参数化建模引擎驱动服装纸样的自动生成与联动更新。
+WildWind Pattern（野风帖）——参数化服装 CAD 系统，基于 C++23 / Qt6 构建。通过参数化建模引擎驱动服装纸样的自动生成与联动更新。核心能力：参数化建模（ParamPoint/Segment/Block/Attachment/FormulaVariable）、智能约束求解（Resolver + ConditionEngine）、交互式制图工具链（智能笔/打断/交点/曲线编辑/旋转）、UI 组件化（VariablePanel/LayerPanel/SidePanel）、文档持久化（DocumentSerializer，ZIP 压缩 via miniz 3.0.2）。
 
 ## 模块边界
 
 | 目录 | 职责 |
 |------|------|
-| `src/parametric` | 核心引擎：参数点、线段、Block、组、公式变量、条件引擎、Resolver |
-| `src/ui` | 面板 UI：变量面板、组面板、公式卡片、条件对话框等 |
-| `src/tools` | 交互工具：选择、智能画笔、捕捉引擎、工具管理器 |
-| `src/canvas` | 画布渲染：场景、视图、BlockItem、原点十字线 |
-| `src/geometry` | 基础几何：Vec2、单位定义 |
+| `src/parametric` | 核心引擎：参数点、线段、Block、组、公式变量、条件引擎、Resolver、PerfProbe |
+| `src/ui` | 面板 UI：变量面板、图层面板、公式卡片、条件对话框、IconHelper、Theme |
+| `src/tools` | 交互工具：选择、智能笔、曲线编辑、捕捉引擎、工具管理器 |
+| `src/canvas` | 画布渲染：CanvasView/CanvasScene、BlockItem/CurveItem、图层、OpenGL 视口 |
+| `src/geometry` | 基础几何：Vec2、单位定义、CurveMath |
 | `src/app` | 应用入口与演示数据 |
+
+## 架构原则（不可破坏）
+
+- **分层单向依赖**：上层可依赖下层，下层绝不反向依赖上层（parametric 引擎不依赖任何 UI）。可测试性靠此保证。
+- **ParamDocument 是门面**：所有公共 API 与信号签名必须保持不变；业务逻辑封装在内部子域类中。容器写路径已收口：blocks/layers/variables/formulas 等只保留 const 访问器，模型变更只能走 ①带校验/信号的门面方法 ②显式命名的静默恢复 API（`*Raw`，仅限反序列化与 undo 回放）。禁止 `const_cast`；attachment 原位编辑唯一通道是 `findAttachment(id)` 可变重载。
+- **组零限制**：组只是"方便选中"的选择标签，不干预任何几何/连接/求解行为。组模型 = Block 不携带 groupId 字段，由 ParamDocument 的 `m_blockGroup`（blockId→groupId）集中维护；**Resolver 零改动**，组逻辑只在 ParamDocument 与命令层实现。
+- **UI 与引擎并联观察者**：面板与画布都是 ParamDocument 信号的观察者，不直接调用 Resolver（被封装在文档内部）。
+- **隐藏实体**：visible=false 是纯视觉属性，不影响交互（仍可悬停/选择/捕捉）。几何缓存 rebuildCache 必须包含所有实体，渲染 paint 独立按可见性控制。
+- **画布缓存刷新**：只改显示/语义属性、不移动几何的命令必须显式 `++block->geometryEpoch`，否则 rebuildCache 不触发、画布不刷新。
 
 ## 构建命令
 
 ```bash
-cmake --preset default
+cmake --preset default        # Debug（binaryDir=build/out）
+cmake --preset release        # Release（如需）
 cmake --build --preset default
 ```
+
+**clangd 编译数据库刷新**（LSP 用，VS 生成器不导出 compile_commands.json，需 Ninja 专用目录）：
+```bash
+cmd /c ""C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" && cmake -S E:\garment-cad -B E:\garment-cad\build\clangd -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_STANDARD=23 -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/msvc2022_64 -DFETCHCONTENT_SOURCE_DIR_ELAWIDGETOOLS=E:\garment-cad\build\out\_deps\elawidgettools-src"
+```
+- 新增/删除源文件或改 CMakeLists.txt 后必须重跑，否则 clangd 索引陈旧（大量"不可能的错误"，构建其实通过）——现象与处理详见 `TROUBLESHOOTING.md` 第 1 组。
+- 命令中的 `FETCHCONTENT_SOURCE_DIR_ELAWIDGETOOLS` 必须指向 `build/out/_deps/elawidgettools-src`（patch 版源码）：一是 github.com:443 不可达（无代理环境），二保证 clangd 索引与真实构建源码一致。
+- clangd 安装于 `C:\Users\Administrator\AppData\Local\Programs\clangd\clangd_22.1.6\bin\clangd.exe`，opencode 的 LSP 配置指向 `build\clangd`（见 opencode.json）。
+- PowerShell 5.1 下 `cmd /c ""...&&..."` 嵌套引号会失败（报 'C:\Program' 不是内部或外部命令），改走临时 .bat（先 call vcvars64.bat 再 cmake）。
 
 ## 验证命令
 
@@ -29,57 +55,57 @@ cd build/out
 ctest -C Debug
 ```
 
-注：default preset 的 binaryDir 是 `build/out`（非 build/default）；Visual Studio 多配置生成器必须加 `-C Debug`，否则报 "No tests were found"。
+- default preset 的 binaryDir 是 `build/out`；VS 多配置生成器必须加 `-C Debug`。
+- ctest 共 22 个用例（test_expression/resolver/serializer/p612_colinearity/group/duplicate/break/intersection/commands/curve/perf/aux_layer/smartpen_aux/segment_edit_bar/group_guards/tool_intersection/select_wkey/rotate_copy/dialog_tabs/canvas_perf/hold_show/log_probe）。**test_canvas_perf 的 singleCurveFrame 在 Debug 下段错误为存量问题**（与换肤类改动无关，疑似环境/软渲染），用基线对照法排查，勿误判回归（详见 `TROUBLESHOOTING.md` 第 5 组）。
+- 不进 ctest 需手动跑：test_realdoc_perf、test_realdoc_full（env `GCAD_DOC=<.gcad路径>`，可叠加 `GCAD_PROFILE=1`）。
+- 性能探针：src/parametric/PerfProbe.h，`GCAD_PROFILE=1` 启用；GUI 点击链路遥测日志固定路径 `e:\garment-cad\gcad_click_log.txt`。
+- 新增 .cpp 必须检查所有引用该文件的 target 源列表（CMake 无自动扫描，漏加会 LNK2019）。
 
 ## 环境要求
 
 | 依赖 | 要求 |
 |------|------|
-| Qt | 6.x（推荐 6.5+），组件：Widgets、Svg、Test |
-| 编译器 | MSVC 2022（Visual Studio 17，x64） |
+| Qt | 6.x（推荐 6.5+），组件：Widgets、Svg、Test、OpenGLWidgets |
+| 编译器 | MSVC 2022（Visual Studio 17，x64，`/std:c++latest` + `/permissive-` + `/FS`） |
 | CMake | ≥ 3.25 |
-| C++ 标准 | C++23（MSVC 使用 `/std:c++latest`） |
+| C++ 标准 | C++23（`CMAKE_CXX_STANDARD_REQUIRED ON`） |
 
-### 方式一：Qt 官方安装器（推荐）
+Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指向 msvc2022_64）/方式二（vcpkg manifest + toolchain file），两种方式无需同时使用。
 
-1. 从 [Qt 官网](https://www.qt.io/download-qt-installer) 下载 Qt Online Installer。
-2. 安装时勾选 **MSVC 2022 64-bit** 组件。
-3. 设置环境变量 `QT_DIR` 指向安装路径下的 `msvc2022_64` 目录：
+## 依赖管理
 
-```powershell
-# 示例（根据实际版本号调整）
-[System.Environment]::SetEnvironmentVariable("QT_DIR", "C:/Qt/6.11.1/msvc2022_64", "User")
-```
+- FetchContent 内嵌于 CMakeLists.txt（无 vcpkg.json/conanfile）：miniz `https://github.com/richgel999/miniz.git` Tag `3.0.2` 浅克隆。
+- **ElaWidgetTools**（`https://github.com/Liniyous/ElaWidgetTools.git`，GIT_TAG `aa1856b8f8589ba0a82e50c0ac01e289eb3ff2c4`，GIT_SHALLOW）：主项目 CMakeLists.txt 用 `PATCH_COMMAND` 执行 `third_party/elawidgettools_qt69_patch.cmake`（共 3 个 Part：Qt 6.9 编译兼容 / 弹窗按钮同步 emit 修 UAF + 隐藏空文本中间按钮 / ElaMenu 移除 400ms 动画，均幂等）。库为静态库，主程序以 dllimport 语义链接产生 LNK4217 警告属正常。重建流程与链接坑详见 `TROUBLESHOOTING.md` 第 2 组。
+- **spdlog**（`https://github.com/gabime/spdlog.git`，GIT_TAG `v1.17.0`，GIT_SHALLOW，MIT）：编译版静态库，自带 fmt；链接 `spdlog::spdlog`，头文件 `spdlog/spdlog.h`。Qt sink 可用（`spdlog/sinks/qt_sinks.h`）。
+- **Tracy Profiler**（`https://github.com/wolfpld/tracy.git`，GIT_TAG `v0.14.0`，GIT_SHALLOW，BSD-3）：客户端库 `Tracy::TracyClient`，头文件 `tracy/Tracy.hpp`，探针 `ZoneScoped`；`TRACY_ON_DEMAND=ON`（无 profiler 连接时零收集），发布版可用 `-DTRACY_ENABLE=OFF` 整体关闭；GUI 为独立工具（GitHub releases 的 windows-x64 预编译 zip）。
+- Qt6 组件：Widgets Svg OpenGLWidgets Test；AUTOMOC/AUTORCC/AUTOUIC 已启用。
+- 图标：Phosphor Icons SVG（MIT），存放 resources/icons/ + icons.qrc（前缀 `:/icons/`），统一经 `src/ui/IconHelper.h`（iconByName 着色 / icon2State 双状态 / appIcon）。新图标从 phosphor-icons/core assets/regular/ 下载并在 qrc 登记。
 
-4. 重新打开终端，验证：
+## 开发规范
 
-```powershell
-echo $env:QT_DIR
-cmake --preset default
-```
+- **文件编码**：所有新建源文件（.h/.cpp/.qrc 等）必须 UTF-8 with BOM，否则 MSVC 解析失败（C2001/C2061）。Write 工具创建的文件无 BOM，需补。
+- **工具模式切换统一用 W 键，禁用 Tab**（Tab 是 Qt 焦点导航键，打断交互）。W 语义按工具区分，切换后 `event->accept()` 并刷新预览/HUD。
+- **交互函数必须显式接入事件流**（mouseMove/mousePress/keyPress），只实现不调用 = 功能静默失效；用单元测试直接驱动事件流验证。
+- **约束类型分派点登记表**（ParamPoint.h）：新增/修改 PointConstraint 枚举必须逐层同步 12 处（数据定义、Block::resolve exhaustive switch、resolveInterpolatedPoints、曲线宿主判定、Resolver 交点 step、blockReferences 脏传播、degradeOrphanedIntersections、BlockItem 渲染、ToolSelect/ToolCurveEdit 交互、BlockCommands 降级恢复、DocumentSerializer 成对字符串映射、Duplicate）。遗漏 blockReferences 或序列化映射不会编译报错，只会静默损坏。
+- **删除影响报告**：新删善后分支必须同步更新 `deleteImpactReport` 与测试（八项计数：attachmentsRemoved/bridgesReleased/intersectionsFrozen/linkedFrozen/linkedVarsRemoved/measureVarsRemoved/angleVarsRemoved/formulasBroken）。
+- **卡片抽取范式**：子卡片持 doc 指针 + 目标 id，setTarget/refresh 双入口，模型变更经 `changed(ChangeKind)` 信号回报对话框，对话框只做联动刷新。
+- **Qt 性能**：每帧同步槽里禁止 setStyleSheet（re-polish 数毫秒级），只在离散状态翻转时调用；setText 做同值短路；批量操作禁用布局避免 O(N²)。
+- **性能断言抗噪声**：Debug 构建性能波动 30%+，断言用宽松边界（如 ≤2.0x），勿用严格排序；验证算法优化要构造最坏场景（逆序深链）而非常见微差。
+- **测量工作流**：测量任意两点发布 MeasureVariable（refName `M_xxx`，cm 域）；"烘焙到操作层"=复制非移动（lengthFormula 活链接）；跨层附着单向（仅辅助层 follower、工作层 leader）；值循环预检只在 addAttachment 入口拦截。
 
-### 方式二：vcpkg manifest
+## 领域建模决策（用户拍板，勿翻案）
 
-若使用 vcpkg 管理依赖，可在项目根目录创建 `vcpkg.json`：
-
-```json
-{
-  "dependencies": [
-    { "name": "qtbase", "features": ["widgets"] },
-    "qtsvg"
-  ]
-}
-```
-
-配置时通过 toolchain 文件传入：
-
-```powershell
-cmake --preset default -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake
-```
-
-此方式无需设置 `QT_DIR`，CMake 会从 vcpkg 安装路径自动发现 Qt6。
+- **桥接线范式**：自由线 + 长度公式引用测量变量 M_xxx + 可选端点跟随（起点跟随宿主 / 终点指向 endTarget，LinePropertyDialog 开关）；创建后与普通线段无异，无 isBridge/pin 标志。终点指向 = Block 的 endTargetBlockId/endTargetPointId/endTargetOffset 字段，Resolver Step 7 驱动（容差 5° 吸附，琥珀环高亮）。
+- **曲线系统**：分段三次 Bézier + 过点锚点；AUTO 点 C2 曲率连续（solveC2Tangents Thomas 算法，tension 不作用于 C2 解）；MANUAL 点（autoTangent=false）存储切线为已知边界；智能笔只画直线，曲线编辑全部在 ToolCurveEdit（快捷键 C）；共线不等长切线手柄（tangentLocked=true 时跟随转向保长度）。桥接线禁止加曲线点。打断需贝塞尔细分（de Casteljau）。
+- **辅助计算层**：全局唯一、固定在图层列表最底部（index 0）、不可删除。层间契约：唯一出口 = 发布的测量标量；工作层对辅助层不可见、不可捕捉、不可附着。非激活时完全隐身，求解照常。
+- **图层系统**：图层是纯粹"选择/显示过滤器"，求解器/测量/附着零改动。非活动层灰显（#9E9E9E+40%、不显示标注、不可选不可悬停）但可捕捉；最终可见性 = block.visible && layer.visible；新线归活动层；切换活动层自动清空选择。LayerPanel 的 refresh 必须 QueuedConnection（否则 use-after-free）；QTreeWidget 设了 stylesheet 必须显式定义 ::indicator。
+- **Resolver 性能**：settle 收敛 = BFS 拓扑一趟（森林不变式保证无环）；拖拽帧内增量求解（collectAffected BFS + affectedOnly + resolveForDrag 忽略跨选择集附件）；公式求值 = Kahn 拓扑序单趟；Step5 桥接仅在 bridgesMoved 时重收敛、Step7 仅在 rotated 时收敛。
+- **隐藏/灰显与交互**：隐藏实体仍可交互；灰显层可捕捉不可选。
+- **连接手势**：抓取/吸附/光环/目标环四半径由单一常量 `kConnectSnapRadius` 统一驱动（当前值 7.5px，WYSIWYG 铁律）。
 
 ## 关键约束
 
 - **单位体系**：内部计算使用厘米（cm），界面显示使用毫米（mm）。
 - **Block 刚体模型**：Block 是刚体变换单元，内部点相对位置固定，整体支持平移/旋转。
+- **画布缩放**：ZOOM_MIN=0.2（20%）/ ZOOM_MAX=10.0（1000%）/ SCENE_BOUND=±10,000mm（浮点精度安全）——常量定义于 src/canvas/CanvasView.h:74-77。
+- **Git 远程**：origin = https://github.com/zll7hj111-cmyk/garment-cad.git，主分支 main；本地身份 林林 <2274789227@qq.com>。

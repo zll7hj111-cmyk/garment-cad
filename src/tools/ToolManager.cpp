@@ -36,7 +36,7 @@ void ToolManager::setParamDocument(cad::param::ParamDocument* paramDoc)
     disconnect(m_activeLayerConn);
     if (m_paramDoc) {
         m_activeLayerConn = connect(m_paramDoc,
-            &cad::param::ParamDocument::activeLayerChanged, this, [this](int) {
+            &cad::param::ParamDocument::activeLayerChanged, this, [this](const QUuid&) {
                 if (auto* ts = dynamic_cast<ToolSelect*>(m_activeTool.get()))
                     ts->clearSelectionOnLayerChange();
             });
@@ -103,6 +103,12 @@ void ToolManager::setActiveTool(std::unique_ptr<Tool> tool)
         // never knows the manager — it only fires the injected callback.
         m_activeTool->setToolSwitchRequest(
             [this](ToolType t) { switchTool(t); });
+        // Status-bar edit target (selection tool → one segment). Forwarded as
+        // a real signal so MainWindow can show the SegmentEditBar.
+        if (auto* ts = dynamic_cast<ToolSelect*>(m_activeTool.get())) {
+            ts->setEditTargetCallback(
+                [this](const QUuid& b, const QUuid& s) { emit editTargetChanged(b, s); });
+        }
         m_activeTool->setUndoStack(m_undoStack);
         m_activeTool->activate(*m_scene, m_paramDoc);
         emit activeToolChanged(m_activeType, m_activeTool->name());

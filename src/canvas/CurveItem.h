@@ -4,6 +4,8 @@
 #include <QPainterPath>
 #include <QUuid>
 
+#include "parametric/Segment.h"  // cad::param::SegmentRole (Data default)
+
 class QGraphicsSceneHoverEvent;
 
 namespace cad { class CanvasScene; }
@@ -32,6 +34,7 @@ public:
         QPointF labelPos;        ///< Name/length label anchor.
         double labelAngle = 0;   ///< Label tangent angle (radians).
         QColor color;
+        cad::param::SegmentRole role = cad::param::SegmentRole::Outline;
         double weight;
         Qt::PenStyle penStyle;
         QString name;

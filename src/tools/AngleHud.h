@@ -1,13 +1,13 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <functional>
 
 #include "parametric/Attachment.h"
 
-class QLineEdit;
-class QLabel;
-class QPushButton;
+class ElaLineEdit;
+class ElaText;
+class ElaPushButton;
 
 namespace cad::tools {
 
@@ -28,7 +28,7 @@ public:
     std::function<void()> onCancel;                     ///< Esc.
     std::function<void(cad::param::RotationMode)> onModeChanged;  ///< Mode toggled.
 
-    [[nodiscard]] QLineEdit* edit() const { return m_edit; }
+    [[nodiscard]] ElaLineEdit* edit() const { return m_edit; }
 
     /// Green border when the current input is valid, red when not.
     void setValid(bool ok);
@@ -48,10 +48,10 @@ protected:
 private:
     void applyModeVisuals();
 
-    QLineEdit* m_edit = nullptr;
-    QLabel* m_lblCaption = nullptr;
-    QLabel* m_lblUnit = nullptr;
-    QPushButton* m_btnToggle = nullptr;
+    ElaLineEdit* m_edit = nullptr;
+    ElaText* m_lblCaption = nullptr;
+    ElaText* m_lblUnit = nullptr;
+    ElaPushButton* m_btnToggle = nullptr;
     cad::param::RotationMode m_mode = cad::param::RotationMode::Angle;
     QString m_captionOverride;   ///< Non-empty = user-set caption (setCaption).
 };

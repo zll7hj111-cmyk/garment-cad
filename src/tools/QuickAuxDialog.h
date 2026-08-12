@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QDialog>
+#include "ElaDialog.h"
 
 #include "parametric/ParamPoint.h"
 
@@ -23,7 +23,7 @@ class AuxPointForm;
 ///
 /// The dialog never touches the document: the caller reads point() after
 /// exec() == Accepted and pushes an AddAuxPointCommand.
-class QuickAuxDialog : public QDialog
+class QuickAuxDialog : public ElaDialog
 {
     Q_OBJECT
 

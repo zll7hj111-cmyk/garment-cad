@@ -1,14 +1,14 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
 #include <QList>
 #include <QSet>
 
-class QScrollArea;
+class ElaScrollArea;
 class QVBoxLayout;
-class QLabel;
-class QPushButton;
+class ElaText;
+class ElaPushButton;
 class QUndoStack;
 
 namespace cad::param { class ParamDocument; }
@@ -61,12 +61,12 @@ private:
     cad::param::ParamDocument* m_doc = nullptr;
     QUndoStack* m_undoStack = nullptr;
 
-    QScrollArea* m_scroll      = nullptr;
+    ElaScrollArea* m_scroll      = nullptr;
     QWidget*     m_container   = nullptr;
     QVBoxLayout* m_listLayout  = nullptr;
-    QLabel*      m_countLabel  = nullptr;   ///< Header pill: total group count.
-    QLabel*      m_emptyHint   = nullptr;   ///< Shown when no groups exist.
-    QPushButton* m_batchBtn    = nullptr;   ///< 解散选中 (batch dissolve).
+    ElaText*     m_countLabel  = nullptr;   ///< Header pill: total group count.
+    ElaText*     m_emptyHint   = nullptr;   ///< Shown when no groups exist.
+    ElaPushButton* m_batchBtn    = nullptr;   ///< 解散选中 (batch dissolve).
     QList<QWidget*> m_cards;                ///< Cards in layout order.
     QSet<QUuid>  m_checked;                 ///< Groups selected for batch ops.
     QWidget*     m_dropTarget  = nullptr;   ///< Card under the drag cursor.

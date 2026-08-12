@@ -1,12 +1,11 @@
-#include "PointRefEdit.h"
+﻿#include "PointRefEdit.h"
 
 #include <algorithm>
 
-#include <QDialog>
-#include <QDialogButtonBox>
+#include "ElaDialog.h"
 #include <QFocusEvent>
 #include <QKeyEvent>
-#include <QLabel>
+#include "ElaText.h"
 #include <QListWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -14,6 +13,8 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Segment.h"
+#include "ui/ElaDialogButtons.h"
+#include "ui/Theme.h"
 #include "parametric/Serial.h"
 
 namespace cad::tools {
@@ -48,10 +49,12 @@ PointRefEdit::PointRefEdit(cad::param::ParamDocument* doc, QWidget* parent)
         "\u540c\u540d\u70b9\u4f1a\u5f39\u7a97\u9009\u62e9\uff0cEsc \u53d6\u6d88"));
     // 输入点编号（如 P12）或完整序列号，回车确认。同名点会弹窗选择，Esc 取消
     setMinimumWidth(90);
-    setStyleSheet(
-        "QLineEdit { color: #1565C0; border: 1px solid #BBDEFB; border-radius: 3px;"
-        "  padding: 2px 5px; background: #F8FBFF; }"
-        "QLineEdit:focus { border-color: #1565C0; background: #FFFFFF; }");
+    const auto& tk = cad::ui::Theme::tokens();
+    setStyleSheet(QStringLiteral(
+        "QLineEdit { color: %1; border: 1px solid %2; border-radius: 3px;"
+        "  padding: 2px 5px; background: %3; }"
+        "QLineEdit:focus { border-color: %1; background: %4; }")
+        .arg(tk.accent.name(), tk.accent.name(), tk.surface2.name(), tk.surface.name()));
 }
 
 void PointRefEdit::setPoint(const QUuid& blockId, const QUuid& pointId)
@@ -137,14 +140,14 @@ void PointRefEdit::commitInput()
     }
 
     // --- Disambiguation dialog: show full serials ---
-    QDialog dlg(this);
+    ElaDialog dlg(this);
     dlg.setWindowTitle(QString::fromUtf8("\u627e\u5230\u591a\u4e2a\u540c\u540d\u70b9"));  // 找到多个同名点
     dlg.setMinimumWidth(360);
     auto* lay = new QVBoxLayout(&dlg);
-    auto* hint = new QLabel(QString::fromUtf8(
-        "\u591a\u4e2a\u70b9\u5171\u4eab\u7f16\u53f7\u201c%1\u201d\uff0c\u8bf7\u9009\u62e9\uff1a").arg(input), &dlg);
+    auto* hint = new ElaText(QString::fromUtf8(
+        "\u591a\u4e2a\u70b9\u5171\u4eab\u7f16\u53f7\u201c%1\u201d\uff0c\u8bf7\u9009\u62e9\uff1a").arg(input), 13, &dlg);
     // 多个点共享编号"xxx"，请选择：
-    hint->setStyleSheet("color:#555; font-size:12px;");
+    hint->setStyleSheet("font-size:12px;");
     lay->addWidget(hint);
 
     auto* list = new QListWidget(&dlg);
@@ -161,12 +164,8 @@ void PointRefEdit::commitInput()
     list->setCurrentRow(0);
     lay->addWidget(list, 1);
 
-    auto* buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(cad::ui::makeDialogButtons(&dlg).row);
     connect(list, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
-    lay->addWidget(buttons);
 
     if (dlg.exec() != QDialog::Accepted) {
         revertDisplay();
@@ -204,9 +203,11 @@ void PointRefEdit::revertDisplay()
 void PointRefEdit::flashError()
 {
     const QString saved = styleSheet();
-    setStyleSheet(
-        "QLineEdit { color: #C62828; border: 1px solid #EF9A9A; border-radius: 3px;"
-        "  padding: 2px 5px; background: #FFEBEE; }");
+    const auto& tk = cad::ui::Theme::tokens();
+    setStyleSheet(QStringLiteral(
+        "QLineEdit { color: %1; border: 1px solid %1; border-radius: 3px;"
+        "  padding: 2px 5px; background: rgba(220,38,38,32); }")
+        .arg(tk.danger.name()));
     setToolTip(QString::fromUtf8("\u672a\u627e\u5230\u8be5\u70b9\uff08\u6392\u9664\u672c\u7ebf\u6bb5\u6240\u5c5e Block\uff09"));
     // 未找到该点（排除本线段所属 Block）
     QTimer::singleShot(900, this, [this, saved] {

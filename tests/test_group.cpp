@@ -16,6 +16,7 @@ using namespace cad::param;
 using cad::geo::Vec2;
 using cad::test::makeLine;
 using cad::test::LineSetup;
+using cad::test::layerIdAt;
 
 namespace {
 
@@ -76,7 +77,7 @@ void TestGroup::createGroupValidation()
 
     // Cross-layer rejected.
     auto d = makeLine(doc, 100.0, Vec2{0.0, -150.0});
-    doc.findBlock(d.blockId)->layer = 1;   // working layer 1 ≠ active layer 2
+    doc.findBlock(d.blockId)->layer = doc.auxLayerId();   // aux ≠ working layer
     QVERIFY(doc.createGroup({c.blockId, d.blockId}).isNull());
 }
 

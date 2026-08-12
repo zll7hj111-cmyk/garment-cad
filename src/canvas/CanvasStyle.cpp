@@ -12,6 +12,19 @@
 CanvasStyle::RoleDefaults CanvasStyle::roleDefaults(cad::param::SegmentRole role) const
 {
     using cad::param::SegmentRole;
+    // Dark theme: light-on-dark family (near-white outlines, light-gray
+    // internals, mid-gray dashes) so lines read clearly on the black canvas.
+    if (dark) {
+        switch (role) {
+        case SegmentRole::Outline:
+            return { QColor(244, 246, 248), 1.2, Qt::SolidLine };
+        case SegmentRole::Internal:
+            return { QColor(198, 205, 213), 1.0, Qt::SolidLine };
+        case SegmentRole::Auxiliary:
+            return { QColor(96, 104, 114), 0.8, Qt::DashLine };
+        }
+        return { QColor(244, 246, 248), 1.2, Qt::SolidLine };
+    }
     switch (role) {
     case SegmentRole::Outline:
         return { QColor(30, 30, 30), 1.2, Qt::SolidLine };
@@ -21,6 +34,25 @@ CanvasStyle::RoleDefaults CanvasStyle::roleDefaults(cad::param::SegmentRole role
         return { QColor(150, 150, 150), 0.8, Qt::DashLine };
     }
     return { QColor(30, 30, 30), 1.2, Qt::SolidLine };
+}
+
+QColor CanvasStyle::displayColor(cad::param::SegmentRole role,
+                                 const QColor& dataColor) const
+{
+    // Light theme / print: the data color is the paint color.
+    if (!dark) return dataColor;
+
+    // Dark theme: lift dark ink to the role's light-on-dark family. The
+    // default segment color is near-black (30,30,30); on the night-paper
+    // canvas it would vanish. User-chosen bright colors stay as chosen.
+    // Luma threshold: mid-gray (~#808080) and darker get lifted.
+    const double luma = 0.2126 * dataColor.redF()
+                      + 0.7152 * dataColor.greenF()
+                      + 0.0722 * dataColor.blueF();
+    if (luma >= 0.5) return dataColor;
+
+    const RoleDefaults rd = roleDefaults(role);
+    return rd.color;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,23 +165,28 @@ CanvasStyle CanvasStyle::lightTheme()
 CanvasStyle CanvasStyle::darkTheme()
 {
     CanvasStyle s;
-    s.canvasBackground    = QColor(30, 30, 30);
-    s.crosshairColor      = QColor(70, 70, 70);
-    s.previewLineColor    = QColor(80, 170, 255);
-    s.snapIndicatorColor  = QColor(255, 90, 90);
-    s.snapPointColor      = QColor(60, 220, 120);
-    s.auxMarkerColor      = QColor(102, 187, 106);
-    s.hudBackground       = QColor(50, 50, 50, 230);
-    s.hudText             = QColor(220, 220, 220);
+    s.dark = true;                       // white-ish role lines
+    s.canvasBackground    = QColor(20, 24, 30);     // #14181E night paper
+    s.crosshairColor      = QColor(38, 43, 49);
+    s.previewLineColor    = QColor(76, 141, 255);     // dark accent
+    s.snapIndicatorColor  = QColor(240, 101, 90);
+    s.snapPointColor      = QColor(52, 199, 123);
+    s.auxMarkerColor      = QColor(52, 199, 123);
+    s.hudBackground       = QColor(35, 40, 46, 230);
+    s.hudText             = QColor(232, 234, 237);
 
-    s.m_selectColor       = QColor(255, 80, 80);
-    s.m_hoverTint         = QColor(255, 140, 140);
-    s.attachmentNodeColor = QColor(0, 200, 180);
-    s.m_pointColor        = QColor(210, 210, 210);
-    s.m_auxPointColor     = QColor(102, 187, 106);
-    s.m_nameLabelColor    = QColor(170, 170, 170);
-    s.m_lengthLabelColor  = QColor(80, 200, 130);
-    s.m_pointLabelColor   = QColor(160, 160, 160);
+    s.m_selectColor       = QColor(76, 141, 255);     // accent family
+    s.m_hoverTint         = QColor(76, 141, 255);
+    s.m_surfaceColor      = QColor(29, 33, 38);       // dark surface
+    s.m_accentWash        = QColor(30, 43, 66);       // dark accentTint
+    s.m_borderSoft        = QColor(51, 58, 66);       // dark border
+    s.attachmentNodeColor = QColor(43, 179, 163);
+    s.lockedAttachmentColor = QColor(240, 169, 75);
+    s.m_pointColor        = QColor(236, 238, 241);
+    s.m_auxPointColor     = QColor(52, 199, 123);
+    s.m_nameLabelColor    = QColor(174, 181, 191);
+    s.m_lengthLabelColor  = QColor(52, 199, 123);
+    s.m_pointLabelColor   = QColor(154, 163, 173);
     return s;
 }
 

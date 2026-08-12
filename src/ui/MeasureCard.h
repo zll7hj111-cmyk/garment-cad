@@ -1,13 +1,13 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
 
 #include "parametric/MeasureVariable.h"
 
-class QLineEdit;
-class QToolButton;
-class QLabel;
+class ElaLineEdit;
+class ElaToolButton;
+class ElaText;
 
 namespace cad::ui { class CopyChip; }
 
@@ -61,13 +61,13 @@ private:
     double m_lastValueMm = 0.0;     ///< last shown value (no-op guard for per-frame sync)
 
     cad::ui::CopyChip* m_nameChip = nullptr;
-    QLabel*          m_indexLabel = nullptr;
-    QLabel*          m_valueLabel = nullptr;
-    QLabel*          m_lockIcon = nullptr;
-    QToolButton*     m_deleteBtn = nullptr;
+    ElaText*         m_indexLabel = nullptr;
+    ElaText*         m_valueLabel = nullptr;
+    ElaText*         m_lockIcon = nullptr;
+    ElaToolButton*     m_deleteBtn = nullptr;
 
     QWidget*         m_detail = nullptr;
     cad::ui::CopyChip* m_refChip = nullptr;
-    QLabel*          m_sourceInfo = nullptr;
-    QLineEdit*       m_commentEdit = nullptr;
+    ElaText*         m_sourceInfo = nullptr;
+    ElaLineEdit*       m_commentEdit = nullptr;
 };

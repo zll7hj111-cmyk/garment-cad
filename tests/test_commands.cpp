@@ -22,6 +22,14 @@ using cad::geo::Vec2;
 
 namespace {
 
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
 /// Create a minimal horizontal line block and add it to the document.
 struct LineSetup {
     QUuid blockId;
@@ -74,6 +82,7 @@ private slots:
     void removeBlock_undoRedo();
     void moveBlock_undoRedo();
     void moveCurveAnchor_followDetachAndUndo();
+    void setSegmentProperty_bumpsGeometryEpoch();
 
     // Delete-impact report (删除影响报告)
     void deleteImpactReport_matchesActualCascade();
@@ -219,7 +228,7 @@ void TestCommands::moveCurveAnchor_followDetachAndUndo()
 {
     ParamDocument doc;
     auto [blockId, startId, endId, segId] = makeLine(doc, 100.0);
-    for (auto& b : doc.blocks()) b.layer = 1;  // working layer (drag domain)
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);  // working layer (drag domain)
 
     // Curve anchor on the segment (chord 0..100 along local X).
     ParamPoint anchor;
@@ -280,6 +289,56 @@ void TestCommands::moveCurveAnchor_followDetachAndUndo()
 }
 
 // ---------------------------------------------------------------------------
+// SetSegmentPropertyCommand: a visibility/property-only edit moves no
+// geometry, so it must still bump geometryEpoch — the canvas rebuilds its
+// cached display state (BlockItem::m_lines) only when that epoch changes.
+// Without the bump, the layer panel's eye toggle would have no effect until
+// some unrelated geometry edit happens to rebuild the cache.
+// ---------------------------------------------------------------------------
+void TestCommands::setSegmentProperty_bumpsGeometryEpoch()
+{
+    ParamDocument doc;
+    auto ls = makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    auto* block = doc.findBlock(ls.blockId);
+    QVERIFY(block);
+    QVERIFY(block->findSegment(ls.segId));
+    const quint64 epoch0 = block->geometryEpoch;
+
+    QUndoStack stack;
+    cad::cmd::SetSegmentPropertyCommand::Props props;
+    auto* seg = block->findSegment(ls.segId);
+    props.name = seg->name;
+    props.role = seg->role;
+    props.lineStyle = seg->lineStyle;
+    props.color = seg->color;
+    props.weight = seg->weight;
+    props.visible = false;  // ← the only change: hide the line
+    props.showName = seg->showName;
+    props.showLength = seg->showLength;
+    props.lengthFormula = seg->lengthFormula;
+    stack.push(new cad::cmd::SetSegmentPropertyCommand(&doc, ls.blockId, ls.segId, props));
+
+    // redo: property applied AND the canvas-invalidation epoch bumped.
+    seg = doc.findBlock(ls.blockId)->findSegment(ls.segId);
+    QCOMPARE(seg->visible, false);
+    QVERIFY(doc.findBlock(ls.blockId)->geometryEpoch >= epoch0 + 1);
+
+    // undo: restored, epoch bumped again (canvas must re-reveal the line).
+    stack.undo();
+    seg = doc.findBlock(ls.blockId)->findSegment(ls.segId);
+    QCOMPARE(seg->visible, true);
+    QVERIFY(doc.findBlock(ls.blockId)->geometryEpoch >= epoch0 + 2);
+
+    // redo again: hidden once more.
+    stack.redo();
+    seg = doc.findBlock(ls.blockId)->findSegment(ls.segId);
+    QCOMPARE(seg->visible, false);
+    QVERIFY(doc.findBlock(ls.blockId)->geometryEpoch >= epoch0 + 3);
+}
+
+// ---------------------------------------------------------------------------
 // Delete-impact report (删除影响报告): the prediction must mirror what
 // removeBlock() actually does — attachments vanish, the bridge loses a pin
 // and is released, the intersection freezes, linked/measure/angle variables
@@ -293,14 +352,14 @@ void TestCommands::deleteImpactReport_matchesActualCascade()
     auto [lId, lStart, lEnd, lSeg] = makeLine(doc, 100.0);
     auto [fId, fStart, fEnd, fSeg] = makeLine(doc, 60.0);
     doc.findBlock(fId)->segments.front().lengthFormula = QStringLiteral("l_l");
-    for (auto& b : doc.blocks()) b.layer = 1;  // working layer BEFORE pins exist
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);  // working layer BEFORE pins exist
 
     // Bridge pinned between L and F (deleting L drops it below 2 pins).
     QUuid bridgeId, pin1Id, pin2Id;
     {
         Block bridge;
         bridge.isBridge = true;
-        bridge.layer = 1;
+        bridge.layer = layerIdAt(doc, 1);
         ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
         ParamPoint p2; p2.constraint = PointConstraint::Free; p2.freePos = Vec2{80.0, 30.0};
         pin1Id = p1.id; pin2Id = p2.id;
@@ -339,7 +398,7 @@ void TestCommands::deleteImpactReport_matchesActualCascade()
         ipId = ip.id;
         e->addPoint(std::move(ip));
     }
-    for (auto& b : doc.blocks()) b.layer = 1;  // working layer (E was late)
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);  // working layer (E was late)
 
     // Variables + formula depending on L.
     MeasureVariable mv;
@@ -412,7 +471,7 @@ void TestCommands::resolveForDrag_followersMoveLive()
     auto [followerId, fStartId, fEndId, fSegId] = makeLine(doc, 50.0);
 
     // Real drags happen on working layers (default Block::layer = 0 = aux).
-    for (auto& b : doc.blocks()) b.layer = 1;
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
 
     Attachment att;
     att.fromBlockId  = followerId;
@@ -470,7 +529,7 @@ void TestCommands::resolveForDrag_silentSignals()
 {
     ParamDocument doc;
     makeLine(doc, 100.0);
-    for (auto& b : doc.blocks()) b.layer = 1;
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
 
 
     QSignalSpy resolvedSpy(&doc, &ParamDocument::resolved);
@@ -502,7 +561,7 @@ void TestCommands::resolveForDrag_incrementalMatchesFull()
     auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
     auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 60.0);
     auto [cId, cStart, cEnd, cSeg] = makeLine(doc, 40.0);
-    for (auto& b : doc.blocks()) b.layer = 1;  // working layer (drag domain)
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);  // working layer (drag domain)
 
     Attachment ab;
     ab.fromBlockId = bId; ab.fromPointId = bStart;
@@ -523,7 +582,7 @@ void TestCommands::resolveForDrag_incrementalMatchesFull()
 
     // Intersection block E: ray origin = A's start point (cross-block ref).
     auto [eId, eStart, eEnd, eSeg2] = makeLine(doc, 70.0);
-    for (auto& b : doc.blocks()) b.layer = 1;  // D/E were created after the first pass
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);  // D/E were created after the first pass
     {
         auto* e = doc.findBlock(eId);
         ParamPoint ip;
@@ -539,7 +598,7 @@ void TestCommands::resolveForDrag_incrementalMatchesFull()
     {
         Block bridge;
         bridge.isBridge = true;
-        bridge.layer = 1;
+        bridge.layer = layerIdAt(doc, 1);
         ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
         ParamPoint p2; p2.constraint = PointConstraint::Free; p2.freePos = Vec2{80.0, 30.0};
         pin1Id = p1.id; pin2Id = p2.id;
@@ -564,7 +623,7 @@ void TestCommands::resolveForDrag_incrementalMatchesFull()
         auto* a = doc.findBlock(aId);
         a->transform.origin = a->transform.origin + delta;
     }
-    doc.invalidateLayer(1);
+    doc.invalidateLayer(layerIdAt(doc, 1));
     doc.resolveForDrag({aId});
 
     auto snapshot = [&doc](const QUuid& id) {
@@ -619,7 +678,7 @@ void TestCommands::resolveForDrag_ignoresDetachedAttachments()
     ParamDocument doc;
     auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
     auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);
-    for (auto& b : doc.blocks()) b.layer = 1;  // working layer (drag domain)
+    for (const auto& b : doc.blocks()) if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);  // working layer (drag domain)
 
     Attachment att;
     att.fromBlockId = bId; att.fromPointId = bStart;
@@ -634,7 +693,7 @@ void TestCommands::resolveForDrag_ignoresDetachedAttachments()
         auto* a = doc.findBlock(aId);
         a->transform.origin = a->transform.origin + Vec2{40.0, 0.0};
     }
-    doc.invalidateLayer(1);
+    doc.invalidateLayer(layerIdAt(doc, 1));
     doc.resolveForDrag({aId}, {att.id});
     const Vec2 bAfterIgnore = doc.findBlock(bId)->transform.origin;
     QVERIFY((bAfterIgnore - bOrig).length() < 1e-9);
@@ -661,7 +720,7 @@ void TestCommands::curveRenderCache_filledByResolve()
 
     // Curve block: start (0,0) → curve anchor (50,20) → end (100,0), Bezier.
     Block block;
-    block.layer = 1;
+    block.layer = layerIdAt(doc, 1);
     ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
     ParamPoint p2; p2.constraint = PointConstraint::CurveAnchor; p2.freePos = Vec2{50.0, 20.0};
     ParamPoint p3; p3.constraint = PointConstraint::Free; p3.freePos = Vec2{100.0, 0.0};
@@ -782,7 +841,7 @@ void TestCommands::evaluator_caseInsensitiveFallback()
 
     // Block whose segment length is driven by the lowercase reference.
     Block block;
-    block.layer = 1;
+    block.layer = layerIdAt(doc, 1);
     ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
     const QUuid startId = p1.id;
     ParamPoint p2; p2.constraint = PointConstraint::Polar;
@@ -1037,12 +1096,12 @@ void TestCommands::bakeMeasureCopy_undoRedo()
 {
     ParamDocument doc;
     QVERIFY(doc.layerCount() >= 2);
-    QVERIFY(doc.isAuxLayer(0));
-    const int targetLayer = 1;
+    QVERIFY(doc.isAuxLayer(layerIdAt(doc, 0)));
+    const QUuid targetLayer = layerIdAt(doc, 1);
 
     // Source measure line on the AUX layer: 120 mm, world-rotated 30°.
     Block mline;
-    mline.layer = 0;
+    mline.layer = layerIdAt(doc, 0);
     mline.transform.origin = Vec2{50.0, -40.0};
     mline.transform.rotation = 30.0 * M_PI / 180.0;
     ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
@@ -1113,7 +1172,7 @@ void TestCommands::bakeMeasureCopy_undoRedo()
     QCOMPARE(static_cast<int>(doc.blocks().size()), 1);
     QVERIFY(doc.findBlock(newId) == nullptr);
     QVERIFY(doc.findBlock(mlId) != nullptr);
-    QCOMPARE(doc.findBlock(mlId)->layer, 0);
+    QCOMPARE(doc.findBlock(mlId)->layer, layerIdAt(doc, 0));
     QCOMPARE(static_cast<int>(doc.measureVars().size()), 1);
     QCOMPARE(doc.findMeasure(mvId)->ownerBlockId, mlId);
     QCOMPARE(doc.findMeasure(mvId)->refName, QStringLiteral("M_bake1"));
@@ -1136,7 +1195,7 @@ void TestCommands::bakeMeasureCopy_invalidCases()
     ParamDocument doc;
 
     // Unknown source block → invalid no-op.
-    cad::cmd::BakeMeasureCopyCommand noSrc(&doc, QUuid::createUuid(), 1);
+    cad::cmd::BakeMeasureCopyCommand noSrc(&doc, QUuid::createUuid(), layerIdAt(doc, 1));
     QVERIFY(!noSrc.isValid());
     noSrc.redo();
     QCOMPARE(static_cast<int>(doc.blocks().size()), 0);
@@ -1154,22 +1213,22 @@ void TestCommands::bakeMeasureCopy_invalidCases()
     doc.resolveAll();
 
     // ...the AUX layer is not a valid bake target.
-    cad::cmd::BakeMeasureCopyCommand auxTarget(&doc, line.blockId, 0);
+    cad::cmd::BakeMeasureCopyCommand auxTarget(&doc, line.blockId, layerIdAt(doc, 0));
     QVERIFY(!auxTarget.isValid());
 
-    // ...an out-of-range layer is rejected too.
-    cad::cmd::BakeMeasureCopyCommand oobTarget(&doc, line.blockId, 99);
+    // ...an unknown layer id is rejected too.
+    cad::cmd::BakeMeasureCopyCommand oobTarget(&doc, line.blockId, QUuid::createUuid());
     QVERIFY(!oobTarget.isValid());
 
     // A block WITHOUT an owned measure variable is not bakeable.
     const auto plain = makeLine(doc, 60.0, Vec2{0.0, 80.0});
-    cad::cmd::BakeMeasureCopyCommand notMeasure(&doc, plain.blockId, 1);
+    cad::cmd::BakeMeasureCopyCommand notMeasure(&doc, plain.blockId, layerIdAt(doc, 1));
     QVERIFY(!notMeasure.isValid());
 
     // A measure line whose segment END POINT never resolves is rejected
     // (Polar referencing a nonexistent point stays unresolved after resolveAll).
     Block dangling;
-    dangling.layer = 0;
+    dangling.layer = layerIdAt(doc, 0);
     ParamPoint dp1; dp1.constraint = PointConstraint::Free; dp1.freePos = Vec2::zero();
     ParamPoint dp2; dp2.constraint = PointConstraint::Polar;
     dp2.refPointId = QUuid::createUuid();   // dangling reference
@@ -1187,12 +1246,12 @@ void TestCommands::bakeMeasureCopy_invalidCases()
     dmv.ownerBlockId = dId;
     doc.addMeasure(dmv);
     doc.resolveAll();
-    cad::cmd::BakeMeasureCopyCommand unresolved(&doc, dId, 1);
+    cad::cmd::BakeMeasureCopyCommand unresolved(&doc, dId, layerIdAt(doc, 1));
     QVERIFY(!unresolved.isValid());
 
     // A ZERO-LENGTH measure line is rejected (degenerate direction).
     Block zero;
-    zero.layer = 0;
+    zero.layer = layerIdAt(doc, 0);
     ParamPoint zp1; zp1.constraint = PointConstraint::Free; zp1.freePos = Vec2::zero();
     ParamPoint zp2; zp2.constraint = PointConstraint::Polar;
     zp2.refPointId = zp1.id; zp2.distance = 0.0; zp2.angle = 0.0;
@@ -1210,7 +1269,7 @@ void TestCommands::bakeMeasureCopy_invalidCases()
     zmv.ownerBlockId = zId;
     doc.addMeasure(zmv);
     doc.resolveAll();
-    cad::cmd::BakeMeasureCopyCommand zeroLen(&doc, zId, 1);
+    cad::cmd::BakeMeasureCopyCommand zeroLen(&doc, zId, layerIdAt(doc, 1));
     QVERIFY(!zeroLen.isValid());
 }
 
@@ -1221,45 +1280,44 @@ void TestCommands::bakeMeasureCopy_invalidCases()
 // ---------------------------------------------------------------------------
 void TestCommands::layerCommands_activeLayerRestored()
 {
-    ParamDocument doc;   // [aux(0), 图层 1(1)], active = 1
+    ParamDocument doc;   // [aux(row 0), 图层 1(row 1)], active = 图层 1
     QCOMPARE(doc.layerCount(), 2);
-    QCOMPARE(doc.activeLayer(), 1);
+    QCOMPARE(doc.activeLayer(), layerIdAt(doc, 1));
 
-    doc.addLayer(QStringLiteral("w2"));   // index 2
-    doc.addLayer(QStringLiteral("w3"));   // index 3
+    doc.addLayer(QStringLiteral("w2"));   // row 2
+    doc.addLayer(QStringLiteral("w3"));   // row 3
     QCOMPARE(doc.layerCount(), 4);
 
     // --- AddLayerCommand: undo restores the pre-command active layer ---
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     cad::cmd::AddLayerCommand addCmd(&doc, QStringLiteral("w4"));
     addCmd.redo();
     QCOMPARE(doc.layerCount(), 5);
-    QCOMPARE(doc.activeLayer(), 4);          // the new layer becomes active
+    QCOMPARE(doc.activeLayer(), layerIdAt(doc, 4));  // the new layer becomes active
     addCmd.undo();
     QCOMPARE(doc.layerCount(), 4);
-    QCOMPARE(doc.activeLayer(), 1);          // snapshot restored (not clamped to 3)
+    QCOMPARE(doc.activeLayer(), layerIdAt(doc, 1));  // snapshot restored
 
-    // --- RemoveLayerCommand: undo restores the active layer removed/shifted
-    //     by removeLayer(). Deleting the ACTIVE layer leaves the index
-    //     pointing at a DIFFERENT layer until undo restores the snapshot.
-    doc.setActiveLayer(2);
+    // --- RemoveLayerCommand: undo restores the removed layer + the active
+    //     snapshot. Removing the ACTIVE layer retargets the model to the
+    //     first working layer until undo restores the snapshot.
+    doc.setActiveLayer(layerIdAt(doc, 2));
     QCOMPARE(doc.layers()[2].name, QStringLiteral("w2"));
     cad::cmd::RemoveLayerCommand rmCmd(&doc, 2);
     rmCmd.redo();
     QCOMPARE(doc.layerCount(), 3);
-    // Model adjustment kept index 2, which now names w3 — the wrong layer.
-    QCOMPARE(doc.activeLayer(), 2);
-    QCOMPARE(doc.layers()[doc.activeLayer()].name, QStringLiteral("w3"));
+    // Model fallback: first working layer (图层 1), NOT the removed w2.
+    QCOMPARE(doc.activeLayer(), layerIdAt(doc, 1));
     rmCmd.undo();
     QCOMPARE(doc.layerCount(), 4);
-    QCOMPARE(doc.activeLayer(), 2);
-    QCOMPARE(doc.layers()[doc.activeLayer()].name, QStringLiteral("w2"));  // restored
+    QCOMPARE(doc.activeLayer(), layerIdAt(doc, 2));
+    QCOMPARE(doc.layerById(doc.activeLayer())->name, QStringLiteral("w2"));  // restored
 
     // Redo/undo round-trip keeps the restoration stable.
     rmCmd.redo();
     rmCmd.undo();
-    QCOMPARE(doc.activeLayer(), 2);
-    QCOMPARE(doc.layers()[doc.activeLayer()].name, QStringLiteral("w2"));
+    QCOMPARE(doc.activeLayer(), layerIdAt(doc, 2));
+    QCOMPARE(doc.layerById(doc.activeLayer())->name, QStringLiteral("w2"));
 }
 
 QTEST_MAIN(TestCommands)

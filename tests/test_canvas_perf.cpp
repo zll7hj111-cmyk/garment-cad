@@ -1,4 +1,4 @@
-/// @file test_canvas_perf.cpp
+﻿/// @file test_canvas_perf.cpp
 /// Headless rendering + interaction benchmark for curve-heavy documents.
 ///
 /// Measures the REAL per-frame cost of a curve-anchor drag — resolve +
@@ -30,6 +30,14 @@ using namespace cad::param;
 using cad::geo::Vec2;
 
 namespace {
+
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
 
 double medianUs(std::vector<double>& v)
 {
@@ -150,7 +158,7 @@ std::pair<double, double> TestCanvasPerf::dragFrameCost(
     for (int i = 0; i < iters; ++i) {
         // Wiggle the dragged anchor (like a real drag).
         anchor->interpOffsetDist = 30.0 + 0.3 * (i % 7);
-        doc.invalidateLayer(1);
+        doc.invalidateLayer(layerIdAt(doc, 1));
 
         auto t0 = std::chrono::steady_clock::now();
         doc.resolveAll();                              // solve + cache rebuild
@@ -489,7 +497,7 @@ void TestCanvasPerf::curveScaling()
         ParamPoint* anchor = dragBlk->findPoint(anchorId);
         for (int i = 0; i < kIters; ++i) {
             anchor->interpOffsetDist = 30.0 + 0.3 * (i % 7);
-            doc.invalidateLayer(1);
+            doc.invalidateLayer(layerIdAt(doc, 1));
             auto t0 = std::chrono::steady_clock::now();
             doc.resolveAll();
             (void)snap.findSnap(cursor, &doc, 1.0, -1.0, anchorId);

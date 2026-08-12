@@ -16,6 +16,7 @@ using namespace cad::param;
 using cad::geo::Vec2;
 using cad::test::makeLine;
 using cad::test::LineSetup;
+using cad::test::layerIdAt;
 
 namespace {
 
@@ -55,7 +56,7 @@ private slots:
 void TestGroupGuards::delOnMemberDeletesWholeGroup()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     auto a = makeLine(doc, 100.0);
     auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});
@@ -100,7 +101,7 @@ void TestGroupGuards::delOnMemberDeletesWholeGroup()
 void TestGroupGuards::internalConnectionCannotBeDetached()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     auto a = makeLine(doc, 100.0);                       // (0,0)→(100,0)
     auto b = makeLine(doc, 100.0);                       // B follows A's end
@@ -135,7 +136,7 @@ void TestGroupGuards::internalConnectionCannotBeDetached()
 void TestGroupGuards::badgeCreatedAndPositioned()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     auto a = makeLine(doc, 100.0);                       // (0,0)→(100,0)
     auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});     // (0,-50)→(100,-50)
@@ -167,7 +168,7 @@ void TestGroupGuards::badgeCreatedAndPositioned()
 void TestGroupGuards::badgeClickEmitsSignal()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     auto a = makeLine(doc, 100.0);
     auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});
@@ -204,7 +205,7 @@ void TestGroupGuards::badgeClickEmitsSignal()
 void TestGroupGuards::badgeAtGuard()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     auto a = makeLine(doc, 100.0);
     auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});

@@ -1,11 +1,11 @@
-#include "IntersectionForm.h"
+﻿#include "IntersectionForm.h"
 
-#include <QCheckBox>
+#include "ElaCheckBox.h"
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QPushButton>
+#include "ElaText.h"
+#include "ElaLineEdit.h"
+#include "ElaPushButton.h"
 #include <QSignalBlocker>
 
 #include "parametric/ParamPoint.h"
@@ -18,22 +18,22 @@ IntersectionForm::IntersectionForm(QWidget* parent)
     auto* layout = new QFormLayout(this);
     layout->setContentsMargins(0, 4, 0, 0);
 
-    m_editName = new QLineEdit(this);
+    m_editName = new ElaLineEdit(this);
     m_editName->setPlaceholderText(QString::fromUtf8("\u5982\u201c\u80a9\u70b9\u201d"));  // 如"肩点"
     layout->addRow(QString::fromUtf8("\u540d\u79f0:"), m_editName);  // 名称:
 
-    m_lblOrigin = new QLabel(QString::fromUtf8("\u2014"), this);  // —
-    m_lblOrigin->setStyleSheet(QStringLiteral("color:#666;"));
+    m_lblOrigin = new ElaText(QString::fromUtf8("\u2014"), 13, this);  // —
+    m_lblOrigin->setObjectName(QStringLiteral("mutedText"));
     layout->addRow(QString::fromUtf8("\u5c04\u7ebf\u8d77\u70b9:"), m_lblOrigin);  // 射线起点:
 
-    m_editAngle = new QLineEdit(this);
+    m_editAngle = new ElaLineEdit(this);
     m_editAngle->setPlaceholderText(QString::fromUtf8("\u5982 90 (\u00b0)\u6216\u516c\u5f0f"));  // 如 90 (°)或公式
     m_editAngle->setToolTip(QString::fromUtf8(
         "\u5c04\u7ebf\u89d2\u5ea6(\u00b0)\uff1a\u9ed8\u8ba4\u76f8\u5bf9\u76ee\u6807\u7ebf\u6bb5 start\u2192end \u65b9\u5411\uff0c"
         "90\u00b0=\u5782\u76f4\uff0c\u9006\u65f6\u9488\u4e3a\u6b63\uff0c\u652f\u6301\u516c\u5f0f"));
     layout->addRow(QString::fromUtf8("\u5c04\u7ebf\u89d2\u5ea6(\u00b0):"), m_editAngle);  // 射线角度(°):
 
-    m_chkWorldAngle = new QCheckBox(QString::fromUtf8("按绝对角度输入"), this);  // 按绝对角度输入
+    m_chkWorldAngle = new ElaCheckBox(QString::fromUtf8("按绝对角度输入"), this);  // 按绝对角度输入
     m_chkWorldAngle->setToolTip(QString::fromUtf8(
         "\u52fe\u9009\u540e\u89d2\u5ea6\u6846\u6309\u7edd\u5bf9\u89d2\u5ea6\u663e\u793a/\u8f93\u5165\uff0c"
         "\u4fdd\u5b58\u65f6\u81ea\u52a8\u53cd\u7b97\u4e3a\u76f8\u5bf9\u7ebf\u6bb5\u7684\u89d2\u5ea6\uff08\u5b58\u50a8\u59cb\u7ec8\u4e3a\u76f8\u5bf9\u503c\uff09"));
@@ -44,17 +44,17 @@ IntersectionForm::IntersectionForm(QWidget* parent)
     auto* aimRow = new QWidget(this);
     auto* aimLayout = new QHBoxLayout(aimRow);
     aimLayout->setContentsMargins(0, 0, 0, 0);
-    m_lblAim = new QLabel(QString::fromUtf8("\u2014"), aimRow);  // —
-    m_lblAim->setStyleSheet(QStringLiteral("color:#666;"));
+    m_lblAim = new ElaText(QString::fromUtf8("\u2014"), 13, aimRow);  // —
+    m_lblAim->setObjectName(QStringLiteral("mutedText"));
     aimLayout->addWidget(m_lblAim, 1);
-    m_btnClearAim = new QPushButton(QString::fromUtf8("\u6e05\u9664"), aimRow);  // 清除
+    m_btnClearAim = new ElaPushButton(QString::fromUtf8("\u6e05\u9664"), aimRow);  // 清除
     m_btnClearAim->setEnabled(false);
     m_btnClearAim->setToolTip(QString::fromUtf8(
         "\u53d6\u6d88\u6307\u5411\uff0c\u56de\u9000\u5230\u89d2\u5ea6\u6a21\u5f0f"));  // 取消指向，回退到角度模式
     aimLayout->addWidget(m_btnClearAim);
     layout->addRow(QString::fromUtf8("\u6307\u5411\u70b9:"), aimRow);  // 指向点:
 
-    m_chkShowName = new QCheckBox(QString::fromUtf8("\u663e\u793a\u540d\u79f0"), this);  // 显示名称
+    m_chkShowName = new ElaCheckBox(QString::fromUtf8("\u663e\u793a\u540d\u79f0"), this);  // 显示名称
     layout->addRow(QString(), m_chkShowName);
 
     // Signals.

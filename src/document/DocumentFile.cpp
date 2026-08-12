@@ -95,14 +95,24 @@ bool DocumentFile::save(const QString& path, const cad::param::ParamDocument& do
     }
     mz_zip_writer_end(&zip);
 
-    // Atomic rename: remove old, rename temp → final
-    if (QFile::exists(path))
-        QFile::remove(path);
-    if (!QFile::rename(tmpPath, path)) {
+    // Crash-safe replace: rename the old file ASIDE first, then rename the
+    // temp in. A crash between the two renames leaves path.bak (recoverable) —
+    // the previous remove-then-rename lost BOTH the original and the temp.
+    const QString bakPath = path + QStringLiteral(".bak");
+    QFile::remove(bakPath);
+    if (QFile::exists(path) && !QFile::rename(path, bakPath)) {
         QFile::remove(tmpPath);
         if (error) *error = QStringLiteral("无法保存文件: %1").arg(path);
         return false;
     }
+    if (!QFile::rename(tmpPath, path)) {
+        // Roll the backup back so the user keeps their previous file.
+        QFile::rename(bakPath, path);
+        QFile::remove(tmpPath);
+        if (error) *error = QStringLiteral("无法保存文件: %1").arg(path);
+        return false;
+    }
+    QFile::remove(bakPath);
 
     return true;
 }

@@ -31,6 +31,7 @@ private slots:
     void namingConvention();
     void degreeSymbol();
     void garmentFormula();
+    void parseDepthGuard();
 };
 
 void TestExpression::basicArithmetic()
@@ -324,6 +325,32 @@ void TestExpression::garmentFormula()
     const double expected = ((88.0/8 + 6.2) - (88.0/24 + 3.4) + 1.8)
                             / std::cos(22.0 * 3.14159265358979323846 / 180.0);
     QVERIFY(qAbs(r.value - expected) < 1e-9);
+}
+
+// 病理性嵌套输入必须安全拒绝：解析深度防护（否则编译期 C++ 递归栈溢出崩溃）。
+void TestExpression::parseDepthGuard()
+{
+    QHash<QString, double> vars;
+
+    // 5000 层括号嵌套：无防护时 parseExpression↔parseFactor 递归 ~15000 帧
+    // C++ 调用栈必然溢出；防护下应在 kMaxParseDepth 处干净失败。
+    QString deep = QString(5000, QLatin1Char('(')) + QStringLiteral("1")
+                 + QString(5000, QLatin1Char(')'));
+    auto r = ExpressionEvaluator::evaluate(deep, vars);
+    QVERIFY(!r.ok);
+    QVERIFY(!r.error.isEmpty());
+
+    // 5000 个一元负号同理（parseFactor 每层递归一次）。
+    QString neg = QString(5000, QLatin1Char('-')) + QStringLiteral("1");
+    r = ExpressionEvaluator::evaluate(neg, vars);
+    QVERIFY(!r.ok);
+
+    // 合理嵌套深度不受影响。
+    QString ok = QString(20, QLatin1Char('(')) + QStringLiteral("2+3")
+               + QString(20, QLatin1Char(')'));
+    r = ExpressionEvaluator::evaluate(ok, vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 5.0);
 }
 
 QTEST_GUILESS_MAIN(TestExpression)

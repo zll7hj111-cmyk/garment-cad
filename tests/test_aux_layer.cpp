@@ -29,12 +29,20 @@ using cad::tools::SnapEngine;
 
 namespace {
 
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
 /// Block: Free start + Polar end (horizontal, 100 mm) + one Interpolated
 /// auxiliary point at 50% on the segment. Added to @p doc on @p layerIndex.
 QUuid makeAuxLineBlock(ParamDocument& doc, int layerIndex)
 {
     Block block;
-    block.layer = layerIndex;
+    block.layer = layerIdAt(doc, layerIndex);
     block.transform.origin = Vec2::zero();
     block.transform.rotation = 0.0;
 
@@ -75,9 +83,12 @@ QUuid makeAuxLineBlock(ParamDocument& doc, int layerIndex)
 }
 
 /// Render the scene into a pixmap and count pixels exactly matching the
-/// auxiliary-point green (67,160,71).
+/// auxiliary-point color (read from the scene's CanvasStyle tokens so the
+/// test survives palette changes).
 int countAuxGreenPixels(CanvasScene& scene)
 {
+    const QColor aux = scene.style()->pointColor(EntityState::Normal, true);
+
     QGraphicsView view(&scene);
     view.resize(600, 400);
     scene.setSceneRect(-50, -100, 300, 300);
@@ -92,18 +103,20 @@ int countAuxGreenPixels(CanvasScene& scene)
     for (int y = 0; y < img.height(); ++y) {
         for (int x = 0; x < img.width(); ++x) {
             const QRgb rgb = img.pixel(x, y);
-            if (qRed(rgb) == 67 && qGreen(rgb) == 160 && qBlue(rgb) == 71)
+            if (qRed(rgb) == aux.red() && qGreen(rgb) == aux.green() && qBlue(rgb) == aux.blue())
                 ++green;
         }
     }
     return green;
 }
 
-/// Count pixels that differ from the view background (250,250,250) — any
+/// Count pixels that differ from the view background (token-driven) — any
 /// non-background pixel proves SOMETHING was painted (e.g. the grayed
 /// auxiliary draft), regardless of its exact color.
 int countNonBackgroundPixels(CanvasScene& scene)
 {
+    const QColor bg = scene.style()->canvasBackground;
+
     QGraphicsView view(&scene);
     view.resize(600, 400);
     scene.setSceneRect(-50, -100, 300, 300);
@@ -118,7 +131,7 @@ int countNonBackgroundPixels(CanvasScene& scene)
     for (int y = 0; y < img.height(); ++y) {
         for (int x = 0; x < img.width(); ++x) {
             const QRgb rgb = img.pixel(x, y);
-            if (qRed(rgb) != 250 || qGreen(rgb) != 250 || qBlue(rgb) != 250)
+            if (qRed(rgb) != bg.red() || qGreen(rgb) != bg.green() || qBlue(rgb) != bg.blue())
                 ++nonBg;
         }
     }
@@ -137,7 +150,7 @@ BridgeRef makeBridgeBlock(ParamDocument& doc, int layerIndex, Vec2 origin)
 {
     Block block;
     block.isBridge = true;
-    block.layer = layerIndex;
+    block.layer = layerIdAt(doc, layerIndex);
     block.transform.origin = origin;
     block.transform.rotation = 0.0;
 
@@ -183,7 +196,7 @@ LineRef makeLineBlock(ParamDocument& doc, int layerIndex, Vec2 origin,
                       double lengthMm, double angleDeg = 0.0)
 {
     Block block;
-    block.layer = layerIndex;
+    block.layer = layerIdAt(doc, layerIndex);
     block.transform.origin = origin;
     block.transform.rotation = 0.0;
 
@@ -236,7 +249,7 @@ private slots:
     void snapCandidatesOverlapDetected();
     // ── 锁定连接 (锁定 = 焊接) ──
     void auxConnectionAutoLocked();
-    void workingConnectionStaysUnlocked();
+    void workingConnectionDefaultsLocked();
     void lockedClosureWeldsChain();
     void lockedDragMovesWholePair();
     void dragLeaderKeepsFollower();
@@ -245,7 +258,7 @@ private slots:
 void TestAuxLayer::auxPointAddedAfterBlockRenders()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
     CanvasScene scene(&doc);
 
     // Step 1: block WITHOUT the aux point (normal draw flow).
@@ -288,15 +301,15 @@ void TestAuxLayer::auxPointAddedAfterBlockRenders()
 void TestAuxLayer::auxPointSurvivesLayerSwitch()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
     CanvasScene scene(&doc);
     makeAuxLineBlock(doc, 0);
     doc.resolveAll();
 
     // Toggle active layer 0 -> 1 -> 0; the aux point must reappear each time.
     for (int i = 0; i < 3; ++i) {
-        doc.setActiveLayer(1);
-        doc.setActiveLayer(0);
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        doc.setActiveLayer(layerIdAt(doc, 0));
         QVERIFY2(countAuxGreenPixels(scene) > 0,
                  "aux point missing after layer switch (BUG)");
     }
@@ -306,7 +319,7 @@ void TestAuxLayer::auxPointResolved()
 {
     ParamDocument doc;
     const QUuid blockId = makeAuxLineBlock(doc, 0);  // aux layer = index 0
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
     doc.resolveAll();
 
     const Block* b = doc.findBlock(blockId);
@@ -325,7 +338,7 @@ void TestAuxLayer::auxPointResolved()
 void TestAuxLayer::auxPointRenderedWhenAuxLayerActive()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
     CanvasScene scene(&doc);  // must exist BEFORE addBlock (blockAdded signal)
     const QUuid blockId = makeAuxLineBlock(doc, 0);
     doc.resolveAll();
@@ -340,10 +353,10 @@ void TestAuxLayer::auxPointRenderedWhenAuxLayerActive()
 void TestAuxLayer::auxLayerGrayedWhenWorkingLayerActive()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
     CanvasScene scene(&doc);
     makeAuxLineBlock(doc, 0);
-    doc.setActiveLayer(1);  // working layer
+    doc.setActiveLayer(layerIdAt(doc, 1));  // working layer
     doc.resolveAll();
 
     // The aux layer is GRAYED, not hidden: no green (the draft's identity
@@ -355,7 +368,7 @@ void TestAuxLayer::auxLayerGrayedWhenWorkingLayerActive()
 void TestAuxLayer::auxLayerNotSnappableWhenWorkingLayerActive()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
     makeAuxLineBlock(doc, 0);
     doc.resolveAll();
 
@@ -370,7 +383,7 @@ void TestAuxLayer::auxLayerNotSnappableWhenWorkingLayerActive()
     // Working layer ACTIVE → the grayed draft must NOT be snappable
     // (cross-group attachments are rejected by addAttachment; a snap target
     // that cannot connect would be an interaction trap).
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     doc.resolveAll();
     QVERIFY(!snap.findSnap(auxWorld, &doc, 1.0).has_value());
 }
@@ -378,7 +391,7 @@ void TestAuxLayer::auxLayerNotSnappableWhenWorkingLayerActive()
 void TestAuxLayer::auxActiveSnapsWorkingPoints()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);  // aux layer ACTIVE (the H-toggle target state)
+    doc.setActiveLayer(layerIdAt(doc, 0));  // aux layer ACTIVE (the H-toggle target state)
     const LineRef w = makeLineBlock(doc, 1, Vec2(100.0, 50.0), 80.0);  // working leader
     doc.resolveAll();
 
@@ -453,7 +466,7 @@ void TestAuxLayer::auxFollowerTracksWorkingLeader()
     // Move again through the DRAG path with a narrow working-layer seed:
     // resolveForDrag must settle the aux follower within the SAME frame.
     doc.findBlock(w.blockId)->transform.origin = Vec2(10.0, -40.0);
-    doc.invalidateLayer(1);  // tool annotates only the working layer
+    doc.invalidateLayer(layerIdAt(doc, 1));  // tool annotates only the working layer
     doc.resolveForDrag({w.blockId});
     QVERIFY(doc.findBlock(f.blockId)->worldPos(f.startId)
                 .distanceTo(doc.findBlock(w.blockId)->worldPos(w.endId)) < 1e-6);
@@ -496,16 +509,20 @@ void TestAuxLayer::phase3MatchesFullScopeAll()
     QVERIFY(doc.diagnostics().empty());
 
     // The phased result must be a fixpoint: one conservative Scope::All pass
-    // (legacy monolithic resolve) must not move ANY block or point.
+    // (legacy monolithic resolve) must not move ANY block or point. The pass
+    // runs on a COPY — the facade's block container is read-only.
     const std::vector<Block> snapshot = doc.blocks();
+    std::vector<Block> candidate = doc.blocks();
     std::vector<ResolveDiagnostic> diag;
     const QHash<QString, QList<Condition>> noCond;
-    Resolver::resolveAll(doc.blocks(), doc.attachments(), doc.parameters(),
-                         noCond, &diag, Resolver::Scope::All, 0, nullptr);
+    Resolver::resolveAll(candidate, doc.attachments(), doc.parameters(),
+                         noCond, &diag, Resolver::Scope::All, QUuid(), nullptr);
     QVERIFY(diag.empty());
-    QCOMPARE(doc.blocks().size(), snapshot.size());
+    QCOMPARE(candidate.size(), snapshot.size());
     for (const Block& before : snapshot) {
-        const Block* after = doc.findBlock(before.id);
+        const Block* after = nullptr;
+        for (const Block& cb : candidate)
+            if (cb.id == before.id) { after = &cb; break; }
         QVERIFY(after != nullptr);
         QVERIFY(std::abs(after->transform.origin.x - before.transform.origin.x) < 1e-6);
         QVERIFY(std::abs(after->transform.origin.y - before.transform.origin.y) < 1e-6);
@@ -625,7 +642,7 @@ void TestAuxLayer::noCrossLayerDocumentUnchanged()
     // Narrowed drag of the chain root: the follower tracks, everything else
     // — especially the untouched aux block — stays frozen.
     doc.findBlock(w1.blockId)->transform.origin = Vec2(40.0, 20.0);
-    doc.invalidateLayer(1);
+    doc.invalidateLayer(layerIdAt(doc, 1));
     doc.resolveForDrag({w1.blockId});
     QVERIFY(doc.diagnostics().empty());
 
@@ -645,11 +662,11 @@ void TestAuxLayer::noCrossLayerDocumentUnchanged()
 void TestAuxLayer::snapCandidatesOverlapDetected()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
 
     // Block A: start at world (50,0), extends +X.
     Block a;
-    a.layer = 0;
+    a.layer = layerIdAt(doc, 0);
     a.transform.origin = Vec2(50.0, 0.0);
     ParamPoint a1;
     a1.constraint = PointConstraint::Free;
@@ -672,7 +689,7 @@ void TestAuxLayer::snapCandidatesOverlapDetected()
 
     // Block B: start at the SAME world spot, extends +Y.
     Block b;
-    b.layer = 0;
+    b.layer = layerIdAt(doc, 0);
     b.transform.origin = Vec2(50.0, 0.0);
     ParamPoint b1;
     b1.constraint = PointConstraint::Free;
@@ -727,7 +744,7 @@ void TestAuxLayer::snapCandidatesOverlapDetected()
 void TestAuxLayer::auxConnectionAutoLocked()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 0));
     const LineRef aux = makeLineBlock(doc, 0, Vec2(0.0, 0.0), 80.0);
     const LineRef w   = makeLineBlock(doc, 1, Vec2(200.0, 0.0), 50.0);
 
@@ -754,14 +771,15 @@ void TestAuxLayer::auxConnectionAutoLocked()
     QVERIFY2(doc.attachments()[1].isLocked, "aux-internal connection must auto-lock");
 }
 
-void TestAuxLayer::workingConnectionStaysUnlocked()
+void TestAuxLayer::workingConnectionDefaultsLocked()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     const LineRef w1 = makeLineBlock(doc, 1, Vec2(0.0, 0.0), 100.0);
     const LineRef w2 = makeLineBlock(doc, 1, Vec2(0.0, 0.0), 60.0);
 
-    // Working-layer connection: NOT locked by default.
+    // Working-layer connection: LOCKED by default (拖动保护默认开启,
+    // 2026-08 用户拍板: 只要建立跟随就保护他).
     Attachment att;
     att.fromBlockId = w2.blockId;
     att.fromPointId = w2.startId;
@@ -769,9 +787,9 @@ void TestAuxLayer::workingConnectionStaysUnlocked()
     att.toPointId   = w1.endId;
     QVERIFY(doc.addAttachment(att));
     QVERIFY(doc.attachments().size() == 1);
-    QVERIFY2(!doc.attachments()[0].isLocked, "working connection must default unlocked");
+    QVERIFY2(doc.attachments()[0].isLocked, "working connection must default locked (拖动保护)");
 
-    // Manual lock/unlock round-trip (属性面板锁定开关).
+    // Manual lock/unlock round-trip (属性面板拖动保护开关).
     const QUuid attId = doc.attachments()[0].id;
     doc.setAttachmentLocked(attId, true);
     QVERIFY(doc.attachments()[0].isLocked);
@@ -783,7 +801,7 @@ void TestAuxLayer::workingConnectionStaysUnlocked()
 void TestAuxLayer::lockedClosureWeldsChain()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     // A(leader) ← B(follower) ← C(follower), all locked: dragging A must
     // weld B AND C into the drag set (递归焊接闭包).
     const LineRef a = makeLineBlock(doc, 1, Vec2(0.0, 0.0), 100.0);
@@ -807,19 +825,21 @@ void TestAuxLayer::lockedClosureWeldsChain()
     QVERIFY(closure.contains(b.blockId));
     QVERIFY(closure.contains(c.blockId));
 
-    // An unlocked sibling does NOT get welded in.
+    // An unlocked sibling does NOT get welded in (新建默认锁定, 此处通过
+    // setAttachmentLocked 模拟用户在属性面板取消拖动保护).
     const LineRef d = makeLineBlock(doc, 1, Vec2(0.0, 200.0), 30.0);
     Attachment bd;
     bd.fromBlockId = d.blockId; bd.fromPointId = d.startId;
     bd.toBlockId   = b.blockId; bd.toPointId   = b.startId;
-    QVERIFY(doc.addAttachment(bd));  // not locked
+    QVERIFY(doc.addAttachment(bd));
+    doc.setAttachmentLocked(bd.id, false);
     QCOMPARE(doc.lockedClosure({a.blockId}).size(), 3);
 }
 
 void TestAuxLayer::lockedDragMovesWholePair()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);  // aux active so the follower line is clickable
+    doc.setActiveLayer(layerIdAt(doc, 0));  // aux active so the follower line is clickable
     // NOTE: the scene must exist BEFORE addBlock — CanvasScene only listens
     // to blockAdded; pre-existing blocks would have no item (not clickable).
     CanvasScene scene(&doc);
@@ -831,6 +851,7 @@ void TestAuxLayer::lockedDragMovesWholePair()
     att.fromPointId = aux.startId;
     att.toBlockId   = w.blockId;
     att.toPointId   = w.startId;
+    att.followerAngle = 180.0;   // 闭合基准: 180° = 沿 leader 起点出口方向朝左展开
     QVERIFY(doc.addAttachment(att));   // auto-locked (aux)
     QVERIFY(doc.attachments()[0].isLocked);
     doc.resolveAll();
@@ -901,7 +922,7 @@ void TestAuxLayer::lockedDragMovesWholePair()
 void TestAuxLayer::dragLeaderKeepsFollower()
 {
     ParamDocument doc;
-    doc.setActiveLayer(1);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     // NOTE: scene before addBlock (see lockedDragMovesWholePair).
     CanvasScene scene(&doc);
     const LineRef w1 = makeLineBlock(doc, 1, Vec2(0.0, 0.0), 100.0);
@@ -912,7 +933,7 @@ void TestAuxLayer::dragLeaderKeepsFollower()
     att.fromPointId = w2.startId;
     att.toBlockId   = w1.blockId;
     att.toPointId   = w1.startId;
-    QVERIFY(doc.addAttachment(att));   // plain (unlocked) working connection
+    QVERIFY(doc.addAttachment(att));   // working connection (默认拖动保护)
     doc.resolveAll();
     QVERIFY(doc.findBlock(w2.blockId)->worldPos(w2.startId)
                 .distanceTo(doc.findBlock(w1.blockId)->worldPos(w1.startId)) < 1e-6);
@@ -956,8 +977,10 @@ void TestAuxLayer::dragLeaderKeepsFollower()
     sendMouse(QEvent::MouseButtonRelease, vp(195.0, 0.0), Qt::LeftButton,
               Qt::NoModifier);
 
-    // 方向感知拆除: dragging the LEADER keeps the plain connection alive and
+    // 方向感知拆除: dragging the LEADER keeps the connection alive and
     // the follower tracks (old behaviour tore it apart → follower dropped).
+    // The connection is 拖动保护 locked by default, which also welds —
+    // the follower is dragged along and re-settled onto the leader start.
     QCOMPARE(doc.attachments().size(), size_t(1));
     QVERIFY(doc.findBlock(w2.blockId)->worldPos(w2.startId)
                 .distanceTo(doc.findBlock(w1.blockId)->worldPos(w1.startId)) < 1e-6);

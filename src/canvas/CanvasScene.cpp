@@ -41,7 +41,7 @@ CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
         connect(m_paramDoc, &cad::param::ParamDocument::layersChanged,
                 this, &CanvasScene::refreshAllBlockItems);
         connect(m_paramDoc, &cad::param::ParamDocument::activeLayerChanged,
-                this, [this](int) { refreshAllBlockItems(); });
+                this, [this](const QUuid&) { refreshAllBlockItems(); });
         connect(m_paramDoc, &cad::param::ParamDocument::groupsChanged,
                 this, &CanvasScene::reconcileGroupBadges);
         connect(m_paramDoc, &cad::param::ParamDocument::documentReset,
@@ -131,6 +131,25 @@ void CanvasScene::selectBlock(const QUuid& blockId)
         item->setSelected(true);
 }
 
+void CanvasScene::setForceShowName(bool on)
+{
+    if (m_forceShowName == on) return;
+    m_forceShowName = on;
+    // Repaint only: geometry/caches are untouched (pure display overlay).
+    for (auto* item : m_blockItems)
+        item->update();
+    emit forceShowChanged(m_forceShowName, m_forceShowLength);
+}
+
+void CanvasScene::setForceShowLength(bool on)
+{
+    if (m_forceShowLength == on) return;
+    m_forceShowLength = on;
+    for (auto* item : m_blockItems)
+        item->update();
+    emit forceShowChanged(m_forceShowName, m_forceShowLength);
+}
+
 void CanvasScene::notifyGroupInfoChanged()
 {
     emit groupInfoChanged();
@@ -148,6 +167,12 @@ void CanvasScene::setStyle(const CanvasStyle& s)
     m_style = s;
     // Full scene repaint with new tokens.
     update();
+    // Pattern-paper ground follows the theme: the background brush lives on
+    // each view (only the view paints it), so sync every attached view here —
+    // the single authoritative theme-switch path (constructor + toggleTheme).
+    // QGraphicsView base is enough: no CanvasView-specific API is needed.
+    for (QGraphicsView* v : views())
+        v->setBackgroundBrush(m_style.canvasBackground);
 }
 
 void CanvasScene::showToast(const QString& text)
@@ -386,6 +411,16 @@ void CanvasScene::setGroupSelected(const QSet<QUuid>& groupIds)
     if (m_selectedGroups == groupIds) return;
     m_selectedGroups = groupIds;
     updateBadgeAccents();
+}
+
+void CanvasScene::notifyLineCreated(const QUuid& blockId, const QUuid& segmentId)
+{
+    emit lineCreated(blockId, segmentId);
+}
+
+void CanvasScene::notifyLinePreview(double lenCm, double angleDeg)
+{
+    emit linePreviewChanged(lenCm, angleDeg);
 }
 
 void CanvasScene::onBadgeHover(const QUuid& groupId, bool hovered)

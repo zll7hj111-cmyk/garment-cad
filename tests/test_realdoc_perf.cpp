@@ -1,4 +1,4 @@
-/// @file test_realdoc_perf.cpp
+﻿/// @file test_realdoc_perf.cpp
 /// Per-frame drag-cost breakdown on a REAL user document (.gcad).
 ///
 /// Loads the document given in env var GCAD_DOC (or argv[1]) and simulates
@@ -32,6 +32,14 @@ using cad::geo::Vec2;
 
 namespace {
 
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
 double medianUs(std::vector<double>& v)
 {
     if (v.empty()) return 0.0;
@@ -58,7 +66,7 @@ void printDocStats(const ParamDocument& doc)
             if (s.type == SegmentType::Line) ++segs;
             else ++curves;
         }
-        if (b.layer == 0) ++auxBlocks; else ++workBlocks;
+        if (b.layer == doc.auxLayerId()) ++auxBlocks; else ++workBlocks;
     }
     qInfo().noquote() << QStringLiteral(
         "[realdoc] blocks=%1 (work=%2 aux=%3) points=%4 (aux=%5 free=%6) "
@@ -126,7 +134,7 @@ void TestRealdocPerf::dragFrameBreakdown()
     QUuid dragId;
     int bestFollowers = -1;
     for (const auto& b : doc.blocks()) {
-        if (b.layer == 0) continue;
+        if (b.layer == doc.auxLayerId()) continue;
         const int f = followerCount(doc, b.id);
         if (f > bestFollowers) { bestFollowers = f; dragId = b.id; }
     }
@@ -160,7 +168,7 @@ void TestRealdocPerf::dragFrameBreakdown()
     {
         std::vector<double> medians;
         for (const auto& b : doc.blocks()) {
-            if (b.layer == 0) continue;
+            if (b.layer == doc.auxLayerId()) continue;
             Block* blk = doc.findBlock(b.id);
             const Vec2 origin = blk->transform.origin;
             std::vector<double> us;

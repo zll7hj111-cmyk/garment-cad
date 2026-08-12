@@ -61,8 +61,8 @@ public:
     /// @param diagnostics Optional out-vector receiving issues found during
     ///                    resolution (cleared first; left untouched if null).
     /// @param scope       Layer group to resolve (see Scope).
-    /// @param auxLayerIndex Layer index of the auxiliary calculation layer;
-    ///                    only consulted when @p scope != All.
+    /// @param auxLayerId  Stable id (Layer::id) of the auxiliary calculation
+    ///                    layer; only consulted when @p scope != All.
     /// @param affectedOnly Optional block-id subset. When non-null, ONLY blocks
     ///                    in the set may move; everything else is a static
     ///                    reference (same semantics as out-of-scope blocks).
@@ -74,7 +74,7 @@ public:
                            const QHash<QString, QList<Condition>>& conditioned = {},
                            std::vector<ResolveDiagnostic>* diagnostics = nullptr,
                            Scope scope = Scope::All,
-                           int auxLayerIndex = 0,
+                           const QUuid& auxLayerId = QUuid(),
                            const QSet<QUuid>* affectedOnly = nullptr);
 
 private:

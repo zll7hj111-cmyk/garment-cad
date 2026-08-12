@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QLabel>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QUndoStack>
@@ -19,6 +20,8 @@
 #include "tools/ToolManager.h"
 #include "tools/ToolRotate.h"
 #include "tools/AngleHud.h"
+#include "tools/LinePropertyDialog.h"
+#include "ElaLineEdit.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Duplicate.h"
 #include "document/commands/BlockCommands.h"
@@ -28,6 +31,7 @@ using namespace cad::param;
 using cad::geo::Vec2;
 using cad::test::makeLine;
 using cad::test::LineSetup;
+using cad::test::layerIdAt;
 
 namespace {
 
@@ -98,22 +102,30 @@ private slots:
 
     // ── UI 层完整事件链 ──
     void ctrlDragRotateCopyCommits();
+    void diagonalFreeLineCopyOverlapsOriginal();
     void ctrlDragZeroAngleDiscards();
     void escCancelsCopy();
     void consecutiveCopiesAllAttachToOriginal();
+    void rotateCopyCommitHidesHud();
 
     // ── 公式锁定跟随线 ──
     void lockedFollowerRotationBakesFormula();
     void lockedFollowerRotateCopyWorks();
+    void modeSwitchKeepsFormula();
+    void propertyDialogShowsFollowValue();
 
     // ── 终点指向 (endTarget) 锁定 ──
     void endTargetRotationReleasesAim();
     void endTargetRotateCopyDropsAim();
+    void endTargetRotateCopyKeepsOriginalAim();
+    void endTargetRotateCopyIdleGestureKeepsOriginalAim();
+    void endTargetRotateCopyUndoRedoKeepsOriginalAim();
+    void midGestureCtrlConvertsToCopy();
 
     // ── 锚心切换 (起点 ↔ 终点) ──
     void xToggleSwitchesAnchorToEndPoint();
     void clickEndPointSwitchesAnchor();
-    void followerEndAnchorRotateReleasesLink();
+    void connectedLineXAnchorSwitchBlocked();
     void endAnchorRotateCopyAttachesToEnd();
     void endAnchorLineFollowsCursor();
 
@@ -125,7 +137,7 @@ private slots:
 void TestRotateCopy::cloneAttachesToOriginalWithRelativeAngle()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     const LineSetup a = makeLine(doc, 100.0);   // horizontal at origin
     doc.resolveAll();
 
@@ -139,11 +151,12 @@ void TestRotateCopy::cloneAttachesToOriginalWithRelativeAngle()
         doc.addLinked(lv);
     doc.addBlock(clone);
     QVERIFY(doc.addAttachment(
-        attachCloneToOriginal(doc, clone, a.blockId, a, 210.0)));
+        attachCloneToOriginal(doc, clone, a.blockId, a, -30.0)));
     doc.resolveAll();
 
-    // Stored 210° = 180°(起点出口反向) + 30° → clone is 30° CCW of the
-    // original (relative-angle semantics of the rotate-copy gesture).
+    // Stored −30° (闭合基准 2026-08: 0° = 折叠重叠, 180° = 直行延续; 起点
+    // 出口反向) → clone is 30° CCW of the original (relative-angle semantics
+    // of the rotate-copy gesture).
     const Block* orig = doc.findBlock(a.blockId);
     const Block* cln = doc.findBlock(clone.id);
     QVERIFY(orig && cln);
@@ -155,7 +168,7 @@ void TestRotateCopy::cloneAttachesToOriginalWithRelativeAngle()
 void TestRotateCopy::cloneFollowsOriginalRotation()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     const LineSetup a = makeLine(doc, 100.0);
     doc.resolveAll();
 
@@ -164,10 +177,11 @@ void TestRotateCopy::cloneFollowsOriginalRotation()
     for (const auto& lv : r.newLinked)
         doc.addLinked(lv);
     doc.addBlock(clone);
-    doc.addAttachment(attachCloneToOriginal(doc, clone, a.blockId, a, 210.0));
+    doc.addAttachment(attachCloneToOriginal(doc, clone, a.blockId, a, -30.0));
     doc.resolveAll();
 
-    // Relative angle = stored − 180° = 30° before and 75° after the 45° turn.
+    // Relative angle = 180° − (−30°) − 180° = 30° before and 75° after the
+    // 45° turn (闭合基准存储).
     QVERIFY(std::abs(worldAngleDeg(doc, clone.id) - 30.0) < 1e-6);
 
     // Rotate the ORIGINAL 45° about its start → the clone keeps its 30°
@@ -192,7 +206,7 @@ void TestRotateCopy::cloneFollowsOriginalRotation()
 void TestRotateCopy::rotateCopyCommandUndoRedo()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     const LineSetup a = makeLine(doc, 100.0);
     doc.resolveAll();
 
@@ -202,11 +216,12 @@ void TestRotateCopy::rotateCopyCommandUndoRedo()
     QUndoStack stack;
     stack.push(new cad::cmd::RotateCopyCommand(
         &doc, std::move(r), a.blockId, a.startId,
-        clone.points.front().id, a.segId, 60.0));
+        clone.points.front().id, a.segId, 120.0));
     QCOMPARE(doc.blocks().size(), size_t(2));
     QVERIFY(doc.findBlock(clone.id) != nullptr);
     QVERIFY(cloneAttachment(doc, clone.id, a.blockId) != nullptr);
-    // Stored 60° (model angle) → world = 180 + 60 = 240 ≡ −120°.
+    // Stored 120° (闭合基准存储值, 挂起点 → refWorld = 180°):
+    // world = refWorld + 180° − 120° = 240° ≡ −120°.
     QVERIFY(std::abs(worldAngleDeg(doc, clone.id) + 120.0) < 1e-6);
 
     stack.undo();
@@ -224,7 +239,7 @@ void TestRotateCopy::rotateCopyCommandUndoRedo()
 void TestRotateCopy::formulaLockedOriginalCopyIsFree()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     // Leader B + follower A whose follower angle is FORMULA-locked.
     const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
     const LineSetup a = makeLine(doc, 60.0);
@@ -244,13 +259,13 @@ void TestRotateCopy::formulaLockedOriginalCopyIsFree()
     DuplicateResult r = duplicateBlocks(doc, {a.blockId});
     const Block& clone = r.blocks.front();
     doc.addBlock(clone);
-    doc.addAttachment(attachCloneToOriginal(doc, clone, a.blockId, a, 10.0));
+    doc.addAttachment(attachCloneToOriginal(doc, clone, a.blockId, a, 170.0));
     doc.resolveAll();
 
     const Attachment* ca = cloneAttachment(doc, clone.id, a.blockId);
     QVERIFY(ca);
     QVERIFY(ca->followerAngleFormula.isEmpty());   // 副本自动去公式
-    QVERIFY(std::abs(ca->followerAngle - 10.0) < 1e-9);
+    QVERIFY(std::abs(ca->followerAngle - 170.0) < 1e-9);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -261,7 +276,7 @@ void TestRotateCopy::formulaLockedOriginalCopyIsFree()
 void TestRotateCopy::ctrlDragRotateCopyCommits()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);
     doc.resolveAll();
@@ -311,7 +326,8 @@ void TestRotateCopy::ctrlDragRotateCopyCommits()
         if (b.id != a.blockId) { cln = &b; break; }
     QVERIFY(cln);
     QVERIFY(cloneAttachment(doc, cln->id, a.blockId) != nullptr);
-    // Dragging 90° CCW around the start point → clone 90° CCW of original.
+    // Dragging 90° CCW around the start point → clone at 90° CCW of the
+    // original (复制基准 2026-08: 0° 相对角 = 与原线重叠，与锚心无关).
     QVERIFY(std::abs(worldAngleDeg(doc, cln->id) - 90.0) < 1e-6);
 
     // 3) Undo removes the copy in ONE step.
@@ -320,10 +336,84 @@ void TestRotateCopy::ctrlDragRotateCopyCommits()
     QCOMPARE(doc.attachments().size(), size_t(0));
 }
 
+// 对角自由线的旋转复制：副本 0° 必须精确重叠原线（复制基准 2026-08 定稿；
+// 旧基准"锚心偏移 0/180°"只对水平线碰巧正确，对角/连接线差 180°−α —
+// 用户报告"复制以 180° 创建"）。
+void TestRotateCopy::diagonalFreeLineCopyOverlapsOriginal()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);
+    if (auto* blk = doc.findBlock(a.blockId))
+        blk->transform.rotation = M_PI / 4.0;   // 45° 对角自由线（绕原点）
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton,
+                       mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 1) Click selects the 45° line (Idle → Ready); anchor = start point (0,0).
+    const QPoint hit = vp(35.0, 35.0);   // scene (35,35) — on the diagonal
+    sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, hit, Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(doc.blocks().size(), size_t(1));
+
+    // 2) Ctrl+press ONLY (no drag yet): the clone must overlap the original
+    //    exactly — 45°, not 45°−180° = −135° (the reported bug).
+    sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::ControlModifier);
+    QCOMPARE(doc.blocks().size(), size_t(2));
+    const Block* pre = nullptr;
+    for (const auto& b : doc.blocks())
+        if (b.id != a.blockId) { pre = &b; break; }
+    QVERIFY(pre);
+    QVERIFY(std::abs(worldAngleDeg(doc, pre->id) - 45.0) < 1e-6);
+
+    // 3) Drag +90° CCW (θ0 = 45° at press, θ1 = 135° at (−50,50)) → release.
+    sendMouse(QEvent::MouseMove, vp(-50.0, 50.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(-50.0, 50.0), Qt::LeftButton,
+              Qt::ControlModifier);
+
+    QCOMPARE(doc.blocks().size(), size_t(2));   // original + clone
+    const Block* cln = nullptr;
+    for (const auto& b : doc.blocks())
+        if (b.id != a.blockId) { cln = &b; break; }
+    QVERIFY(cln);
+    // 副本 = 原线朝向 45° + 相对角 90° = 135°（旧代码 45 − 180 + 90 = −45）。
+    QVERIFY(std::abs(worldAngleDeg(doc, cln->id) - 135.0) < 1e-6);
+
+    // 4) Undo removes the copy in ONE step.
+    stack.undo();
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    QCOMPARE(doc.attachments().size(), size_t(0));
+}
+
 void TestRotateCopy::ctrlDragZeroAngleDiscards()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);
     doc.resolveAll();
@@ -373,7 +463,7 @@ void TestRotateCopy::ctrlDragZeroAngleDiscards()
 void TestRotateCopy::escCancelsCopy()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);
     doc.resolveAll();
@@ -423,7 +513,7 @@ void TestRotateCopy::escCancelsCopy()
 void TestRotateCopy::consecutiveCopiesAllAttachToOriginal()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);
     doc.resolveAll();
@@ -479,8 +569,77 @@ void TestRotateCopy::consecutiveCopiesAllAttachToOriginal()
         relAngles << worldAngleDeg(doc, b.id);
     }
     QCOMPARE(relAngles.size(), 2);
+    // 复制基准 2026-08: 副本绝对角 = 原线朝向 + 相对角 → 90° 与 180°
+    // （相对 180° = 沿原线正向延伸）。
     QVERIFY(relAngles.contains(90.0));
     QVERIFY(relAngles.contains(180.0));
+}
+
+// 旋转复制提交后 HUD 必须隐藏：输入框目标会悄然从“副本相对角度”切回
+// “原线角度”，用户继续输入表达式/数值会作用到原线段（用户回归：复制
+// 后输入表达式作用在原线上）。连续复制时 HUD 恢复显示副本编辑。
+void TestRotateCopy::rotateCopyCommitHidesHud()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);   // (0,0)→(100,0)
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    const QPoint mid = vp(50.0, 0.0);
+    // 选中 A → HUD 显示。
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoModifier);
+    auto* hud = view.viewport()->findChild<cad::tools::AngleHud*>();
+    QVERIFY(hud);
+    QVERIFY(hud->isVisible());
+
+    // Ctrl+拖动 90° → 提交。
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, vp(0.0, 50.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(0.0, 50.0), Qt::LeftButton,
+              Qt::ControlModifier);
+    QCOMPARE(doc.blocks().size(), size_t(2));
+    // 提交后 HUD 隐藏（副本编辑语义终结）。
+    QVERIFY(!hud->isVisible());
+
+    // 防御：即使输入回调被触发（HUD 隐藏期间），原线角度也绝不变。
+    const double angleBefore = worldAngleDeg(doc, a.blockId);
+    hud->onTextChanged(QStringLiteral("45"));
+    QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - angleBefore) < 1e-9);
+
+    // 连续复制：再次 Ctrl+press → HUD 恢复显示（副本相对角度编辑）。
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::ControlModifier);
+    QVERIFY(hud->isVisible());
+    sendMouse(QEvent::MouseMove, vp(0.0, 100.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(0.0, 100.0), Qt::LeftButton,
+              Qt::ControlModifier);
+    QCOMPARE(doc.blocks().size(), size_t(3));
+    // 第二次提交后再次隐藏。
+    QVERIFY(!hud->isVisible());
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -508,8 +667,8 @@ LockedFollowerSetup makeLockedFollower(ParamDocument& doc)
     conn.toBlockId = s.b.blockId;
     conn.toPointId = s.b.endId;
     conn.toSegmentId = s.b.segId;
-    conn.followerAngle = 45.0;
-    conn.followerAngleFormula = QStringLiteral("45");   // 公式锁定
+    conn.followerAngle = 135.0;   // 闭合基准: 世界角保持 45°（180°−45°）
+    conn.followerAngleFormula = QStringLiteral("135");   // 公式锁定
     doc.addAttachment(conn);
     doc.resolveAll();
     return s;
@@ -522,7 +681,7 @@ LockedFollowerSetup makeLockedFollower(ParamDocument& doc)
 void TestRotateCopy::lockedFollowerRotationBakesFormula()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LockedFollowerSetup s = makeLockedFollower(doc);
     QVERIFY(doc.diagnostics().empty());
@@ -571,14 +730,14 @@ void TestRotateCopy::lockedFollowerRotationBakesFormula()
     stack.undo();
     const Attachment* ca2 = followerAttachmentOf(doc, s.a.blockId);
     QVERIFY(ca2);
-    QCOMPARE(ca2->followerAngleFormula, QStringLiteral("45"));
+    QCOMPARE(ca2->followerAngleFormula, QStringLiteral("135"));
 }
 
 // 锁定跟随线的旋转复制：Ctrl+press 拖动 → 副本出现，副本自身无公式。
 void TestRotateCopy::lockedFollowerRotateCopyWorks()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LockedFollowerSetup s = makeLockedFollower(doc);
     QVERIFY(doc.diagnostics().empty());
@@ -625,8 +784,237 @@ void TestRotateCopy::lockedFollowerRotateCopyWorks()
     const Attachment* ca = cloneAttachment(doc, cln->id, s.a.blockId);
     QVERIFY(ca);
     QVERIFY(ca->followerAngleFormula.isEmpty());         // 副本无公式
-    // 副本绝对角度 = A 朝向(45°) + 相对 45° = 90°.
+    // 复制基准 2026-08 定稿: 副本 0° = 与原线精确重叠（A 世界朝向 45°），
+    // 拖动 +45° CCW → 副本 = 45° + 45° = 90°（旧基准差 180°−α = 135°:
+    // 副本落在 −90°，相对角语义全部错位 —— 用户报告"复制以 180° 创建"）。
     QVERIFY(std::abs(worldAngleDeg(doc, cln->id) - 90.0) < 1e-6);
+}
+
+// 弧长/角度表达式锁定：HUD 切换角度↔弧长模式只是显示单位变化，绝不把
+// 表达式换算烘焙成数值（用户要求：弧长用表达式时不能自己换算成数值）。
+void TestRotateCopy::modeSwitchKeepsFormula()
+{
+    // ── 场景 1：角度表达式锁定，切到弧长模式 → 拒绝且公式保留 ──
+    {
+        ParamDocument doc;
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        CanvasScene scene(&doc);
+        const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+        const LineSetup a = makeLine(doc, 60.0);
+        Attachment conn;
+        conn.fromBlockId = a.blockId;
+        conn.fromPointId = a.startId;
+        conn.toBlockId = b.blockId;
+        conn.toPointId = b.endId;
+        conn.toSegmentId = b.segId;
+        conn.followerAngle = 45.0;
+        conn.followerAngleFormula = QStringLiteral("45");   // 角度表达式锁定
+        doc.addAttachment(conn);
+        doc.resolveAll();
+        QVERIFY(doc.diagnostics().empty());
+
+        CanvasView view(&scene);
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+        QTest::qWait(80);
+
+        cad::tools::ToolManager tm(&scene);
+        tm.setParamDocument(&doc);
+        QUndoStack stack;
+        tm.setUndoStack(&stack);
+        tm.switchTool(cad::tools::ToolType::Rotate);
+        view.setToolManager(&tm);
+
+        auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+        auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                             Qt::KeyboardModifiers mods) {
+            const QPoint global = view.viewport()->mapToGlobal(pos);
+            QMouseEvent ev(type, pos, global, btn,
+                           btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+            QApplication::sendEvent(view.viewport(), &ev);
+            QTest::qWait(20);
+        };
+
+        // 选中 A（锚心=挂接点 → Connected/Angle 模式）。
+        sendMouse(QEvent::MouseButtonPress, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+        sendMouse(QEvent::MouseButtonRelease, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+        auto* hud = view.viewport()->findChild<cad::tools::AngleHud*>();
+        QVERIFY(hud);
+
+        // 切到弧长模式：公式锁定 → 拒绝，表达式必须原样保留。
+        hud->onModeChanged(cad::param::RotationMode::ArcLength);
+        const Attachment* att = followerAttachmentOf(doc, a.blockId);
+        QVERIFY(att);
+        QCOMPARE(att->rotationMode, cad::param::RotationMode::Angle);
+        QCOMPARE(att->followerAngleFormula, QStringLiteral("45"));   // 未被烘焙
+    }
+
+    // ── 场景 2：弧长表达式锁定，切到角度模式 → 拒绝且公式保留 ──
+    {
+        ParamDocument doc;
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        CanvasScene scene(&doc);
+        const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+        const LineSetup a = makeLine(doc, 60.0);   // radius 60mm
+        Attachment conn;
+        conn.fromBlockId = a.blockId;
+        conn.fromPointId = a.startId;
+        conn.toBlockId = b.blockId;
+        conn.toPointId = b.endId;
+        conn.toSegmentId = b.segId;
+        conn.rotationMode = cad::param::RotationMode::ArcLength;
+        conn.arcLength = 47.1238898038469;   // ≈ 45° 的弧长（弧度 × 半径）
+        conn.arcLengthFormula = QStringLiteral("10");   // 弧长表达式锁定 (cm)
+        doc.addAttachment(conn);
+        doc.resolveAll();
+        QVERIFY(doc.diagnostics().empty());
+
+        CanvasView view(&scene);
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+        QTest::qWait(80);
+
+        cad::tools::ToolManager tm(&scene);
+        tm.setParamDocument(&doc);
+        QUndoStack stack;
+        tm.setUndoStack(&stack);
+        tm.switchTool(cad::tools::ToolType::Rotate);
+        view.setToolManager(&tm);
+
+        auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+        auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                             Qt::KeyboardModifiers mods) {
+            const QPoint global = view.viewport()->mapToGlobal(pos);
+            QMouseEvent ev(type, pos, global, btn,
+                           btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+            QApplication::sendEvent(view.viewport(), &ev);
+            QTest::qWait(20);
+        };
+
+        sendMouse(QEvent::MouseButtonPress, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+        sendMouse(QEvent::MouseButtonRelease, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+        auto* hud = view.viewport()->findChild<cad::tools::AngleHud*>();
+        QVERIFY(hud);
+
+        // 切到角度模式：弧长公式锁定 → 拒绝，表达式必须原样保留。
+        hud->onModeChanged(cad::param::RotationMode::Angle);
+        const Attachment* att = followerAttachmentOf(doc, a.blockId);
+        QVERIFY(att);
+        QCOMPARE(att->rotationMode, cad::param::RotationMode::ArcLength);
+        QCOMPARE(att->arcLengthFormula, QStringLiteral("10"));   // 未被烘焙
+    }
+}
+
+// 属性对话框：跟随角度/弧长表达式线必须在输入框旁显示当前计算值
+// （表达式不直观，用户要求：看到公式也要看到值）。
+void TestRotateCopy::propertyDialogShowsFollowValue()
+{
+    // ── 场景 1：跟随角度表达式 → 显示 = 45° ──
+    {
+        ParamDocument doc;
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        CanvasScene scene(&doc);
+        const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+        const LineSetup a = makeLine(doc, 60.0);
+        Attachment conn;
+        conn.fromBlockId = a.blockId;
+        conn.fromPointId = a.startId;
+        conn.toBlockId = b.blockId;
+        conn.toPointId = b.endId;
+        conn.toSegmentId = b.segId;
+        conn.followerAngle = 45.0;
+        conn.followerAngleFormula = QStringLiteral("45");   // 表达式
+        doc.addAttachment(conn);
+        doc.resolveAll();
+        QVERIFY(doc.diagnostics().empty());
+
+        CanvasView view(&scene);
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+        QTest::qWait(80);
+
+        auto* dlg = new cad::tools::LinePropertyDialog(
+            a.blockId, a.segId, &doc, &scene, &view);
+        dlg->show();
+        QTest::qWait(50);
+        auto* val = dlg->findChild<QLabel*>(QStringLiteral("followValueLabel"));
+        QVERIFY(val);
+        QVERIFY(val->isVisible());                       // 公式线显示当前值
+        QCOMPARE(val->text(), QStringLiteral("= 45°"));
+        delete dlg;
+    }
+
+    // ── 场景 2：弧长表达式 → 显示 = 10.00 cm ──
+    {
+        ParamDocument doc;
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        CanvasScene scene(&doc);
+        const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+        const LineSetup a = makeLine(doc, 60.0);
+        Attachment conn;
+        conn.fromBlockId = a.blockId;
+        conn.fromPointId = a.startId;
+        conn.toBlockId = b.blockId;
+        conn.toPointId = b.endId;
+        conn.toSegmentId = b.segId;
+        conn.rotationMode = cad::param::RotationMode::ArcLength;
+        conn.arcLength = 0.0;
+        conn.arcLengthFormula = QStringLiteral("10");   // 弧长表达式 (cm)
+        doc.addAttachment(conn);
+        doc.resolveAll();
+        QVERIFY(doc.diagnostics().empty());
+
+        CanvasView view(&scene);
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+        QTest::qWait(80);
+
+        auto* dlg = new cad::tools::LinePropertyDialog(
+            a.blockId, a.segId, &doc, &scene, &view);
+        dlg->show();
+        QTest::qWait(50);
+        auto* val = dlg->findChild<QLabel*>(QStringLiteral("followValueLabel"));
+        QVERIFY(val);
+        QVERIFY(val->isVisible());
+        QCOMPARE(val->text(), QStringLiteral("= 10.00 cm"));
+        delete dlg;
+    }
+
+    // ── 场景 3：自由线绝对角度表达式（智能笔创建态同路径）
+    // → 显示 = 45°（逆时针为正 2026-08 v3 定稿：绝对角度 = 世界角，无镜像） ──
+    {
+        ParamDocument doc;
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        CanvasScene scene(&doc);
+        const LineSetup a = makeLine(doc, 100.0);   // (0,0)→(100,0) Polar
+        auto* blk = doc.findBlock(a.blockId);
+        QVERIFY(blk);
+        auto* ep = blk->findPoint(blk->segments.front().endPointId);
+        QVERIFY(ep);
+        ep->angleFormula = QStringLiteral("45");   // 绝对角度表达式
+        doc.resolveAll();
+        QVERIFY(doc.diagnostics().empty());
+
+        CanvasView view(&scene);
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+        QTest::qWait(80);
+
+        auto* dlg = new cad::tools::LinePropertyDialog(
+            a.blockId, a.segId, &doc, &scene, &view);
+        dlg->show();
+        QTest::qWait(50);
+        auto* val = dlg->findChild<QLabel*>(QStringLiteral("followValueLabel"));
+        QVERIFY(val);
+        QVERIFY(val->isVisible());
+        QCOMPARE(val->text(), QStringLiteral("= 45°"));
+        delete dlg;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -666,7 +1054,7 @@ AimLineSetup makeAimLine(ParamDocument& doc)
 void TestRotateCopy::endTargetRotationReleasesAim()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const AimLineSetup s = makeAimLine(doc);
     QVERIFY(doc.diagnostics().empty());
@@ -725,7 +1113,7 @@ void TestRotateCopy::endTargetRotationReleasesAim()
 void TestRotateCopy::endTargetRotateCopyDropsAim()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const AimLineSetup s = makeAimLine(doc);
     QVERIFY(doc.diagnostics().empty());
@@ -771,8 +1159,245 @@ void TestRotateCopy::endTargetRotateCopyDropsAim()
             { cln = &b; break; }
     QVERIFY(cln);
     QVERIFY(cln->endTargetBlockId.isNull());           // 副本无指向
-    // 副本绝对角度 = A 指向角(45°) + 相对 90° = 135°.
+    // 锚心语义: 副本 0° = 与原线重叠，相对 +90° → 副本绝对角度 =
+    // 45° + 90° = 135°（复制基准 2026-08）。
     QVERIFY(std::abs(worldAngleDeg(doc, cln->id) - 135.0) < 1e-6);
+}
+
+// 旋转复制只清副本的终点指向，原块的指向必须保留（用户回归: 辅助层 L246
+// 旋转复制后原线指向被误删）。
+void TestRotateCopy::endTargetRotateCopyKeepsOriginalAim()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const AimLineSetup s = makeAimLine(doc);
+    QVERIFY(doc.diagnostics().empty());
+    const Block* blk0 = doc.findBlock(s.a.blockId);
+    QVERIFY(!blk0->endTargetBlockId.isNull());   // 前提: A 带指向
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // Select A, then Ctrl+drag a rotate-copy 90° CCW.
+    const QPoint mid = vp(35.36, 35.36);
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, vp(-50.0, 50.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(-50.0, 50.0), Qt::LeftButton,
+              Qt::ControlModifier);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));          // T + A + clone
+    const Block* orig = doc.findBlock(s.a.blockId);
+    QVERIFY(orig);
+    // 原块指向必须保留（只副本被清）。
+    QVERIFY(!orig->endTargetBlockId.isNull());
+    QCOMPARE(orig->endTargetPointId, s.targetPointId);
+    bool targetAlive = false;
+    for (const auto& b : doc.blocks())
+        if (b.id == orig->endTargetBlockId) { targetAlive = true; break; }
+    QVERIFY(targetAlive);
+    const Block* cln = nullptr;
+    for (const auto& b : doc.blocks())
+        if (b.id != s.a.blockId && cloneAttachment(doc, b.id, s.a.blockId))
+            { cln = &b; break; }
+    QVERIFY(cln);
+    QVERIFY(cln->endTargetBlockId.isNull());           // 副本无指向
+}
+
+// Idle 状态下一次手势 Ctrl+press（选中+复制同一步）也不许删原块指向。
+void TestRotateCopy::endTargetRotateCopyIdleGestureKeepsOriginalAim()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const AimLineSetup s = makeAimLine(doc);
+    QVERIFY(doc.diagnostics().empty());
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 直接 Ctrl+press（Idle → select + beginRotateCopy 一步）。
+    const QPoint mid = vp(35.36, 35.36);
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, vp(-50.0, 50.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(-50.0, 50.0), Qt::LeftButton,
+              Qt::ControlModifier);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));
+    const Block* orig = doc.findBlock(s.a.blockId);
+    QVERIFY(orig);
+    QVERIFY(!orig->endTargetBlockId.isNull());          // 原块指向保留
+    QCOMPARE(orig->endTargetPointId, s.targetPointId);
+    const Block* cln = nullptr;
+    for (const auto& b : doc.blocks())
+        if (b.id != s.a.blockId && cloneAttachment(doc, b.id, s.a.blockId))
+            { cln = &b; break; }
+    QVERIFY(cln);
+    QVERIFY(cln->endTargetBlockId.isNull());            // 副本无指向
+}
+
+// 旋转复制 → undo → redo 全程，原块指向保持（undo 只删副本）。
+void TestRotateCopy::endTargetRotateCopyUndoRedoKeepsOriginalAim()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const AimLineSetup s = makeAimLine(doc);
+    QVERIFY(doc.diagnostics().empty());
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    const QPoint mid = vp(35.36, 35.36);
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, vp(-50.0, 50.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(-50.0, 50.0), Qt::LeftButton,
+              Qt::ControlModifier);
+    QCOMPARE(doc.blocks().size(), size_t(3));
+
+    stack.undo();
+    QCOMPARE(doc.blocks().size(), size_t(2));           // 副本已删
+    const Block* orig = doc.findBlock(s.a.blockId);
+    QVERIFY(orig && !orig->endTargetBlockId.isNull());  // 原块指向仍在
+    QCOMPARE(orig->endTargetPointId, s.targetPointId);
+
+    stack.redo();
+    QCOMPARE(doc.blocks().size(), size_t(3));
+    const Block* orig2 = doc.findBlock(s.a.blockId);
+    QVERIFY(orig2 && !orig2->endTargetBlockId.isNull()); // redo 后仍在
+    QCOMPARE(orig2->endTargetPointId, s.targetPointId);
+}
+
+// 普通旋转拖动中途按下 Ctrl → 转为旋转复制：已转角度转移到副本，原块
+// 回弹旋转前姿态（普通旋转已清除的终点指向一并恢复）。这是用户报告的
+// “旋转复制删掉 L246 终点指向”的典型时序：先按下鼠标再按 Ctrl。
+void TestRotateCopy::midGestureCtrlConvertsToCopy()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const AimLineSetup s = makeAimLine(doc);
+    QVERIFY(doc.diagnostics().empty());
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    const QPoint mid = vp(35.36, 35.36);   // A 的中点（A 指向 T 后为 45° 斜线）
+    // 选中 A。
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoModifier);
+    // 普通旋转：press 无 Ctrl → beginRotation 清除终点指向（设计如此）。
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(doc.findBlock(s.a.blockId)->endTargetBlockId.isNull());
+    // 已转 45°（A 方向 45° → 90°）。
+    sendMouse(QEvent::MouseMove, vp(0.0, 50.0), Qt::NoButton, Qt::NoModifier);
+    QVERIFY(std::abs(worldAngleDeg(doc, s.a.blockId) - 90.0) < 1e-6);
+    // 中途按住 Ctrl 继续拖动 → 转复制：原块回弹 + 指向恢复。
+    sendMouse(QEvent::MouseMove, vp(-50.0, 50.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(-50.0, 50.0), Qt::LeftButton,
+              Qt::ControlModifier);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));          // T + A + clone
+    const Block* orig = doc.findBlock(s.a.blockId);
+    QVERIFY(orig);
+    // 终点指向已恢复（普通旋转的清除被回滚）。
+    QVERIFY(!orig->endTargetBlockId.isNull());
+    QCOMPARE(orig->endTargetPointId, s.targetPointId);
+    // 原块回弹到旋转前姿态（45°）。
+    QVERIFY(std::abs(worldAngleDeg(doc, s.a.blockId) - 45.0) < 1e-6);
+    const Block* cln = nullptr;
+    for (const auto& b : doc.blocks())
+        if (b.id != s.a.blockId && cloneAttachment(doc, b.id, s.a.blockId))
+            { cln = &b; break; }
+    QVERIFY(cln);
+    QVERIFY(cln->endTargetBlockId.isNull());           // 副本无指向
+    // 已转角度转移到副本：副本 = 原线朝向 45° + 相对角 45° = 90°
+    // （复制基准 2026-08: 0° = 与原线重叠）。
+    QVERIFY(std::abs(worldAngleDeg(doc, cln->id) - 90.0) < 1e-6);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -795,7 +1420,7 @@ void sendKeyX(CanvasView& view)
 void TestRotateCopy::xToggleSwitchesAnchorToEndPoint()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);   // (0,0) → (100,0)
     doc.resolveAll();
@@ -858,7 +1483,7 @@ void TestRotateCopy::xToggleSwitchesAnchorToEndPoint()
 void TestRotateCopy::clickEndPointSwitchesAnchor()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);   // (0,0) → (100,0)
     doc.resolveAll();
@@ -906,17 +1531,17 @@ void TestRotateCopy::clickEndPointSwitchesAnchor()
     QVERIFY(blk->worldPos(a.endId).distanceTo(Vec2(100.0, 0.0)) < 1e-6);
 }
 
-// 跟随线切终点锚心：旋转开始即解除挂接（旋转 = 放弃跟随），绝对角度自由旋转；
-// 撤销一步同时恢复挂接（含公式）与旋转前姿态。
+// 已连接线段禁止切换锚心（用户拍板 2026-08）：X 键被拒，挂接绝不断开；
+// 旋转保持 Connected 模式 = 编辑跟随角。撤销一步恢复跟随角。
 // 注意：事件坐标经 viewport 整数化（event->pos() 是 QPoint），因此用 0° 跟随角度
 // 的跟随线 + 整数坐标，保证拖动角精确（45° 跟随角度会引入亚像素取整误差）。
-void TestRotateCopy::followerEndAnchorRotateReleasesLink()
+void TestRotateCopy::connectedLineXAnchorSwitchBlocked()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
-    // B: (200,0)→(300,0); A hangs on B's END with a 0° follower angle
-    // (no formula) → A: (300,0)→(360,0), world angle 0°.
+    // B: (200,0)→(300,0); A hangs on B's END with a 180° follower angle
+    // (闭合基准: 180° = 沿 leader 直行延续) → A: (300,0)→(360,0), world angle 0°.
     const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
     const LineSetup a = makeLine(doc, 60.0);
     Attachment conn;
@@ -925,7 +1550,7 @@ void TestRotateCopy::followerEndAnchorRotateReleasesLink()
     conn.toBlockId = b.blockId;
     conn.toPointId = b.endId;
     conn.toSegmentId = b.segId;
-    conn.followerAngle = 0.0;
+    conn.followerAngle = 180.0;
     doc.addAttachment(conn);
     doc.resolveAll();
     QVERIFY(doc.diagnostics().empty());
@@ -960,25 +1585,32 @@ void TestRotateCopy::followerEndAnchorRotateReleasesLink()
     sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoModifier);
 
-    // X: switch the anchor to A's END point → Free mode + pending release.
+    // X: switch blocked — the START point is attached, so the anchor stays
+    // put and the session remains in Connected mode (跟随保护).
     sendKeyX(view);
 
-    // Drag: cursor (330,0) → (360,100) around the end pivot (360,0):
-    // cur0 = atan2(0,-30) = 180°, theta = atan2(100,0) = 90°,
-    // delta = −90° ⇒ world angle 0 − 90 = −90° (exact, integer coords).
+    // Drag around the START pivot (300,0): cursor (330,0) → (300,−100):
+    // cur0 = atan2(0,30) = 0°, theta = atan2(−100,0) = −90°,
+    // Connected 拖动增量与世界角同向、与存储角反向: target = 180° − (−90°)
+    // = 270°（存储不归一化，≡ −90°），世界角 = 180° − 270° = −90°.
     sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
-    sendMouse(QEvent::MouseMove, vp(360.0, 100.0), Qt::NoButton, Qt::NoModifier);
-    sendMouse(QEvent::MouseButtonRelease, vp(360.0, 100.0), Qt::LeftButton,
+    sendMouse(QEvent::MouseMove, vp(300.0, -100.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(300.0, -100.0), Qt::LeftButton,
               Qt::NoModifier);
 
-    // The follower link is GONE (旋转 = 放弃跟随) and A rotated freely.
-    QVERIFY(doc.attachments().empty());
+    // The follower link SURVIVES (旋转 = 编辑跟随角，挂接不被释放).
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment* keep = followerAttachmentOf(doc, a.blockId);
+    QVERIFY(keep);
+    QVERIFY(std::abs(keep->followerAngle - 270.0) < 1e-6);
     QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - (-90.0)) < 1e-6);
 
-    // ONE undo restores the link and the pre-rotation pose.
+    // ONE undo restores the follower angle (link still intact).
     stack.undo();
     QCOMPARE(doc.attachments().size(), size_t(1));
-    QVERIFY(followerAttachmentOf(doc, a.blockId) != nullptr);
+    const Attachment* keep2 = followerAttachmentOf(doc, a.blockId);
+    QVERIFY(keep2);
+    QVERIFY(std::abs(keep2->followerAngle - 180.0) < 1e-6);
     QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - 0.0) < 1e-6);
 }
 
@@ -986,7 +1618,7 @@ void TestRotateCopy::followerEndAnchorRotateReleasesLink()
 void TestRotateCopy::endAnchorRotateCopyAttachesToEnd()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);   // (0,0) → (100,0)
     doc.resolveAll();
@@ -1037,6 +1669,9 @@ void TestRotateCopy::endAnchorRotateCopyAttachesToEnd()
     const Attachment* ca = cloneAttachment(doc, cln->id, a.blockId);
     QVERIFY(ca);
     QCOMPARE(ca->toPointId, a.endId);
+    // 挂接点恒用副本自己的起点（用户拍板: "复制的线段以终点为锚心，并且
+    // 把自己的终点调换成起点"）——线段从锚心伸出，而不是终点钉在锚心。
+    QCOMPARE(ca->fromPointId, cln->segments.front().startPointId);
     // Clone at relative −45°: the END-point exit direction is FORWARD (0°,
     // unlike the start point's backward exit), so the stored 180°+deg fold
     // puts the clone at 0° + 180° − 45° = 135° world angle. The original
@@ -1051,7 +1686,7 @@ void TestRotateCopy::endAnchorRotateCopyAttachesToEnd()
 void TestRotateCopy::endAnchorLineFollowsCursor()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup a = makeLine(doc, 100.0);   // (0,0) → (100,0)
     doc.resolveAll();
@@ -1106,10 +1741,11 @@ void TestRotateCopy::endAnchorLineFollowsCursor()
 void TestRotateCopy::angleModeOverflowNormalized()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     // B: (200,0)→(300,0); A hangs on B's END with followerAngle = 1260°
-    // (≡ 180°: A points LEFT, mid-body at (270,0)).
+    // (闭合基准: 世界角 = 180° − 1260° ≡ 0° → A points RIGHT, mid-body at
+    // (330,0); HUD 显示 fmod(1260,360) = 180°).
     const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
     const LineSetup a = makeLine(doc, 60.0);
     Attachment conn;
@@ -1147,8 +1783,8 @@ void TestRotateCopy::angleModeOverflowNormalized()
     };
 
     // Select A (anchor = attachment point → Connected/Angle mode).
-    sendMouse(QEvent::MouseButtonPress, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
-    sendMouse(QEvent::MouseButtonRelease, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonPress, vp(330.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(330.0, 0.0), Qt::LeftButton, Qt::NoModifier);
 
     auto* hud = view.viewport()->findChild<cad::tools::AngleHud*>();
     QVERIFY(hud);
@@ -1159,7 +1795,7 @@ void TestRotateCopy::angleModeOverflowNormalized()
 void TestRotateCopy::arcLengthModeOverflowNormalized()
 {
     ParamDocument doc;
-    doc.setActiveLayer(0);
+    doc.setActiveLayer(layerIdAt(doc, 1));
     CanvasScene scene(&doc);
     const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
     const LineSetup a = makeLine(doc, 60.0);   // radius 60mm
@@ -1198,20 +1834,40 @@ void TestRotateCopy::arcLengthModeOverflowNormalized()
         QTest::qWait(20);
     };
 
-    // Select A: 3 turns ≡ 180° fold-back → A points LEFT, mid-body (270,0).
+    // Select A: 3 turns = 弧长角 1080° ≡ 0° 折叠（闭合基准恒等映射 2026-08:
+    // 弧长角 = 线夹角）→ A points LEFT (toward (240,0)), mid-body (270,0).
+    // 显示 = 带符号折角（v3 定稿）：1080° ≡ 0° 折叠 → HUD 0° / 0cm。
     sendMouse(QEvent::MouseButtonPress, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(270.0, 0.0), Qt::LeftButton, Qt::NoModifier);
 
     auto* hud = view.viewport()->findChild<cad::tools::AngleHud*>();
     QVERIFY(hud);
-    // ArcLength mode: HUD shows arc length in cm (3 turns × 2π × 60mm = 113.1cm).
-    QCOMPARE(hud->edit()->text(), QStringLiteral("113.1"));
+    // ArcLength mode: HUD shows 带符号折角弧长 in cm (3 turns ≡ 0° 折叠 → 0).
+    QCOMPARE(hud->edit()->text(), QStringLiteral("0"));
 
-    // Click the HUD mode toggle (⌒ → ∠): the angle must normalize to 180°.
+    // Click the HUD mode toggle (⌒ → ∠): the angle must normalize to the
+    // fold-back 0° (弧长 3 圈 ≡ 角度 0° 折叠, 恒等映射 2026-08).
     auto* toggle = hud->findChild<QPushButton*>();
     QVERIFY(toggle);
     QTest::mouseClick(toggle, Qt::LeftButton);
-    QCOMPARE(hud->edit()->text(), QStringLiteral("180"));   // 1260 → 180
+    QCOMPARE(hud->edit()->text(), QStringLiteral("0"));   // 1080 → 0
+
+    // 输入带符号折角：输入 270（>180 视为原始 α）→ 存储 α = 270（另一侧）。
+    hud->edit()->setText(QStringLiteral("270"));
+    QTest::qWait(30);
+    const auto& atts = doc.attachments();
+    bool storedOk = false;
+    for (const auto& att2 : atts) {
+        if (att2.fromBlockId == a.blockId && std::abs(att2.followerAngle - 270.0) < 1e-6)
+            storedOk = true;
+    }
+    QVERIFY(storedOk);
+
+    // 模式切换往返刷新 HUD：显示带符号折角 −90（v3 定稿，符号 = 折向）。
+    QTest::mouseClick(toggle, Qt::LeftButton);   // → 弧长（显示 −9.4cm）
+    QCOMPARE(hud->edit()->text(), QStringLiteral("-9.4"));
+    QTest::mouseClick(toggle, Qt::LeftButton);   // → 角度（显示 −90°）
+    QCOMPARE(hud->edit()->text(), QStringLiteral("-90"));
 }
 
 QTEST_MAIN(TestRotateCopy)

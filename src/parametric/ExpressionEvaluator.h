@@ -52,7 +52,9 @@ public:
     };
 
     /// Compile an expression (or fetch its cached bytecode). The returned
-    /// reference is stable for the lifetime of the process (deque storage).
+    /// reference stays valid until the compile cache is reset by pathological
+    /// growth (~8192 unique expression texts) — callers must re-fetch per
+    /// call rather than hold the reference across resets.
     static const Compiled& compiled(const QString& expression);
 
     /// Execute compiled bytecode against a variable map (fast path).
@@ -98,7 +100,13 @@ private:
     int m_pos = 0;
     bool m_ok = true;
     QString m_error;
+    /// Parse recursion depth guard (pathological nesting would otherwise
+    /// overflow the C++ call stack before execute()'s kMaxStack ever runs).
+    int m_depth = 0;
 };
+
+/// Nesting-depth limit for the recursive-descent parser.
+constexpr int kMaxParseDepth = 128;
 
 /// Per-pass evaluation memo. Create ONE instance per resolve pass (during
 /// which the variable map is guaranteed unchanged) and thread it through

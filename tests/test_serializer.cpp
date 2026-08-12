@@ -392,8 +392,16 @@ void TestSerializer::formulaGroupsLegacyDocument()
 }
 
 namespace {
+
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
 /// Build a minimal single-segment block for layer tests.
-cad::param::Block makeLineBlock(int layer)
+cad::param::Block makeLineBlock(const QUuid& layerId)
 {
     cad::param::Block b;
     cad::param::ParamPoint pa;
@@ -410,7 +418,7 @@ cad::param::Block makeLineBlock(int layer)
     s.startPointId = paId;
     s.endPointId = pbId;
     b.addSegment(std::move(s));
-    b.layer = layer;
+    b.layer = layerId;
     return b;
 }
 } // namespace
@@ -424,11 +432,11 @@ void TestSerializer::layersRoundTrip()
     src.addLayer(QStringLiteral("辅助"));   // index 2
     src.addLayer(QStringLiteral("工作"));   // index 3
 
-    cad::param::Block b1 = makeLineBlock(1);
+    cad::param::Block b1 = makeLineBlock(layerIdAt(src, 1));
     QUuid b1Id = b1.id;
     src.addBlock(std::move(b1));
 
-    src.setActiveLayer(2);
+    src.setActiveLayer(layerIdAt(src, 2));
 
     QJsonObject json = DocumentSerializer::serialize(src);
     ParamDocument dst;
@@ -442,8 +450,8 @@ void TestSerializer::layersRoundTrip()
     QCOMPARE(dst.layers()[2].name, QStringLiteral("辅助"));
     QCOMPARE(dst.layers()[3].name, QStringLiteral("工作"));
     QCOMPARE(dst.layers()[2].visible, true);
-    QCOMPARE(dst.activeLayer(), 2);
-    QCOMPARE(dst.findBlock(b1Id)->layer, 1);
+    QCOMPARE(dst.activeLayer(), layerIdAt(dst, 2));
+    QCOMPARE(dst.findBlock(b1Id)->layer, layerIdAt(dst, 1));
 }
 
 void TestSerializer::layersLegacyDocument()
@@ -452,7 +460,7 @@ void TestSerializer::layersLegacyDocument()
     // the default aux+working pair is kept and legacy blocks (old layer 0)
     // shift up onto the first working layer.
     ParamDocument src;
-    src.addBlock(makeLineBlock(0));
+    src.addBlock(makeLineBlock(QUuid()));  // no layer field: legacy default
 
     QJsonObject json = DocumentSerializer::serialize(src);
     QJsonObject docObj = json["document"].toObject();
@@ -467,35 +475,35 @@ void TestSerializer::layersLegacyDocument()
     QCOMPARE(dst.layers()[0].name, QStringLiteral("辅助层"));
     QCOMPARE(dst.layers()[0].type, cad::param::LayerType::Auxiliary);
     QCOMPARE(dst.layers()[1].name, QStringLiteral("图层 1"));
-    QCOMPARE(dst.activeLayer(), 1);
-    QCOMPARE(dst.blocks().front().layer, 1);  // shifted above the aux layer
+    QCOMPARE(dst.activeLayer(), layerIdAt(dst, 1));
+    QCOMPARE(dst.blocks().front().layer, layerIdAt(dst, 1));  // landed on the first working layer
 }
 
 void TestSerializer::removeLayerMovesBlocks()
 {
     // Removing a layer drops its blocks to the layer below (never into the
-    // aux layer) and shifts every higher layer's blocks down by one.
-    ParamDocument doc;   // [辅助层(0), 图层 1(1)]
-    doc.addLayer(QStringLiteral("L1"));  // index 2
-    doc.addLayer(QStringLiteral("L2"));  // index 3
+    // aux layer); blocks on other layers keep their STABLE layer ids.
+    ParamDocument doc;   // [辅助层(row 0), 图层 1(row 1)]
+    doc.addLayer(QStringLiteral("L1"));  // row 2
+    doc.addLayer(QStringLiteral("L2"));  // row 3
 
-    cad::param::Block a = makeLineBlock(2);
+    cad::param::Block a = makeLineBlock(layerIdAt(doc, 2));
     QUuid aId = a.id;
     doc.addBlock(std::move(a));
-    cad::param::Block b = makeLineBlock(3);
+    cad::param::Block b = makeLineBlock(layerIdAt(doc, 3));
     QUuid bId = b.id;
     doc.addBlock(std::move(b));
 
     // The auxiliary layer cannot be removed (no-op).
-    doc.removeLayer(0);
+    doc.removeLayer(layerIdAt(doc, 0));
     QCOMPARE((int)doc.layers().size(), 4);
     QCOMPARE(doc.layers()[0].type, cad::param::LayerType::Auxiliary);
 
-    doc.removeLayer(2);  // remove "L1"
+    doc.removeLayer(layerIdAt(doc, 2));  // remove "L1"
 
     QCOMPARE((int)doc.layers().size(), 3);
-    QCOMPARE(doc.findBlock(aId)->layer, 1);  // fell to layer below (not aux)
-    QCOMPARE(doc.findBlock(bId)->layer, 2);  // shifted down
+    QCOMPARE(doc.findBlock(aId)->layer, layerIdAt(doc, 1));  // fell to layer below (not aux)
+    QCOMPARE(doc.findBlock(bId)->layer, layerIdAt(doc, 2));  // stable id, now row 2
 }
 
 void TestSerializer::blocksRoundTrip()
@@ -906,7 +914,7 @@ void TestSerializer::bridgeAuxPointSnappableAndAttachable()
     att.toBlockId = bridgeId;
     att.toPointId = auxId;
     att.toSegmentId = bsegId;
-    att.followerAngle = 0.0;
+    att.followerAngle = 180.0;   // 闭合基准: 180° = 沿 (桥) 方向直行延续
     QVERIFY2(doc.addAttachment(att), "attach to bridge aux point must succeed");
 
     // ...but NOT to a bridge's pinned endpoint (fresh leader block so the

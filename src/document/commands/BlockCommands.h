@@ -332,4 +332,47 @@ private:
     bool m_newAuto;
 };
 
+/// Snapshot of the status-bar edit strip's mutable state (SegmentEditBar):
+/// the segment's name / length fields, the endpoint's Polar / measure fields
+/// and the follower attachment's angle / arc state. The strip edits the model
+/// LIVE and pushes ONE command per commit, so undo/redo AND the undo stack's
+/// dirty flag stay consistent (without this, edits after a save were silently
+/// lost on close — the stack stayed clean).
+class SegmentEditBarCommand : public QUndoCommand
+{
+public:
+    struct State {
+        QString segName;
+        QString lengthFormula;
+        QString endDistanceFormula;
+        double endDistance = 0.0;
+        double endAngle = 0.0;
+        QString endAngleFormula;
+        int endConstraint = 0;
+        QUuid endRefPointId;
+        // Follower attachment (null id = free line).
+        QUuid attId;
+        double followerAngle = 0.0;
+        QString followerAngleFormula;
+        double arcLength = 0.0;
+        QString arcLengthFormula;
+        int rotationMode = 0;
+    };
+
+    /// @p newState Target state; the OLD state is captured from the model at
+    /// construction (push() then applies newState via redo()).
+    SegmentEditBarCommand(cad::param::ParamDocument* doc,
+                          const QUuid& blockId, const QUuid& segmentId,
+                          State newState, QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    QUuid m_segmentId;
+    State m_oldState;
+    State m_newState;
+};
+
 } // namespace cad::cmd

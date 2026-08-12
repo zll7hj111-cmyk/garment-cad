@@ -1,9 +1,13 @@
-#include "AngleHud.h"
+﻿#include "AngleHud.h"
 
+#include "canvas/CanvasScene.h"
+#include "canvas/CanvasStyle.h"
+
+#include <QGraphicsView>
 #include <QHBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QPushButton>
+#include "ElaText.h"
+#include "ElaLineEdit.h"
+#include "ElaPushButton.h"
 #include <QKeyEvent>
 #include <QEvent>
 
@@ -16,31 +20,50 @@ AngleHud::AngleHud(QWidget* viewport)
     layout->setContentsMargins(10, 6, 10, 6);
     layout->setSpacing(6);
 
+    // Palette comes from the owning canvas scene's CanvasStyle so the HUD
+    // follows the active theme (pattern-workbench rule: no hardcoded colors).
+    QColor hudBg = QColor(30, 38, 46, 235);
+    QColor hudFg = QColor(154, 163, 173);
+    QColor hudBorder = QColor(255, 255, 255, 35);
+    QColor validCol = QColor(43, 179, 163);   // teal family
+    QColor invalidCol = QColor(240, 101, 90); // danger family
+    if (auto* view = qobject_cast<QGraphicsView*>(viewport ? viewport->parentWidget() : nullptr)) {
+        if (auto* cs = qobject_cast<CanvasScene*>(view->scene())) {
+            hudBg = cs->style()->hudBackground;
+            hudFg = cs->style()->hudText;
+            hudBorder = cs->style()->crosshairColor;
+            validCol = cs->style()->snapPointColor;
+            invalidCol = cs->style()->snapIndicatorColor;
+        }
+    }
+
     // Mode toggle button (compact, acts as caption + switch).
-    m_btnToggle = new QPushButton(this);
+    m_btnToggle = new ElaPushButton(this);
     m_btnToggle->setCursor(Qt::PointingHandCursor);
     m_btnToggle->setFixedHeight(22);
     m_btnToggle->setStyleSheet(QStringLiteral(
-        "QPushButton{background:rgba(255,255,255,20);color:#80cbc4;"
-        "border:1px solid rgba(255,255,255,40);border-radius:4px;"
-        "font-size:11px;padding:2px 6px;}"
-        "QPushButton:hover{background:rgba(255,255,255,35);}"));
+        "QPushButton{background:%1;color:%2;"
+        "border:1px solid %3;border-radius:4px;"
+        "font-size:11px;padding:2px 6px;}")
+        .arg(hudBg.name(QColor::HexArgb), validCol.name(), hudBorder.name(QColor::HexArgb)));
 
-    m_lblCaption = new QLabel(this);
-    m_edit = new QLineEdit(this);
+    m_lblCaption = new ElaText(QString(), 13, this);
+    m_edit = new ElaLineEdit(this);
     m_edit->setFixedWidth(150);
-    m_lblUnit = new QLabel(this);
+    m_lblUnit = new ElaText(QString(), 13, this);
 
     layout->addWidget(m_btnToggle);
     layout->addWidget(m_lblCaption);
     layout->addWidget(m_edit);
     layout->addWidget(m_lblUnit);
 
-    // Dark floating-panel look (AutoCAD dynamic-input style).
+    // Floating overlay look (AutoCAD dynamic-input style) — theme-aware.
     setStyleSheet(QStringLiteral(
-        "AngleHud{background:rgba(30,38,46,235);"
-        "border:1px solid rgba(255,255,255,35);border-radius:8px;}"
-        "QLabel{color:#b0bec5;font-size:12px;}"));
+        "AngleHud{background:%1;"
+        "border:1px solid %2;border-radius:8px;}"
+        "QLabel{color:%3;font-size:12px;}")
+        .arg(hudBg.name(QColor::HexArgb), hudBorder.name(QColor::HexArgb),
+             hudFg.name()));
     setValid(true);
     applyModeVisuals();
 
@@ -98,12 +121,32 @@ void AngleHud::applyModeVisuals()
 
 void AngleHud::setValid(bool ok)
 {
+    // Theme-aware valid/invalid colors (from the owning canvas scene).
+    QColor validCol = QColor(43, 179, 163);
+    QColor invalidCol = QColor(240, 101, 90);
+    QColor editBg = QColor(255, 255, 255, 245);
+    QColor editFg = QColor(232, 234, 237);
+    // NOTE: this widget's parent IS the viewport (a plain QWidget), so the
+    // scene must be reached via viewport->parentWidget() — casting the parent
+    // directly never matches, silently falling back to the hardcoded light
+    // gray text that was unreadable in BOTH themes (用户报告 2026-08).
+    if (auto* view = qobject_cast<QGraphicsView*>(
+            parentWidget() ? parentWidget()->parentWidget() : nullptr)) {
+        if (auto* cs = qobject_cast<CanvasScene*>(view->scene())) {
+            validCol = cs->style()->snapPointColor;
+            invalidCol = cs->style()->snapIndicatorColor;
+            editBg = cs->style()->hudBackground.lighter(115);
+            editFg = cs->style()->hudText;
+        }
+    }
     m_edit->setStyleSheet(ok
-        ? QStringLiteral("QLineEdit{border:1px solid #4db6ac;border-radius:4px;"
-                         "padding:3px 6px;background:rgba(255,255,255,245);"
-                         "color:#263238;selection-background-color:#80cbc4;}")
-        : QStringLiteral("QLineEdit{border:1px solid #ef5350;border-radius:4px;"
-                         "padding:3px 6px;background:#fff5f5;color:#b71c1c;}"));
+        ? QStringLiteral("QLineEdit{border:1px solid %1;border-radius:4px;"
+                         "padding:3px 6px;background:%2;"
+                         "color:%3;selection-background-color:%1;}")
+              .arg(validCol.name(), editBg.name(QColor::HexArgb), editFg.name())
+        : QStringLiteral("QLineEdit{border:1px solid %1;border-radius:4px;"
+                         "padding:3px 6px;background:%2;color:%1;}")
+              .arg(invalidCol.name(), QStringLiteral("#FDECEB")));
 }
 
 bool AngleHud::eventFilter(QObject* o, QEvent* e)

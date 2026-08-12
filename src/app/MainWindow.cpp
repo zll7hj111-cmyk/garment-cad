@@ -1,12 +1,16 @@
+﻿#include "SegmentEditBar.h"
+
 #include "MainWindow.h"
 
-#include <QLabel>
-#include <QStatusBar>
-#include <QToolBar>
+#include "ElaText.h"
+#include <QToolButton>
+#include <QFrame>
+#include <QPainter>
+#include <QPixmap>
+#include <QIcon>
+#include <QHBoxLayout>
 #include <QAction>
 #include <QActionGroup>
-#include <QMenuBar>
-#include <QMessageBox>
 #include <QUndoStack>
 #include <QFileDialog>
 #include <QSettings>
@@ -14,20 +18,34 @@
 #include <QFileInfo>
 #include <QApplication>
 #include <QTimer>
+#include <QShortcut>
+#include <QStackedWidget>
 
 #include "canvas/CanvasView.h"
 #include "canvas/CanvasScene.h"
+#include "canvas/CanvasStyle.h"
 #include "canvas/BlockItem.h"
 #include "parametric/ParamDocument.h"
 #include "geometry/Units.h"
 #include "tools/ToolManager.h"
 #include "tools/ToolSelect.h"
+#include "tools/LinePropertyDialog.h"
 #include "ui/VariablePanel.h"
-#include "ui/SidePanel.h"
 #include "ui/LayerPanel.h"
 #include "ui/GroupPanel.h"
 #include "ui/IconHelper.h"
+#include "ui/Theme.h"
+#include "ui/ElaMsgBox.h"
 #include "document/DocumentFile.h"
+#include "ElaWindow.h"
+#include "ElaStatusBar.h"
+#include "ElaMenuBar.h"
+#include "ElaMenu.h"
+#include "ElaTheme.h"
+#include "ElaToolButton.h"
+#include "ElaScrollPageArea.h"
+#include "ElaTabBar.h"
+#include "ElaNavigationBar.h"
 
 using cad::param::ParamDocument;
 using cad::tools::ToolManager;
@@ -45,7 +63,7 @@ void showLoadWarnings(QWidget* parent, const QStringList& warnings)
     QStringList shown = warnings.mid(0, kMaxShown);
     if (warnings.size() > kMaxShown)
         shown << QString::fromUtf8("… 另有 %1 项降级").arg(warnings.size() - kMaxShown);
-    QMessageBox::warning(parent, QString::fromUtf8("文件加载完成"),
+    cad::ui::ElaMsgBox::warning(parent, QString::fromUtf8("文件加载完成"),
         QString::fromUtf8("文件已加载，但有 %1 处内容无法识别，已按默认值恢复：\n\n%2")
             .arg(warnings.size()).arg(shown.join(QStringLiteral("\n"))));
 }
@@ -53,7 +71,7 @@ void showLoadWarnings(QWidget* parent, const QStringList& warnings)
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent)
+    : ElaWindow(parent)
 {
     m_paramDoc = new ParamDocument(this);
     m_undoStack = new QUndoStack(this);
@@ -71,11 +89,21 @@ MainWindow::MainWindow(QWidget* parent)
     setupMenuBar();
     setupToolBar();
     setupStatusBar();
-    setupSidePanel();
+    setupPages();
     connectSignals();
 
     setWindowIcon(cad::ui::IconHelper::appIcon());
     resize(1280, 800);
+
+    // Dark is the default theme — mirror it into the canvas tokens.
+    if (cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark)
+        m_canvasScene->setStyle(CanvasStyle::darkTheme());
+
+    // Mirror the app theme into ElaWidgetTools so Ela widgets (menu bar,
+    // dock title bar) follow the 视图 → 暗色主题 toggle.
+    ElaTheme::getInstance()->setThemeMode(
+        cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark
+            ? ElaThemeType::Dark : ElaThemeType::Light);
 
     // Load recent files from settings.
     QSettings settings;
@@ -97,13 +125,40 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUi()
 {
-    setCentralWidget(m_canvasView);
+    // Central wrapper: floating pill toolbar strip above the canvas. This
+    // becomes the FIRST ElaWindow page (画布, stack index 0 — the default).
+    m_centerContainer = new QWidget(this);
+    auto* v = new QVBoxLayout(m_centerContainer);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(0);
+    m_toolDock = new QWidget(m_centerContainer);
+    m_toolDock->setObjectName(QStringLiteral("toolDock"));
+    v->addWidget(m_toolDock);
+    v->addWidget(m_canvasView, 1);
+
+    // 画布页作为自建标签页堆栈的第一个页面（setupPages 中 addWidget）。
+    // 不再经 ElaWindow::addCentralWidget 注册（Ela 左侧导航已废弃）。
+
+    // No user-info card in the navigation bar (not a login-type app).
+    setUserInfoCardVisible(false);
 }
 
 void MainWindow::setupMenuBar()
 {
+    // Fluent-styled menu bar (ElaWidgetTools): sits inside the ElaAppBar
+    // (MiddleArea) — no classic menu strip above the central widget.
+    auto* elaMenuBar = new ElaMenuBar(this);
+    elaMenuBar->setFixedHeight(30);
+    auto* menuHost = new QWidget(this);
+    auto* menuLay = new QVBoxLayout(menuHost);
+    menuLay->setContentsMargins(0, 0, 0, 0);
+    menuLay->setSpacing(0);
+    menuLay->addWidget(elaMenuBar);
+    menuLay->addStretch();
+    setCustomWidget(ElaAppBarType::MiddleArea, menuHost);
+
     // ===== 文件菜单 =====
-    QMenu* fileMenu = menuBar()->addMenu(QString::fromUtf8("文件(&F)"));
+    ElaMenu* fileMenu = elaMenuBar->addMenu(QString::fromUtf8("文件(&F)"));
 
     QAction* actNew = fileMenu->addAction(QString::fromUtf8("新建(&N)"));
     actNew->setShortcut(QKeySequence::New);
@@ -134,7 +189,7 @@ void MainWindow::setupMenuBar()
     connect(actExit, &QAction::triggered, this, &QWidget::close);
 
     // ===== 编辑菜单 =====
-    QMenu* editMenu = menuBar()->addMenu(QString::fromUtf8("编辑(&E)"));
+    QMenu* editMenu = elaMenuBar->addMenu(QString::fromUtf8("编辑(&E)"));
     m_actionUndo = m_undoStack->createUndoAction(this, QString::fromUtf8("撤销(&U)"));
     m_actionUndo->setShortcut(QKeySequence::Undo);
     editMenu->addAction(m_actionUndo);
@@ -144,10 +199,10 @@ void MainWindow::setupMenuBar()
     editMenu->addAction(m_actionRedo);
 
     // ===== 工具菜单 =====
-    QMenu* toolMenu = menuBar()->addMenu(QString::fromUtf8("工具(&T)"));
+    QMenu* toolMenu = elaMenuBar->addMenu(QString::fromUtf8("工具(&T)"));
 
     m_actionSelect = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("cursor-click"), QColor(0x34, 0x49, 0x5E)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("cursor-click"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("选择(&V)"), this);
     m_actionSelect->setCheckable(true);
     m_actionSelect->setChecked(true);
@@ -155,49 +210,49 @@ void MainWindow::setupMenuBar()
     toolMenu->addAction(m_actionSelect);
 
     m_actionSmartPen = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("pen"), QColor(0x34, 0x49, 0x5E)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("pen"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("智能笔(&L)"), this);
     m_actionSmartPen->setCheckable(true);
     m_actionSmartPen->setShortcut(QKeySequence(Qt::Key_L));
     toolMenu->addAction(m_actionSmartPen);
 
     m_actionCurveEdit = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("pen"), QColor(0xE9, 0x1E, 0x63)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("pen"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("曲线(&C)"), this);
     m_actionCurveEdit->setCheckable(true);
     m_actionCurveEdit->setShortcut(QKeySequence(Qt::Key_C));
     toolMenu->addAction(m_actionCurveEdit);
 
     m_actionRotate = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("rotate"), QColor(0x34, 0x49, 0x5E)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("rotate"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("旋转(&R)"), this);
     m_actionRotate->setCheckable(true);
     m_actionRotate->setShortcut(QKeySequence(Qt::Key_R));
     toolMenu->addAction(m_actionRotate);
 
     m_actionBreak = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("scissors"), QColor(0x34, 0x49, 0x5E)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("scissors"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("打断(&B)"), this);
     m_actionBreak->setCheckable(true);
     m_actionBreak->setShortcut(QKeySequence(Qt::Key_B));
     toolMenu->addAction(m_actionBreak);
 
     m_actionIntersection = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("funnel"), QColor(0x34, 0x49, 0x5E)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("funnel"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("交点(&I)"), this);
     m_actionIntersection->setCheckable(true);
     m_actionIntersection->setShortcut(QKeySequence(Qt::Key_I));
     toolMenu->addAction(m_actionIntersection);
 
     m_actionMeasure = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("ruler"), QColor(0x34, 0x49, 0x5E)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("ruler"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("测量(&M)"), this);
     m_actionMeasure->setCheckable(true);
-    m_actionMeasure->setShortcut(QKeySequence(Qt::Key_M));
+    // M 快捷键让给画布长按显示长度（CanvasView::keyPressEvent），测量暂不设快捷键
     toolMenu->addAction(m_actionMeasure);
 
     m_actionAngleMeasure = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("rotate"), QColor(0x8E, 0x44, 0xAD)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("rotate"), cad::ui::Theme::tokens().text2),
         QString::fromUtf8("角度测量(&A)"), this);
     m_actionAngleMeasure->setCheckable(true);
     m_actionAngleMeasure->setShortcut(QKeySequence(Qt::Key_A));
@@ -214,14 +269,27 @@ void MainWindow::setupMenuBar()
             this, &MainWindow::actionToggleAuxLayer);
     toolMenu->addAction(m_actionToggleAuxLayer);
 
+    // ===== 视图菜单 =====
+    QMenu* viewMenu = elaMenuBar->addMenu(QString::fromUtf8("视图(&V)"));
+
+    // 暗色主题: 全局 QSS + 画布 token 即时切换, 无需重启.
+    m_actionToggleTheme = new QAction(QString::fromUtf8("暗色主题(&D)"), this);
+    m_actionToggleTheme->setCheckable(true);
+    m_actionToggleTheme->setChecked(
+        cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark);
+    m_actionToggleTheme->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    connect(m_actionToggleTheme, &QAction::toggled,
+            this, &MainWindow::toggleTheme);
+    viewMenu->addAction(m_actionToggleTheme);
+
     // ===== 帮助菜单 =====
-    QMenu* helpMenu = menuBar()->addMenu(QString::fromUtf8("帮助(&H)"));
+    QMenu* helpMenu = elaMenuBar->addMenu(QString::fromUtf8("帮助(&H)"));
     QAction* aboutAction = helpMenu->addAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("t-shirt"), QColor(0x2E, 0x86, 0xC1)),
+        cad::ui::IconHelper::iconByName(QStringLiteral("t-shirt"), QColor(0x2F, 0x6F, 0xED)),
         QString::fromUtf8("关于(&A)"));
     connect(aboutAction, &QAction::triggered, this, [this]() {
-        QMessageBox::about(this, QString::fromUtf8("关于 服装CAD"),
-            QString::fromUtf8("参数化服装 CAD 系统 v0.1.0\n基于 C++23 / Qt6 构建"));
+        cad::ui::ElaMsgBox::about(this, QString::fromUtf8("关于 野风帖"),
+            QString::fromUtf8("野风帖 - 参数化服装 CAD 系统 v0.1.0\n基于 C++23 / Qt6 构建"));
     });
 
     // Exclusive tool selection shared between menu and toolbar.
@@ -248,40 +316,200 @@ void MainWindow::setupMenuBar()
 
 void MainWindow::setupToolBar()
 {
-    m_toolBar = addToolBar(QString::fromUtf8("工具"));
-    m_toolBar->setMovable(false);
-    m_toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    // 悬浮胶囊工具栏: 圆角胶囊 + 居中. 按钮已换 Fluent ElaToolButton:
+    // ElaIconType 字体图标 (eTheme 自动换色) + setIsSelected 高亮选中态,
+    // 不再依赖 Phosphor SVG 双状态图标. 两侧对称 addStretch 才是真居中
+    // (之前只有右侧 stretch, 胶囊实际贴左).
+    auto* dockLay = new QHBoxLayout(m_toolDock);
+    dockLay->setContentsMargins(10, 5, 10, 5);
+    dockLay->setSpacing(0);
 
-    // Reuse the menu actions (already checkable + exclusive via QActionGroup).
-    m_toolBar->addAction(m_actionSelect);
-    m_toolBar->addAction(m_actionSmartPen);
-    m_toolBar->addAction(m_actionCurveEdit);
-    m_toolBar->addAction(m_actionRotate);
-    m_toolBar->addAction(m_actionBreak);
-    m_toolBar->addAction(m_actionIntersection);
-    m_toolBar->addAction(m_actionMeasure);
-    m_toolBar->addAction(m_actionAngleMeasure);
+    auto* pill = new ElaScrollPageArea(m_toolDock);
+    pill->setObjectName(QStringLiteral("toolPill"));
+    // ElaScrollPageArea hardcodes setFixedHeight(75) in its ctor — override it
+    // so the capsule hugs the 30px buttons instead of leaving a tall void
+    // above/below (user: 工具栏占位上下太长).
+    pill->setFixedHeight(46);
+    auto* pillLay = new QHBoxLayout(pill);
+    pillLay->setContentsMargins(4, 4, 4, 4);
+    pillLay->setSpacing(2);
+
+    struct ToolSpec { QAction* act; ElaIconType::IconName icon; };
+    const ToolSpec specs[] = {
+        {m_actionSelect,       ElaIconType::ArrowPointer},
+        {m_actionSmartPen,     ElaIconType::PenNib},
+        {m_actionCurveEdit,    ElaIconType::BezierCurve},
+        {m_actionRotate,       ElaIconType::Rotate},
+        {m_actionBreak,        ElaIconType::Scissors},
+        {m_actionIntersection, ElaIconType::Intersection},
+        {m_actionMeasure,      ElaIconType::RulerCombined},
+        {m_actionAngleMeasure, ElaIconType::Angle},
+    };
+    for (const auto& spec : specs) {
+        auto* btn = new ElaToolButton(pill);
+        btn->setDefaultAction(spec.act);
+        btn->setElaIcon(spec.icon);
+        btn->setIsTransparent(true);
+        btn->setCursor(Qt::PointingHandCursor);
+        m_toolButtons.append(btn);
+        pillLay->addWidget(btn);
+    }
+
+    // ── 图层指示芯片: 色点 + 当前活动图层名, 点击弹出切换菜单 ──
+    // 画布上不标图层会让用户画错层, 这里把"当前往哪个层画"常驻工具栏.
+    m_layerChipSeparator = new QFrame(pill);
+    m_layerChipSeparator->setFrameShape(QFrame::VLine);
+    m_layerChipSeparator->setFixedWidth(1);
+    pillLay->addSpacing(6);
+    pillLay->addWidget(m_layerChipSeparator);
+    pillLay->addSpacing(2);
+
+    m_layerChip = new ElaToolButton(pill);
+    m_layerChip->setIsTransparent(true);
+    m_layerChip->setCursor(Qt::PointingHandCursor);
+    m_layerChip->setPopupMode(QToolButton::InstantPopup);
+    m_layerChip->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    pillLay->addWidget(m_layerChip);
+
+    dockLay->addStretch(1);
+    dockLay->addWidget(pill, 0, Qt::AlignHCenter);
+    dockLay->addStretch(1);
+
+    refreshLayerChip();
+}
+
+void MainWindow::refreshLayerChip()
+{
+    if (!m_layerChip || !m_paramDoc) return;
+
+    const auto& tk = cad::ui::Theme::tokens();
+    // Separator follows the current theme (re-polish is cheap at this rate).
+    if (m_layerChipSeparator)
+        m_layerChipSeparator->setStyleSheet(
+            QStringLiteral("background: %1; border: none;").arg(tk.border.name()));
+
+    // Dot: working layer = accent (activity), auxiliary = success (aux
+    // geometry family — semantic colors only carry meaning).
+    auto dotIcon = [](const QColor& c) {
+        QPixmap pm(12, 12);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        p.drawEllipse(QRectF(1.5, 1.5, 9.0, 9.0));
+        return QIcon(pm);
+    };
+
+    const QUuid cur = m_paramDoc->activeLayer();
+    const auto* layer = m_paramDoc->layerById(cur);
+    if (!layer) return;
+
+    const bool aux = layer->type == cad::param::LayerType::Auxiliary;
+    const QColor dot = aux ? tk.success : tk.accent;
+    m_layerChip->setIcon(dotIcon(dot));
+    m_layerChip->setText(aux ? QStringLiteral("辅助：%1").arg(layer->name)
+                             : QStringLiteral("图层：%1").arg(layer->name));
+    m_layerChip->setToolTip(QStringLiteral("当前活动图层：%1（点击切换）").arg(layer->name));
+
+    // Rebuild the popup menu: all layers, current one checked, click = switch.
+    if (m_layerChipMenu) {
+        m_layerChip->setMenu(nullptr);
+        delete m_layerChipMenu;
+        m_layerChipMenu = nullptr;
+    }
+    auto* menu = new ElaMenu(m_layerChip);
+    for (const auto& l : m_paramDoc->layers()) {
+        const bool lAux = l.type == cad::param::LayerType::Auxiliary;
+        QString label = l.name;
+        if (lAux) label += QStringLiteral("（辅助计算层）");
+        auto* act = menu->addAction(dotIcon(lAux ? tk.success : tk.accent), label);
+        act->setCheckable(true);
+        act->setChecked(l.id == cur);
+        connect(act, &QAction::triggered, this,
+                [this, id = l.id]() { m_paramDoc->setActiveLayer(id); });
+    }
+    m_layerChipMenu = menu;
+    m_layerChip->setMenu(menu);
+}
+
+void MainWindow::refreshToolIcons()
+{
+    // Rebuild the tool icons from the current theme so both themes stay
+    // legible (normal = secondary text, active/checked = accent).
+    const auto& t = cad::ui::Theme::tokens();
+    const QColor normal = t.text2;
+    const QColor active = t.accent;
+    auto setIcon = [&](QAction* act, const char* name) {
+        act->setIcon(cad::ui::IconHelper::icon2State(
+            QString::fromLatin1(name), normal, active));
+    };
+    setIcon(m_actionSelect,      "cursor-click");
+    setIcon(m_actionSmartPen,    "pen");
+    setIcon(m_actionCurveEdit,   "pen");
+    setIcon(m_actionRotate,      "rotate");
+    setIcon(m_actionBreak,       "scissors");
+    setIcon(m_actionIntersection,"funnel");
+    setIcon(m_actionMeasure,     "ruler");
+    setIcon(m_actionAngleMeasure,"rotate");
+}
+
+void MainWindow::toggleTheme(bool dark)
+{
+    const auto mode = dark ? cad::ui::ThemeMode::Dark : cad::ui::ThemeMode::Light;
+    cad::ui::Theme::apply(mode);
+    // Ela widgets (Fluent menu bar / dock title bar) follow the same toggle.
+    ElaTheme::getInstance()->setThemeMode(
+        dark ? ElaThemeType::Dark : ElaThemeType::Light);
+    // Canvas tokens follow the chrome theme immediately.
+    m_canvasScene->setStyle(dark ? CanvasStyle::darkTheme()
+                                 : CanvasStyle::lightTheme());
+    // Panels bake token colors at construction; re-derive them.
+    if (m_variablePanel)
+        m_variablePanel->applyTheme();
+    if (m_layerPanel)
+        m_layerPanel->applyTheme();
+    refreshToolIcons();
+    refreshLayerChip();
 }
 
 void MainWindow::setupStatusBar()
 {
-    m_toolHintLabel = new QLabel(QString::fromUtf8("选择：点击选取（单选即操作）| W切换单选/多选 | 右键取消/确认 | 空白右键→智能笔 | 双击编辑 | Del删除"), this);
-    statusBar()->addWidget(m_toolHintLabel, 1);
+    // ElaStatusBar: Fluent-styled status bar (QStatusBar drop-in).
+    auto* sb = new ElaStatusBar(this);
+    setStatusBar(sb);
 
-    m_coordLabel = new QLabel("X: 0.000  Y: 0.000", this);
+    m_toolHintLabel = new ElaText(QString::fromUtf8("选择：点击选取（单选即操作）| W切换单选/多选 | 右键取消/确认 | 空白右键→智能笔 | 双击编辑 | Del删除"), 13, this);
+    sb->addWidget(m_toolHintLabel, 1);
+
+    m_coordLabel = new ElaText("X: 0.000  Y: 0.000", 13, this);
+    m_coordLabel->setObjectName(QStringLiteral("coordLabel"));
     m_coordLabel->setMinimumWidth(220);
+    // CAD readouts: monospace digits so drag values never jitter.
+    m_coordLabel->setStyleSheet(
+        "font-family: 'Consolas','Courier New',monospace;");
 
-    m_zoomLabel = new QLabel(QString::fromUtf8("缩放: 100%"), this);
+    m_zoomLabel = new ElaText(QString::fromUtf8("缩放: 100%"), 13, this);
+    m_zoomLabel->setObjectName(QStringLiteral("zoomLabel"));
     m_zoomLabel->setMinimumWidth(100);
+    m_zoomLabel->setStyleSheet(
+        "font-family: 'Consolas','Courier New',monospace;");
 
     // Attachment diagnostics (hidden while the document is healthy).
-    m_diagLabel = new QLabel(this);
-    m_diagLabel->setStyleSheet("color:#C0392B;");
+    m_diagLabel = new ElaText(QString(), 13, this);
+    m_diagLabel->setObjectName(QStringLiteral("dangerText"));
     m_diagLabel->hide();
 
-    statusBar()->addPermanentWidget(m_diagLabel);
-    statusBar()->addPermanentWidget(m_coordLabel);
-    statusBar()->addPermanentWidget(m_zoomLabel);
+    // 创建后内嵌编辑条 (SegmentEditBar): 替代旧的创建弹窗. 默认隐藏,
+    // 智能笔创建线段后由 onLineCreated 显示.
+    m_segmentEditBar = new cad::app::SegmentEditBar(m_paramDoc, this);
+    m_segmentEditBar->setUndoStack(m_undoStack);
+    m_segmentEditBar->hide();
+    sb->addWidget(m_segmentEditBar, 1);
+
+    sb->addPermanentWidget(m_diagLabel);
+    sb->addPermanentWidget(m_coordLabel);
+    sb->addPermanentWidget(m_zoomLabel);
 }
 
 void MainWindow::connectSignals()
@@ -290,6 +518,8 @@ void MainWindow::connectSignals()
             this, &MainWindow::onSceneMouseMoved);
     connect(m_canvasView, &CanvasView::zoomFactorChanged,
             this, &MainWindow::onZoomChanged);
+    connect(m_canvasScene, &CanvasScene::forceShowChanged,
+            this, &MainWindow::onForceShowChanged);
     connect(m_toolManager, &ToolManager::activeToolChanged,
             this, &MainWindow::onToolChanged);
     connect(m_paramDoc, &ParamDocument::documentChanged,
@@ -298,6 +528,23 @@ void MainWindow::connectSignals()
             this, &MainWindow::updateTitle);
     connect(m_paramDoc, &ParamDocument::activeLayerChanged,
             this, &MainWindow::onActiveLayerChanged);
+    // Layer add/remove/rename must re-label the toolbar chip too.
+    connect(m_paramDoc, &ParamDocument::layersChanged,
+            this, &MainWindow::refreshLayerChip);
+
+    // 创建后内嵌编辑条: 线段创建完成 → 显示; 创建中 → 只读实时读数;
+    // Esc → 撤销创建 (删线).
+    connect(m_canvasScene, &CanvasScene::lineCreated,
+            this, &MainWindow::onLineCreated);
+    connect(m_canvasScene, &CanvasScene::linePreviewChanged,
+            this, &MainWindow::onLinePreview);
+    connect(m_segmentEditBar, &cad::app::SegmentEditBar::cancelRequested,
+            this, &MainWindow::onEditStripCancel);
+
+    // Selection tool picked a single segment → show it in the edit strip.
+    // Both ids null = clear (multi-select / deselection).
+    connect(m_toolManager, &ToolManager::editTargetChanged,
+            this, &MainWindow::onEditTargetChanged);
 }
 
 void MainWindow::onSceneMouseMoved(qreal x, qreal y)
@@ -361,6 +608,22 @@ void MainWindow::onToolChanged(ToolType type, const char* name)
     case ToolType::AngleMeasure:  m_actionAngleMeasure->setChecked(true); break;
     }
 
+    // Fluent tool buttons: the pill buttons are QAction-driven but their
+    // highlight is drawn from setIsSelected, so mirror the active tool here.
+    int toolIndex = -1;
+    switch (type) {
+    case ToolType::Select:        toolIndex = 0; break;
+    case ToolType::SmartPen:      toolIndex = 1; break;
+    case ToolType::CurveEdit:     toolIndex = 2; break;
+    case ToolType::Rotate:        toolIndex = 3; break;
+    case ToolType::Break:         toolIndex = 4; break;
+    case ToolType::Intersection:  toolIndex = 5; break;
+    case ToolType::Measure:       toolIndex = 6; break;
+    case ToolType::AngleMeasure:  toolIndex = 7; break;
+    }
+    for (int i = 0; i < m_toolButtons.size(); ++i)
+        m_toolButtons.at(i)->setIsSelected(i == toolIndex);
+
     if (m_toolManager->activeToolType() == ToolType::SmartPen) {
         m_toolHintLabel->setText(
             QString::fromUtf8("智能笔：点设起点 | 再点设终点 | Shift约束45° | 右键/Esc取消 | 空白右键→选择"));
@@ -383,6 +646,55 @@ void MainWindow::onToolChanged(ToolType type, const char* name)
         m_toolHintLabel->setText(
             QString::fromUtf8("选择：点击选取实体（单选即操作）| W切换单选/多选 | 右键取消/确认 | 空白右键→智能笔 | 双击编辑 | Del删除"));
     }
+
+    // 创建后编辑条只在智能笔创建场景有意义; 切换工具即隐藏.
+    if (m_segmentEditBar)
+        m_segmentEditBar->hideBar();
+}
+
+void MainWindow::onLineCreated(const QUuid& blockId, const QUuid& segmentId)
+{
+    if (!m_segmentEditBar) return;
+    m_segmentEditBar->showForLine(blockId, segmentId);
+}
+
+void MainWindow::onLinePreview(double lenCm, double angleDeg)
+{
+    if (!m_segmentEditBar) return;
+    m_segmentEditBar->showPreview(lenCm, angleDeg);
+}
+
+void MainWindow::onEditStripCancel()
+{
+    // 创建模式 Esc = 删除: rewind the undo stack to the creation point — this
+    // drops the creation command AND any strip edits pushed since (strip
+    // edits now commit through SegmentEditBarCommand, so one rewind removes
+    // them all). Selection mode: rewinds only edits made since the pick.
+    if (m_segmentEditBar)
+        m_segmentEditBar->cancelCreation();
+}
+
+void MainWindow::onEditTargetChanged(const QUuid& blockId, const QUuid& segmentId)
+{
+    if (!m_segmentEditBar) return;
+    if (segmentId.isNull()) {
+        // Multi-select, deselection or blank click — nothing to edit.
+        m_segmentEditBar->hideBar();
+        return;
+    }
+    // Selection-mode pick: show without stealing keyboard focus (the canvas
+    // keeps focus for W-toggle / Del / marquee interactions).
+    m_segmentEditBar->showForLine(blockId, segmentId, false);
+}
+
+void MainWindow::onForceShowChanged(bool showNames, bool showLengths)
+{
+    // Keep every open LinePropertyDialog's display toggles in sync while the
+    // N/M hold-to-show keys are pressed (parent chain: dialogs live under the
+    // canvas view). No-op when none are open.
+    const auto dialogs = m_canvasView->findChildren<cad::tools::LinePropertyDialog*>();
+    for (auto* dlg : dialogs)
+        dlg->applyHoldOverride(showNames, showLengths);
 }
 
 void MainWindow::actionSelect()
@@ -428,45 +740,116 @@ void MainWindow::actionAngleMeasure()
 void MainWindow::actionToggleAuxLayer()
 {
     if (!m_paramDoc) return;
-    const int cur = m_paramDoc->activeLayer();
+    const QUuid cur = m_paramDoc->activeLayer();
     if (m_paramDoc->isAuxLayer(cur)) {
         // 已在辅助层 → 切回最近一次的工作层。
         m_paramDoc->setActiveLayer(m_lastWorkingLayer);
     } else {
-        // 记住当前工作层，再切到辅助层（遍历查找，不假设索引 0）。
+        // 记住当前工作层，再切到辅助层。
         m_lastWorkingLayer = cur;
-        const auto& layers = m_paramDoc->layers();
-        for (int i = 0; i < static_cast<int>(layers.size()); ++i) {
-            if (m_paramDoc->isAuxLayer(i)) {
-                m_paramDoc->setActiveLayer(i);
-                break;
-            }
-        }
+        m_paramDoc->setActiveLayer(m_paramDoc->auxLayerId());
     }
 }
 
-void MainWindow::onActiveLayerChanged(int index)
+void MainWindow::onActiveLayerChanged(const QUuid& layerId)
 {
     // 任何路径切到工作层都更新记忆，H 总能回到最近的工作层。
-    if (m_paramDoc && !m_paramDoc->isAuxLayer(index))
-        m_lastWorkingLayer = index;
+    if (m_paramDoc && !m_paramDoc->isAuxLayer(layerId))
+        m_lastWorkingLayer = layerId;
     if (m_actionToggleAuxLayer)
         m_actionToggleAuxLayer->setChecked(
-            m_paramDoc && m_paramDoc->isAuxLayer(index));
+            m_paramDoc && m_paramDoc->isAuxLayer(layerId));
+    refreshLayerChip();
 }
 
-void MainWindow::setupSidePanel()
+void MainWindow::setupPages()
 {
-    m_sidePanel = new SidePanel(m_paramDoc, m_canvasScene, this);
-    addDockWidget(Qt::RightDockWidgetArea, m_sidePanel);
-    m_variablePanel = m_sidePanel->variablePanel();
+    // 画布页含 QOpenGLWidget：Ela 页面切换动画（Popup/Scale）会 grab() 整页
+    // 离屏渲染，软渲染环境下 QOpenGLWidget 离屏 grab 段错误 → 点击导航即闪退。
+    // 改用 None（无动画直切），规避 grab。
+    setStackSwitchMode(ElaWindowType::StackSwitchMode::None);
+
+    auto* varPage = new QWidget(this);
+    auto* varLay = new QVBoxLayout(varPage);
+    varLay->setContentsMargins(12, 12, 12, 12);
+    m_variablePanel = new cad::ui::VariablePanel(m_paramDoc, varPage);
     m_variablePanel->setUndoStack(m_undoStack);
-    m_sidePanel->layerPanel()->setUndoStack(m_undoStack);
-    m_sidePanel->groupPanel()->setUndoStack(m_undoStack);
+    varLay->addWidget(m_variablePanel);
+
+    auto* layerPage = new QWidget(this);
+    auto* layerLay = new QVBoxLayout(layerPage);
+    layerLay->setContentsMargins(12, 12, 12, 12);
+    m_layerPanel = new LayerPanel(m_paramDoc, layerPage);
+    m_layerPanel->setUndoStack(m_undoStack);
+    layerLay->addWidget(m_layerPanel);
+
+    auto* groupPage = new QWidget(this);
+    auto* groupLay = new QVBoxLayout(groupPage);
+    groupLay->setContentsMargins(12, 12, 12, 12);
+    m_groupPanel = new GroupPanel(m_paramDoc, groupPage);
+    m_groupPanel->setUndoStack(m_undoStack);
+    groupLay->addWidget(m_groupPanel);
+
+    // 网页式标签页导航：顶部标签栏（画布/变量/图层/组）+ 自建页面堆栈，
+    // 替代 ElaWindow 左侧竖列导航（隐藏导航栏，页面整体迁入自建堆栈）。
+    m_pageTabs = new ElaTabBar(this);
+    m_pageTabs->addTab(QStringLiteral("画布"));
+    m_pageTabs->addTab(QStringLiteral("变量"));
+    m_pageTabs->addTab(QStringLiteral("图层"));
+    m_pageTabs->addTab(QStringLiteral("组"));
+    m_pageTabs->setTabSize(QSize(88, 30));
+    // ElaTabBar 默认 closable+movable+drag-drop：每个标签带 × 关闭按钮，
+    // 标签还可拖拽换序 —— 换序后 currentChanged 的下标与 QStackedWidget
+    // 页面错位（点图层会打开别的页）。锁死为固定网页式标签条。
+    m_pageTabs->setTabsClosable(false);
+    m_pageTabs->setMovable(false);
+    m_pageTabs->setAcceptDrops(false);
+
+    m_pageStack = new QStackedWidget(this);
+    m_pageStack->addWidget(m_centerContainer);
+    m_pageStack->addWidget(varPage);
+    m_pageStack->addWidget(layerPage);
+    m_pageStack->addWidget(groupPage);
+    connect(m_pageTabs, &QTabBar::currentChanged,
+            m_pageStack, &QStackedWidget::setCurrentIndex);
+
+    auto* pageHost = new QWidget(this);
+    auto* pageLay = new QVBoxLayout(pageHost);
+    pageLay->setContentsMargins(8, 6, 8, 0);
+    pageLay->setSpacing(6);
+    pageLay->addWidget(m_pageTabs);
+    pageLay->addWidget(m_pageStack, 1);
+    setCentralCustomWidget(pageHost);
+
+    // ElaWindow 中央区在同一个 VBox 里同时放了 pageHost 和它自己那个（空的）
+    // 导航页容器：两者 stretch 都是 0，多余纵向空间被 50/50 平分 —— 空容器
+    // 吞掉窗口下半部，画布被挤到上半部（视觉上就是"导航页侵入画布"）。
+    // 本应用从不向 Ela 注册导航页，把空容器从布局里拿掉，pageHost 独占整区。
+    if (QWidget* innerCentral = pageHost->parentWidget()) {
+        if (auto* box = qobject_cast<QBoxLayout*>(innerCentral->layout())) {
+            box->setStretch(0, 1);
+            box->setStretch(1, 0);
+            if (auto* emptyContainer = innerCentral->findChild<QStackedWidget*>())
+                emptyContainer->hide();
+        }
+    }
+
+    // 左侧导航栏不再使用（标签页接管），隐藏以回收布局。
+    if (auto* navBar = findChild<ElaNavigationBar*>())
+        navBar->hide();
+
+    for (int i = 0; i < 4; ++i) {
+        auto* sc = new QShortcut(QKeySequence(Qt::CTRL | (Qt::Key_1 + i)), this);
+        const int idx = i;
+        connect(sc, &QShortcut::activated, this, [this, idx] {
+            m_pageTabs->setCurrentIndex(idx);
+            m_pageStack->setCurrentIndex(idx);
+        });
+    }
 
     // Click a group card → activate the selection tool and select the whole
     // group (confirmed, drag-ready).
-    connect(m_sidePanel->groupPanel(), &GroupPanel::selectGroupRequested,
+    connect(m_groupPanel, &GroupPanel::selectGroupRequested,
             this, [this](const QList<QUuid>& blockIds) {
         m_toolManager->switchTool(cad::tools::ToolType::Select);
         if (auto* ts = dynamic_cast<cad::tools::ToolSelect*>(
@@ -484,7 +867,7 @@ void MainWindow::setupSidePanel()
     });
 
     // Click a linked card → flash the source block red on canvas.
-    connect(m_variablePanel, &VariablePanel::highlightBlockRequested,
+    connect(m_variablePanel, &cad::ui::VariablePanel::highlightBlockRequested,
             this, [this](const QUuid& blockId) {
         auto* bi = m_canvasScene->findBlockItem(blockId);
         if (!bi) return;
@@ -503,7 +886,7 @@ void MainWindow::setupSidePanel()
     // Click a measure card → flash the TWO measured points precisely.
     // Bridge-line measurements (ownerBlockId set) and dangling/unresolved
     // sources keep the existing whole-block highlight path.
-    connect(m_variablePanel, &VariablePanel::highlightMeasureRequested,
+    connect(m_variablePanel, &cad::ui::VariablePanel::highlightMeasureRequested,
             this, [this](const QUuid& measureId) {
         const auto* mv = m_paramDoc->findMeasure(measureId);
         if (!mv) return;
@@ -552,17 +935,18 @@ bool MainWindow::maybeSave()
     if (m_undoStack->isClean())
         return true;
 
-    auto ret = QMessageBox::warning(this, QString::fromUtf8("服装CAD"),
+    auto ret = cad::ui::ElaMsgBox::show(this, QString::fromUtf8("野风帖"),
         QString::fromUtf8("文档已修改，是否保存？"),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+        QString::fromUtf8("保存"), QString::fromUtf8("取消"),
+        QString::fromUtf8("不保存"));
 
-    if (ret == QMessageBox::Save) {
+    if (ret == cad::ui::ElaMsgBox::Result::Left) {
         onSaveDocument();
         return m_undoStack->isClean();  // false if save failed
     }
-    if (ret == QMessageBox::Cancel)
+    if (ret == cad::ui::ElaMsgBox::Result::Right)
         return false;
-    return true;  // Discard
+    return true;  // 不保存
 }
 
 void MainWindow::updateTitle()
@@ -571,13 +955,13 @@ void MainWindow::updateTitle()
         ? QString::fromUtf8("未命名")
         : QFileInfo(m_currentFilePath).fileName();
     QString dirty = m_undoStack->isClean() ? QString() : QStringLiteral("*");
-    setWindowTitle(QStringLiteral("%1%2 - 服装CAD").arg(dirty, name));
+    setWindowTitle(QStringLiteral("%1%2 - 野风帖").arg(dirty, name));
 }
 
 void MainWindow::clearDocument()
 {
-    m_paramDoc->clear();   // 内部重置 activeLayer=1 但不发射信号
-    m_lastWorkingLayer = 1;
+    m_paramDoc->clear();   // 内部重置 activeLayer 为第一个工作层，但不发射信号
+    m_lastWorkingLayer = m_paramDoc->firstWorkingLayerId();
     if (m_actionToggleAuxLayer)
         m_actionToggleAuxLayer->setChecked(false);
     m_undoStack->clear();
@@ -604,7 +988,7 @@ void MainWindow::onOpenDocument()
     QString error;
     QStringList warnings;
     if (!cad::doc::DocumentFile::load(path, *m_paramDoc, &error, &warnings)) {
-        QMessageBox::critical(this, QString::fromUtf8("打开失败"), error);
+        cad::ui::ElaMsgBox::critical(this, QString::fromUtf8("打开失败"), error);
         return;
     }
     showLoadWarnings(this, warnings);
@@ -627,7 +1011,7 @@ void MainWindow::onSaveDocument()
 
     QString error;
     if (!cad::doc::DocumentFile::save(m_currentFilePath, *m_paramDoc, &error)) {
-        QMessageBox::critical(this, QString::fromUtf8("保存失败"), error);
+        cad::ui::ElaMsgBox::critical(this, QString::fromUtf8("保存失败"), error);
         return;
     }
 
@@ -649,7 +1033,7 @@ void MainWindow::onSaveAsDocument()
 
     QString error;
     if (!cad::doc::DocumentFile::save(path, *m_paramDoc, &error)) {
-        QMessageBox::critical(this, QString::fromUtf8("保存失败"), error);
+        cad::ui::ElaMsgBox::critical(this, QString::fromUtf8("保存失败"), error);
         return;
     }
 
@@ -670,7 +1054,7 @@ void MainWindow::onOpenRecentFile()
     QString error;
     QStringList warnings;
     if (!cad::doc::DocumentFile::load(path, *m_paramDoc, &error, &warnings)) {
-        QMessageBox::critical(this, QString::fromUtf8("打开失败"), error);
+        cad::ui::ElaMsgBox::critical(this, QString::fromUtf8("打开失败"), error);
         m_recentFiles.removeAll(path);
         updateRecentFilesMenu();
         return;

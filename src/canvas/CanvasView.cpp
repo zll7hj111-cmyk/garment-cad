@@ -1,10 +1,10 @@
-#include "CanvasView.h"
+﻿#include "CanvasView.h"
 
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QContextMenuEvent>
-#include <QMenu>
+#include "ElaMenu.h"
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QScrollBar>
@@ -16,6 +16,7 @@
 #include <QSurfaceFormat>
 #include <QTimer>
 #include <QShowEvent>
+#include <QFocusEvent>
 
 #include <cmath>
 #include <limits>
@@ -38,6 +39,7 @@
 
 CanvasView::CanvasView(CanvasScene* scene, QWidget* parent)
     : QGraphicsView(scene, parent)
+    , m_scene(scene)
 {
     // Rendering backend: Qt's native rasterizer by DEFAULT. Software raster
     // renders this scene in tens of microseconds per full viewport — smooth
@@ -68,8 +70,14 @@ CanvasView::CanvasView(CanvasScene* scene, QWidget* parent)
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
-    // Background (from style)
-    setBackgroundBrush(QColor(250, 250, 250));
+    // Background (from style) — the pattern-paper ground. CanvasScene::setStyle
+    // is the authoritative theme path and refreshes this brush on every theme
+    // switch; the constructor seeds it from the scene's current style so a
+    // view created after a theme change still paints the right paper.
+    if (auto* cs = qobject_cast<CanvasScene*>(this->scene()))
+        applyCanvasBackground(cs->style()->canvasBackground);
+    else
+        setBackgroundBrush(QColor(246, 243, 236));
 
     // Mouse tracking for coordinate display
     setMouseTracking(true);
@@ -82,6 +90,11 @@ CanvasView::CanvasView(CanvasScene* scene, QWidget* parent)
 }
 
 CanvasView::~CanvasView() = default;
+
+void CanvasView::applyCanvasBackground(const QColor& c)
+{
+    setBackgroundBrush(c);
+}
 
 double CanvasView::zoomFactor() const
 {
@@ -214,6 +227,19 @@ void CanvasView::mouseDoubleClickEvent(QMouseEvent* event)
 
 void CanvasView::keyPressEvent(QKeyEvent* event)
 {
+    // Hold-to-show keys: N = all names, M = all lengths (M freed from the
+    // measure action shortcut). Swallowed BEFORE tool dispatch; auto-repeat
+    // presses keep the state already set.
+    if (event->key() == Qt::Key_N || event->key() == Qt::Key_M) {
+        if (!event->isAutoRepeat() && m_scene) {
+            if (event->key() == Qt::Key_N)
+                m_scene->setForceShowName(true);
+            else
+                m_scene->setForceShowLength(true);
+        }
+        event->accept();
+        return;
+    }
     if (m_toolManager) {
         m_toolManager->dispatchKeyPress(event);
     }
@@ -222,10 +248,34 @@ void CanvasView::keyPressEvent(QKeyEvent* event)
 
 void CanvasView::keyReleaseEvent(QKeyEvent* event)
 {
+    // Release the matching override (each key releases only its own state so
+    // N held + L tapped then released keeps N's names shown).
+    if (m_scene) {
+        if (event->key() == Qt::Key_N) {
+            m_scene->setForceShowName(false);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_M) {
+            m_scene->setForceShowLength(false);
+            event->accept();
+            return;
+        }
+    }
     if (m_toolManager) {
         m_toolManager->dispatchKeyRelease(event);
     }
     QGraphicsView::keyReleaseEvent(event);
+}
+
+void CanvasView::focusOutEvent(QFocusEvent* event)
+{
+    // Never leave hold-to-show stuck when focus leaves the canvas.
+    if (m_scene) {
+        m_scene->setForceShowName(false);
+        m_scene->setForceShowLength(false);
+    }
+    QGraphicsView::focusOutEvent(event);
 }
 
 void CanvasView::showEvent(QShowEvent* event)
@@ -386,7 +436,7 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
     if (!bestBlockId.isNull())
         hitGroupId = m_paramDoc->groupOfBlock(bestBlockId);
 
-    QMenu menu(this);
+    ElaMenu menu(this);
     QAction* groupSelectAct = nullptr;
     QAction* groupDissolveAct = nullptr;
     QAction* groupRenameAct = nullptr;
@@ -426,9 +476,11 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
             QMenu* bakeMenu = menu.addMenu(QStringLiteral("烘焙到操作层"));
             const auto& layerList = m_paramDoc->layers();
             for (int i = 0; i < static_cast<int>(layerList.size()); ++i) {
-                if (m_paramDoc->isAuxLayer(i)) continue;   // skip the aux layer
+                if (m_paramDoc->isAuxLayer(layerList[static_cast<size_t>(i)].id))
+                    continue;   // skip the aux layer
                 QAction* act = bakeMenu->addAction(layerList[static_cast<size_t>(i)].name);
-                act->setProperty("bakeTargetLayer", i);
+                act->setProperty("bakeTargetLayer",
+                                 layerList[static_cast<size_t>(i)].id.toString());
             }
         }
     }
@@ -503,7 +555,8 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
     } else if (chosen && chosen->property("bakeTargetLayer").isValid()) {
         // 烘焙到操作层: bake a COPY of the measure line onto the chosen
         // working layer, then switch to that layer and select the new line.
-        const int targetLayer = chosen->property("bakeTargetLayer").toInt();
+        const QUuid targetLayer =
+            QUuid::fromString(chosen->property("bakeTargetLayer").toString());
         auto* bakeCmd = new cad::cmd::BakeMeasureCopyCommand(
             m_paramDoc, bestBlockId, targetLayer);
         if (!bakeCmd->isValid()) {

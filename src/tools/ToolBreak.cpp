@@ -287,7 +287,8 @@ void ToolBreak::openAuxDialogForBreak(const SegmentSnapResult& segSnap)
         ? m_scene->views().first() : nullptr;
     auto* dlg = new QuickAuxDialog(pt, block->findPoint(seg->startPointId),
                                    block->findPoint(seg->endPointId), parentWidget);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    // NOTE: no WA_DeleteOnClose — the dialog schedules its own deleteLater()
+    // on close (ElaAppBar's default close path would destroy it mid-call).
     m_auxDialog = dlg;
     m_auxDialogSegSnap = segSnap;
 

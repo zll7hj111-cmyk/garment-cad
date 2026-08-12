@@ -2,6 +2,7 @@
 
 #include "Tool.h"
 #include "SnapEngine.h"
+#include "LineFactory.h"
 #include "geometry/Vec2.h"
 
 #include <QGraphicsItem>
@@ -20,6 +21,7 @@ namespace cad::param { class ParamDocument; class Block; struct ParamPoint; stru
 namespace cad::tools {
 
 class QuickAuxDialog;
+class LeaderCandidatePicker;
 
 /// Screen-space HUD label that follows the cursor during line drawing.
 class HudItem : public QGraphicsItem
@@ -38,11 +40,11 @@ private:
     QRectF  m_rect;
 };
 
-/// Smart Pen tool — parametric line creation with snapping and property dialog.
+/// Smart Pen tool — parametric line creation with snapping.
 ///
 /// Flow B interaction:
 ///   Click → set start (auto-snap) → move → preview + HUD → click → set end (auto-snap)
-///   → property dialog pops up → confirm → line created → back to Idle.
+///   → line created (host shows the status-bar edit strip, no dialog) → back to Idle.
 ///
 /// Right-click / Esc cancels.  Hold Shift for 45° angle constraint.
 class ToolSmartPen : public Tool
@@ -104,38 +106,6 @@ private:
     /// Transition Idle → Drawing: create the preview/rubber-band items.
     void beginStroke(Qt::KeyboardModifiers mods);
 
-    /// Create a parametric Block for a free line (no snap).
-    void createFreeLine(const cad::geo::Vec2& start, const cad::geo::Vec2& end);
-
-    /// Create a parametric Block attached to an existing block (snapped start).
-    void createAttachedLine(const SnapResult& snapStart, const cad::geo::Vec2& end);
-
-    /// Create a bridge line (桥接线): both endpoints pinned to existing points
-    /// (snapped start AND end). Length/angle are passive — fully determined by
-    /// the two host points; the Resolver re-derives them every pass.
-    void createBridgeLine(const SnapResult& snapStart, const SnapResult& snapEnd);
-
-    // --- Leader candidate selection (基准线点选) ---
-    /// A leader-segment candidate at the snapped start: any segment incident
-    /// to any point coincident with the snap position (within snap radius,
-    /// across blocks — attached points from several blocks stack on one spot).
-    struct LeaderCandidate {
-        QUuid blockId;
-        QUuid pointId;    ///< Attachment target point on that block.
-        QUuid segmentId;  ///< Segment providing the reference direction.
-    };
-
-    /// Collect + rank candidates around the snapped start point.
-    void collectLeaderCandidates(const SnapResult& snap);
-    /// Choose candidate by index: teal-highlight it and update m_refDirDeg.
-    void setLeaderIndex(int index);
-    /// Clear highlight and candidate list.
-    void clearLeaderState();
-    /// Candidate whose segment body is within pick tolerance of worldPos
-    /// (nearest wins), or -1. Used for click-to-switch during rubber band.
-    [[nodiscard]] int leaderCandidateAt(const cad::geo::Vec2& worldPos,
-                                        double zoom) const;
-
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::Idle;
@@ -143,13 +113,16 @@ private:
     cad::geo::Vec2 m_startPoint;
     bool m_angleSnap = false;
     mutable double m_snapAngleDeg = 0.0;  ///< Follower angle (relative to leader) for HUD.
-    double m_refDirDeg = 0.0;             ///< Leader segment world direction (deg) at snapped start; 0 when free.
 
     // Snap state
     SnapEngine m_snapEngine;
     std::optional<SnapResult> m_startSnap;  ///< If start was snapped to existing point.
     std::optional<SnapResult> m_currentSnap; ///< Current hover snap (for indicator).
     std::optional<SegmentSnapResult> m_segSnap; ///< Current segment-body hover (for X marker).
+
+    // Extracted collaborators: line construction + leader-candidate selection.
+    LineFactory* m_lineFactory = nullptr;
+    LeaderCandidatePicker* m_leaderPicker = nullptr;
 
     // Non-modal quick-aux dialog state (open between click and accept)
     QPointer<QuickAuxDialog> m_auxDialog;      ///< Open dialog (null when none).

@@ -11,6 +11,16 @@ constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
 /// Maximum bytecode stack depth (far beyond any realistic expression).
 constexpr int kMaxStack = 256;
+
+/// RAII recursion guard for the recursive-descent parser: pathological
+/// inputs like "((((((...1" or "-----...-1" recurse once per nesting level
+/// and would overflow the C++ call stack during compile (execute()'s
+/// kMaxStack only protects the bytecode run, which happens AFTER parsing).
+struct DepthGuard {
+    int& depth;
+    explicit DepthGuard(int& d) : depth(d) { ++depth; }
+    ~DepthGuard() { --depth; }
+};
 } // namespace
 
 // ============================================================
@@ -30,6 +40,8 @@ ExpressionEvaluator::compiled(const QString& expression)
         return store[static_cast<std::size_t>(it.value())];
 
     // Pathological-growth guard (unique expression texts are few in practice).
+    // NOTE: resetting invalidates every previously returned reference — the
+    // documented contract (see header) is that callers must re-fetch per call.
     if (index.size() >= 8192) {
         index.clear();
         store.clear();
@@ -284,6 +296,11 @@ void ExpressionEvaluator::compile(Compiled& out)
 
 void ExpressionEvaluator::parseExpression(Compiled& out)
 {
+    if (m_depth >= kMaxParseDepth) {
+        fail(out, QStringLiteral("表达式嵌套过深"));
+        return;
+    }
+    const DepthGuard guard(m_depth);
     parseTerm(out);
     for (;;) {
         skipSpaces();
@@ -328,6 +345,11 @@ void ExpressionEvaluator::parseTerm(Compiled& out)
 
 void ExpressionEvaluator::parseFactor(Compiled& out)
 {
+    if (m_depth >= kMaxParseDepth) {
+        fail(out, QStringLiteral("表达式嵌套过深"));
+        return;
+    }
+    const DepthGuard guard(m_depth);
     skipSpaces();
     const QChar c = peek();
 

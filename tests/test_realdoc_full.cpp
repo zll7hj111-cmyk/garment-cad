@@ -1,4 +1,4 @@
-/// @file test_realdoc_full.cpp
+﻿/// @file test_realdoc_full.cpp
 /// FULL-WINDOW drag benchmark on a real user document (.gcad).
 ///
 /// Unlike test_realdoc_perf (solver + bare scene only), this test builds the
@@ -40,6 +40,14 @@ using namespace cad::param;
 using cad::geo::Vec2;
 
 namespace {
+
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
 
 double medianUs(std::vector<double>& v)
 {
@@ -115,7 +123,7 @@ void TestRealdocFull::teardownSmoke()
         win.resize(800, 600);
         win.show();
         QVERIFY(QTest::qWaitForWindowExposed(&win));
-        auto* view = qobject_cast<CanvasView*>(win.centralWidget());
+        auto* view = qobject_cast<CanvasView*>(win.getCentralWidget(0));
         QVERIFY(view);
         auto* scene = qobject_cast<CanvasScene*>(view->scene());
         QVERIFY(scene);
@@ -139,7 +147,7 @@ void TestRealdocFull::fullWindowDrag()
     win.show();
     QVERIFY(QTest::qWaitForWindowExposed(&win));
 
-    auto* view = qobject_cast<CanvasView*>(win.centralWidget());
+    auto* view = qobject_cast<CanvasView*>(win.getCentralWidget(0));
     QVERIFY(view);
     auto* scene = qobject_cast<CanvasScene*>(view->scene());
     QVERIFY(scene);
@@ -156,7 +164,7 @@ void TestRealdocFull::fullWindowDrag()
     QUuid targetBlock;
     Vec2 grabWorld;
     for (const auto& b : doc->blocks()) {
-        if (b.layer == 0) continue;
+        if (b.layer == doc->auxLayerId()) continue;
         for (const auto& seg : b.segments) {
             const auto* sp = b.findPoint(seg.startPointId);
             const auto* ep = b.findPoint(seg.endPointId);

@@ -1,24 +1,25 @@
-#pragma once
+﻿#pragma once
 
-#include <QDialog>
+#include "ElaDialog.h"
+#include "ElaText.h"
 #include <QList>
 #include <QHash>
 
 #include "parametric/Condition.h"
 
 class QVBoxLayout;
-class QComboBox;
-class QCheckBox;
-class QDoubleSpinBox;
-class QPushButton;
-class QLabel;
+class ElaComboBox;
+class ElaCheckBox;
+class ElaDoubleSpinBox;
+class ElaPushButton;
+class ElaText;
 
 /// Modal editor for the conditional adjustments attached to one formula.
 ///
 /// The watched-variable combo only offers the identifiers actually referenced
 /// by the formula expression (intersected with known variables), enforcing the
 /// rule that a condition must target a variable the formula uses.
-class ConditionDialog : public QDialog
+class ConditionDialog : public ElaDialog
 {
     Q_OBJECT
 
@@ -35,16 +36,16 @@ private:
     struct Row {
         cad::param::Condition cond;   ///< Source condition (keeps id).
         QWidget*        widget = nullptr;
-        QComboBox*      watch  = nullptr;
-        QCheckBox*      lowerOn = nullptr;
-        QDoubleSpinBox* lower  = nullptr;
-        QCheckBox*      upperOn = nullptr;
-        QDoubleSpinBox* upper  = nullptr;
-        QComboBox*      mode   = nullptr;
-        QDoubleSpinBox* step   = nullptr;
-        QLabel*         stepLbl = nullptr;
-        QDoubleSpinBox* amount = nullptr;
-        QPushButton*    remove = nullptr;
+        ElaComboBox*      watch  = nullptr;
+        ElaCheckBox*      lowerOn = nullptr;
+        ElaDoubleSpinBox* lower  = nullptr;
+        ElaCheckBox*      upperOn = nullptr;
+        ElaDoubleSpinBox* upper  = nullptr;
+        ElaComboBox*      mode   = nullptr;
+        ElaDoubleSpinBox* step   = nullptr;
+        ElaText*        stepLbl = nullptr;
+        ElaDoubleSpinBox* amount = nullptr;
+        ElaPushButton*    remove = nullptr;
     };
 
     void setupUi(const QString& formulaName, const QString& expression);
@@ -58,7 +59,7 @@ private:
     QHash<QString, double> m_knownVars;
     QStringList m_vars;
     QVBoxLayout* m_rowsLayout = nullptr;
-    QLabel* m_emptyHint = nullptr;
+    ElaText* m_emptyHint = nullptr;
     QList<Row*> m_rows;
     QList<cad::param::Condition> m_result;
 };

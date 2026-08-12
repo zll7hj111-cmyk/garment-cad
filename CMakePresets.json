@@ -15,6 +15,7 @@
       "binaryDir": "${sourceDir}/build/out",
       "cacheVariables": {
         "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
         "CMAKE_PREFIX_PATH": {
           "type": "PATH",
           "value": "$env{QT_DIR}"

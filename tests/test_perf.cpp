@@ -26,6 +26,14 @@ using cad::geo::Vec2;
 
 namespace {
 
+/// Test convenience: stable id of the display layer at @p row.
+QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
+{
+    const auto& ls = doc.layers();
+    return (row >= 0 && row < static_cast<int>(ls.size()))
+        ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
 /// A chained line block on a specific layer. Free start, Polar end whose
 /// distance is driven by @p distFormula (cm domain).
 struct ChainNode {
@@ -38,7 +46,7 @@ ChainNode addChainBlock(ParamDocument& doc, int layer, const QString& distFormul
                         Vec2 origin)
 {
     Block block;
-    block.layer = layer;
+    block.layer = layerIdAt(doc, layer);
     block.transform.origin = origin;
 
     ParamPoint p1;
@@ -75,7 +83,7 @@ void chain(ParamDocument& doc, const ChainNode& follower, const ChainNode& leade
     att.fromPointId = follower.startId;
     att.toBlockId = leader.blockId;
     att.toPointId = leader.endId;
-    att.followerAngle = 0.0;
+    att.followerAngle = 180.0;   // 闭合基准: 180° = 沿 leader 直行延续
     doc.addAttachment(std::move(att));
 }
 
@@ -158,7 +166,7 @@ void TestPerf::layeredResolveBenchmark()
     const Vec2 dragOrigin = dragBlk->transform.origin;
     for (int i = 0; i < kIters; ++i) {
         dragBlk->transform.origin = dragOrigin + Vec2(0.5 * i, 0.3 * i);
-        doc.invalidateLayer(1);  // working group only
+        doc.invalidateLayer(layerIdAt(doc, 1));  // working group only
         auto t0 = std::chrono::steady_clock::now();
         doc.resolveAll();
         auto t1 = std::chrono::steady_clock::now();
@@ -239,7 +247,7 @@ double dragCost(ParamDocument& doc, const std::vector<ChainNode>& nodes, int ite
     us.reserve(iters);
     for (int i = 0; i < iters; ++i) {
         dragBlk->transform.origin = origin + Vec2(0.5 * i, 0.3 * i);
-        doc.invalidateLayer(1);
+        doc.invalidateLayer(layerIdAt(doc, 1));
         auto t0 = std::chrono::steady_clock::now();
         doc.resolveAll();
         auto t1 = std::chrono::steady_clock::now();
@@ -297,7 +305,7 @@ bool auxFromIntersectionOnLayers(int segLayer, int originLayer)
 
     // b1: horizontal segment (0,0)-(100,0).
     Block b1;
-    b1.layer = segLayer;
+    b1.layer = layerIdAt(doc, segLayer);
     ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
     QUuid p1Id = p1.id;
     ParamPoint p2; p2.constraint = PointConstraint::Polar; p2.refPointId = p1Id;
@@ -311,7 +319,7 @@ bool auxFromIntersectionOnLayers(int segLayer, int originLayer)
 
     // b2: ray origin A at (60,-40).
     Block b2;
-    b2.layer = originLayer;
+    b2.layer = layerIdAt(doc, originLayer);
     ParamPoint a; a.constraint = PointConstraint::Free; a.freePos = Vec2(60.0, -40.0);
     QUuid aId = a.id;
     b2.addPoint(std::move(a));

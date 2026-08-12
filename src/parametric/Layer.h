@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QUuid>
 
 namespace cad::param {
 
@@ -31,8 +32,10 @@ enum class LayerType : quint8 {
 /// painted. Non-active visible layers are rendered grayed as a reference;
 /// the non-active AUXILIARY layer is grayed too, but never a snap target
 /// (see ParamDocument::layerSnappable).
-/// Blocks reference their layer by index into ParamDocument::layers().
+/// Blocks reference their layer by the STABLE Layer::id (never by display
+/// row) — removal/reordering of other layers never invalidates the reference.
 struct Layer {
+    QUuid     id = QUuid::createUuid();  ///< Stable identity (Block::layer ref).
     QString   name;        ///< User-editable display name.
     bool      visible = true;  ///< False = hidden (not painted, not snappable).
     LayerType type = LayerType::Working;  ///< Layer kind (single Auxiliary per doc).

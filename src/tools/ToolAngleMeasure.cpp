@@ -16,6 +16,7 @@
 #include "geometry/Angle.h"
 #include "geometry/Units.h"
 #include "ToolSmartPen.h"  // HudItem
+#include "document/commands/VariableCommands.h"
 
 namespace cad::tools {
 
@@ -146,7 +147,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
                       m_hoverSnap->segmentId != m_snapA->segmentId;
     if (!m_highlightB) {
         m_highlightB = new QGraphicsLineItem();
-        QPen pen(QColor(0x2E, 0x86, 0xC1), 2.4);  // blue
+        QPen pen(QColor(0x2F, 0x6F, 0xED), 2.4);  // accent blue
         pen.setCosmetic(true);
         m_highlightB->setPen(pen);
         m_highlightB->setZValue(101.0);
@@ -249,7 +250,12 @@ void ToolAngleMeasure::commitAngleMeasure()
     // matches what the user sees and types back into formula fields.
     am.refName = QStringLiteral("MA_") + cad::param::Serial::randomPrefix().toUpper();
 
-    m_paramDoc->addAngleMeasure(std::move(am));
+    // Commit through the undo stack (same pattern as ToolMeasure) — a plain
+    // addAngleMeasure would leave the angle un-undoable and desync the stack.
+    if (m_undoStack)
+        m_undoStack->push(new cad::cmd::AddAngleMeasureCommand(m_paramDoc, std::move(am)));
+    else
+        m_paramDoc->addAngleMeasure(std::move(am));
 
     // Stay active; ready for the next measurement.
     resetToSelectA();

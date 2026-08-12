@@ -1,9 +1,9 @@
-#pragma once
+﻿#pragma once
 
-#include <QDialog>
+#include "ElaDialog.h"
 #include <QString>
 
-class QLineEdit;
+class ElaLineEdit;
 
 namespace cad::tools {
 
@@ -20,7 +20,7 @@ namespace cad::tools {
 ///
 /// Accepted  → caller writes the filled name/comment via SetMeasureCommand.
 /// Rejected  → the measure is kept as committed; nothing else happens.
-class MeasureResultDialog : public QDialog
+class MeasureResultDialog : public ElaDialog
 {
     Q_OBJECT
 
@@ -41,8 +41,8 @@ public:
     [[nodiscard]] QString enteredComment() const;
 
 private:
-    QLineEdit* m_nameEdit    = nullptr;
-    QLineEdit* m_commentEdit = nullptr;
+    ElaLineEdit* m_nameEdit    = nullptr;
+    ElaLineEdit* m_commentEdit = nullptr;
 };
 
 } // namespace cad::tools

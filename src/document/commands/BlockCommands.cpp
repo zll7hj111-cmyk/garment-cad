@@ -105,8 +105,9 @@ void RemoveBlockCommand::undo()
     m_doc->addBlock(m_block);
     for (const auto& bridge : m_bridges)
         m_doc->addBlock(bridge);
-    for (const auto& att : m_attachments)
-        m_doc->addAttachment(att);
+    // Verbatim restore: keep each attachment's snapshot isLocked (拖动保护
+    // 默认开启只针对新建连接; 快照还原必须保留用户手动解锁的状态).
+    m_doc->addAttachmentsRaw(m_attachments);
     // Re-publish the auto-deleted linked variables, then restore the pristine
     // formulas of their consumers (baked to numbers by redo).
     for (const auto& lv : m_linked)
@@ -214,7 +215,7 @@ void RotateBlockCommand::undo()
         b->endTargetPointId = m_oldEndTargetPoint;
     }
     if (!m_releasedAttId.isNull())
-        m_doc->addAttachment(m_releasedAttBackup);
+        m_doc->addAttachmentRaw(m_releasedAttBackup);  // verbatim (keep snapshot isLocked)
     m_doc->resolveAll();
 }
 
@@ -238,8 +239,8 @@ void DuplicateBlocksCommand::redo()
         m_doc->addLinked(lv);
     for (const auto& b : m_result.blocks)
         m_doc->addBlock(b);
-    for (const auto& att : m_result.attachments)
-        m_doc->addAttachment(att);
+    // Verbatim: cloned connections keep the ORIGINAL's isLocked (复制语义).
+    m_doc->addAttachmentsRaw(m_result.attachments);
     // Group clone (副本成新组): the clone set re-forms a user group.
     if (m_result.newGroup)
         m_doc->restoreGroup(*m_result.newGroup, m_result.newGroupMembers);
@@ -321,11 +322,46 @@ bool RotateBlockCommand::mergeWith(const QUndoCommand* other)
     const auto* cmd = static_cast<const RotateBlockCommand*>(other);
     if (cmd->m_blockId != m_blockId)
         return false;
+    // A rotation that ALSO released a follower / changed the endpoint-aim
+    // must stay a separate command: the merged snapshot only carries ONE
+    // attachment backup + ONE aim pair, so absorbing the second state would
+    // silently drop the first release / aim change from undo and redo.
+    if (cmd->m_releasedAttId != m_releasedAttId
+        || cmd->m_newEndTargetBlock != m_newEndTargetBlock
+        || cmd->m_newEndTargetPoint != m_newEndTargetPoint)
+        return false;
     m_newTf = cmd->m_newTf;  // keep the oldest m_oldTf
     return true;
 }
 
 // ─── SetSegmentPropertyCommand ───
+
+namespace {
+/// Apply a property snapshot to a segment; reports whether anything changed.
+/// Display attributes (name/visible/style/...) are mirrored in the canvas
+/// item cache (BlockItem::m_lines), which is only rebuilt when
+/// block->geometryEpoch changes — a property-only edit moves no points, so
+/// the resolve pass alone would never invalidate the cache (same rationale
+/// as ParamDocument::setOwnerMeasureName).
+bool applySegmentProps(cad::param::Segment* s,
+                       const SetSegmentPropertyCommand::Props& p)
+{
+    bool changed = false;
+    auto upd = [&changed](auto& dst, const auto& src) {
+        if (dst != src) { dst = src; changed = true; }
+    };
+    upd(s->name, p.name);
+    upd(s->role, p.role);
+    upd(s->lineStyle, p.lineStyle);
+    upd(s->color, p.color);
+    upd(s->weight, p.weight);
+    upd(s->visible, p.visible);
+    upd(s->showName, p.showName);
+    upd(s->showLength, p.showLength);
+    upd(s->lengthFormula, p.lengthFormula);
+    return changed;
+}
+} // namespace
 
 SetSegmentPropertyCommand::SetSegmentPropertyCommand(
     cad::param::ParamDocument* doc,
@@ -360,15 +396,11 @@ void SetSegmentPropertyCommand::redo()
 {
     if (auto* b = m_doc->findBlock(m_blockId)) {
         if (auto* s = b->findSegment(m_segmentId)) {
-            s->name = m_newProps.name;
-            s->role = m_newProps.role;
-            s->lineStyle = m_newProps.lineStyle;
-            s->color = m_newProps.color;
-            s->weight = m_newProps.weight;
-            s->visible = m_newProps.visible;
-            s->showName = m_newProps.showName;
-            s->showLength = m_newProps.showLength;
-            s->lengthFormula = m_newProps.lengthFormula;
+            // Bump geometryEpoch so the canvas rebuilds its cached display
+            // state on the next resolve — visibility/name/style edits move no
+            // geometry, so Block::resolve would not invalidate the cache.
+            if (applySegmentProps(s, m_newProps))
+                ++b->geometryEpoch;
         }
     }
     m_doc->resolveAll();
@@ -378,15 +410,8 @@ void SetSegmentPropertyCommand::undo()
 {
     if (auto* b = m_doc->findBlock(m_blockId)) {
         if (auto* s = b->findSegment(m_segmentId)) {
-            s->name = m_oldProps.name;
-            s->role = m_oldProps.role;
-            s->lineStyle = m_oldProps.lineStyle;
-            s->color = m_oldProps.color;
-            s->weight = m_oldProps.weight;
-            s->visible = m_oldProps.visible;
-            s->showName = m_oldProps.showName;
-            s->showLength = m_oldProps.showLength;
-            s->lengthFormula = m_oldProps.lengthFormula;
+            if (applySegmentProps(s, m_oldProps))
+                ++b->geometryEpoch;
         }
     }
     m_doc->resolveAll();
@@ -692,6 +717,105 @@ void SetCurveTangentCommand::undo()
     pt->tangentOut = m_oldTanOut;
     pt->autoTangent = m_oldAuto;
     ++block->geometryEpoch;  // tangent change reshapes curve → force cache rebuild
+    m_doc->resolveAll();
+}
+
+// ─── SegmentEditBarCommand ───
+
+namespace {
+
+/// Apply one edit-strip state snapshot to the model (name/length/angle).
+/// Missing block/segment/attachment → no-op (deleted concurrently).
+void applyEditStripState(cad::param::ParamDocument& doc,
+                         const QUuid& blockId, const QUuid& segmentId,
+                         const SegmentEditBarCommand::State& s)
+{
+    auto* b = doc.findBlock(blockId);
+    auto* seg = b ? b->findSegment(segmentId) : nullptr;
+    if (!b || !seg) return;
+    if (seg->name != s.segName) {
+        seg->name = s.segName;
+        ++b->geometryEpoch;  // the canvas label cache rebuilds on epoch change
+    }
+    seg->lengthFormula = s.lengthFormula;
+    // The owned measure variable's display name follows the segment name.
+    doc.setOwnerMeasureName(blockId, s.segName);
+    if (auto* ep = b->findPoint(seg->endPointId)) {
+        ep->distance = s.endDistance;
+        ep->distanceFormula = s.endDistanceFormula;
+        ep->angle = s.endAngle;
+        ep->angleFormula = s.endAngleFormula;
+        ep->constraint = static_cast<cad::param::PointConstraint>(s.endConstraint);
+        ep->refPointId = s.endRefPointId;
+    }
+    if (!s.attId.isNull()) {
+        if (auto* a = doc.findAttachment(s.attId)) {
+            a->followerAngle = s.followerAngle;
+            a->followerAngleFormula = s.followerAngleFormula;
+            a->arcLength = s.arcLength;
+            a->arcLengthFormula = s.arcLengthFormula;
+            a->rotationMode = static_cast<cad::param::RotationMode>(s.rotationMode);
+        }
+    }
+}
+
+} // namespace
+
+SegmentEditBarCommand::SegmentEditBarCommand(cad::param::ParamDocument* doc,
+                                             const QUuid& blockId,
+                                             const QUuid& segmentId,
+                                             State newState,
+                                             QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_blockId(blockId)
+    , m_segmentId(segmentId)
+    , m_newState(std::move(newState))
+{
+    setText(QStringLiteral("编辑线段属性"));
+    // Snapshot the pre-edit state from the model.
+    if (const auto* b = doc->findBlock(blockId)) {
+        if (const auto* seg = b->findSegment(segmentId)) {
+            m_oldState.segName = seg->name;
+            m_oldState.lengthFormula = seg->lengthFormula;
+            if (const auto* ep = b->findPoint(seg->endPointId)) {
+                m_oldState.endDistance = ep->distance;
+                m_oldState.endDistanceFormula = ep->distanceFormula;
+                m_oldState.endAngle = ep->angle;
+                m_oldState.endAngleFormula = ep->angleFormula;
+                m_oldState.endConstraint = static_cast<int>(ep->constraint);
+                m_oldState.endRefPointId = ep->refPointId;
+            }
+            // Follower attachment snapshot: the attachment anchored at THIS
+            // segment's start/end point (a block may own one attachment while
+            // having several lines — the first block-wide match would snapshot
+            // the WRONG line's attachment; same rule as SegmentEditBar).
+            for (const auto& att : doc->attachments()) {
+                if (att.fromBlockId != blockId || att.isPin) continue;
+                if (att.fromPointId != seg->startPointId
+                    && att.fromPointId != seg->endPointId)
+                    continue;
+                m_oldState.attId = att.id;
+                m_oldState.followerAngle = att.followerAngle;
+                m_oldState.followerAngleFormula = att.followerAngleFormula;
+                m_oldState.arcLength = att.arcLength;
+                m_oldState.arcLengthFormula = att.arcLengthFormula;
+                m_oldState.rotationMode = static_cast<int>(att.rotationMode);
+                break;
+            }
+        }
+    }
+}
+
+void SegmentEditBarCommand::redo()
+{
+    applyEditStripState(*m_doc, m_blockId, m_segmentId, m_newState);
+    m_doc->resolveAll();
+}
+
+void SegmentEditBarCommand::undo()
+{
+    applyEditStripState(*m_doc, m_blockId, m_segmentId, m_oldState);
     m_doc->resolveAll();
 }
 

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <initializer_list>
 
+#include <QDebug>
+
 #include "parametric/Resolver.h"
 #include "parametric/Serial.h"
 #include "parametric/AttachmentGraph.h"
@@ -12,20 +14,188 @@
 #include "geometry/Units.h"
 #include "parametric/FollowerAngle.h"
 #include "parametric/PerfProbe.h"
+#include "parametric/LayerRegistry.h"
+#include "parametric/VariableStore.h"
+#include "parametric/MeasurementStore.h"
+#include "parametric/GroupRegistry.h"
 
 namespace cad::param {
 
 ParamDocument::ParamDocument(QObject* parent)
     : QObject(parent)
     , m_undoStack(new QUndoStack(this))
+    , m_layerRegistry(std::make_unique<LayerRegistry>(this))
+    , m_variableStore(std::make_unique<VariableStore>(this, this))
+    , m_measureStore(std::make_unique<MeasurementStore>(this, this))
+    , m_groupRegistry(std::make_unique<GroupRegistry>(this, this))
 {
-    // Always an auxiliary calculation layer (index 0) + one working layer.
-    m_layers.push_back(Layer{QStringLiteral("辅助层"), true, LayerType::Auxiliary});
-    m_layers.push_back(Layer{QStringLiteral("图层 1"), true, LayerType::Working});
-    m_activeLayer = 1;
+    // Re-emit sub-domain signals so observers keep a single connection point
+    // (ParamDocument remains the facade over the sub-domain registries).
+    connect(m_layerRegistry.get(), &LayerRegistry::layersChanged,
+            this, &ParamDocument::layersChanged);
+    connect(m_layerRegistry.get(), &LayerRegistry::activeLayerChanged,
+            this, &ParamDocument::activeLayerChanged);
+    connect(m_variableStore.get(), &VariableStore::variablesChanged,
+            this, &ParamDocument::variablesChanged);
+    connect(m_variableStore.get(), &VariableStore::formulasChanged,
+            this, &ParamDocument::formulasChanged);
+    connect(m_variableStore.get(), &VariableStore::formulaGroupsChanged,
+            this, &ParamDocument::formulaGroupsChanged);
+    connect(m_measureStore.get(), &MeasurementStore::linkedVarsChanged,
+            this, &ParamDocument::linkedVarsChanged);
+    connect(m_measureStore.get(), &MeasurementStore::measureVarsChanged,
+            this, &ParamDocument::measureVarsChanged);
+    connect(m_measureStore.get(), &MeasurementStore::angleMeasureVarsChanged,
+            this, &ParamDocument::angleMeasureVarsChanged);
+    connect(m_groupRegistry.get(), &GroupRegistry::groupsChanged,
+            this, &ParamDocument::groupsChanged);
 }
 
 ParamDocument::~ParamDocument() = default;
+
+// --- Sub-domain registry access (read-only escape hatch) ---
+
+const LayerRegistry& ParamDocument::layerRegistry() const { return *m_layerRegistry; }
+const VariableStore& ParamDocument::variableStore() const { return *m_variableStore; }
+const MeasurementStore& ParamDocument::measurementStore() const { return *m_measureStore; }
+const GroupRegistry& ParamDocument::groupRegistry() const { return *m_groupRegistry; }
+
+// --- Facade forwarding: variables / formulas / formula groups ---
+
+void ParamDocument::addVariable(Variable var) { m_variableStore->addVariable(std::move(var)); }
+void ParamDocument::removeVariable(const QUuid& id) { m_variableStore->removeVariable(id); }
+void ParamDocument::updateVariable(const Variable& var) { m_variableStore->updateVariable(var); }
+const std::vector<Variable>& ParamDocument::variables() const { return m_variableStore->variables(); }
+Variable* ParamDocument::findVariable(const QUuid& id) { return m_variableStore->findVariable(id); }
+
+void ParamDocument::addFormula(FormulaVariable formula) { m_variableStore->addFormula(std::move(formula)); }
+void ParamDocument::removeFormula(const QUuid& id) { m_variableStore->removeFormula(id); }
+void ParamDocument::updateFormula(const FormulaVariable& formula) { m_variableStore->updateFormula(formula); }
+const std::vector<FormulaVariable>& ParamDocument::formulas() const { return m_variableStore->formulas(); }
+FormulaVariable* ParamDocument::findFormula(const QUuid& id) { return m_variableStore->findFormula(id); }
+void ParamDocument::recomputeFormulas() { m_variableStore->recomputeFormulas(); }
+
+void ParamDocument::addFormulaGroup(FormulaGroup group) { m_variableStore->addFormulaGroup(std::move(group)); }
+void ParamDocument::removeFormulaGroup(const QUuid& groupId) { m_variableStore->removeFormulaGroup(groupId); }
+void ParamDocument::renameFormulaGroup(const QUuid& groupId, const QString& name) { m_variableStore->renameFormulaGroup(groupId, name); }
+void ParamDocument::setFormulaGroupCollapsed(const QUuid& groupId, bool collapsed) { m_variableStore->setFormulaGroupCollapsed(groupId, collapsed); }
+void ParamDocument::moveFormulaGroup(int fromIndex, int toIndex) { m_variableStore->moveFormulaGroup(fromIndex, toIndex); }
+void ParamDocument::moveFormula(const QUuid& formulaId, const QUuid& targetGroupId, int targetLocalIndex)
+{ m_variableStore->moveFormula(formulaId, targetGroupId, targetLocalIndex); }
+const std::vector<FormulaGroup>& ParamDocument::formulaGroups() const { return m_variableStore->formulaGroups(); }
+FormulaGroup* ParamDocument::findFormulaGroup(const QUuid& groupId) { return m_variableStore->findFormulaGroup(groupId); }
+
+// --- Facade forwarding: canvas layers ---
+
+const std::vector<Layer>& ParamDocument::layers() const { return m_layerRegistry->layers(); }
+int ParamDocument::layerCount() const { return m_layerRegistry->layerCount(); }
+int ParamDocument::layerIndex(const QUuid& layerId) const { return m_layerRegistry->indexOf(layerId); }
+const Layer* ParamDocument::layerById(const QUuid& layerId) const { return m_layerRegistry->layerById(layerId); }
+QUuid ParamDocument::auxLayerId() const { return m_layerRegistry->auxLayerId(); }
+QUuid ParamDocument::firstWorkingLayerId() const { return m_layerRegistry->firstWorkingLayerId(); }
+QUuid ParamDocument::addLayer(const QString& name) { return m_layerRegistry->addLayer(name); }
+void ParamDocument::insertLayerAt(int index, Layer layer) { m_layerRegistry->insertLayerAt(index, std::move(layer)); }
+void ParamDocument::renameLayer(const QUuid& layerId, const QString& name) { m_layerRegistry->renameLayer(layerId, name); }
+void ParamDocument::setLayerVisible(const QUuid& layerId, bool visible) { m_layerRegistry->setLayerVisible(layerId, visible); }
+bool ParamDocument::layerVisible(const QUuid& layerId) const { return m_layerRegistry->layerVisible(layerId); }
+QUuid ParamDocument::activeLayer() const { return m_layerRegistry->activeLayer(); }
+void ParamDocument::setActiveLayer(const QUuid& layerId) { m_layerRegistry->setActiveLayer(layerId); }
+bool ParamDocument::isAuxLayer(const QUuid& layerId) const { return m_layerRegistry->isAuxLayer(layerId); }
+bool ParamDocument::layerEffectivelyVisible(const QUuid& layerId) const { return layerVisible(layerId); }
+bool ParamDocument::layerSnappable(const QUuid& layerId) const
+{
+    if (!layerVisible(layerId)) return false;
+    if (layerId == activeLayer()) return true;
+    return !isAuxLayer(layerId);
+}
+void ParamDocument::invalidateLayer(const QUuid& layerId) { m_layerRegistry->invalidateLayer(layerId); }
+void ParamDocument::invalidateAllLayers() { m_layerRegistry->invalidateAllLayers(); }
+
+// --- Facade forwarding: linked / measure / angle-measure variables ---
+
+void ParamDocument::addLinked(LinkedVariable lv) { m_measureStore->addLinked(std::move(lv)); }
+void ParamDocument::removeLinked(const QUuid& id) { m_measureStore->removeLinked(id); }
+void ParamDocument::updateLinked(const LinkedVariable& lv) { m_measureStore->updateLinked(lv); }
+const std::vector<LinkedVariable>& ParamDocument::linkedVars() const { return m_measureStore->linkedVars(); }
+LinkedVariable* ParamDocument::findLinked(const QUuid& id) { return m_measureStore->findLinked(id); }
+LinkedVariable* ParamDocument::findLinkedBySource(const QUuid& blockId, const QUuid& segmentId)
+{ return m_measureStore->findLinkedBySource(blockId, segmentId); }
+bool ParamDocument::measureLinkedVars(bool skipAuxSource) { return m_measureStore->measureLinkedVars(skipAuxSource); }
+
+void ParamDocument::addMeasure(MeasureVariable mv) { m_measureStore->addMeasure(std::move(mv)); }
+void ParamDocument::removeMeasure(const QUuid& id) { m_measureStore->removeMeasure(id); }
+void ParamDocument::updateMeasure(const MeasureVariable& mv) { m_measureStore->updateMeasure(mv); }
+void ParamDocument::setOwnerMeasureName(const QUuid& ownerBlockId, const QString& name)
+{ m_measureStore->setOwnerMeasureName(ownerBlockId, name); }
+
+void ParamDocument::addAngleMeasure(AngleMeasureVariable am) { m_measureStore->addAngleMeasure(std::move(am)); }
+void ParamDocument::removeAngleMeasure(const QUuid& id) { m_measureStore->removeAngleMeasure(id); }
+void ParamDocument::updateAngleMeasure(const AngleMeasureVariable& am) { m_measureStore->updateAngleMeasure(am); }
+const std::vector<AngleMeasureVariable>& ParamDocument::angleMeasures() const { return m_measureStore->angleMeasures(); }
+AngleMeasureVariable* ParamDocument::findAngleMeasure(const QUuid& id) { return m_measureStore->findAngleMeasure(id); }
+const std::vector<MeasureVariable>& ParamDocument::measureVars() const { return m_measureStore->measureVars(); }
+MeasureVariable* ParamDocument::findMeasure(const QUuid& id) { return m_measureStore->findMeasure(id); }
+MeasureVariable* ParamDocument::findMeasureByOwner(const QUuid& ownerBlockId)
+{ return m_measureStore->findMeasureByOwner(ownerBlockId); }
+const MeasureVariable* ParamDocument::findMeasureByOwner(const QUuid& ownerBlockId) const
+{ return m_measureStore->findMeasureByOwner(ownerBlockId); }
+bool ParamDocument::measureMeasureVars(bool skipAuxSource) { return m_measureStore->measureMeasureVars(skipAuxSource); }
+bool ParamDocument::measureAngleMeasureVars(bool skipAuxSource) { return m_measureStore->measureAngleMeasureVars(skipAuxSource); }
+QList<QUuid> ParamDocument::linkedConsumerBlocks(const QUuid& sourceBlockId) const
+{ return m_measureStore->linkedConsumerBlocks(sourceBlockId); }
+
+// --- Silent batch restore (deserializer / trusted pipelines) ---
+
+void ParamDocument::replaceLayersRaw(std::vector<Layer> layers)
+{ m_layerRegistry->replaceLayersRaw(std::move(layers)); }
+void ParamDocument::restoreVariableRaw(Variable var)
+{ m_variableStore->addVariableRaw(std::move(var)); }
+void ParamDocument::restoreFormulaRaw(FormulaVariable formula)
+{ m_variableStore->addFormulaRaw(std::move(formula)); }
+void ParamDocument::restoreFormulaGroupRaw(FormulaGroup group)
+{ m_variableStore->addFormulaGroupRaw(std::move(group)); }
+void ParamDocument::insertFormulaGroupAt(int index, FormulaGroup group)
+{ m_variableStore->insertFormulaGroupAt(index, std::move(group)); }
+void ParamDocument::restoreLinkedRaw(LinkedVariable lv)
+{ m_measureStore->addLinkedRaw(std::move(lv)); }
+void ParamDocument::restoreMeasureRaw(MeasureVariable mv)
+{ m_measureStore->addMeasureRaw(std::move(mv)); }
+void ParamDocument::restoreAngleMeasureRaw(AngleMeasureVariable am)
+{ m_measureStore->addAngleMeasureRaw(std::move(am)); }
+
+// --- Attachment lookup (the ONLY authorized in-place attachment edit channel)
+
+Attachment* ParamDocument::findAttachment(const QUuid& id)
+{
+    for (auto& a : m_attachments)
+        if (a.id == id)
+            return &a;
+    return nullptr;
+}
+
+const Attachment* ParamDocument::findAttachment(const QUuid& id) const
+{
+    for (const auto& a : m_attachments)
+        if (a.id == id)
+            return &a;
+    return nullptr;
+}
+
+// --- Facade forwarding: user groups ---
+
+QUuid ParamDocument::createGroup(const QList<QUuid>& memberIds, const QString& name)
+{ return m_groupRegistry->createGroup(memberIds, name); }
+void ParamDocument::dissolveGroup(const QUuid& groupId) { m_groupRegistry->dissolveGroup(groupId); }
+void ParamDocument::moveGroup(int fromIndex, int toIndex) { m_groupRegistry->moveGroup(fromIndex, toIndex); }
+void ParamDocument::restoreGroup(Group group, const QList<QUuid>& memberIds)
+{ m_groupRegistry->restoreGroup(std::move(group), memberIds); }
+const std::vector<Group>& ParamDocument::groups() const { return m_groupRegistry->groups(); }
+Group* ParamDocument::findGroup(const QUuid& groupId) { return m_groupRegistry->findGroup(groupId); }
+QUuid ParamDocument::groupOfBlock(const QUuid& blockId) const { return m_groupRegistry->groupOfBlock(blockId); }
+QList<QUuid> ParamDocument::blocksInGroup(const QUuid& groupId) const { return m_groupRegistry->blocksInGroup(groupId); }
+void ParamDocument::setGroupName(const QUuid& groupId, const QString& name) { m_groupRegistry->setGroupName(groupId, name); }
+void ParamDocument::restoreGroups(std::vector<Group> groups, QHash<QUuid, QUuid> blockGroup)
+{ m_groupRegistry->restoreGroups(std::move(groups), std::move(blockGroup)); }
 
 // --- Parameters ---
 
@@ -74,6 +244,24 @@ double ParamDocument::parameter(const QString& name, double defaultVal) const
     return m_parameters.value(name, defaultVal);
 }
 
+// --- Internal sub-domain hooks ---
+
+void ParamDocument::publishParameter(const QString& name, double cmValue)
+{
+    m_parameters[name] = cmValue;
+}
+
+void ParamDocument::removeParameterEntry(const QString& name)
+{
+    m_parameters.remove(name);
+}
+
+void ParamDocument::publishParamsRaw(const QHash<QString, double>& cmValues)
+{
+    for (auto it = cmValues.cbegin(); it != cmValues.cend(); ++it)
+        m_parameters[it.key()] = it.value();
+}
+
 // --- Free points ---
 
 void ParamDocument::addFreePoint(ParamPoint pt)
@@ -104,6 +292,10 @@ ParamPoint* ParamDocument::findFreePoint(const QUuid& id)
 QUuid ParamDocument::addBlock(Block block)
 {
     QUuid id = block.id;
+    // A block without a layer assignment lands on the first WORKING layer —
+    // never on the auxiliary calculation layer (no implicit aux drafts).
+    if (block.layer.isNull())
+        block.layer = m_layerRegistry->firstWorkingLayerId();
     // Assign readable serials to any points/segments that lack one.
     for (auto& pt : block.points)
         if (pt.serial.isEmpty()) pt.serial = newPointSerial();
@@ -145,97 +337,26 @@ void ParamDocument::removeBlock(const QUuid& id)
     // Group membership cascade: drop the removed block from its group; a
     // group that shrinks below two members dissolves automatically
     // (组成员删到不足两条时自动解散).
-    {
-        const QUuid gid = m_blockGroup.value(id);
-        if (!gid.isNull()) {
-            m_blockGroup.remove(id);
-            auto it = m_groupMembers.find(gid);
-            if (it != m_groupMembers.end()) {
-                it->erase(std::remove(it->begin(), it->end(), id), it->end());
-                if (it->size() < 2) {
-                    m_groupMembers.erase(it);
-                    for (auto mi = m_blockGroup.begin(); mi != m_blockGroup.end(); )
-                        mi = (mi.value() == gid) ? m_blockGroup.erase(mi) : std::next(mi);
-                    m_groups.erase(std::remove_if(m_groups.begin(), m_groups.end(),
-                        [&gid](const Group& g) { return g.id == gid; }),
-                        m_groups.end());
-                }
-            }
-            emit groupsChanged();
-        }
-    }
+    m_groupRegistry->purgeBlock(id);
 
     // Auto-delete linked variables whose source is this block. Exact-match
     // consumers (length-linked copies, 复制的线段) first bake the frozen
     // measurement back to a plain number — the reference object is gone
     // (引用对象被删, 长度恢复为数值).
-    {
-        for (const auto& lv : m_linkedVars) {
-            if (lv.sourceBlockId != id || lv.refName.isEmpty()) continue;
-            for (auto& b : m_blocks) {
-                for (auto& s : b.segments)
-                    if (s.lengthFormula == lv.refName)
-                        s.lengthFormula.clear();
-                for (auto& p : b.points) {
-                    if (p.distanceFormula != lv.refName) continue;
-                    p.distance = lv.value;   // frozen measurement (mm)
-                    p.distanceFormula.clear();
-                }
+    for (const auto& lv : m_measureStore->linkedVars()) {
+        if (lv.sourceBlockId != id || lv.refName.isEmpty()) continue;
+        for (auto& b : m_blocks) {
+            for (auto& s : b.segments)
+                if (s.lengthFormula == lv.refName)
+                    s.lengthFormula.clear();
+            for (auto& p : b.points) {
+                if (p.distanceFormula != lv.refName) continue;
+                p.distance = lv.value;   // frozen measurement (mm)
+                p.distanceFormula.clear();
             }
         }
-        bool linkedRemoved = false;
-        auto lit = std::remove_if(m_linkedVars.begin(), m_linkedVars.end(),
-            [&](const LinkedVariable& lv) {
-                if (lv.sourceBlockId != id) return false;
-                if (!lv.refName.isEmpty())
-                    m_parameters.remove(lv.refName);
-                linkedRemoved = true;
-                return true;
-            });
-        m_linkedVars.erase(lit, m_linkedVars.end());
-        if (linkedRemoved)
-            emit linkedVarsChanged();
     }
-
-    // Auto-delete measure variables that reference the removed block — as
-    // either endpoint, or as their OWNER (a bridge/measure line owns its
-    // measurement: deleting the line deletes the variable). Without a
-    // measurement target the variable is meaningless — destroyed immediately
-    // (没有测量对象时立刻销毁).
-    {
-        bool measureRemoved = false;
-        auto mit = std::remove_if(m_measureVars.begin(), m_measureVars.end(),
-            [&](const MeasureVariable& mv) {
-                if (mv.blockA != id && mv.blockB != id && mv.ownerBlockId != id)
-                    return false;
-                if (!mv.refName.isEmpty())
-                    m_parameters.remove(mv.refName);
-                measureRemoved = true;
-                return true;
-            });
-        m_measureVars.erase(mit, m_measureVars.end());
-        if (measureRemoved)
-            emit measureVarsChanged();
-    }
-
-    // Auto-delete angle measure variables that reference the removed block (as
-    // either segment's host). Without a measurement target the variable is
-    // meaningless — destroyed immediately (没有测量对象时立刻销毁).
-    {
-        bool angleRemoved = false;
-        auto ait = std::remove_if(m_angleMeasures.begin(), m_angleMeasures.end(),
-            [&](const AngleMeasureVariable& am) {
-                if (am.blockA != id && am.blockB != id)
-                    return false;
-                if (!am.refName.isEmpty())
-                    m_parameters.remove(am.refName);
-                angleRemoved = true;
-                return true;
-            });
-        m_angleMeasures.erase(ait, m_angleMeasures.end());
-        if (angleRemoved)
-            emit angleMeasureVarsChanged();
-    }
+    m_measureStore->purgeBlockReferences(id);
 
     emit blockRemoved(id);
     // Bridges pinned to the removed block just lost a pin — they are released
@@ -301,7 +422,7 @@ ParamDocument::DeleteImpact ParamDocument::deleteImpactReport(const QUuid& id) c
 
     // 4+5. Linked variables sourced from the victim: consumers freeze their
     //    measurement back to a plain number; the variables themselves die.
-    for (const auto& lv : m_linkedVars) {
+    for (const auto& lv : m_measureStore->linkedVars()) {
         if (lv.sourceBlockId != id) continue;
         ++r.linkedVarsRemoved;
         if (lv.refName.isEmpty()) continue;
@@ -315,30 +436,30 @@ ParamDocument::DeleteImpact ParamDocument::deleteImpactReport(const QUuid& id) c
     }
 
     // 6. Measure variables referencing the victim (as endpoint or owner).
-    for (const auto& mv : m_measureVars)
+    for (const auto& mv : m_measureStore->measureVars())
         if (mv.blockA == id || mv.blockB == id || mv.ownerBlockId == id)
             ++r.measureVarsRemoved;
 
     // 7. Angle measures referencing the victim (either segment's host).
-    for (const auto& am : m_angleMeasures)
+    for (const auto& am : m_measureStore->angleMeasures())
         if (am.blockA == id || am.blockB == id)
             ++r.angleVarsRemoved;
 
     // 8. Formulas referencing any measurement name removed above lose their
     //    operand and will report an evaluation error on the next resolve.
     QSet<QString> removedNames;
-    for (const auto& lv : m_linkedVars)
+    for (const auto& lv : m_measureStore->linkedVars())
         if (lv.sourceBlockId == id && !lv.refName.isEmpty())
             removedNames.insert(lv.refName);
-    for (const auto& mv : m_measureVars)
+    for (const auto& mv : m_measureStore->measureVars())
         if ((mv.blockA == id || mv.blockB == id || mv.ownerBlockId == id)
             && !mv.refName.isEmpty())
             removedNames.insert(mv.refName);
-    for (const auto& am : m_angleMeasures)
+    for (const auto& am : m_measureStore->angleMeasures())
         if ((am.blockA == id || am.blockB == id) && !am.refName.isEmpty())
             removedNames.insert(am.refName);
     if (!removedNames.isEmpty()) {
-        for (const auto& f : m_formulas) {
+        for (const auto& f : m_variableStore->formulas()) {
             const QStringList names = ExpressionEvaluator::referencedNames(f.expression);
             for (const QString& n : names) {
                 if (removedNames.contains(n)) { ++r.formulasBroken; break; }
@@ -395,12 +516,12 @@ bool ParamDocument::addAttachment(Attachment att)
         return false;
     const bool crossLayer = fromAux && !toAux;
 
-    // Aux-layer connections are LOCKED by default (辅助层默认锁定): the aux
-    // layer is a calculated draft whose wiring must not be torn apart by an
-    // accidental drag. Callers may pre-set isLocked=false to opt out, but any
-    // freshly created aux connection re-locks (重建即默认锁定). Working-layer
-    // connections keep the caller's explicit value (manual lock allowed).
-    att.isLocked = att.isLocked || fromAux;
+    // 拖动保护默认开启 (2026-08 用户拍板): 只要建立跟随就保护他。
+    // 所有新建连接统一锁定 (焊接语义) —— 拖动任一端时整个对一起移动,
+    // 不会被拖拆; 用户可在属性面板手动取消拖动保护。注意 undo/redo 的
+    // 快照还原走 addAttachmentRaw/addAttachmentsRaw (verbatim), 不经过
+    // 这里, 因此用户手动解锁的状态在撤销后不会被悄悄重新锁定。
+    att.isLocked = true;
     // A bridge is a pure downstream leaf: its pinned endpoints cannot anchor
     // followers, and bridge-to-bridge pins are forbidden. However, an AUXILIARY
     // point on a bridge is a legitimate leader target — the Resolver settles
@@ -522,6 +643,17 @@ int ParamDocument::removeAttachmentsOfBlock(const QUuid& blockId)
         emit structureChanged();
     }
     return removed;
+}
+
+void ParamDocument::restoreFollowerAttachment(
+    const QUuid& fromBlockId, const std::optional<Attachment>& followerAtt)
+{
+    std::erase_if(m_attachments, [&fromBlockId](const Attachment& a) {
+        return !a.isPin && a.fromBlockId == fromBlockId;
+    });
+    if (followerAtt)
+        addAttachmentRaw(*followerAtt);  // verbatim (keeps the snapshot's isLocked)
+    resolveAll();
 }
 
 std::vector<QUuid> ParamDocument::bridgesPinnedTo(const QUuid& hostBlockId) const
@@ -667,103 +799,29 @@ QString ParamDocument::newGroupSerial()
     return Serial::make(Serial::randomPrefix(), QLatin1Char('G'), m_nextGroupSeq++);
 }
 
-// --- User groups (成组) ---
+// --- Canvas layers (facade: block re-layering + registry removal) ---
 
-QUuid ParamDocument::createGroup(const QList<QUuid>& memberIds, const QString& name)
+void ParamDocument::removeLayer(const QUuid& layerId)
 {
-    if (memberIds.size() < 2) return QUuid();
+    const int n = m_layerRegistry->layerCount();
+    if (n <= 2)
+        return;  // Need at least aux + one working layer.
+    const int row = m_layerRegistry->indexOf(layerId);
+    if (row < 0 || m_layerRegistry->isAuxLayer(layerId))
+        return;  // Unknown or the auxiliary calculation layer: cannot be removed.
 
-    // Validate: members exist, share one layer, none already grouped
-    // (第一版禁嵌套、组成员必须同层).
-    int layer = -1;
-    for (const QUuid& id : memberIds) {
-        const Block* b = blockById(id);
-        if (!b) return QUuid();
-        if (m_blockGroup.contains(id)) return QUuid();
-        if (layer < 0) layer = b->layer;
-        else if (b->layer != layer) return QUuid();
+    // Blocks in the removed layer fall to the layer below, but never into the
+    // auxiliary layer. Blocks in other layers keep their stable ids untouched
+    // (removal no longer shifts any references).
+    QUuid targetId = row > 0 ? m_layerRegistry->layers()[static_cast<size_t>(row - 1)].id
+                             : QUuid();
+    if (targetId.isNull() || m_layerRegistry->isAuxLayer(targetId))
+        targetId = m_layerRegistry->firstWorkingLayerId();
+    for (auto& b : m_blocks) {
+        if (b.layer == layerId)
+            b.layer = targetId;
     }
-
-    Group g;
-    g.serial = newGroupSerial();
-    g.name = name;
-    const QUuid gid = g.id;
-    m_groups.push_back(std::move(g));
-    m_groupMembers.insert(gid, memberIds);
-    for (const QUuid& id : memberIds)
-        m_blockGroup.insert(id, gid);
-    emit groupsChanged();
-    return gid;
-}
-
-void ParamDocument::dissolveGroup(const QUuid& groupId)
-{
-    auto it = std::find_if(m_groups.begin(), m_groups.end(),
-        [&groupId](const Group& g) { return g.id == groupId; });
-    if (it == m_groups.end()) return;
-    m_groups.erase(it);
-    m_groupMembers.remove(groupId);
-    for (auto i = m_blockGroup.begin(); i != m_blockGroup.end(); )
-        i = (i.value() == groupId) ? m_blockGroup.erase(i) : std::next(i);
-    emit groupsChanged();
-}
-
-void ParamDocument::moveGroup(int fromIndex, int toIndex)
-{
-    const int n = static_cast<int>(m_groups.size());
-    if (fromIndex < 0 || fromIndex >= n || toIndex < 0 || toIndex >= n)
-        return;
-    if (fromIndex == toIndex) return;
-    Group g = std::move(m_groups[static_cast<size_t>(fromIndex)]);
-    m_groups.erase(m_groups.begin() + fromIndex);
-    m_groups.insert(m_groups.begin() + toIndex, std::move(g));
-    emit groupsChanged();
-}
-
-void ParamDocument::restoreGroup(Group group, const QList<QUuid>& memberIds)
-{
-    // Replace any record with the same id (idempotent undo replay).
-    auto it = std::find_if(m_groups.begin(), m_groups.end(),
-        [&group](const Group& g) { return g.id == group.id; });
-    if (it != m_groups.end()) *it = group;
-    else m_groups.push_back(group);
-    // Replace the membership index entry wholesale (idempotent replay must
-    // not duplicate members).
-    QList<QUuid> members;
-    for (const QUuid& id : memberIds)
-        if (blockById(id)) {                   // skip members not (yet) restored
-            members.push_back(id);
-            m_blockGroup.insert(id, group.id);
-        }
-    m_groupMembers.insert(group.id, std::move(members));
-    emit groupsChanged();
-}
-
-Group* ParamDocument::findGroup(const QUuid& groupId)
-{
-    auto it = std::find_if(m_groups.begin(), m_groups.end(),
-        [&groupId](const Group& g) { return g.id == groupId; });
-    return (it != m_groups.end()) ? &(*it) : nullptr;
-}
-
-QUuid ParamDocument::groupOfBlock(const QUuid& blockId) const
-{
-    return m_blockGroup.value(blockId);
-}
-
-QList<QUuid> ParamDocument::blocksInGroup(const QUuid& groupId) const
-{
-    return m_groupMembers.value(groupId);
-}
-
-void ParamDocument::setGroupName(const QUuid& groupId, const QString& name)
-{
-    if (Group* g = findGroup(groupId)) {
-        if (g->name != name) {
-            g->name = name;
-            emit groupsChanged();
-        }
-    }
+    m_layerRegistry->removeLayerRaw(layerId);
 }
 
 // --- Resolve ---
@@ -923,13 +981,13 @@ bool ParamDocument::wouldCreateMeasureValueCycle(const Attachment& candidate) co
         }
         return false;
     };
-    for (const auto& mv : m_measureVars)
+    for (const auto& mv : m_measureStore->measureVars())
         if (checkVar(mv.refName, mv.ownerBlockId, {mv.blockA, mv.blockB}))
             return true;
-    for (const auto& lv : m_linkedVars)
+    for (const auto& lv : m_measureStore->linkedVars())
         if (checkVar(lv.refName, QUuid(), {lv.sourceBlockId}))
             return true;
-    for (const auto& am : m_angleMeasures)
+    for (const auto& am : m_measureStore->angleMeasures())
         if (checkVar(am.refName, QUuid(), {am.blockA, am.blockB}))
             return true;
     return false;
@@ -1024,11 +1082,8 @@ void ParamDocument::resolveForDrag(const QList<QUuid>& affectedBlockIds,
     // invalidation so Phase 1/2/3 all run and the cross-layer settle happens
     // inside this drag frame. Documents WITHOUT cross-layer attachments keep
     // the exact pre-existing narrowed behaviour (zero overhead).
-    if (m_crossLayerCount > 0) {
-        m_auxDirty = true;
-        m_workingDirty = true;
-        m_dirtyAnnotated = true;
-    }
+    if (m_crossLayerCount > 0)
+        m_layerRegistry->invalidateAllLayers();
 
     // Dirty-subgraph mode: seeds are non-empty → narrow the pass to the
     // affected subgraph. Empty seeds = plain full resolve (minus panels).
@@ -1054,13 +1109,12 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     GCAD_PERF_SCOPE("resolve");
     // Conservative fallback: callers that did not narrow the scope via
     // invalidateLayer()/invalidateAllLayers() re-resolve everything.
-    if (!m_dirtyAnnotated) {
-        m_auxDirty = true;
-        m_workingDirty = true;
-    }
-    m_dirtyAnnotated = false;
+    if (!m_layerRegistry->dirtyAnnotated())
+        m_layerRegistry->invalidateAllLayers();
+    m_layerRegistry->clearDirtyAnnotation();
 
-    constexpr int kAuxLayer = 0;  // invariant: the aux layer is always index 0.
+    // Invariant: the aux layer id comes from the registry (element 0).
+    const QUuid kAuxLayer = m_layerRegistry->auxLayerId();
 
     // Attachments excluded from this pass (drag-time cross-selection links
     // pending removal). They stay in the document; the pass simply skips them.
@@ -1083,7 +1137,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     // Aux geometry is a pure function of the variables; during working-layer
     // manipulation it stays frozen and its cached transforms remain valid.
     bool auxRan = false, workingRan = false;
-    if (m_auxDirty) {
+    if (m_layerRegistry->auxDirty()) {
         GCAD_PERF_SCOPE("resolve.aux");
         std::vector<ResolveDiagnostic> auxDiag;  // discarded (phase 2 owns m_diagnostics)
         measureLinkedVars();   // feed aux formulas before resolving (old semantics)
@@ -1100,18 +1154,18 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                                  Resolver::Scope::AuxOnly, kAuxLayer,
                                  effAffected);
         }
-        m_auxDirty = false;
+        m_layerRegistry->setAuxDirty(false);
         auxRan = true;
         // Published measurement values sourced from the aux layer may have
         // changed → working layers must re-measure and re-resolve.
-        m_workingDirty = true;
+        m_layerRegistry->setWorkingDirty(true);
     }
 
     // ── Phase 2: working layers ──
     // Extracted into a closure so the Phase 3 cross-layer fixpoint can
     // re-run it when settling aux followers perturbs published measurements.
     auto runWorkingPhase = [&]() {
-        if (!m_workingDirty) return;
+        if (!m_layerRegistry->workingDirty()) return;
         GCAD_PERF_SCOPE("resolve.work");
         // Measurements sourced entirely from the (now clean) aux layer keep
         // their cached values — only working-geometry measurements re-run.
@@ -1137,10 +1191,52 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                                  Resolver::Scope::WorkingOnly, kAuxLayer,
                                  effAffected);
         }
-        m_workingDirty = false;
+        m_layerRegistry->setWorkingDirty(false);
         workingRan = true;
     };
     runWorkingPhase();
+
+    // ── Phase 2.5: cross-layer intersection re-solve (跨层交点重解) ──
+    // An aux-layer intersection whose ray origin / borrow point lives on a
+    // WORKING layer was solved in Phase 1 against the STALE working position
+    // (the working layers only move in Phase 2). Without a re-solve the
+    // intersection drifts off the origin→borrow ray (用户回归: P612 在
+    // 肩褶高 15/20 时不共线). Detect the dependency (cheap: aux intersections
+    // only) and re-run the aux pass with the fresh working values; changed
+    // aux measurements re-trigger the working pass, bounded like Phase 3.
+    if (auxRan && workingRan) {
+        bool auxRefsWorking = false;
+        for (const auto& blk : m_blocks) {
+            if (isAuxLayer(blk.layer)) continue;
+            for (const auto& ob : m_blocks) {
+                if (!isAuxLayer(ob.layer)) continue;
+                for (const auto& pt : ob.points) {
+                    if (pt.constraint != PointConstraint::Intersection) continue;
+                    for (const QUuid& ref : {pt.refPointA, pt.interAimPointId}) {
+                        if (ref.isNull()) continue;
+                        if (blk.findPoint(ref)) { auxRefsWorking = true; break; }
+                    }
+                    if (auxRefsWorking) break;
+                }
+                if (auxRefsWorking) break;
+            }
+            if (auxRefsWorking) break;
+        }
+        if (auxRefsWorking) {
+            for (int round = 0; round < 4; ++round) {
+                std::vector<ResolveDiagnostic> auxDiag2;  // discarded
+                Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
+                                     m_conditioned, &auxDiag2,
+                                     Resolver::Scope::AuxOnly, kAuxLayer,
+                                     nullptr);
+                if (!(measureLinkedVars() || measureMeasureVars()
+                      || measureAngleMeasureVars()))
+                    break;
+                m_layerRegistry->setWorkingDirty(true);
+                runWorkingPhase();
+            }
+        }
+    }
 
     // ── Phase 3: cross-layer settle (跨层沉降) ──
     // Only when cross-layer attachments EXIST (counter-maintained; documents
@@ -1171,7 +1267,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             // Measurement changed → working layers must re-solve, then the
             // aux followers re-settle (next loop round).
             if (effAffected) effAffected = nullptr;  // measurement changed → full
-            m_workingDirty = true;
+            m_layerRegistry->setWorkingDirty(true);
             runWorkingPhase();
         }
         if (!settled) {
@@ -1229,9 +1325,16 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             pt.interpOffsetDist = rel.dot(normal);
 
             // Re-resolve this point's position from the new params.
-            pt.resolvedPos = sp->resolvedPos
-                           + unitDir * (len * pt.interpPercent)
-                           + normal * pt.interpOffsetDist;
+            const geo::Vec2 newPos = sp->resolvedPos
+                                   + unitDir * (len * pt.interpPercent)
+                                   + normal * pt.interpOffsetDist;
+            // The anchor moved — bump the epoch so the canvas rebuilds the
+            // curve cache this frame (Block::resolve's own epoch bump already
+            // ran BEFORE this post-pass, so without this the curve would keep
+            // passing through the OLD anchor until the next resolve).
+            if (pt.resolvedPos.distanceSquaredTo(newPos) > 1e-6)
+                ++blk.geometryEpoch;
+            pt.resolvedPos = newPos;
             pt.resolved = true;
         }
     }
@@ -1257,19 +1360,10 @@ void ParamDocument::clear()
     m_followersDirty = true;
     m_crossLayerCount = 0;
     m_diagnostics.clear();
-    m_variables.clear();
-    m_formulas.clear();
-    m_formulaGroups.clear();
-    m_linkedVars.clear();
-    m_measureVars.clear();
-    m_angleMeasures.clear();
-    m_groups.clear();
-    m_blockGroup.clear();
-    m_groupMembers.clear();
-    m_layers.clear();
-    m_layers.push_back(Layer{QStringLiteral("辅助层"), true, LayerType::Auxiliary});
-    m_layers.push_back(Layer{QStringLiteral("图层 1"), true, LayerType::Working});
-    m_activeLayer = 1;
+    m_variableStore->clear();
+    m_measureStore->clear();
+    m_groupRegistry->clear();
+    m_layerRegistry->reset();
     m_nextPointSeq = 1;
     m_nextLineSeq  = 1;
     m_nextGroupSeq = 1;
@@ -1295,15 +1389,6 @@ void ParamDocument::setSerialCounters(int pointSeq, int lineSeq, int groupSeq)
     m_nextPointSeq = pointSeq;
     m_nextLineSeq  = lineSeq;
     m_nextGroupSeq = groupSeq;
-}
-
-void ParamDocument::restoreGroups(std::vector<Group> groups, QHash<QUuid, QUuid> blockGroup)
-{
-    m_groups = std::move(groups);
-    m_blockGroup = std::move(blockGroup);
-    m_groupMembers.clear();
-    for (auto it = m_blockGroup.cbegin(); it != m_blockGroup.cend(); ++it)
-        m_groupMembers[it.value()].push_back(it.key());
 }
 
 QUuid ParamDocument::addBlockRaw(Block block)
@@ -1340,897 +1425,6 @@ void ParamDocument::finishRestore()
     emit linkedVarsChanged();
     emit structureChanged();
     emit groupsChanged();
-}
-
-// --- Variables ---
-
-void ParamDocument::addVariable(Variable var)
-{
-    m_variables.push_back(std::move(var));
-    emit variablesChanged();
-    recomputeFormulas();
-}
-
-void ParamDocument::removeVariable(const QUuid& id)
-{
-    auto it = std::find_if(m_variables.begin(), m_variables.end(),
-        [&id](const Variable& v) { return v.id == id; });
-    if (it != m_variables.end()) {
-        m_variables.erase(it);
-        emit variablesChanged();
-        recomputeFormulas();
-    }
-}
-
-void ParamDocument::updateVariable(const Variable& var)
-{
-    for (auto& v : m_variables) {
-        if (v.id == var.id) {
-            v = var;
-            break;
-        }
-    }
-    emit variablesChanged();
-    recomputeFormulas();
-}
-
-Variable* ParamDocument::findVariable(const QUuid& id)
-{
-    auto it = std::find_if(m_variables.begin(), m_variables.end(),
-        [&id](const Variable& v) { return v.id == id; });
-    return (it != m_variables.end()) ? &(*it) : nullptr;
-}
-
-// --- Formula variables ---
-
-void ParamDocument::addFormula(FormulaVariable formula)
-{
-    m_formulas.push_back(std::move(formula));
-    m_formulaDepsDirty = true;  // new formula may be referenced by others
-    emit formulasChanged();
-    recomputeFormulas();
-}
-
-void ParamDocument::removeFormula(const QUuid& id)
-{
-    auto it = std::find_if(m_formulas.begin(), m_formulas.end(),
-        [&id](const FormulaVariable& f) { return f.id == id; });
-    if (it != m_formulas.end()) {
-        m_formulas.erase(it);
-        m_formulaDepsDirty = true;  // references to the removed name now dangle
-        emit formulasChanged();
-        recomputeFormulas();
-    }
-}
-
-void ParamDocument::updateFormula(const FormulaVariable& formula)
-{
-    for (auto& f : m_formulas) {
-        if (f.id == formula.id) {
-            f.name = formula.name;
-            f.expression = formula.expression;
-            f.actualValueCm = formula.actualValueCm;
-            f.comment = formula.comment;
-            f.conditions = formula.conditions;
-            f.conditionsEnabled = formula.conditionsEnabled;
-            m_formulaDepsDirty = true;  // name / expression may have changed
-            break;
-        }
-    }
-    emit formulasChanged();
-    recomputeFormulas();
-}
-
-FormulaVariable* ParamDocument::findFormula(const QUuid& id)
-{
-    auto it = std::find_if(m_formulas.begin(), m_formulas.end(),
-        [&id](const FormulaVariable& f) { return f.id == id; });
-    return (it != m_formulas.end()) ? &(*it) : nullptr;
-}
-
-// ============================================================
-// Formula groups (panel folders)
-// ============================================================
-
-void ParamDocument::addFormulaGroup(FormulaGroup group)
-{
-    m_formulaGroups.push_back(std::move(group));
-    emit formulaGroupsChanged();
-}
-
-void ParamDocument::removeFormulaGroup(const QUuid& groupId)
-{
-    auto it = std::find_if(m_formulaGroups.begin(), m_formulaGroups.end(),
-        [&groupId](const FormulaGroup& g) { return g.id == groupId; });
-    if (it == m_formulaGroups.end())
-        return;
-
-    // Dissolve: members fall back to the ungrouped section.
-    bool membersChanged = false;
-    for (auto& f : m_formulas) {
-        if (f.groupId == groupId) {
-            f.groupId = QUuid();
-            membersChanged = true;
-        }
-    }
-    m_formulaGroups.erase(it);
-
-    emit formulaGroupsChanged();
-    if (membersChanged)
-        emit formulasChanged();
-}
-
-void ParamDocument::renameFormulaGroup(const QUuid& groupId, const QString& name)
-{
-    if (auto* g = findFormulaGroup(groupId); g && g->name != name) {
-        g->name = name;
-        emit formulaGroupsChanged();
-    }
-}
-
-void ParamDocument::setFormulaGroupCollapsed(const QUuid& groupId, bool collapsed)
-{
-    if (auto* g = findFormulaGroup(groupId); g && g->collapsed != collapsed) {
-        g->collapsed = collapsed;
-        emit formulaGroupsChanged();
-    }
-}
-
-void ParamDocument::moveFormulaGroup(int fromIndex, int toIndex)
-{
-    const int n = static_cast<int>(m_formulaGroups.size());
-    if (fromIndex < 0 || fromIndex >= n || toIndex < 0 || toIndex >= n
-        || fromIndex == toIndex)
-        return;
-
-    FormulaGroup g = std::move(m_formulaGroups[fromIndex]);
-    m_formulaGroups.erase(m_formulaGroups.begin() + fromIndex);
-    m_formulaGroups.insert(m_formulaGroups.begin() + toIndex, std::move(g));
-    emit formulaGroupsChanged();
-}
-
-void ParamDocument::moveFormula(const QUuid& formulaId, const QUuid& targetGroupId,
-                                int targetLocalIndex)
-{
-    auto it = std::find_if(m_formulas.begin(), m_formulas.end(),
-        [&formulaId](const FormulaVariable& f) { return f.id == formulaId; });
-    if (it == m_formulas.end())
-        return;
-
-    FormulaVariable moved = std::move(*it);
-    m_formulas.erase(it);
-    moved.groupId = targetGroupId;
-
-    // Global insert position = slot of the targetLocalIndex-th member of the
-    // target group (after removal). Only the relative order within a group
-    // matters for display, so falling back to "after the last member" (or
-    // vector end for an empty group) is sufficient.
-    auto insertPos = m_formulas.size();
-    bool placed = false;
-    int local = 0;
-    for (std::size_t i = 0; i < m_formulas.size(); ++i) {
-        if (m_formulas[i].groupId == targetGroupId) {
-            if (local == targetLocalIndex) { insertPos = i; placed = true; break; }
-            ++local;
-        }
-    }
-    if (!placed) {
-        for (std::size_t i = m_formulas.size(); i > 0; --i) {
-            if (m_formulas[i - 1].groupId == targetGroupId) { insertPos = i; break; }
-        }
-    }
-
-    m_formulas.insert(m_formulas.begin() + insertPos, std::move(moved));
-    emit formulasChanged();
-}
-
-FormulaGroup* ParamDocument::findFormulaGroup(const QUuid& groupId)
-{
-    auto it = std::find_if(m_formulaGroups.begin(), m_formulaGroups.end(),
-        [&groupId](const FormulaGroup& g) { return g.id == groupId; });
-    return (it != m_formulaGroups.end()) ? &(*it) : nullptr;
-}
-
-// ============================================================
-// Canvas layers (pure selection/visibility filter)
-// ============================================================
-
-int ParamDocument::addLayer(const QString& name)
-{
-    m_layers.push_back(Layer{name, true});
-    emit layersChanged();
-    return static_cast<int>(m_layers.size()) - 1;
-}
-
-void ParamDocument::removeLayer(int index)
-{
-    const int n = layerCount();
-    if (index < 0 || index >= n || n <= 2)
-        return;  // Need at least aux + one working layer.
-    if (isAuxLayer(index))
-        return;  // The auxiliary calculation layer cannot be removed.
-
-    // Blocks in the removed layer fall to the layer below, but never into the
-    // auxiliary layer (clamp to 1); blocks in higher layers shift down by one
-    // to keep indices contiguous.
-    for (auto& b : m_blocks) {
-        if (b.layer == index)
-            b.layer = std::max(1, index - 1);
-        else if (b.layer > index)
-            --b.layer;
-    }
-    m_layers.erase(m_layers.begin() + index);
-
-    if (m_activeLayer >= layerCount())
-        m_activeLayer = layerCount() - 1;
-    else if (m_activeLayer > index)
-        --m_activeLayer;
-
-    emit layersChanged();
-}
-
-void ParamDocument::renameLayer(int index, const QString& name)
-{
-    if (index < 0 || index >= layerCount())
-        return;
-    if (m_layers[index].name != name) {
-        m_layers[index].name = name;
-        emit layersChanged();
-    }
-}
-
-void ParamDocument::setLayerVisible(int index, bool visible)
-{
-    if (index < 0 || index >= layerCount())
-        return;
-    if (m_layers[index].visible == visible)
-        return;
-    m_layers[index].visible = visible;
-    emit layersChanged();
-
-    // Hiding the active layer: switch to the nearest visible layer so the
-    // user always has an editable layer.
-    if (!visible && index == m_activeLayer) {
-        for (int d = 1; d < layerCount(); ++d) {
-            if (index - d >= 0 && m_layers[index - d].visible) {
-                setActiveLayer(index - d);
-                return;
-            }
-            if (index + d < layerCount() && m_layers[index + d].visible) {
-                setActiveLayer(index + d);
-                return;
-            }
-        }
-    }
-}
-
-bool ParamDocument::layerVisible(int index) const
-{
-    if (index < 0 || index >= layerCount())
-        return true;  // Out-of-range treated as visible (defensive).
-    return m_layers[index].visible;
-}
-
-void ParamDocument::setActiveLayer(int index)
-{
-    if (index < 0 || index >= layerCount() || index == m_activeLayer)
-        return;
-    m_activeLayer = index;
-    emit activeLayerChanged(index);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Formula dependency graph (拓扑序缓存)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-void ParamDocument::rebuildFormulaOrder() const
-{
-    m_formulaDepsDirty = false;
-    const int n = static_cast<int>(m_formulas.size());
-    m_formulaOrder.clear();
-    m_formulaOrder.reserve(n);
-
-    // Dependencies = identifiers matched case-insensitively against formula
-    // names (same folding the evaluator's PushVar fallback uses, so the
-    // graph and the evaluator agree on what resolves).
-    QHash<QString, int> nameIndex;  // case-folded formula name -> index
-    for (int i = 0; i < n; ++i)
-        if (!m_formulas[i].name.isEmpty())
-            nameIndex.insert(m_formulas[i].name.toLower(), i);
-
-    std::vector<std::vector<int>> dependents(n);
-    std::vector<int> inDegree(n, 0);
-    for (int i = 0; i < n; ++i) {
-        const auto& f = m_formulas[i];
-        if (f.actualValueCm.has_value() || f.expression.isEmpty()) continue;
-        const QStringList refs = ExpressionEvaluator::referencedNames(f.expression);
-        QSet<QString> seen;
-        for (const QString& ref : std::as_const(refs)) {
-            const QString lower = ref.toLower();
-            if (seen.contains(lower)) continue;
-            seen.insert(lower);
-            const auto it = nameIndex.constFind(lower);
-            if (it == nameIndex.constEnd()) continue;  // variable / typo
-            dependents[it.value()].push_back(i);
-            ++inDegree[i];
-        }
-    }
-
-    // Kahn's algorithm; document order preserved among ready formulas.
-    std::vector<int> queue;
-    queue.reserve(n);
-    for (int i = 0; i < n; ++i)
-        if (inDegree[i] == 0) queue.push_back(i);
-    for (size_t head = 0; head < queue.size(); ++head) {
-        const int cur = queue[head];
-        m_formulaOrder.push_back(cur);
-        for (const int d : dependents[cur])
-            if (--inDegree[d] == 0) queue.push_back(d);
-    }
-    m_formulaAcyclic = static_cast<int>(m_formulaOrder.size()) == n;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Formulas
-// ═══════════════════════════════════════════════════════════════════════════════
-
-void ParamDocument::recomputeFormulas()
-{
-    // Sync plain variable values into the parameter map (cm).
-    for (const auto& v : m_variables) {
-        const double cm = geo::Units::mmToCm(v.value);
-        if (!v.name.isEmpty())
-            m_parameters.insert(v.name, cm);
-        if (!v.refName.isEmpty())
-            m_parameters.insert(v.refName, cm);
-    }
-
-    // Base value map (cm): variables under display name + reference name.
-    QHash<QString, double> baseMap;
-    for (const auto& v : m_variables) {
-        const double cm = geo::Units::mmToCm(v.value);
-        if (!v.name.isEmpty())
-            baseMap.insert(v.name, cm);
-        if (!v.refName.isEmpty())
-            baseMap.insert(v.refName, cm);
-    }
-
-    // Condition table: formulaName -> conditions (enabled & non-empty only).
-    QHash<QString, QList<Condition>> condByName;
-    for (const auto& f : m_formulas) {
-        if (f.conditionsEnabled && !f.conditions.isEmpty() && !f.name.isEmpty())
-            condByName.insert(f.name, f.conditions);
-    }
-
-    // Topological single-pass evaluation (optimisation): formulas may
-    // reference other formulas by name. The dependency order is CACHED and
-    // rebuilt only when the formula set changes — variable edits reuse it.
-    // For the (overwhelmingly common) acyclic case, evaluating in dependency
-    // order makes every formula converge in ONE pass — the legacy bounded
-    // fixpoint re-evaluated ALL formulas per pass, costing O(depth x count)
-    // evaluations on deep reference chains (each early pass mostly failing
-    // with "unknown variable" until its dependencies are ready). Cycles (an
-    // authoring error) fall back to the original fixpoint, bit-for-bit
-    // unchanged.
-    if (m_formulaDepsDirty)
-        rebuildFormulaOrder();
-
-    if (m_formulaAcyclic) {
-        // Acyclic: every formula evaluates exactly once, dependencies first.
-        for (const int i : m_formulaOrder) {
-            auto& f = m_formulas[i];
-            if (f.actualValueCm.has_value()) {
-                // User-provided actual value overrides the expression.
-                f.valid = true;
-                f.error.clear();
-                f.baseValue = geo::Units::cmToMm(*f.actualValueCm);
-                if (!f.name.isEmpty())
-                    baseMap.insert(f.name, *f.actualValueCm);
-                continue;
-            }
-            const auto r = ConditionEngine::evaluate(
-                f.expression, baseMap, condByName);
-            if (r.ok) {
-                f.valid = true;
-                f.error.clear();
-                f.baseValue = geo::Units::cmToMm(r.value);
-                if (!f.name.isEmpty())
-                    baseMap.insert(f.name, r.value);
-            } else {
-                f.valid = false;
-                f.error = r.error;
-            }
-        }
-    } else {
-        // Cycle detected (a formula references itself or a cycle): fall back
-        // to the legacy bounded fixpoint so values stay bit-for-bit identical.
-        const int passes = qMax(1, static_cast<int>(m_formulas.size()));
-        for (int pass = 0; pass < passes; ++pass) {
-            bool progressed = false;
-            for (auto& f : m_formulas) {
-                // User-provided actual value overrides the expression entirely.
-                if (f.actualValueCm.has_value()) {
-                    f.valid = true;
-                    f.error.clear();
-                    f.baseValue = geo::Units::cmToMm(*f.actualValueCm);
-                    if (!f.name.isEmpty()) {
-                        auto it = baseMap.find(f.name);
-                        if (it == baseMap.end()) {
-                            baseMap.insert(f.name, *f.actualValueCm);
-                            progressed = true;
-                        } else if (qAbs(it.value() - *f.actualValueCm) > 1e-9) {
-                            it.value() = *f.actualValueCm;
-                            progressed = true;
-                        }
-                    }
-                    continue;
-                }
-                const auto r = ConditionEngine::evaluate(
-                    f.expression, baseMap, condByName);
-                if (r.ok) {
-                    f.valid = true;
-                    f.error.clear();
-                    f.baseValue = geo::Units::cmToMm(r.value);
-                    if (!f.name.isEmpty()) {
-                        auto it = baseMap.find(f.name);
-                        if (it == baseMap.end()) {
-                            baseMap.insert(f.name, r.value);
-                            progressed = true;
-                        } else if (qAbs(it.value() - r.value) > 1e-9) {
-                            it.value() = r.value;
-                            progressed = true;
-                        }
-                    }
-                } else {
-                    f.valid = false;
-                    f.error = r.error;
-                }
-            }
-            if (!progressed)
-                break;
-        }
-    }
-
-    // Final adjusted values (conditions applied) for display + standalone use.
-    for (auto& f : m_formulas) {
-        if (!f.valid) continue;
-        // Actual value is a direct override: no condition adjustment.
-        if (f.actualValueCm.has_value()) {
-            f.value = f.baseValue;
-            continue;
-        }
-        const double baseCm = geo::Units::mmToCm(f.baseValue);
-        const double adjCm = condByName.contains(f.name)
-            ? ConditionEngine::applyConditions(baseCm, f.conditions, baseMap)
-            : baseCm;
-        f.value = geo::Units::cmToMm(adjCm);
-    }
-
-    // Sync formula BASE values (conditions NOT applied) into parameters.
-    QHash<QString, double> baseCm;
-    for (const auto& f : m_formulas) {
-        if (f.valid && !f.name.isEmpty())
-            baseCm.insert(f.name, geo::Units::mmToCm(f.baseValue));
-    }
-    syncFormulaConditions(condByName);
-    syncFormulaParameters(baseCm);  // triggers resolveAll()
-
-    emit formulasChanged();
-}
-
-// --- Linked variables ---
-
-void ParamDocument::addLinked(LinkedVariable lv)
-{
-    m_linkedVars.push_back(std::move(lv));
-    emit linkedVarsChanged();
-    resolveAll();
-}
-
-void ParamDocument::removeLinked(const QUuid& id)
-{
-    auto it = std::find_if(m_linkedVars.begin(), m_linkedVars.end(),
-        [&id](const LinkedVariable& lv) { return lv.id == id; });
-    if (it != m_linkedVars.end()) {
-        // Remove the published parameter key.
-        if (!it->refName.isEmpty())
-            m_parameters.remove(it->refName);
-        m_linkedVars.erase(it);
-        emit linkedVarsChanged();
-        resolveAll();
-    }
-}
-
-void ParamDocument::updateLinked(const LinkedVariable& lv)
-{
-    for (auto& existing : m_linkedVars) {
-        if (existing.id == lv.id) {
-            // Only name/comment are user-editable; source and value are not.
-            const QString oldRef = existing.refName;
-            existing.name = lv.name;
-            existing.comment = lv.comment;
-            // refName change: retire old key; new one published by
-            // measureLinkedVars() inside the resolveAll() below.
-            if (existing.refName != lv.refName && !lv.refName.isEmpty()) {
-                m_parameters.remove(oldRef);
-                existing.refName = lv.refName;
-            }
-            break;
-        }
-    }
-    emit linkedVarsChanged();
-    resolveAll();
-}
-
-LinkedVariable* ParamDocument::findLinked(const QUuid& id)
-{
-    auto it = std::find_if(m_linkedVars.begin(), m_linkedVars.end(),
-        [&id](const LinkedVariable& lv) { return lv.id == id; });
-    return (it != m_linkedVars.end()) ? &(*it) : nullptr;
-}
-
-LinkedVariable* ParamDocument::findLinkedBySource(const QUuid& blockId,
-                                                  const QUuid& segmentId)
-{
-    for (auto& lv : m_linkedVars) {
-        if (lv.sourceBlockId == blockId && lv.sourceSegmentId == segmentId)
-            return &lv;
-    }
-    return nullptr;
-}
-
-QList<QUuid> ParamDocument::linkedConsumerBlocks(const QUuid& sourceBlockId) const
-{
-    QList<QUuid> result;
-    for (const auto& lv : m_linkedVars) {
-        if (lv.sourceBlockId != sourceBlockId || lv.refName.isEmpty()) continue;
-        for (const auto& b : m_blocks) {
-            if (result.contains(b.id)) continue;
-            bool consumes = false;
-            for (const auto& s : b.segments)
-                if (s.lengthFormula == lv.refName) { consumes = true; break; }
-            if (!consumes)
-                for (const auto& p : b.points)
-                    if (p.distanceFormula == lv.refName) { consumes = true; break; }
-            if (consumes) result.push_back(b.id);
-        }
-    }
-    return result;
-}
-
-bool ParamDocument::measureLinkedVars(bool skipAuxSource)
-{
-    GCAD_PERF_SCOPE("meas.linked");
-    if (m_linkedVars.empty()) return false;
-
-    // Purge variables whose measurement target no longer exists (block or
-    // segment deleted). Without a target the variable is destroyed
-    // immediately (没有测量对象时立刻销毁).
-    bool purged = false;
-    auto pit = std::remove_if(m_linkedVars.begin(), m_linkedVars.end(),
-        [&](const LinkedVariable& lv) {
-            const Block* blk = blockById(lv.sourceBlockId);
-            if (blk && blk->findSegment(lv.sourceSegmentId)) return false;
-            if (!lv.refName.isEmpty())
-                m_parameters.remove(lv.refName);
-            purged = true;
-            return true;
-        });
-    m_linkedVars.erase(pit, m_linkedVars.end());
-    if (purged)
-        emit linkedVarsChanged();
-
-    bool dirty = false;
-    // Cross-layer correction: aux blocks linked to the working layers via a
-    // cross-layer attachment move in Phase 3 — their measurements are NOT
-    // cacheable even though both endpoints sit on the aux layer. Empty set
-    // (a single integer test) when the document has no cross-layer edges.
-    const QSet<QUuid> mobileAux =
-        (skipAuxSource && m_crossLayerCount > 0) ? collectMobileAuxBlocks() : QSet<QUuid>();
-    for (auto& lv : m_linkedVars) {
-        const Block* blk = blockById(lv.sourceBlockId);
-        if (!blk) { lv.dangling = true; continue; }
-        // Layered cache: the aux layer was not re-resolved, so measurements
-        // sourced from it cannot have changed — keep the cached value.
-        if (skipAuxSource && isAuxBlock(*blk) && !mobileAux.contains(lv.sourceBlockId))
-            continue;
-        const Segment* seg = blk->findSegment(lv.sourceSegmentId);
-        if (!seg) { lv.dangling = true; continue; }
-
-        const ParamPoint* sp = blk->findPoint(seg->startPointId);
-        const ParamPoint* ep = blk->findPoint(seg->endPointId);
-        if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
-
-        // Block is a rigid body (scale = 1), so local distance == world distance.
-        const double len = sp->resolvedPos.distanceTo(ep->resolvedPos);
-        lv.dangling = false;
-        if (std::abs(len - lv.value) > 1e-9) {
-            lv.value = len;
-            dirty = true;
-        }
-        // Publish into the parameter map (cm domain) for formula consumption.
-        // Only the reference name is usable in formulas.
-        if (!lv.refName.isEmpty())
-            m_parameters[lv.refName] = geo::Units::mmToCm(len);
-    }
-    if (dirty)
-        emit linkedVarsChanged();
-    return dirty;
-}
-
-// --- Measure variables ---
-
-void ParamDocument::addMeasure(MeasureVariable mv)
-{
-    m_measureVars.push_back(std::move(mv));
-    emit measureVarsChanged();
-    resolveAll();
-}
-
-void ParamDocument::removeMeasure(const QUuid& id)
-{
-    auto it = std::find_if(m_measureVars.begin(), m_measureVars.end(),
-        [&id](const MeasureVariable& mv) { return mv.id == id; });
-    if (it == m_measureVars.end()) return;
-
-    if (!it->refName.isEmpty())
-        m_parameters.remove(it->refName);
-    m_measureVars.erase(it);
-    emit measureVarsChanged();
-    resolveAll();
-}
-
-void ParamDocument::updateMeasure(const MeasureVariable& mv)
-{
-    for (auto& existing : m_measureVars) {
-        if (existing.id == mv.id) {
-            const QString oldRef = existing.refName;
-            existing.name = mv.name;
-            existing.comment = mv.comment;
-            if (existing.refName != mv.refName && !mv.refName.isEmpty()) {
-                m_parameters.remove(oldRef);
-                existing.refName = mv.refName;
-            }
-            // Keep the owned measure line's segment name in sync (测量变量名称
-            // → 测量对象名称). Bump geometryEpoch so the canvas rebuilds the
-            // cached name label on the next resolve (a rename moves no geometry,
-            // so the resolve pass would not invalidate the cache by itself).
-            if (!existing.ownerBlockId.isNull()) {
-                if (Block* owner = blockById(existing.ownerBlockId)) {
-                    bool renamed = false;
-                    for (auto& s : owner->segments) {
-                        if (s.name != existing.name) {
-                            s.name = existing.name;
-                            renamed = true;
-                        }
-                    }
-                    if (renamed)
-                        ++owner->geometryEpoch;
-                }
-            }
-            break;
-        }
-    }
-    emit measureVarsChanged();
-    resolveAll();
-}
-
-void ParamDocument::setOwnerMeasureName(const QUuid& ownerBlockId, const QString& name)
-{
-    if (ownerBlockId.isNull()) return;
-    for (auto& mv : m_measureVars) {
-        if (mv.ownerBlockId == ownerBlockId && mv.name != name) {
-            mv.name = name;
-            emit measureVarsChanged();
-            return;
-        }
-    }
-}
-
-MeasureVariable* ParamDocument::findMeasure(const QUuid& id)
-{
-    for (auto& mv : m_measureVars)
-        if (mv.id == id) return &mv;
-    return nullptr;
-}
-
-MeasureVariable* ParamDocument::findMeasureByOwner(const QUuid& ownerBlockId)
-{
-    if (ownerBlockId.isNull()) return nullptr;
-    for (auto& mv : m_measureVars)
-        if (mv.ownerBlockId == ownerBlockId) return &mv;
-    return nullptr;
-}
-
-const MeasureVariable* ParamDocument::findMeasureByOwner(const QUuid& ownerBlockId) const
-{
-    if (ownerBlockId.isNull()) return nullptr;
-    for (const auto& mv : m_measureVars)
-        if (mv.ownerBlockId == ownerBlockId) return &mv;
-    return nullptr;
-}
-
-// --- Angle measure variables ---
-
-void ParamDocument::addAngleMeasure(AngleMeasureVariable am)
-{
-    m_angleMeasures.push_back(std::move(am));
-    emit angleMeasureVarsChanged();
-    resolveAll();
-}
-
-void ParamDocument::removeAngleMeasure(const QUuid& id)
-{
-    auto it = std::find_if(m_angleMeasures.begin(), m_angleMeasures.end(),
-        [&id](const AngleMeasureVariable& am) { return am.id == id; });
-    if (it == m_angleMeasures.end()) return;
-
-    if (!it->refName.isEmpty())
-        m_parameters.remove(it->refName);
-    m_angleMeasures.erase(it);
-    emit angleMeasureVarsChanged();
-    resolveAll();
-}
-
-void ParamDocument::updateAngleMeasure(const AngleMeasureVariable& am)
-{
-    for (auto& existing : m_angleMeasures) {
-        if (existing.id == am.id) {
-            existing.name = am.name;
-            existing.comment = am.comment;
-            break;
-        }
-    }
-    emit angleMeasureVarsChanged();
-    resolveAll();
-}
-
-AngleMeasureVariable* ParamDocument::findAngleMeasure(const QUuid& id)
-{
-    for (auto& am : m_angleMeasures)
-        if (am.id == id) return &am;
-    return nullptr;
-}
-
-bool ParamDocument::measureAngleMeasureVars(bool skipAuxSource)
-{
-    GCAD_PERF_SCOPE("meas.angle");
-    if (m_angleMeasures.empty()) return false;
-
-    // Purge variables whose measurement target no longer exists (block or
-    // segment deleted) — destroyed immediately (没有测量对象时立刻销毁).
-    bool purged = false;
-    auto pit = std::remove_if(m_angleMeasures.begin(), m_angleMeasures.end(),
-        [&](const AngleMeasureVariable& am) {
-            const Block* blkA = blockById(am.blockA);
-            const Block* blkB = blockById(am.blockB);
-            if (blkA && blkB &&
-                blkA->findSegment(am.segmentA) && blkB->findSegment(am.segmentB))
-                return false;
-            if (!am.refName.isEmpty())
-                m_parameters.remove(am.refName);
-            purged = true;
-            return true;
-        });
-    m_angleMeasures.erase(pit, m_angleMeasures.end());
-    if (purged)
-        emit angleMeasureVarsChanged();
-
-    bool dirty = false;
-    // Cross-layer correction (see measureLinkedVars): mobile aux blocks track
-    // the working layers via Phase 3, so their measurements cannot be cached.
-    const QSet<QUuid> mobileAux =
-        (skipAuxSource && m_crossLayerCount > 0) ? collectMobileAuxBlocks() : QSet<QUuid>();
-    for (auto& am : m_angleMeasures) {
-        const Block* blkA = blockById(am.blockA);
-        const Block* blkB = blockById(am.blockB);
-        if (!blkA || !blkB) { am.dangling = true; continue; }
-        // Layered cache: both segments on the (clean) aux layer → the value
-        // cannot have changed — keep the cached measurement.
-        if (skipAuxSource && isAuxBlock(*blkA) && isAuxBlock(*blkB)
-            && !mobileAux.contains(am.blockA) && !mobileAux.contains(am.blockB))
-            continue;
-
-        const Segment* sa = blkA->findSegment(am.segmentA);
-        const Segment* sb = blkB->findSegment(am.segmentB);
-        if (!sa || !sb) { am.dangling = true; continue; }
-
-        const ParamPoint* a0 = blkA->findPoint(sa->startPointId);
-        const ParamPoint* a1 = blkA->findPoint(sa->endPointId);
-        const ParamPoint* b0 = blkB->findPoint(sb->startPointId);
-        const ParamPoint* b1 = blkB->findPoint(sb->endPointId);
-        if (!a0 || !a1 || !b0 || !b1 ||
-            !a0->resolved || !a1->resolved || !b0->resolved || !b1->resolved)
-            continue;
-
-        // World-space chord direction (start→end) of each segment.
-        const geo::Vec2 wa0 = blkA->transform.toWorld(a0->resolvedPos);
-        const geo::Vec2 wa1 = blkA->transform.toWorld(a1->resolvedPos);
-        const geo::Vec2 wb0 = blkB->transform.toWorld(b0->resolvedPos);
-        const geo::Vec2 wb1 = blkB->transform.toWorld(b1->resolvedPos);
-        const double dax = wa1.x - wa0.x, day = wa1.y - wa0.y;
-        const double dbx = wb1.x - wb0.x, dby = wb1.y - wb0.y;
-        if (dax * dax + day * day < 1e-12 || dbx * dbx + dby * dby < 1e-12)
-            continue;  // degenerate (zero-length) segment
-        const double dirA = std::atan2(day, dax);
-        const double dirB = std::atan2(dby, dbx);
-
-        // Directed angle from A to B, same semantics as the construction
-        // angle (跟随角度): normalized to (-180, 180].
-        const double angleDeg = geo::normalizeDeg180(geo::radToDeg(dirB - dirA));
-
-        am.dangling = false;
-        if (std::abs(angleDeg - am.value) > 1e-9) {
-            am.value = angleDeg;
-            dirty = true;
-        }
-        if (!am.refName.isEmpty())
-            m_parameters[am.refName] = angleDeg;  // degree domain
-    }
-    if (dirty)
-        emit angleMeasureVarsChanged();
-    return dirty;
-}
-
-bool ParamDocument::measureMeasureVars(bool skipAuxSource)
-{
-    GCAD_PERF_SCOPE("meas.measure");
-    if (m_measureVars.empty()) return false;
-
-    // Purge variables whose measurement target no longer exists (block or
-    // point deleted) — destroyed immediately (没有测量对象时立刻销毁).
-    bool purged = false;
-    auto pit = std::remove_if(m_measureVars.begin(), m_measureVars.end(),
-        [&](const MeasureVariable& mv) {
-            const Block* blkA = blockById(mv.blockA);
-            const Block* blkB = blockById(mv.blockB);
-            if (blkA && blkB &&
-                blkA->findPoint(mv.pointA) && blkB->findPoint(mv.pointB))
-                return false;
-            if (!mv.refName.isEmpty())
-                m_parameters.remove(mv.refName);
-            purged = true;
-            return true;
-        });
-    m_measureVars.erase(pit, m_measureVars.end());
-    if (purged)
-        emit measureVarsChanged();
-
-    bool dirty = false;
-    // Cross-layer correction (see measureLinkedVars): mobile aux blocks track
-    // the working layers via Phase 3, so their measurements cannot be cached.
-    const QSet<QUuid> mobileAux =
-        (skipAuxSource && m_crossLayerCount > 0) ? collectMobileAuxBlocks() : QSet<QUuid>();
-    for (auto& mv : m_measureVars) {
-        const Block* blkA = blockById(mv.blockA);
-        const Block* blkB = blockById(mv.blockB);
-        if (!blkA || !blkB) { mv.dangling = true; continue; }
-        // Layered cache: both endpoints on the (clean) aux layer → the value
-        // cannot have changed — keep the cached measurement.
-        if (skipAuxSource && isAuxBlock(*blkA) && isAuxBlock(*blkB)
-            && !mobileAux.contains(mv.blockA) && !mobileAux.contains(mv.blockB))
-            continue;
-
-        const ParamPoint* pa = blkA->findPoint(mv.pointA);
-        const ParamPoint* pb = blkB->findPoint(mv.pointB);
-        if (!pa || !pb || !pa->resolved || !pb->resolved) continue;
-
-        // World-space distance (points may be on different blocks).
-        const geo::Vec2 wa = blkA->transform.toWorld(pa->resolvedPos);
-        const geo::Vec2 wb = blkB->transform.toWorld(pb->resolvedPos);
-        const double dist = wa.distanceTo(wb);
-
-        mv.dangling = false;
-        if (std::abs(dist - mv.value) > 1e-9) {
-            mv.value = dist;
-            dirty = true;
-        }
-        if (!mv.refName.isEmpty())
-            m_parameters[mv.refName] = geo::Units::mmToCm(dist);
-    }
-    if (dirty)
-        emit measureVarsChanged();
-    return dirty;
 }
 
 } // namespace cad::param

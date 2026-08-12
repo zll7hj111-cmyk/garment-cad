@@ -140,6 +140,9 @@ private slots:
     void bridgeAloneReleasedWithLinkedVar();
     void bridgeMixedPinBecomesFollower();
     void existingLinkedVarReused();
+    void endTargetOutsideClearedOnClone();
+    void endTargetInsideRemappedOnClone();
+    void followAndInterpRefOutsideClearedOnClone();
 };
 
 // 单线克隆：除 ID/serial 外信息全同，内部引用重映射，参数联动保留。
@@ -524,6 +527,118 @@ void TestDuplicate::existingLinkedVarReused()
     QVERIFY(result.newLinked.empty());  // reused, not re-published
     QCOMPARE(result.blocks.front().segments.front().lengthFormula,
              QStringLiteral("Lcustom"));
+}
+
+// 副本不继承指向复制集外的 endTarget（与 RotateCopyGesture 语义一致）。
+void TestDuplicate::endTargetOutsideClearedOnClone()
+{
+    ParamDocument doc;
+    LineInfo a = makeLine(doc, Vec2::zero(), 100.0);
+    LineInfo b = makeLine(doc, Vec2(300.0, 0.0), 100.0);
+
+    // A aims at B's end point (B stays outside the copied set).
+    Block* blk = doc.findBlock(a.blockId);
+    blk->endTargetBlockId = b.blockId;
+    blk->endTargetPointId = b.endId;
+
+    DuplicateResult result = duplicateBlocks(doc, {a.blockId});
+    QCOMPARE(result.blocks.size(), size_t(1));
+    const Block& clone = result.blocks.front();
+    QVERIFY(clone.endTargetBlockId.isNull());
+    QVERIFY(clone.endTargetPointId.isNull());
+    // The original keeps its aim constraint untouched.
+    QCOMPARE(doc.findBlock(a.blockId)->endTargetBlockId, b.blockId);
+    QCOMPARE(doc.findBlock(a.blockId)->endTargetPointId, b.endId);
+}
+
+// endTarget 指向复制集内 → 副本保持相对指向（remap 到副本目标块）。
+void TestDuplicate::endTargetInsideRemappedOnClone()
+{
+    ParamDocument doc;
+    LineInfo a = makeLine(doc, Vec2::zero(), 100.0);
+    LineInfo b = makeLine(doc, Vec2(300.0, 0.0), 100.0);
+
+    Block* blk = doc.findBlock(a.blockId);
+    blk->endTargetBlockId = b.blockId;
+    blk->endTargetPointId = b.endId;
+
+    DuplicateResult result = duplicateBlocks(doc, {a.blockId, b.blockId});
+    QCOMPARE(result.blocks.size(), size_t(2));
+    const Block* cloneA = nullptr;
+    const Block* cloneB = nullptr;
+    for (const Block& c : result.blocks) {
+        if (c.endTargetBlockId.isNull())
+            cloneB = &c;
+        else
+            cloneA = &c;
+    }
+    QVERIFY(cloneA && cloneB);
+    QCOMPARE(cloneA->endTargetBlockId, cloneB->id);
+
+    // The clone-B end point maps through the idMap (same point index).
+    const Block* origB = doc.findBlock(b.blockId);
+    int endIdx = -1;
+    for (size_t i = 0; i < origB->points.size(); ++i) {
+        if (origB->points[i].id == b.endId) { endIdx = static_cast<int>(i); break; }
+    }
+    QVERIFY(endIdx >= 0);
+    QVERIFY(cloneB->points.size() > size_t(endIdx));
+    QCOMPARE(cloneA->endTargetPointId, cloneB->points[size_t(endIdx)].id);
+}
+
+// CurveAnchor follow 与 Interpolated 参考点指向集外 → 副本清空（防止副本
+// 被原块拉动 / 永不解析），原块保持不变。
+void TestDuplicate::followAndInterpRefOutsideClearedOnClone()
+{
+    ParamDocument doc;
+    LineInfo a = makeLine(doc, Vec2::zero(), 100.0);
+    LineInfo b = makeLine(doc, Vec2(300.0, 0.0), 100.0);
+
+    // A carries a curve anchor following B's start point...
+    Block* blk = doc.findBlock(a.blockId);
+    ParamPoint anchor;
+    anchor.constraint = PointConstraint::CurveAnchor;
+    anchor.hostSegmentId = a.segId;
+    anchor.followBlockId = b.blockId;
+    anchor.followPointId = b.startId;
+    blk->addPoint(anchor);
+
+    // ...and an interpolated aux point measuring from B's start point.
+    ParamPoint aux;
+    aux.constraint = PointConstraint::Interpolated;
+    aux.hostSegmentId = a.segId;
+    aux.interpPercent = 0.5;
+    aux.interpRefPointId = b.startId;
+    blk->addPoint(aux);
+
+    DuplicateResult result = duplicateBlocks(doc, {a.blockId});
+    QCOMPARE(result.blocks.size(), size_t(1));
+    const Block& clone = result.blocks.front();
+
+    bool foundAnchor = false, foundAux = false;
+    for (const ParamPoint& p : clone.points) {
+        if (p.constraint == PointConstraint::CurveAnchor) {
+            foundAnchor = true;
+            QVERIFY(p.followBlockId.isNull());
+            QVERIFY(p.followPointId.isNull());
+        }
+        if (p.constraint == PointConstraint::Interpolated) {
+            foundAux = true;
+            QVERIFY(p.interpRefPointId.isNull());
+        }
+    }
+    QVERIFY(foundAnchor && foundAux);
+
+    // The original keeps its follow / measurement references.
+    const Block* orig = doc.findBlock(a.blockId);
+    for (const ParamPoint& p : orig->points) {
+        if (p.constraint == PointConstraint::CurveAnchor) {
+            QCOMPARE(p.followBlockId, b.blockId);
+            QCOMPARE(p.followPointId, b.startId);
+        }
+        if (p.constraint == PointConstraint::Interpolated)
+            QCOMPARE(p.interpRefPointId, b.startId);
+    }
 }
 
 QTEST_MAIN(TestDuplicate)

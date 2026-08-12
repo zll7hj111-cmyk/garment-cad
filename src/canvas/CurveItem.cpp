@@ -20,6 +20,19 @@ const QFont& nameFont()
     static QFont f = [] { QFont fnt; fnt.setPixelSize(10); return fnt; }();
     return f;
 }
+/// Length annotations: monospace digits so drag readouts never jitter.
+const QFont& lengthFont()
+{
+    static QFont f = [] {
+        QFont fnt;
+        fnt.setFamilies({QStringLiteral("Consolas"),
+                         QStringLiteral("Courier New"),
+                         QStringLiteral("monospace")});
+        fnt.setPixelSize(10);
+        return fnt;
+    }();
+    return f;
+}
 
 } // namespace
 
@@ -112,9 +125,12 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
 
     CanvasAnimator* animator = nullptr;
     const CanvasStyle* style = nullptr;
+    bool forceName = false, forceLen = false;  // Hold-to-show (N/M keys).
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        animator = cs->animator();
-        style    = cs->style();
+        animator  = cs->animator();
+        style     = cs->style();
+        forceName = cs->forceShowName();
+        forceLen  = cs->forceShowLength();
     }
 
     const bool ghost = !m_data.visible;  // hovered hidden curve → ghost style
@@ -122,11 +138,15 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
     if (m_grayed)
         painter->setOpacity(0.4);
 
+    // Dark-mode adaptation: lift the data color to the role's light-on-dark
+    // family so ink curves stay legible on night paper.
+    const QColor paintColor = style ? style->displayColor(m_data.role, m_data.color)
+                                    : m_data.color;
     EntityPaintParams pp;
     if (animator) {
-        pp = animator->lineParams(m_owner, m_data.id, m_data.color, m_data.weight);
+        pp = animator->lineParams(m_owner, m_data.id, paintColor, m_data.weight);
     } else {
-        pp.lineColor  = m_data.color;
+        pp.lineColor  = paintColor;
         pp.lineWidth  = m_data.weight;
         pp.labelColor = QColor(100, 100, 100);
     }
@@ -151,7 +171,7 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
     painter->drawPath(m_data.path);
 
     // Labels at the cached arc-length midpoint (suppressed on grayed layers).
-    if (m_data.showName && !m_data.name.isEmpty() && !m_grayed) {
+    if ((m_data.showName || forceName) && !m_data.name.isEmpty() && !m_grayed) {
         QColor nameColor = pp.labelColor;
         if (ghost) nameColor.setAlpha(kGhostAlpha);
         QPen textPen(nameColor);
@@ -160,13 +180,15 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
         painter->setFont(nameFont());
         painter->drawText(m_data.labelPos + QPointF(4, -4), m_data.name);
     }
-    if (m_data.showLength && !m_data.lengthText.isEmpty() && !m_grayed) {
-        QColor lenColor = animator ? pp.lengthLabelColor : QColor(0, 110, 60);
+    if ((m_data.showLength || forceLen) && !m_data.lengthText.isEmpty() && !m_grayed) {
+        QColor lenColor = animator ? pp.lengthLabelColor
+            : (style ? style->labelColor(EntityState::Normal, true)
+                     : QColor(0, 110, 60));
         if (ghost) lenColor.setAlpha(kGhostAlpha);
         QPen textPen(lenColor);
         textPen.setCosmetic(true);
         painter->setPen(textPen);
-        painter->setFont(nameFont());
+        painter->setFont(lengthFont());
         painter->drawText(m_data.labelPos + QPointF(4, 12), m_data.lengthText);
     }
 }

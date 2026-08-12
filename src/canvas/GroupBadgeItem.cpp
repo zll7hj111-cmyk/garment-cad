@@ -1,4 +1,7 @@
-#include "GroupBadgeItem.h"
+﻿#include "GroupBadgeItem.h"
+
+#include "CanvasScene.h"
+#include "CanvasStyle.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QPainter>
@@ -48,11 +51,25 @@ void GroupBadgeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* op
     Q_UNUSED(widget);
     if (m_rect.isEmpty() || m_text.isEmpty()) return;
 
-    // Design tokens match the panel palette: #F4F6F7 background, #2E86C1
-    // accent, #34495E primary text, #7F8C8D secondary.
-    const QColor border = m_accent ? QColor(0x2E, 0x86, 0xC1) : QColor(0xD5, 0xDB, 0xDB);
-    const QColor fill   = m_accent ? QColor(0xEB, 0xF5, 0xFB) : QColor(0xFF, 0xFF, 0xFF);
-    const QColor text   = m_accent ? QColor(0x2E, 0x86, 0xC1) : QColor(0x7F, 0x8C, 0x8D);
+    // Design tokens come from the scene's CanvasStyle (pattern-workbench
+    // rule: no hardcoded colors — the badge follows the active theme).
+    const auto* style = [&]() -> const CanvasStyle* {
+        if (auto* cs = qobject_cast<CanvasScene*>(scene()))
+            return cs->style();
+        return nullptr;
+    }();
+    const QColor accent = style ? style->selectColorForBadge()
+                                : QColor(0x2F, 0x6F, 0xED);
+    const QColor border = m_accent ? accent
+                                   : (style ? style->borderSoft()
+                                            : QColor(0xD5, 0xDB, 0xDB));
+    const QColor fill   = m_accent ? (style ? style->accentWash()
+                                            : QColor(0xEA, 0xF2, 0xFE))
+                                   : (style ? style->surfaceColor()
+                                            : QColor(0xFF, 0xFF, 0xFF));
+    const QColor text   = m_accent ? accent
+                                   : (style ? style->textSecondary()
+                                            : QColor(0x7F, 0x8C, 0x8D));
 
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setPen(QPen(border, 1.0));

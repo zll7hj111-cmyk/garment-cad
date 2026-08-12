@@ -70,6 +70,15 @@ public:
     /// follower angles) changed without a structural topology change.
     void notifyGroupInfoChanged();
 
+    /// Transient hold-to-show overrides (N/L keys held on canvas). Purely
+    /// visual — the model is untouched, no cache rebuild, no epoch bump.
+    /// Painters overlay every name/length label while set; release restores
+    /// the model's own show flags (snapshot semantics).
+    [[nodiscard]] bool forceShowName() const { return m_forceShowName; }
+    [[nodiscard]] bool forceShowLength() const { return m_forceShowLength; }
+    void setForceShowName(bool on);
+    void setForceShowLength(bool on);
+
     /// Transient toast pill anchored at the top-center of the first view
     /// (工具守卫提示, auto-hides after ~1.4 s). Shared by every tool.
     void showToast(const QString& text);
@@ -103,11 +112,27 @@ public:
     /// ToolSelect's confirmed selection).
     void setGroupSelected(const QSet<QUuid>& groupIds);
 
+    /// Notify listeners (MainWindow) that a segment was just created by the
+    /// smart pen. The host shows the status-bar edit strip (SegmentEditBar)
+    /// for immediate naming/length/angle edits — no creation dialog.
+    void notifyLineCreated(const QUuid& blockId, const QUuid& segmentId);
+    /// Notify listeners of live length/angle readouts while a stroke is being
+    /// drawn (creation-in-progress, read-only preview in the status bar).
+    void notifyLinePreview(double lenCm, double angleDeg);
+
 signals:
     void sceneMouseMoved(qreal x, qreal y);
     void groupInfoChanged();
     /// Badge clicked — the host window selects the whole group on canvas.
     void groupBadgeClicked(const QUuid& groupId);
+    /// A segment was just created (smart pen commit). blockId/segmentId
+    /// identify the NEW line; the host shows the status-bar edit strip.
+    void lineCreated(const QUuid& blockId, const QUuid& segmentId);
+    /// Live readout while a stroke is in progress (creation preview).
+    void linePreviewChanged(double lenCm, double angleDeg);
+    /// Hold-to-show overrides changed (N/L keys). Host forwards to open
+    /// LinePropertyDialogs so their display toggles track the held state.
+    void forceShowChanged(bool showNames, bool showLengths);
 
 protected:
     void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
@@ -133,4 +158,9 @@ private:
     QSet<QUuid> m_selectedGroups;   ///< Groups whose badges are accented.
     void onBadgeHover(const QUuid& groupId, bool hovered);
     void updateBadgeAccents();
+
+    // Hold-to-show overrides (N/L keys): transient view state, never written
+    // to the model.
+    bool m_forceShowName = false;
+    bool m_forceShowLength = false;
 };

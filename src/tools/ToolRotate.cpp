@@ -3,13 +3,10 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
 #include <QGraphicsEllipseItem>
-#include <QGraphicsPathItem>
-#include <QGraphicsSimpleTextItem>
 #include <QKeyEvent>
 #include <QUndoStack>
 #include <QPen>
-#include <QPainterPath>
-#include <QLineEdit>
+#include "ElaLineEdit.h"
 #include <QWidget>
 
 #include <cmath>
@@ -24,6 +21,8 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "AngleHud.h"
+#include "RotateCopyGesture.h"
+#include "RotateGizmo.h"
 #include "LinePropertyDialog.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"
@@ -47,25 +46,43 @@ QString formatDeg(double deg)
 // Lifecycle
 // ═══════════════════════════════════════════════════════════════════════════════
 
+ToolRotate::~ToolRotate()
+{
+    // The HUD is parented to the viewport (which outlives this tool); the
+    // QPointer turns null if the viewport was already torn down, so deleting
+    // it here is always safe. Without this each tool switch (ToolManager
+    // rebuilds the tool) would leak a hidden AngleHud on the viewport.
+    delete m_hud;
+}
+
 void ToolRotate::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
 {
     m_scene = &scene;
     m_paramDoc = paramDoc;
     m_state = RotateState::Idle;
+    // (Re)create the rotate-copy gesture with the current context.
+    delete m_copyGesture;
+    m_copyGesture = new RotateCopyGesture(this);
+    // (Re)create the protractor gizmo renderer (scene-bound).
+    delete m_gizmo;
+    m_gizmo = new RotateGizmo(&scene);
 }
 
 void ToolRotate::deactivate()
 {
     // Mid-copy deactivation (tool switch): drop the preview clone, the
     // original block was never touched.
-    if (m_copyMode) {
-        removeCopyPreview();
-        finishRotateCopy();
-    }
+    if (m_copyGesture && m_copyGesture->active())
+        m_copyGesture->cancel();
+    delete m_copyGesture;
+    m_copyGesture = nullptr;
+    delete m_gizmo;
+    m_gizmo = nullptr;
     // A follower link released by an in-flight rotation is restored — tool
     // switch abandons the gesture (nothing was committed).
     if (m_releaseAttHeld && !m_releaseAttId.isNull() && m_paramDoc) {
-        m_paramDoc->addAttachment(m_releaseAttBackup);
+        m_paramDoc->addAttachmentRaw(m_releaseAttBackup);  // verbatim (keep snapshot isLocked)
+        m_paramDoc->resolveAll();
         m_releaseAttId = QUuid();
         m_releaseAttHeld = false;
     }
@@ -105,7 +122,7 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
             // Ctrl+press selects AND starts a rotate-copy in one gesture
             // (Ctrl = 复制意图, same language as ToolSelect).
             if (event->modifiers() & Qt::ControlModifier)
-                beginRotateCopy(pos);
+                m_copyGesture->begin(pos);
         }
         break;
     }
@@ -120,7 +137,7 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
                 commitCurrent();
                 selectTarget(id);
             }
-            beginRotateCopy(pos);
+            m_copyGesture->begin(pos);
             break;
         }
         // A click on the target's OTHER endpoint switches the anchor
@@ -132,16 +149,34 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
         {
             const QUuid hit = anchorPointAt(pos);
             if (!hit.isNull() && hit != m_anchorPointId) {
-                commitCurrent();
-                m_anchorIsEnd = (hit
-                    == m_paramDoc->findBlock(m_blockId)->segments.front().endPointId);
-                rebuildAnchorState();
-                removeGizmo();
-                buildGizmo();
-                updateGizmo();
-                showHud();
-                if (m_scene) m_scene->refreshAllBlockItems();
-                break;
+                // 已连接线段禁止点击切换锚心（用户拍板 2026-08）: 用户本意
+                // 是点击头部旋转，切换会让跟随附着点跳变/断开——除非在属性
+                // 面板中显式断开跟随。拦截后落到 beginRotation 直接旋转。
+                bool anchorLocked = false;
+                if (const auto* blk = m_paramDoc->findBlock(m_blockId);
+                    blk && !blk->segments.empty()) {
+                    anchorLocked =
+                        attachmentAtPoint(blk->segments.front().startPointId)
+                        || attachmentAtPoint(blk->segments.front().endPointId);
+                }
+                if (!anchorLocked) {
+                    commitCurrent();
+                    // Guard the block/segment lookup like the other paths in this
+                    // file (toggleAnchor/rebuildAnchorState) — the anchor hit may
+                    // belong to a target whose block vanished mid-gesture.
+                    if (const auto* blk = m_paramDoc->findBlock(m_blockId);
+                        blk && !blk->segments.empty()) {
+                        m_anchorIsEnd = (hit
+                            == blk->segments.front().endPointId);
+                    }
+                    rebuildAnchorState();
+                    removeGizmo();
+                    buildGizmo();
+                    updateGizmo();
+                    showHud();
+                    if (m_scene) m_scene->refreshAllBlockItems();
+                    break;
+                }
             }
         }
         if (!id.isNull() && id != m_blockId) {
@@ -161,6 +196,13 @@ void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
 {
     if (m_state != RotateState::Rotating) return;
     const cad::geo::Vec2 pos(event->scenePos().x(), event->scenePos().y());
+    // 普通旋转拖动中途按下 Ctrl：转为旋转复制（原块回弹 + 副本接手当前角度）。
+    // 判定放在 press 时刻之外，用户先按下鼠标再按 Ctrl 也能得到复制语义。
+    // (Rotating 状态下的 move 必然在拖动中，无需再查 buttons()。)
+    if (!m_copyGesture->active() && (event->modifiers() & Qt::ControlModifier)) {
+        m_copyGesture->convert(pos);
+        if (!m_copyGesture->active()) return;   // 转换被拒（跟随/解挂态）：保持普通旋转
+    }
     const bool snap = (event->modifiers() & Qt::ShiftModifier);
     updateRotation(pos, snap);
 }
@@ -169,8 +211,8 @@ void ToolRotate::mouseRelease(QGraphicsSceneMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton) return;
     if (m_state != RotateState::Rotating) return;
-    if (m_copyMode) commitRotateCopy();
-    else            commitRotation();
+    if (m_copyGesture->active()) m_copyGesture->commit();
+    else                         commitRotation();
 }
 
 void ToolRotate::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
@@ -207,7 +249,7 @@ void ToolRotate::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     QWidget* parentWidget = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
     auto* dlg = new LinePropertyDialog(blockId, bestSegId, m_paramDoc,
                                        m_scene, parentWidget);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    // NOTE: no WA_DeleteOnClose — see ToolSelect::openLineProperty.
     dlg->show();
 }
 
@@ -233,22 +275,18 @@ void ToolRotate::keyPress(QKeyEvent* event)
 cad::param::Attachment* ToolRotate::followerAttachment()
 {
     if (!m_paramDoc || m_blockId.isNull()) return nullptr;
-    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-    for (auto& a : atts) {
+    for (const auto& a : m_paramDoc->attachments())
         if (a.fromBlockId == m_blockId && !a.isPin)
-            return &a;
-    }
+            return m_paramDoc->findAttachment(a.id);
     return nullptr;
 }
 
 cad::param::Attachment* ToolRotate::attachmentAtPoint(const QUuid& pointId)
 {
     if (!m_paramDoc || m_blockId.isNull() || pointId.isNull()) return nullptr;
-    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-    for (auto& a : atts) {
+    for (const auto& a : m_paramDoc->attachments())
         if (a.fromBlockId == m_blockId && a.fromPointId == pointId && !a.isPin)
-            return &a;
-    }
+            return m_paramDoc->findAttachment(a.id);
     return nullptr;
 }
 
@@ -261,6 +299,12 @@ void ToolRotate::toggleAnchor()
     if (m_state != RotateState::Ready || !m_paramDoc) return;
     const cad::param::Block* blk = m_paramDoc->findBlock(m_blockId);
     if (!blk || blk->segments.empty()) return;
+
+    // 已连接线段禁止切换锚心（用户拍板 2026-08）: 切换会改变跟随附着点，
+    // 连接语义复杂化甚至断开——只在属性面板显式断开跟随后可切。
+    if (attachmentAtPoint(blk->segments.front().startPointId)
+        || attachmentAtPoint(blk->segments.front().endPointId))
+        return;
 
     commitCurrent();                 // commit any uncommitted HUD edit first
     m_anchorIsEnd = !m_anchorIsEnd;
@@ -348,10 +392,8 @@ QUuid ToolRotate::anchorPointAt(const cad::geo::Vec2& worldPos) const
 void ToolRotate::releaseFollowerIfAnchorMoved()
 {
     if (!m_paramDoc || m_releaseAttId.isNull() || m_releaseAttHeld) return;
-    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-    for (auto& a : atts) {
-        if (a.id == m_releaseAttId) { m_releaseAttBackup = a; break; }
-    }
+    if (auto* a = m_paramDoc->findAttachment(m_releaseAttId))
+        m_releaseAttBackup = *a;
     m_paramDoc->removeAttachment(m_releaseAttId);
     m_releaseAttHeld = true;
     m_connected = false;   // the line is now independent
@@ -405,170 +447,6 @@ void ToolRotate::clearTarget()
 // Rotate-copy gesture (Ctrl+drag 旋转复制)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void ToolRotate::beginRotateCopy(const cad::geo::Vec2& pos)
-{
-    if (m_state != RotateState::Ready || !m_paramDoc) return;
-
-    const cad::param::Block* orig = m_paramDoc->findBlock(m_blockId);
-    if (!orig || orig->segments.empty()) return;
-
-    // 挂接点 = 当前锚心点（起点或终点，X/点击可切换）。
-    // 克隆挂回原块，跟随角度 = 相对原线当前朝向的角度。
-    m_pivotPointId = m_anchorPointId;
-    // 参考线段 = pivot 点的出口线段（跟随角度 0° = 沿原线继续直行）。
-    m_leaderSegmentId = orig->exitSegmentAtPoint(m_pivotPointId);
-    if (m_leaderSegmentId.isNull() && !orig->segments.empty())
-        m_leaderSegmentId = orig->segments.front().id;
-
-    // Clone the single target block: outside attachments/groups are dropped,
-    // so the clone starts as an independent copy overlapping the original.
-    m_copyResult = cad::param::duplicateBlocks(*m_paramDoc, {m_blockId});
-    if (m_copyResult.isEmpty()) return;
-    const cad::param::Block& clone = m_copyResult.blocks.front();
-    m_cloneBlockId = clone.id;
-
-    // Locate the clone-side counterpart of the pivot point (duplicateBlocks
-    // preserves point order — the deep copy keeps every parametric field).
-    m_clonePivotPointId = {};
-    for (size_t i = 0; i < orig->points.size(); ++i) {
-        if (orig->points[i].id == m_pivotPointId) {
-            if (i < clone.points.size())
-                m_clonePivotPointId = clone.points[i].id;
-            break;
-        }
-    }
-    if (m_clonePivotPointId.isNull()) { m_copyResult = {}; return; }
-
-    // The clone must NOT inherit the original's endpoint-aim constraint — the
-    // resolver would pull the copy straight back to the target point on every
-    // frame (旋转复制 = 副本相对原线自由转动, 用户拍板).
-    m_copyResult.blocks.front().endTargetBlockId = QUuid();
-    m_copyResult.blocks.front().endTargetPointId = QUuid();
-    m_copyResult.blocks.front().endTargetOffset = 0.0;
-    m_copyResult.blocks.front().endTargetOffsetFormula.clear();
-
-    // Live preview (no undo): linked vars → clone → clone→original attachment.
-    // Follower angle 180° puts the clone EXACTLY on the original: the
-    // leader's exit direction at the anchor point extends BACKWARD for the
-    // START point (模型语义: 起点处“继续直行”= 反向) and FORWARD for the END
-    // point — 180° folds both back onto the original's own direction. The
-    // drag then adds a RELATIVE angle on top (0 = overlap).
-    for (const auto& lv : m_copyResult.newLinked)
-        m_paramDoc->addLinked(lv);
-    m_paramDoc->addBlock(clone);
-    cad::param::Attachment cloneAtt;
-    cloneAtt.fromBlockId = m_cloneBlockId;
-    cloneAtt.fromPointId = m_clonePivotPointId;
-    cloneAtt.toBlockId = m_blockId;
-    cloneAtt.toPointId = m_pivotPointId;
-    cloneAtt.toSegmentId = m_leaderSegmentId;
-    cloneAtt.followerAngle = 180.0;   // relative 0° = overlap the original
-    cloneAtt.rotationMode = cad::param::RotationMode::Angle;
-    m_cloneAttId = cloneAtt.id;
-    if (!m_paramDoc->addAttachment(cloneAtt)) {
-        // Rejected (should not happen for same-layer original→clone): drop.
-        removeCopyPreview();
-        m_copyResult = {};
-        m_cloneBlockId = QUuid();
-        m_cloneAttId = QUuid();
-        return;
-    }
-
-    // Drag base: the clone starts at 0° relative to the ORIGINAL's current
-    // world direction (captured now, so later original rotations keep the
-    // copy's relative angle). m_refWorldRad is left untouched — the copy
-    // branches (endpointAtAngle / gizmo) read m_copyRefWorldRad directly.
-    // NOTE: for the end anchor the DISPLAY angle is line direction + 180°,
-    // but the copy reference must be the raw line direction itself.
-    double refLineDeg = currentAngleDeg();
-    if (!m_connected && m_anchorIsEnd) refLineDeg -= 180.0;
-    m_copyRefWorldRad = m_refWorldRad + refLineDeg * M_PI / 180.0;
-    const cad::geo::Vec2 d = pos - m_pivot;
-    m_dragCursorAngle0 = std::atan2(d.y, d.x);
-    m_dragAngle0 = 0.0;   // relative angle starts at 0 (clone on original)
-
-    m_copyMode = true;
-    m_state = RotateState::Rotating;
-    if (m_hud) m_hud->setMode(cad::param::RotationMode::Angle);
-    refreshHudText();
-    if (m_scene) m_scene->refreshAllBlockItems();
-}
-
-void ToolRotate::commitRotateCopy()
-{
-    if (m_state != RotateState::Rotating || !m_copyMode) return;
-
-    // Read the final clone-attachment state (angle and optional formula).
-    double finalAngle = 0.0;
-    QString finalFormula;
-    const auto& atts = m_paramDoc->attachments();
-    for (const auto& a : atts) {
-        if (a.id == m_cloneAttId) {
-            finalAngle = a.followerAngle;
-            finalFormula = a.followerAngleFormula;
-            break;
-        }
-    }
-    // Normalise to (-180, 180] so a full 360° swing back counts as "no
-    // rotation" (转回原位 = 不复制). Relative 0° = stored 180°.
-    double n = std::fmod(finalAngle - 180.0, 360.0);
-    if (n < 0.0) n += 360.0;
-    if (n > 180.0) n -= 360.0;
-    const bool zeroAngle = std::abs(n) < 1e-6 && finalFormula.isEmpty();
-
-    removeCopyPreview();   // drop the live clone (original untouched)
-
-    if (zeroAngle || !m_undoStack) {
-        finishRotateCopy();   // discard: back to Ready, nothing created
-        updateGizmo();
-        refreshHudText();
-        return;
-    }
-
-    // Restore-then-replay: ONE undo step re-creates clone + attachment with
-    // the final relative angle.
-    m_undoStack->push(new cad::cmd::RotateCopyCommand(
-        m_paramDoc, std::move(m_copyResult), m_blockId, m_pivotPointId,
-        m_clonePivotPointId, m_leaderSegmentId, finalAngle, finalFormula));
-    finishRotateCopy();
-    updateGizmo();
-    refreshHudText();
-}
-
-void ToolRotate::cancelRotateCopy()
-{
-    removeCopyPreview();
-    finishRotateCopy();
-    clearAimCandidate();
-    updateGizmo();
-    refreshHudText();
-}
-
-void ToolRotate::removeCopyPreview()
-{
-    if (!m_paramDoc) return;
-    if (!m_cloneAttId.isNull())
-        m_paramDoc->removeAttachment(m_cloneAttId);
-    if (!m_cloneBlockId.isNull())
-        m_paramDoc->removeBlock(m_cloneBlockId);
-    for (const auto& lv : m_copyResult.newLinked)
-        m_paramDoc->removeLinked(lv.id);
-    if (m_scene) m_scene->refreshAllBlockItems();
-}
-
-void ToolRotate::finishRotateCopy()
-{
-    m_copyResult = {};
-    m_cloneBlockId = QUuid();
-    m_cloneAttId = QUuid();
-    m_clonePivotPointId = QUuid();
-    m_copyMode = false;
-    m_state = RotateState::Ready;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Rotation gesture
-// ═══════════════════════════════════════════════════════════════════════════════
 
 void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
 {
@@ -598,27 +476,24 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
     // 旋转 = 放弃公式约束). The formula's current value is baked into a
     // plain number (geometry unchanged), then rotation proceeds freely.
     if (isAngleLocked() && m_paramDoc) {
-        auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-        for (auto& a : atts) {
-            if (a.id != m_attId) continue;
+        if (auto* a = m_paramDoc->findAttachment(m_attId)) {
             const double cur = currentAngleDeg();
             if (m_rotationMode == cad::param::RotationMode::ArcLength) {
                 // Bake the CURRENT arc value (formula evaluated) — never
                 // back-derive from the normalized display angle, which would
                 // collapse multi-turn arcs to 0 (用户回归 2026-08).
-                double arcMm = a.arcLength;
-                if (!a.arcLengthFormula.isEmpty()) {
+                double arcMm = a->arcLength;
+                if (!a->arcLengthFormula.isEmpty()) {
                     auto r = cad::param::ConditionEngine::evaluate(
-                        a.arcLengthFormula, m_paramDoc->parameters(), {});
+                        a->arcLengthFormula, m_paramDoc->parameters(), {});
                     if (r.ok) arcMm = geo::Units::cmToMm(r.value);
                 }
-                a.arcLength = arcMm;
-                a.arcLengthFormula.clear();
+                a->arcLength = arcMm;
+                a->arcLengthFormula.clear();
             } else {
-                a.followerAngle = cur;
-                a.followerAngleFormula.clear();
+                a->followerAngle = cur;
+                a->followerAngleFormula.clear();
             }
-            break;
         }
         // NOTE: m_baseFormula/m_baseArcFormula stay UNTOUCHED — they are the
         // undo-restore target (撤销恢复公式), and the commit diff needs the
@@ -632,6 +507,25 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
     m_dragAngle0 = currentAngleDeg();
 }
 
+// ── 角度显示约定（2026-08 v3 定稿，用户拍板）────────────────────────────
+// 存储域 α ∈ [0, 360°)（Resolver/序列化零改动）；显示域分两种：
+//  • 连接线（跟随角度/弧长）= 带符号折角 [−180°, +180°]：折叠 0°、
+//    垂直 ±90°、开平 ±180°，符号 = 折向（α ≤ 180° → +α，否则 α−360°）。
+//  • 自由线绝对角度 / 复制相对角度 = 0~360° 逆时针为正（行业默认，
+//    AutoCAD 同）。
+static double signedFoldDeg(double alphaDeg)
+{
+    double a = std::fmod(alphaDeg, 360.0);
+    if (a < 0.0) a += 360.0;
+    return a > 180.0 ? a - 360.0 : a;
+}
+static double alphaFromSignedFold(double foldDeg)
+{
+    double a = std::fmod(foldDeg, 360.0);
+    if (a < 0.0) a += 360.0;
+    return a;
+}
+
 void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
 {
     if (m_state != RotateState::Rotating) return;
@@ -641,8 +535,27 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
     // Normalise to (-π, π] so crossing the −X axis never causes a jump.
     delta = cad::geo::normalizeRad(delta);
 
-    double target = m_dragAngle0 + cad::geo::radToDeg(delta);
-    if (snap) target = std::round(target / 15.0) * 15.0;
+    // 拖动约定（2026-08 v3 定稿）：全模式 WYSIWYG（线跟光标）。
+    // 复制：相对角（逆时针为正）→ target = 起始 + 增量（复制中 connected 原线
+    // 仍挂接，必须先判 copy 再判 connected）。
+    // 自由线：显示 = 世界角（逆时针为正）→ target = 起始 + 增量。
+    // 连接线：存储 α = 闭合基准角（世界角 = refWorld + π − α），线跟光标 →
+    // α 随光标 CCW 减小；显示 = 带符号折角（表盘式：从折叠位逆时针拖折角
+    // 增大 0→±180，过开平后回落另一侧）。跨 ±180° 缝先归一再包符号。
+    double target;
+    if (m_copyGesture->active()) {
+        target = m_dragAngle0 + cad::geo::radToDeg(delta);
+        if (snap) target = std::round(target / 15.0) * 15.0;
+    } else if (m_connected) {
+        const double alpha0 = alphaFromSignedFold(m_dragAngle0);
+        double alpha = std::fmod(alpha0 - cad::geo::radToDeg(delta), 360.0);
+        if (alpha < 0.0) alpha += 360.0;
+        if (snap) alpha = std::round(alpha / 15.0) * 15.0;
+        target = signedFoldDeg(alpha);
+    } else {
+        target = m_dragAngle0 + cad::geo::radToDeg(delta);
+        if (snap) target = std::round(target / 15.0) * 15.0;
+    }
 
     // Endpoint aim snap: if Shift is NOT held, try to align the rotating
     // endpoint's direction with a nearby point.
@@ -660,51 +573,38 @@ void ToolRotate::applyAngleDeg(double deg)
     // layer group (the aux layer stays frozen unless it is the one rotated).
     if (const auto* scopeBlk = m_paramDoc->findBlock(m_blockId))
         m_paramDoc->invalidateLayer(scopeBlk->layer);
-    if (m_copyMode) {
+    if (m_copyGesture && m_copyGesture->active()) {
         // Rotate-copy: deg is the angle RELATIVE to the original; the stored
         // follower angle adds the 180° start-point exit-direction offset
         // (relative 0° = overlap). Formula cleared by direct manipulation.
-        auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-        for (auto& a : atts) {
-            if (a.id == m_cloneAttId) {
-                a.followerAngle = deg + 180.0;
-                a.followerAngleFormula.clear();
-                break;
-            }
-        }
-        m_paramDoc->resolveAll();
-        if (m_scene) m_scene->refreshAllBlockItems();
+        m_copyGesture->applyAngle(deg);
         return;
     }
     if (m_connected) {
-        auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-        for (auto& a : atts) {
-            if (a.id == m_attId) {
-                if (m_rotationMode == cad::param::RotationMode::ArcLength) {
-                // Convert angle → arc length and store in arc fields. Arc is
-                // measured from the REVERSE direction: 弧长 0 = 角度 180°.
+        if (auto* a = m_paramDoc->findAttachment(m_attId)) {
+            // 输入 = 带符号折角（−180~+180，含折向）→ 存储 α ∈ [0, 360°)。
+            const double alpha = alphaFromSignedFold(deg);
+            if (m_rotationMode == cad::param::RotationMode::ArcLength) {
+                // 弧长 = 线夹角恒等映射（2026-08 定稿）：弧长 0 = 0° 折叠、
+                // πr = 180° 开平，与 Resolver 一致，不再反转。
                 const double radius = segmentRadius();
-                double degFromReverse = std::fmod(deg - 180.0, 360.0);
-                if (degFromReverse < 0.0) degFromReverse += 360.0;
-                a.arcLength = degFromReverse * M_PI / 180.0 * radius;
-                a.arcLengthFormula.clear();
-                a.rotationMode = cad::param::RotationMode::ArcLength;
-                } else {
-                    a.followerAngle = deg;
-                    a.followerAngleFormula.clear();   // direct manipulation overrides formula
-                }
-                break;
+                a->arcLength = alpha * M_PI / 180.0 * radius;
+                a->arcLengthFormula.clear();
+                a->rotationMode = cad::param::RotationMode::ArcLength;
+            } else {
+                a->followerAngle = alpha;
+                a->followerAngleFormula.clear();   // direct manipulation overrides formula
             }
         }
     } else {
         cad::param::Block* blk = m_paramDoc->findBlock(m_blockId);
         if (!blk) return;
-        // Display angle is measured FROM the anchor toward the line
-        // (终点锚心 = 线方向+180°), so the stored rotation drops the 180°
-        // end-anchor offset: rotation = deg − anchorOffset − localDir;
-        // keep the ANCHOR point pinned to the pivot (起点或终点锚心).
+        // 自由线显示 = 绝对角度（0~360°，逆时针为正，行业默认；2026-08 v3
+        // 定稿）。起点锚心 = 线方向、终点锚心 = 线方向+180°；存储旋转角 =
+        // 显示角 − 锚偏移 − localDir；保持 ANCHOR 点钉在 pivot。
         const double anchorOffsetRad = m_anchorIsEnd ? M_PI : 0.0;
-        const double newRot = deg * M_PI / 180.0 - anchorOffsetRad - m_localDir;
+        const double newRot = deg * M_PI / 180.0
+                              - anchorOffsetRad - m_localDir;
         blk->transform.rotation = newRot;
         blk->transform.origin = m_pivot - m_anchorLocal.rotated(newRot);
     }
@@ -718,13 +618,9 @@ void ToolRotate::applyModeValue(double value)
         // Arc-length input stores the arc DIRECTLY (never round-trips through
         // the normalized angle, which would collapse multi-turn arcs to 0;
         // 用户回归 2026-08). Formula is cleared by direct manipulation.
-        auto& atts = const_cast<std::vector<cad::param::Attachment>&>(
-            m_paramDoc->attachments());
-        for (auto& a : atts) {
-            if (a.id != m_attId) continue;
-            a.arcLength = geo::Units::cmToMm(value);
-            a.arcLengthFormula.clear();
-            break;
+        if (auto* a = m_paramDoc->findAttachment(m_attId)) {
+            a->arcLength = geo::Units::cmToMm(value);
+            a->arcLengthFormula.clear();
         }
         m_paramDoc->resolveAll();
         if (m_scene) m_scene->refreshAllBlockItems();
@@ -749,8 +645,9 @@ double ToolRotate::segmentRadius() const
 double ToolRotate::currentModeValue() const
 {
     if (m_rotationMode == cad::param::RotationMode::ArcLength && m_connected) {
-        // Read the arc directly — never back-derive it from the NORMALIZED
-        // display angle (multi-turn arcs would collapse to 0; 用户回归 2026-08).
+        // 显示 = 带符号折角弧长（2026-08 v3 定稿）：先按恒等映射得 α
+        // （多圈折叠回落到 0° 侧），包符号后换算弧长 cm。存储读原值
+        // （公式实时求值），不做显示域回算 —— 防多圈爆表。
         const auto& atts = m_paramDoc ? m_paramDoc->attachments()
                                       : std::vector<cad::param::Attachment>{};
         for (const auto& a : atts) {
@@ -761,7 +658,11 @@ double ToolRotate::currentModeValue() const
                     a.arcLengthFormula, m_paramDoc->parameters(), {});
                 if (r.ok) arcMm = geo::Units::cmToMm(r.value);
             }
-            return geo::Units::mmToCm(arcMm);
+            const double radius = segmentRadius();
+            const double alphaDeg = (radius > 1e-9)
+                ? (arcMm / radius) * 180.0 / M_PI : 0.0;
+            const double foldDeg = signedFoldDeg(alphaDeg);
+            return foldDeg * M_PI / 180.0 * radius * 0.1;   // mm → cm
         }
         return 0.0;
     }
@@ -796,9 +697,7 @@ void ToolRotate::commitCurrent()
     if (!m_paramDoc || !m_undoStack) return;
 
     if (m_connected) {
-        auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-        cad::param::Attachment* att = nullptr;
-        for (auto& a : atts) { if (a.id == m_attId) { att = &a; break; } }
+        cad::param::Attachment* att = m_paramDoc->findAttachment(m_attId);
         if (!att) return;
 
         // Snapshot current state.
@@ -850,7 +749,7 @@ void ToolRotate::commitCurrent()
         // A released follower link is restored here so the command's redo()
         // can re-release it — ONE undo step covers 解挂接 + 旋转 together.
         if (m_releaseAttHeld && !m_releaseAttId.isNull())
-            m_paramDoc->addAttachment(m_releaseAttBackup);
+            m_paramDoc->addAttachmentRaw(m_releaseAttBackup);  // verbatim (keep snapshot isLocked)
         m_undoStack->push(new cad::cmd::RotateBlockCommand(
             m_paramDoc, m_blockId, m_baseTf, curTf,
             m_baseEndTargetBlock, m_baseEndTargetPoint,
@@ -872,16 +771,12 @@ void ToolRotate::restoreBase()
 {
     if (!m_paramDoc) return;
     if (m_connected) {
-        auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-        for (auto& a : atts) {
-            if (a.id == m_attId) {
-                a.followerAngle = m_baseAngle;
-                a.followerAngleFormula = m_baseFormula;
-                a.rotationMode = m_rotationMode;
-                a.arcLength = m_baseArcLength;
-                a.arcLengthFormula = m_baseArcFormula;
-                break;
-            }
+        if (auto* a = m_paramDoc->findAttachment(m_attId)) {
+            a->followerAngle = m_baseAngle;
+            a->followerAngleFormula = m_baseFormula;
+            a->rotationMode = m_rotationMode;
+            a->arcLength = m_baseArcLength;
+            a->arcLengthFormula = m_baseArcFormula;
         }
     } else {
         if (auto* blk = m_paramDoc->findBlock(m_blockId)) {
@@ -894,7 +789,7 @@ void ToolRotate::restoreBase()
     // 旋转 = 放弃跟随: undo the release on Esc / empty HUD (nothing was
     // committed, so the follower link comes back).
     if (m_releaseAttHeld && !m_releaseAttId.isNull()) {
-        m_paramDoc->addAttachment(m_releaseAttBackup);
+        m_paramDoc->addAttachmentRaw(m_releaseAttBackup);  // verbatim (keep snapshot isLocked)
         m_releaseAttId = QUuid();
         m_releaseAttHeld = false;
     }
@@ -906,16 +801,8 @@ double ToolRotate::currentAngleDeg() const
 {
     if (!m_paramDoc) return 0.0;
 
-    if (m_copyMode) {
-        // Rotate-copy: the clone's angle RELATIVE to the original (stored
-        // follower angle minus the 180° start-point exit offset).
-        const auto& atts = m_paramDoc->attachments();
-        for (const auto& a : atts) {
-            if (a.id != m_cloneAttId) continue;
-            return a.followerAngle - 180.0;
-        }
-        return 0.0;
-    }
+    if (m_copyGesture && m_copyGesture->active())
+        return m_copyGesture->currentRelativeAngle();
 
     if (m_connected) {
         const auto& atts = m_paramDoc->attachments();
@@ -923,9 +810,9 @@ double ToolRotate::currentAngleDeg() const
             if (a.id != m_attId) continue;
             if (a.rotationMode == cad::param::RotationMode::ArcLength) {
                 // Arc-length mode: derive the effective angle from the arc.
-                // Arc is measured from the REVERSE direction: 弧长 0 = 角度 180°.
-                // Normalized to [0, 360°) so multi-turn arcs never display
-                // absurd angles (用户报告: 400°+ 爆表回归 2026-08).
+                // 弧长 = 线夹角恒等映射（2026-08 定稿）：弧长 0 = 0° 折叠、
+                // πr = 180° 开平，与 Resolver 一致，不再反转。显示 = 带符号
+                // 折角（v3）：α 归一化 [0, 360°) 防多圈爆表后包符号。
                 double arcMm = a.arcLength;
                 if (!a.arcLengthFormula.isEmpty()) {
                     auto r = cad::param::ConditionEngine::evaluate(
@@ -934,33 +821,24 @@ double ToolRotate::currentAngleDeg() const
                 }
                 const double radius = segmentRadius();
                 double deg = (radius > 1e-9)
-                    ? 180.0 + (arcMm / radius) * 180.0 / M_PI : 180.0;
-                deg = std::fmod(deg, 360.0);
-                if (deg < 0.0) deg += 360.0;
-                return deg;
+                    ? (arcMm / radius) * 180.0 / M_PI : 0.0;
+                return signedFoldDeg(deg);
             }
             if (!a.followerAngleFormula.isEmpty()) {
                 auto r = cad::param::ConditionEngine::evaluate(
                     a.followerAngleFormula, m_paramDoc->parameters(), {});
-                if (r.ok) {
-                    double v = std::fmod(r.value, 360.0);
-                    if (v < 0.0) v += 360.0;
-                    return v;
-                }
+                if (r.ok) return signedFoldDeg(r.value);
             }
-            // Normalize the display to [0, 360°) (存储保持原值; 显示层统一
-            // 不爆表 —— 用户报告 400°+ 回归 2026-08).
-            double deg = std::fmod(a.followerAngle, 360.0);
-            if (deg < 0.0) deg += 360.0;
-            return deg;
+            // 存储 α ∈ [0, 360°) → 显示带符号折角（2026-08 v3 定稿）。
+            return signedFoldDeg(a.followerAngle);
         }
         return 0.0;
     }
 
-    // Free: display angle = direction FROM the anchor toward the line
-    // (起点锚心: 线的世界方向; 终点锚心: 终点→起点方向 = 线方向+180°).
-    // Unified semantics: the line always “points at the cursor”, so dragging
-    // feels identical with either anchor (线跟随光标).
+    // Free: 绝对角度 = 世界角，逆时针为正（0° = 水平向右，行业默认，
+    // 2026-08 v3 定稿）。起点锚心 = 线的世界方向；终点锚心 = 终点→起点
+    // 方向 = 线方向+180°。统一语义：线总是“指向光标”，任一锚心拖拽
+    // 手感一致（线跟随光标）。
     const cad::param::Block* blk = m_paramDoc->findBlock(m_blockId);
     if (!blk || blk->segments.empty()) return 0.0;
     const cad::param::Segment& seg = blk->segments.front();
@@ -971,6 +849,8 @@ double ToolRotate::currentAngleDeg() const
     const cad::geo::Vec2 w2 = blk->transform.toWorld(ep->resolvedPos);
     double deg = (w2 - w1).angle() * 180.0 / M_PI;
     if (m_anchorIsEnd) deg += 180.0;
+    deg = std::fmod(deg, 360.0);
+    if (deg < 0.0) deg += 360.0;
     return deg;
 }
 
@@ -978,7 +858,7 @@ bool ToolRotate::isAngleLocked() const
 {
     // A rotate-copy clone carries no committed formula (unless the user typed
     // one into the HUD mid-gesture) — never lock the copy gesture.
-    if (m_copyMode) return false;
+    if (m_copyGesture && m_copyGesture->active()) return false;
     // A follower angle/arc driven by a formula/variable is locked against
     // free-hand editing. Based on the committed base formula so transient HUD
     // edits never flip the lock mid-session. Free lines are never locked.
@@ -990,35 +870,46 @@ bool ToolRotate::isAngleLocked() const
 
 void ToolRotate::onHudModeChanged(cad::param::RotationMode newMode)
 {
-    if (m_copyMode) {
+    if (m_copyGesture && m_copyGesture->active()) {
         // Rotate-copy is always angle semantics (relative angle) — a mode
         // switch mid-gesture is ignored and the HUD snaps back to Angle.
         if (m_hud) m_hud->setMode(cad::param::RotationMode::Angle);
         return;
     }
     if (!m_paramDoc || !m_connected) return;
-    // Geometry-preserving switch: convert current angle ↔ arc length.
-    const double deg = currentAngleDeg();
-    const double radius = segmentRadius();
-
-    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(m_paramDoc->attachments());
-    for (auto& a : atts) {
+    // 公式驱动（角度/弧长表达式）：模式切换只是显示单位变化，绝不换算
+    // 烘焙公式——表达式必须原样保留（用户要求）。公式存在时拒绝切换。
+    for (const auto& a : m_paramDoc->attachments()) {
         if (a.id != m_attId) continue;
-        if (newMode == cad::param::RotationMode::ArcLength) {
-            // Angle → ArcLength: preserve geometry. Arc is measured from the
-            // REVERSE direction (弧长 0 = 角度 180°), normalized to [0, 360°).
-            a.rotationMode = cad::param::RotationMode::ArcLength;
-            double degFromReverse = std::fmod(deg - 180.0, 360.0);
-            if (degFromReverse < 0.0) degFromReverse += 360.0;
-            a.arcLength = degFromReverse * M_PI / 180.0 * radius;
-            a.arcLengthFormula.clear();
-        } else {
-            // ArcLength → Angle: preserve geometry.
-            a.rotationMode = cad::param::RotationMode::Angle;
-            a.followerAngle = deg;
-            a.followerAngleFormula.clear();
+        const bool hasFormula =
+            (m_rotationMode == cad::param::RotationMode::ArcLength)
+                ? !a.arcLengthFormula.isEmpty()
+                : !a.followerAngleFormula.isEmpty();
+        if (hasFormula && newMode != m_rotationMode) {
+            if (m_hud) m_hud->setMode(m_rotationMode);   // 弹回原模式
+            return;
         }
         break;
+    }
+    // Geometry-preserving switch: convert current angle ↔ arc length.
+    // 换算必须走存储域 α（显示 = 带符号折角，2026-08 v3 定稿）——否则
+    // α > 180° 时会把负数折角烘焙进存储，几何静默翻转。
+    const double deg = alphaFromSignedFold(currentAngleDeg());
+    const double radius = segmentRadius();
+
+    if (auto* a = m_paramDoc->findAttachment(m_attId)) {
+        if (newMode == cad::param::RotationMode::ArcLength) {
+            // Angle → ArcLength: preserve geometry. 弧长 = 线夹角恒等映射
+            // （2026-08 定稿）：弧长角 = 显示角，不再反转。归一化 [0, 360°)。
+            a->rotationMode = cad::param::RotationMode::ArcLength;
+            a->arcLength = std::fmod(deg, 360.0) * M_PI / 180.0 * radius;
+            a->arcLengthFormula.clear();
+        } else {
+            // ArcLength → Angle: preserve geometry.
+            a->rotationMode = cad::param::RotationMode::Angle;
+            a->followerAngle = deg;
+            a->followerAngleFormula.clear();
+        }
     }
     m_rotationMode = newMode;
     m_paramDoc->resolveAll();
@@ -1082,15 +973,16 @@ void ToolRotate::refreshHudText()
     // 绝对角度 / 相对角度): 跟随线 = 跟随角度/弧长(默认); 自由线 = 绝对角度;
     // 旋转复制 = 相对角度。setMode 只在模式切换时刷新标签，锚心切换
     // (Connected↔Free) 不切模式，所以这里每帧显式同步。
-    if (m_copyMode)
-        m_hud->setCaption(QString::fromUtf8("相对角度"));
+    if (m_copyGesture && m_copyGesture->active())
+        m_hud->setCaption(QString::fromUtf8("旋转角度"));  // 绕锚心角, 0° = 重叠
     else if (!m_connected)
         m_hud->setCaption(QString::fromUtf8("绝对角度"));
     else
         m_hud->setCaption(QString());   // 默认: 跟随角度 / 弧长
-    if (m_copyMode) {
-        // Rotate-copy: live relative angle (degrees).
-        m_hud->edit()->setText(formatDeg(currentAngleDeg()));
+    if (m_copyGesture && m_copyGesture->active()) {
+        // Rotate-copy: pivot-relative angle (方案 B, 用户拍板 2026-08) —
+        // 0° = 副本与父线重叠, 拖多少度 = 转多少度, 起点/终点锚心一致。
+        m_hud->edit()->setText(formatDeg(m_copyGesture->currentRelativeAngle()));
     } else if (m_rotationMode == cad::param::RotationMode::ArcLength && m_connected) {
         // Arc-length mode: show the value in cm (formula-driven values are
         // evaluated live — the HUD always shows a plain editable number).
@@ -1105,11 +997,14 @@ void ToolRotate::refreshHudText()
 void ToolRotate::onHudTextChanged(const QString& text)
 {
     if (!m_paramDoc) return;
+    // 旋转复制提交/取消后 HUD 已隐藏（副本编辑语义终结）；隐藏期间忽略
+    // 任何输入——防止输入框目标悄然切回原线角度造成“幽灵编辑”。
+    if (!m_hud || !m_hud->isVisible()) return;
     const QString t = text.trimmed();
 
     if (t.isEmpty()) {
-        if (m_copyMode) {
-            applyAngleDeg(0.0);   // empty = revert the clone onto the original
+        if (m_copyGesture && m_copyGesture->active()) {
+            m_copyGesture->applyAngle(0.0);   // empty = revert the clone onto the original
         } else {
             restoreBase();        // empty = revert to the session base
         }
@@ -1118,43 +1013,31 @@ void ToolRotate::onHudTextChanged(const QString& text)
         bool isNumber = false;
         const double numVal = t.toDouble(&isNumber);
         if (isNumber) {
-            // A plain number always applies: if the angle was formula-driven,
-            // applyAngleDeg bakes the formula away (用户拍板: 输入 = 放弃公式).
-            applyModeValue(numVal);
+            // Rotate-copy: HUD value IS the pivot-relative angle (方案 B),
+            // applied directly (副本自动去公式同规则).
+            if (m_copyGesture && m_copyGesture->active())
+                m_copyGesture->applyAngle(numVal);
+            else
+                applyModeValue(numVal);
             m_hudValid = true;
         } else {
             auto r = cad::param::ConditionEngine::evaluate(
                 t, m_paramDoc->parameters(), {});
             if (r.ok) {
-                if (m_copyMode) {
+                if (m_copyGesture && m_copyGesture->active()) {
                     // Formula typed into the copy HUD: the clone never keeps
                     // a formula (用户拍板: 副本自动去公式) — apply the value
-                    // as a relative angle instead.
-                    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(
-                        m_paramDoc->attachments());
-                    for (auto& a : atts) {
-                        if (a.id == m_cloneAttId) {
-                            a.followerAngle = r.value + 180.0;
-                            a.followerAngleFormula.clear();
-                            break;
-                        }
-                    }
-                    m_paramDoc->resolveAll();
-                    if (m_scene) m_scene->refreshAllBlockItems();
+                    // as a pivot-relative angle.
+                    m_copyGesture->applyFormulaValue(r.value);
                 } else if (m_connected) {
                     // Persist the formula (the resolver lets the formula win).
-                    auto& atts = const_cast<std::vector<cad::param::Attachment>&>(
-                        m_paramDoc->attachments());
-                    for (auto& a : atts) {
-                        if (a.id == m_attId) {
-                            if (m_rotationMode == cad::param::RotationMode::ArcLength) {
-                                a.arcLength = geo::Units::cmToMm(r.value);
-                                a.arcLengthFormula = t;
-                            } else {
-                                a.followerAngle = r.value;
-                                a.followerAngleFormula = t;
-                            }
-                            break;
+                    if (auto* a = m_paramDoc->findAttachment(m_attId)) {
+                        if (m_rotationMode == cad::param::RotationMode::ArcLength) {
+                            a->arcLength = geo::Units::cmToMm(r.value);
+                            a->arcLengthFormula = t;
+                        } else {
+                            a->followerAngle = r.value;
+                            a->followerAngleFormula = t;
                         }
                     }
                     m_paramDoc->resolveAll();
@@ -1176,14 +1059,14 @@ void ToolRotate::onHudTextChanged(const QString& text)
 void ToolRotate::onHudCommit()
 {
     if (!m_hudValid) return;   // ignore Enter on an invalid formula
-    if (m_copyMode) commitRotateCopy();
-    else            commitCurrent();
+    if (m_copyGesture && m_copyGesture->active()) m_copyGesture->commit();
+    else                                          commitCurrent();
 }
 
 void ToolRotate::onHudCancel()
 {
-    if (m_copyMode) {
-        cancelRotateCopy();     // drop the preview clone, keep the target
+    if (m_copyGesture && m_copyGesture->active()) {
+        m_copyGesture->cancel();    // drop the preview clone, keep the target
     } else if (m_state == RotateState::Rotating) {
         cancelRotation();       // abort the drag, keep the target
     } else {
@@ -1213,13 +1096,19 @@ cad::geo::Vec2 ToolRotate::endpointAtAngle(double angleDeg) const
 {
     // World direction of the segment at the given mode-appropriate angle.
     double worldDirRad;
-    if (m_copyMode)
-        // Copy mode: angle is measured RELATIVE to the original's current
-        // direction (captured at copy start into m_copyRefWorldRad).
-        worldDirRad = m_copyRefWorldRad + angleDeg * M_PI / 180.0;
+    if (m_copyGesture && m_copyGesture->active())
+        // Copy mode: HUD 角度 = 相对角（0° = 重叠，逆时针为正，v3），
+        // 直接交给手势层换算世界方向。
+        worldDirRad = m_copyGesture->relToWorldRad(angleDeg);
     else if (m_connected)
-        worldDirRad = m_refWorldRad + angleDeg * M_PI / 180.0;
+        // 闭合基准（2026-08 定稿）：世界角 = refWorld + π − α（镜像
+        // 修正：旧代码 refWorld + α 只在 90° 时正确）。输入 = 带符号
+        // 折角，先回存储域 α（v3）。
+        worldDirRad = m_refWorldRad + M_PI
+                      - alphaFromSignedFold(angleDeg) * M_PI / 180.0;
     else
+        // Free: 显示角 = 远端方向（起点锚心 = 线方向，终点锚心 = 终点→
+        // 起点方向）；绝对角度逆时针为正（v3），无镜像。
         worldDirRad = angleDeg * M_PI / 180.0;
 
     // Segment length (local, constant during rotation): use the LONGEST
@@ -1278,15 +1167,19 @@ void ToolRotate::checkEndpointAimSnap(double& angleDeg)
             if (aim.lengthSquared() < 1e-12) continue;
             const double dirToP = std::atan2(aim.y, aim.x);
 
-            // Current world direction of the SEGMENT (line direction, NOT the
-            // display angle: end-anchor display carries a 180° offset).
+            // Current world direction of the rotating FREE END (the direction
+            // the far end points from the pivot — for both anchors this IS
+            // the display angle: 起点锚心 = 线方向, 终点锚心 = 线方向+180°；
+            // 旧代码终点锚心比较线方向导致永远不吸附).
             double worldDirRad;
-            if (m_copyMode)
-                worldDirRad = m_copyRefWorldRad + angleDeg * M_PI / 180.0;
+            if (m_copyGesture && m_copyGesture->active())
+                worldDirRad = m_copyGesture->relToWorldRad(angleDeg);
             else if (m_connected)
-                worldDirRad = m_refWorldRad + angleDeg * M_PI / 180.0;
+                // 闭合基准（2026-08 定稿）：世界角 = refWorld + π − α。
+                worldDirRad = m_refWorldRad + M_PI
+                              - alphaFromSignedFold(angleDeg) * M_PI / 180.0;
             else
-                worldDirRad = (angleDeg - (m_anchorIsEnd ? 180.0 : 0.0)) * M_PI / 180.0;
+                worldDirRad = angleDeg * M_PI / 180.0;
 
             double diff = dirToP - worldDirRad;
             while (diff >  M_PI) diff -= 2.0 * M_PI;
@@ -1306,16 +1199,23 @@ void ToolRotate::checkEndpointAimSnap(double& angleDeg)
         return;
     }
 
-    // Snap the angle to aim exactly at the candidate.
+    // Snap the angle so the free end aims exactly at the candidate.
     const cad::geo::Vec2 aim = bestPos - m_pivot;
     const double dirToP = std::atan2(aim.y, aim.x);
-    if (m_copyMode)
-        angleDeg = (dirToP - m_copyRefWorldRad) * 180.0 / M_PI;
-    else if (m_connected)
-        angleDeg = (dirToP - m_refWorldRad) * 180.0 / M_PI;
-    else
-        // Line direction = dirToP; end-anchor display adds the 180° offset.
-        angleDeg = dirToP * 180.0 / M_PI + (m_anchorIsEnd ? 180.0 : 0.0);
+    if (m_copyGesture && m_copyGesture->active()) {
+        double rel = m_copyGesture->worldRadToRel(dirToP);
+        rel = std::fmod(rel, 360.0);
+        if (rel < 0.0) rel += 360.0;
+        angleDeg = rel;
+    } else if (m_connected) {
+        // 闭合基准镜像（2026-08 定稿）：α = (refWorld + π − dirToP) 转角度，
+        // 显示 = 带符号折角（v3）。
+        angleDeg = signedFoldDeg((m_refWorldRad + M_PI - dirToP) * 180.0 / M_PI);
+    } else {
+        // Free: 显示 = 远端方向（绝对角度，逆时针为正，v3）。
+        angleDeg = std::fmod(dirToP * 180.0 / M_PI, 360.0);
+        if (angleDeg < 0.0) angleDeg += 360.0;
+    }
 
     m_aimBlockId = bestBlockId;
     m_aimPointId = bestPointId;
@@ -1345,108 +1245,80 @@ void ToolRotate::clearAimCandidate()
 
 void ToolRotate::buildGizmo()
 {
-    if (!m_scene) return;
-    removeGizmo();
+    if (m_gizmo)
+        m_gizmo->build(m_pivot, m_refWorldRad, currentZoom());
+}
 
-    const double zoom = currentZoom();
-    const QPointF c = cad::geo::Coord::toScene(m_pivot.x, m_pivot.y);
-
-    // Pivot ring (teal).
-    m_pivotRing = new QGraphicsEllipseItem();
-    QPen ringPen(QColor(38, 166, 154));
-    ringPen.setWidthF(2.0);
-    ringPen.setCosmetic(true);
-    m_pivotRing->setPen(ringPen);
-    m_pivotRing->setBrush(QColor(38, 166, 154, 40));
-    m_pivotRing->setZValue(9998);
-    const double r = 6.0 / zoom;
-    m_pivotRing->setRect(c.x() - r, c.y() - r, 2.0 * r, 2.0 * r);
-
-    // Reference dashed line along the reference direction (60 px).
-    m_refLine = new QGraphicsPathItem();
-    QPen refPen(QColor(120, 144, 156));
-    refPen.setWidthF(1.0);
-    refPen.setCosmetic(true);
-    refPen.setStyle(Qt::DashLine);
-    m_refLine->setPen(refPen);
-    m_refLine->setZValue(9997);
-    const double refLen = 60.0 / zoom;
-    QPainterPath refPath;
-    refPath.moveTo(c);
-    refPath.lineTo(c.x() + refLen * std::cos(m_refWorldRad),
-                   c.y() - refLen * std::sin(m_refWorldRad));  // scene is y-down
-    m_refLine->setPath(refPath);
-
-    // Angle arc (amber) — geometry refreshed by updateGizmo().
-    m_arc = new QGraphicsPathItem();
-    QPen arcPen(QColor(251, 140, 0));
-    arcPen.setWidthF(2.0);
-    arcPen.setCosmetic(true);
-    m_arc->setPen(arcPen);
-    m_arc->setZValue(9998);
-
-    // Angle label.
-    m_label = new QGraphicsSimpleTextItem();
-    m_label->setBrush(QColor(251, 140, 0));
-    m_label->setZValue(9999);
-
-    m_scene->addItem(m_pivotRing);
-    m_scene->addItem(m_refLine);
-    m_scene->addItem(m_arc);
-    m_scene->addItem(m_label);
+double ToolRotate::originalWorldRotDeg() const
+{
+    // 原线绕锚心的当前世界朝向（旋转复制基准：副本 0° = 与原线重叠）：
+    // 连接线 = refWorld + π − α（闭合基准，α 取 live 存储值）；自由线 =
+    // 首段世界方向，终点锚心 + 180°。
+    if (m_connected) {
+        double alpha = m_baseAngle;
+        if (m_paramDoc) {
+            if (const auto* a = m_paramDoc->findAttachment(m_attId))
+                alpha = a->followerAngle;
+        }
+        return (m_refWorldRad + M_PI - alpha * M_PI / 180.0) * 180.0 / M_PI;
+    }
+    double baseDeg = 0.0;
+    if (m_paramDoc) {
+        if (const auto* blk = m_paramDoc->findBlock(m_blockId);
+            blk && !blk->segments.empty()) {
+            const auto& seg = blk->segments.front();
+            const auto* sp = blk->findPoint(seg.startPointId);
+            const auto* ep = blk->findPoint(seg.endPointId);
+            if (sp && ep && sp->resolved && ep->resolved) {
+                const cad::geo::Vec2 wd =
+                    blk->transform.toWorld(ep->resolvedPos)
+                    - blk->transform.toWorld(sp->resolvedPos);
+                baseDeg = wd.angle() * 180.0 / M_PI;
+            }
+        }
+    }
+    if (m_anchorIsEnd) baseDeg += 180.0;
+    return baseDeg;
 }
 
 void ToolRotate::updateGizmo()
 {
-    if (!m_scene || !m_arc || !m_label) return;
-    const double zoom = currentZoom();
-    const QPointF c = cad::geo::Coord::toScene(m_pivot.x, m_pivot.y);
+    if (!m_gizmo) return;
     const double deg = currentAngleDeg();
-    const double endRad = (m_copyMode ? m_copyRefWorldRad : m_refWorldRad)
-                          + deg * M_PI / 180.0;
-
-    // Arc sweeping from the reference direction to the current angle.
-    const double arcR = 40.0 / zoom;
-    QPainterPath arcPath;
-    constexpr int kSamples = 40;
-    for (int i = 0; i <= kSamples; ++i) {
-        const double t = m_refWorldRad + (endRad - m_refWorldRad) * i / kSamples;
-        const QPointF p(c.x() + arcR * std::cos(t),
-                        c.y() - arcR * std::sin(t));           // scene is y-down
-        if (i == 0) arcPath.moveTo(p); else arcPath.lineTo(p);
-    }
-    m_arc->setPath(arcPath);
-
-    // The gizmo always shows the LIVE effective value — formula-driven
-    // angles evaluate their formula (用户拍板: HUD/gizmo 与可操作性一致).
-    QPen arcPen(QColor(251, 140, 0));
-    arcPen.setWidthF(2.0);
-    arcPen.setCosmetic(true);
-    m_arc->setPen(arcPen);
-
-    // Label just outside the arc's mid-angle.
-    const double midRad = m_refWorldRad + (endRad - m_refWorldRad) * 0.5;
-    const double labelR = arcR + 14.0 / zoom;
-    if (m_copyMode) {
-        m_label->setText(QStringLiteral("%1\xc2\xb0").arg(formatDeg(deg)));
-    } else if (m_rotationMode == cad::param::RotationMode::ArcLength && m_connected) {
-        m_label->setText(QStringLiteral("%1cm").arg(formatDeg(currentModeValue())));
+    // 黄弧永远画“真实夹角”（2026-08 用户拍板，可去掉黄弧上的角度文字）：
+    // 连接线 = 折线 → 直行延续方向（跨度 = 折角 α，含 α > 180° 的 CW 侧）；
+    // 自由线 = 0° → 显示角；复制 = 原线 → 克隆线（基准 = 原线世界方向，
+    // span 归一化到 (−180°, +180°] 取内弧）。
+    double dashRad = m_refWorldRad;
+    double arcStart;
+    double arcEnd;
+    if (m_copyGesture && m_copyGesture->active()) {
+        const double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
+        dashRad = origRad;                       // 灰虚线随原线重定位
+        arcStart = origRad;
+        arcEnd = m_copyGesture->currentWorldRad();
+        double span = arcEnd - arcStart;
+        while (span >  M_PI) span -= 2.0 * M_PI;
+        while (span < -M_PI) span += 2.0 * M_PI;
+        arcEnd = arcStart + span;                // 内弧
+    } else if (m_connected) {
+        const double aRad = alphaFromSignedFold(deg) * M_PI / 180.0;
+        arcStart = m_refWorldRad + M_PI - aRad;  // 折线方向
+        arcEnd = m_refWorldRad + M_PI;           // 直行延续方向
+        double span = arcEnd - arcStart;         // = ±α
+        while (span >  M_PI) span -= 2.0 * M_PI;
+        while (span < -M_PI) span += 2.0 * M_PI;
+        arcEnd = arcStart + span;                // α > 180° 取 CW 短侧
     } else {
-        m_label->setText(QStringLiteral("%1\xc2\xb0").arg(formatDeg(deg)));
+        arcStart = 0.0;
+        arcEnd = deg * M_PI / 180.0;
     }
-    m_label->setBrush(QColor(251, 140, 0));
-    m_label->setPos(c.x() + labelR * std::cos(midRad),
-                    c.y() - labelR * std::sin(midRad));
-    m_label->setScale(1.0 / zoom);   // constant screen size
+    m_gizmo->update(currentZoom(), dashRad, arcStart, arcEnd);
 }
 
 void ToolRotate::removeGizmo()
 {
-    if (!m_scene) return;
-    if (m_pivotRing) { m_scene->removeItem(m_pivotRing); delete m_pivotRing; m_pivotRing = nullptr; }
-    if (m_refLine)   { m_scene->removeItem(m_refLine);   delete m_refLine;   m_refLine = nullptr; }
-    if (m_arc)       { m_scene->removeItem(m_arc);       delete m_arc;       m_arc = nullptr; }
-    if (m_label)     { m_scene->removeItem(m_label);     delete m_label;     m_label = nullptr; }
+    if (m_gizmo) m_gizmo->remove();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

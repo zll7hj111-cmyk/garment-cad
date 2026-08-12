@@ -1,9 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 
-class QLabel;
-class QLineEdit;
+class ElaText;
+class ElaLineEdit;
 class QTimer;
 
 namespace cad::ui {
@@ -40,7 +40,8 @@ protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
-    void applyStyle();
+    /// QSS attribute-selector key for the chip variant.
+    [[nodiscard]] QString variantKey() const;
     void updateDisplay();
     void enterEdit();
     void commitEdit();
@@ -52,8 +53,8 @@ private:
     bool m_copyEnabled = true;
     bool m_placeholderStyled = false;   ///< label shows placeholder style (avoids per-frame setStyleSheet)
 
-    QLabel*    m_label = nullptr;
-    QLineEdit* m_edit  = nullptr;   ///< Hidden overlay, shown only during editing.
+    ElaText*   m_label = nullptr;
+    ElaLineEdit* m_edit  = nullptr;   ///< Hidden overlay, shown only during editing.
     QTimer*    m_clickTimer = nullptr;
 };
 

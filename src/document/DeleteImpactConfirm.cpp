@@ -1,6 +1,6 @@
 #include "DeleteImpactConfirm.h"
 
-#include <QMessageBox>
+#include "ui/ElaMsgBox.h"
 
 #include "parametric/ParamDocument.h"
 
@@ -9,10 +9,12 @@ namespace cad::doc {
 namespace {
 
 /// Human-readable line for one impact counter; empty when the counter is 0.
+/// The label carries the %1 placeholder; a single .arg() avoids the fragile
+/// chained-arg pattern (nested %1 depends on Qt replacing only the first one).
 QString impactLine(const QString& label, int count)
 {
     if (count <= 0) return {};
-    return QString::fromUtf8("\u2022 %1").arg(label).arg(count);
+    return QStringLiteral("\u2022 ") + label.arg(count);
 }
 
 } // namespace
@@ -58,11 +60,8 @@ bool confirmDeleteImpact(QWidget* parent, const cad::param::ParamDocument* doc,
             total.formulasBroken); !l.isEmpty()) lines << l;
 
     const QString text = lines.join(QStringLiteral("\n")) + QStringLiteral("\n\n")
-        + QString::fromUtf8("\u786e\u5b9a\u5220\u9664\uff1f");
-    const auto ans = QMessageBox::warning(parent, QString::fromUtf8("\u5220\u9664\u5f71\u54cd"),
-                                          text, QMessageBox::Yes | QMessageBox::Cancel,
-                                          QMessageBox::Cancel);
-    return ans == QMessageBox::Yes;
+        + QString::fromUtf8("确定删除？");
+    return cad::ui::ElaMsgBox::question(parent, QString::fromUtf8("删除影响"), text);
 }
 
 } // namespace cad::doc
