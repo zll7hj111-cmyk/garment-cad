@@ -26,6 +26,7 @@
 #include "parametric/Attachment.h"
 #include "parametric/MeasureVariable.h"
 #include "parametric/Serial.h"
+#include "parametric/ConditionEngine.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
@@ -185,10 +186,22 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
             m_startSnap.reset();
             m_leaderPicker->setRefDirDeg(0.0);
         }
-        beginStroke(event->modifiers());
+        startStroke(event->modifiers());
     }
     else if (m_state == State::Drawing) {
         // --- Set end point and commit ---
+        // 预输入约束优先：长度/角度已由状态栏给定，终点按约束计算，
+        // 不再借用线段身辅助点或终点吸附（预输入 = 几何已确定）。
+        if (m_strokeInput.hasLength || m_strokeInput.hasAngle) {
+            const cad::geo::Vec2 end = applyPreInputConstraints(clickPos);
+            if (m_startPoint.distanceSquaredTo(end) < 1e-10) {
+                cancelLine();
+                return;
+            }
+            commitLine(end, std::nullopt);
+            return;
+        }
+
         cad::geo::Vec2 end = applyAngleSnap(clickPos);
 
         // Line-body quick aux point as the stroke's END (attached/bridge):
@@ -257,6 +270,138 @@ void ToolSmartPen::setupSnappedStart(const SnapResult& snap)
         m_leaderPicker->setIndex(0);
 }
 
+void ToolSmartPen::startStroke(Qt::KeyboardModifiers mods)
+{
+    captureStrokeInput();
+
+    // 预输入完整（长度+角度）：一次点击即可成线，无需第二击。
+    if (m_strokeInput.hasLength && m_strokeInput.hasAngle) {
+        commitLine(fixedPreInputEnd(), std::nullopt);
+        return;
+    }
+
+    beginStroke(mods);
+}
+
+void ToolSmartPen::captureStrokeInput()
+{
+    m_strokeInput = StrokeInput{};
+    m_strokeInput.raw = m_preInput;
+
+    const QString lenText = m_preInput.lengthCm.trimmed();
+    if (!lenText.isEmpty()) {
+        bool isNumber = false;
+        const double cm = lenText.toDouble(&isNumber);
+        if (isNumber) {
+            m_strokeInput.hasLength = true;
+            m_strokeInput.lengthMm = cad::geo::Units::cmToMm(cm);
+        } else if (m_paramDoc) {
+            auto r = cad::param::ConditionEngine::evaluate(
+                lenText, m_paramDoc->parameters(), m_paramDoc->conditions());
+            if (r.ok) {
+                m_strokeInput.hasLength = true;
+                m_strokeInput.lengthMm = cad::geo::Units::cmToMm(r.value);
+                m_strokeInput.lengthFormula = lenText;
+            } else if (m_scene) {
+                m_scene->showToast(QString::fromUtf8("预输入长度无法计算，已忽略"));
+            }
+        }
+    }
+
+    const QString angText = m_preInput.angleDeg.trimmed();
+    if (!angText.isEmpty()) {
+        bool isNumber = false;
+        const double deg = angText.toDouble(&isNumber);
+        if (isNumber) {
+            m_strokeInput.hasAngle = true;
+            m_strokeInput.displayAngleDeg = deg;
+        } else if (m_paramDoc) {
+            auto r = cad::param::ConditionEngine::evaluate(
+                angText, m_paramDoc->parameters(), m_paramDoc->conditions());
+            if (r.ok) {
+                m_strokeInput.hasAngle = true;
+                m_strokeInput.displayAngleDeg = r.value;
+                m_strokeInput.angleFormula = angText;
+            } else if (m_scene) {
+                m_scene->showToast(QString::fromUtf8("预输入角度无法计算，已忽略"));
+            }
+        }
+    }
+}
+
+cad::geo::Vec2 ToolSmartPen::applyPreInputConstraints(const cad::geo::Vec2& cursor) const
+{
+    if (m_strokeInput.hasAngle) {
+        // 角度已定：光标沿固定方向射线投影，第二击只决定长度。
+        const double worldDeg = toWorldAngleDeg(m_strokeInput.displayAngleDeg);
+        const double rad = worldDeg * M_PI / 180.0;
+        const cad::geo::Vec2 dir(std::cos(rad), std::sin(rad));
+        double t = (cursor - m_startPoint).dot(dir);
+        if (t < 0.0) t = 0.0;
+        m_snapAngleDeg = m_strokeInput.displayAngleDeg;
+        return m_startPoint + dir * t;
+    }
+
+    // 长度已定：沿用（可 Shift 吸附的）光标方向，距离固定。
+    cad::geo::Vec2 end = applyAngleSnap(cursor);
+    const cad::geo::Vec2 delta = end - m_startPoint;
+    const double dist = delta.length();
+    if (dist > 1e-12)
+        end = m_startPoint + delta * (m_strokeInput.lengthMm / dist);
+    return end;
+}
+
+cad::geo::Vec2 ToolSmartPen::fixedPreInputEnd() const
+{
+    const double worldDeg = toWorldAngleDeg(m_strokeInput.displayAngleDeg);
+    const double rad = worldDeg * M_PI / 180.0;
+    return m_startPoint
+        + cad::geo::Vec2(std::cos(rad), std::sin(rad)) * m_strokeInput.lengthMm;
+}
+
+double ToolSmartPen::toWorldAngleDeg(double displayDeg) const
+{
+    // 附着起点：显示角 = 跟随折角（闭合基准 α = 180° − 相对角）；
+    // 自由起点：显示角 = 绝对世界角。
+    if (m_startSnap)
+        return m_leaderPicker->refDirDeg() + (180.0 - displayDeg);
+    return displayDeg;
+}
+
+LineBuildOptions ToolSmartPen::strokeBuildOptions() const
+{
+    LineBuildOptions opts;
+    opts.name = m_strokeInput.raw.name.trimmed();
+    if (m_strokeInput.hasLength) {
+        opts.hasLength = true;
+        opts.lengthMm = m_strokeInput.lengthMm;
+        opts.lengthFormula = m_strokeInput.lengthFormula;
+    }
+    if (m_strokeInput.hasAngle) {
+        opts.hasAngle = true;
+        opts.displayAngleDeg = m_strokeInput.displayAngleDeg;
+        opts.angleFormula = m_strokeInput.angleFormula;
+    }
+    return opts;
+}
+
+void ToolSmartPen::consumePreInput()
+{
+    // 一次性预输入：只清空本次真正生效的字段（内容被使用后就清空）。
+    // 仅当状态栏文本仍等于快照时才清——若用户在画线过程中又输入了新值，
+    // 新值保留给下一条线。名称随任何成功创建的线生效。
+    auto consume = [](QString& current, const QString& used, bool usedThisTime) {
+        if (usedThisTime && !used.isEmpty() && current == used)
+            current.clear();
+    };
+    consume(m_preInput.name, m_strokeInput.raw.name, true);
+    consume(m_preInput.lengthCm, m_strokeInput.raw.lengthCm,
+            m_strokeInput.hasLength);
+    consume(m_preInput.angleDeg, m_strokeInput.raw.angleDeg,
+            m_strokeInput.hasAngle);
+    m_strokeInput = StrokeInput{};
+}
+
 void ToolSmartPen::beginStroke(Qt::KeyboardModifiers mods)
 {
     m_state = State::Drawing;
@@ -316,7 +461,10 @@ void ToolSmartPen::mouseMove(QGraphicsSceneMouseEvent* event)
 
     m_angleSnap = event->modifiers() & Qt::ShiftModifier;
 
-    const cad::geo::Vec2 effectiveEnd = applyAngleSnap(cursorPos);
+    const cad::geo::Vec2 effectiveEnd =
+        (m_strokeInput.hasLength || m_strokeInput.hasAngle)
+            ? applyPreInputConstraints(cursorPos)
+            : applyAngleSnap(cursorPos);
 
     updatePreview(effectiveEnd);
     updateSnapIndicator(cursorPos);
@@ -371,18 +519,23 @@ void ToolSmartPen::commitLine(const cad::geo::Vec2& end,
         return;
     }
 
+    const LineBuildOptions opts = strokeBuildOptions();
+
     if (m_startSnap && endSnap) {
         // Both ends pinned to existing points → bridge line (桥接线).
+        // 预输入长度/角度对桥接线被动几何无意义，仅名称生效。
         m_lineFactory->createBridgeLine(*m_startSnap, *endSnap,
                                         m_leaderPicker->index(),
-                                        m_leaderPicker->candidates());
+                                        m_leaderPicker->candidates(), opts);
     } else if (m_startSnap) {
         m_lineFactory->createAttachedLine(*m_startSnap, end,
                                           m_leaderPicker->index(),
-                                          m_leaderPicker->candidates());
+                                          m_leaderPicker->candidates(), opts);
     } else {
-        m_lineFactory->createFreeLine(m_startPoint, end);
+        m_lineFactory->createFreeLine(m_startPoint, end, opts);
     }
+
+    consumePreInput();  // 预输入一次性：内容已使用，立即清空。
 
     m_leaderPicker->clear();  // after createAttachedLine — it reads the index
     clearPreview();
@@ -635,7 +788,7 @@ void ToolSmartPen::onAuxDialogAccepted(const cad::param::ParamPoint& pt)
     if (m_auxDialogForStart) {
         if (m_state != State::Idle) return;  // safety: state drifted
         setupSnappedStart(*snap);
-        beginStroke(Qt::NoModifier);
+        startStroke(Qt::NoModifier);
     } else {
         if (m_state != State::Drawing) return;  // safety: state drifted
         // 起点自由 + 终点辅助点 = 翻转 (与 mousePress 终点吸附同一规则):

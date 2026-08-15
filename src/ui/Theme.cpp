@@ -137,15 +137,14 @@ QLabel#cardIndex { font-size: 10px; font-weight: bold; color: @text3; }
 
 QLabel#chipLabel {
     font-size: 12px; font-weight: 600; color: @text1;
-    background: transparent; padding: 0 2px;
+    background: transparent; padding: 0 4px;
 }
-QLabel#chipLabel:hover { background: @surface2; border-radius: 2px; }
 QLabel#chipLabel[placeholder="true"] {
-    font-size: 11px; color: @text3; background: transparent;
+    font-size: 11px; color: @text3;
 }
 QLabel#chipLabel[variant="ref"] {
     font-family: 'Consolas','Courier New',monospace; font-size: 11px;
-    color: @accent; background: @accentTint;
+    color: @accent;
 }
 
 /* ── Plain pickers (no Ela equivalent) ───────────────────── */

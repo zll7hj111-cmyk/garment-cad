@@ -1,4 +1,5 @@
 ﻿#include "SegmentEditBar.h"
+#include "SmartPenPreInputBar.h"
 
 #include "MainWindow.h"
 
@@ -20,6 +21,9 @@
 #include <QTimer>
 #include <QShortcut>
 #include <QStackedWidget>
+#include <QSplitter>
+#include <QSizePolicy>
+#include <QScreen>
 
 #include "canvas/CanvasView.h"
 #include "canvas/CanvasScene.h"
@@ -29,6 +33,7 @@
 #include "geometry/Units.h"
 #include "tools/ToolManager.h"
 #include "tools/ToolSelect.h"
+#include "tools/ToolSmartPen.h"
 #include "tools/LinePropertyDialog.h"
 #include "ui/VariablePanel.h"
 #include "ui/LayerPanel.h"
@@ -68,6 +73,20 @@ void showLoadWarnings(QWidget* parent, const QStringList& warnings)
             .arg(warnings.size()).arg(shown.join(QStringLiteral("\n"))));
 }
 
+/// 面板打开时主窗口对应标签按钮上的激活指示: 主题强调色小圆点
+/// (ElaTabBarStyle 不支持 per-tab 文字色, 用图标最稳)。
+QIcon panelActiveDot(const QColor& color)
+{
+    QPixmap pm(14, 14);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    p.drawEllipse(QRectF(2.5, 2.5, 9, 9));
+    return QIcon(pm);
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -95,7 +114,7 @@ MainWindow::MainWindow(QWidget* parent)
     setWindowIcon(cad::ui::IconHelper::appIcon());
     resize(1280, 800);
 
-    // Dark is the default theme — mirror it into the canvas tokens.
+    // 默认白色（亮色）主题；若用户在 main() 之后已切换为暗色则镜像到画布。
     if (cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark)
         m_canvasScene->setStyle(CanvasStyle::darkTheme());
 
@@ -114,6 +133,10 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    // 面板窗事件过滤器在子对象析构前摘除, 避免析构期 Hide 事件回调
+    // 触碰已部分销毁的成员。
+    if (m_panelWindow)
+        m_panelWindow->removeEventFilter(this);
     // QObject children are destroyed during ~QObject — AFTER this class's own
     // members are already gone. QUndoStack emits cleanChanged/indexChanged
     // while clearing its commands on destruction; a live connection would
@@ -471,6 +494,7 @@ void MainWindow::toggleTheme(bool dark)
         m_layerPanel->applyTheme();
     refreshToolIcons();
     refreshLayerChip();
+    syncPanelTabs();  // 激活指示圆点颜色跟随主题
 }
 
 void MainWindow::setupStatusBar()
@@ -507,6 +531,12 @@ void MainWindow::setupStatusBar()
     m_segmentEditBar->hide();
     sb->addWidget(m_segmentEditBar, 1);
 
+    // 智能笔预输入条: 切到智能笔时显示, 名称为/长度/角度供下一条线使用,
+    // 内容被使用后清空 (onLineCreated). 默认隐藏 (默认工具是选择).
+    m_preInputBar = new cad::app::SmartPenPreInputBar(this);
+    m_preInputBar->hide();
+    sb->addWidget(m_preInputBar, 1);
+
     sb->addPermanentWidget(m_diagLabel);
     sb->addPermanentWidget(m_coordLabel);
     sb->addPermanentWidget(m_zoomLabel);
@@ -540,6 +570,10 @@ void MainWindow::connectSignals()
             this, &MainWindow::onLinePreview);
     connect(m_segmentEditBar, &cad::app::SegmentEditBar::cancelRequested,
             this, &MainWindow::onEditStripCancel);
+
+    // 预输入条 → 活动智能笔: 每次编辑都同步 (含清空), 工具在起笔时快照。
+    connect(m_preInputBar, &cad::app::SmartPenPreInputBar::valuesChanged,
+            this, &MainWindow::onPreInputChanged);
 
     // Selection tool picked a single segment → show it in the edit strip.
     // Both ids null = clear (multi-select / deselection).
@@ -624,7 +658,10 @@ void MainWindow::onToolChanged(ToolType type, const char* name)
     for (int i = 0; i < m_toolButtons.size(); ++i)
         m_toolButtons.at(i)->setIsSelected(i == toolIndex);
 
-    if (m_toolManager->activeToolType() == ToolType::SmartPen) {
+    const bool smartPenActive =
+        m_toolManager->activeToolType() == ToolType::SmartPen;
+
+    if (smartPenActive) {
         m_toolHintLabel->setText(
             QString::fromUtf8("智能笔：点设起点 | 再点设终点 | Shift约束45° | 右键/Esc取消 | 空白右键→选择"));
     } else if (m_toolManager->activeToolType() == ToolType::CurveEdit) {
@@ -650,12 +687,38 @@ void MainWindow::onToolChanged(ToolType type, const char* name)
     // 创建后编辑条只在智能笔创建场景有意义; 切换工具即隐藏.
     if (m_segmentEditBar)
         m_segmentEditBar->hideBar();
+
+    // 智能笔预输入条: 仅智能笔激活时显示 (替换长提示文本, 状态栏给输入框
+    // 让位); 切回时把已输入的值推给新创建的工具实例。
+    if (m_preInputBar) {
+        m_preInputBar->setVisible(smartPenActive);
+        if (smartPenActive)
+            onPreInputChanged();
+    }
+    if (m_toolHintLabel)
+        m_toolHintLabel->setVisible(!smartPenActive);
 }
 
 void MainWindow::onLineCreated(const QUuid& blockId, const QUuid& segmentId)
 {
+    // 预输入一次性语义：内容已被本次创建使用 → 清空, 恢复空白的预输入状态。
+    if (m_preInputBar)
+        m_preInputBar->clearAll();
     if (!m_segmentEditBar) return;
     m_segmentEditBar->showForLine(blockId, segmentId);
+}
+
+void MainWindow::onPreInputChanged()
+{
+    if (!m_preInputBar || !m_toolManager) return;
+    if (auto* pen = dynamic_cast<cad::tools::ToolSmartPen*>(
+            m_toolManager->activeTool())) {
+        pen->setPreInput({
+            m_preInputBar->nameText(),
+            m_preInputBar->lengthText(),
+            m_preInputBar->angleText()
+        });
+    }
 }
 
 void MainWindow::onLinePreview(double lenCm, double angleDeg)
@@ -769,35 +832,84 @@ void MainWindow::setupPages()
     // 改用 None（无动画直切），规避 grab。
     setStackSwitchMode(ElaWindowType::StackSwitchMode::None);
 
-    auto* varPage = new QWidget(this);
-    auto* varLay = new QVBoxLayout(varPage);
-    varLay->setContentsMargins(12, 12, 12, 12);
-    m_variablePanel = new cad::ui::VariablePanel(m_paramDoc, varPage);
-    m_variablePanel->setUndoStack(m_undoStack);
-    varLay->addWidget(m_variablePanel);
+    // 变量/图层/组 面板统一进独立悬浮窗 (Qt::Tool): 侧边栏样式的长竖条窗口,
+    // 频繁编辑/复制公式、切图层/组时不再来回切主窗口标签页。初始隐藏,
+    // 点击主窗口顶部 变量/图层/组 标签显示并切到对应大标签页; 窗口可自由
+    // 拖动、缩放, X 关闭即隐藏 (标签可再开)。
+    m_panelWindow = new QWidget(this, Qt::Tool);
+    m_panelWindow->setObjectName(QStringLiteral("panelFloatingWindow"));
+    m_panelWindow->setWindowTitle(QString::fromUtf8("面板"));
+    m_panelWindow->setMinimumSize(300, 360);
+    m_panelWindow->setMaximumWidth(480);  // 保持侧边栏竖条观感, 高度自由.
+    m_panelWindow->installEventFilter(this);  // X 关闭/隐藏 → 主标签同步回画布
+    auto* winLay = new QVBoxLayout(m_panelWindow);
+    winLay->setContentsMargins(8, 8, 8, 8);
+    winLay->setSpacing(6);
 
-    auto* layerPage = new QWidget(this);
+    // 分类大标签: 变量 / 图层 / 组, 与主窗口后三个标签一一对应。
+    m_panelBigBar = new ElaTabBar(m_panelWindow);
+    m_panelBigBar->addTab(QStringLiteral("变量"));
+    m_panelBigBar->addTab(QStringLiteral("图层"));
+    m_panelBigBar->addTab(QStringLiteral("组"));
+    m_panelBigBar->setTabSize(QSize(84, 32));
+    m_panelBigBar->setExpanding(true);
+    m_panelBigBar->setUsesScrollButtons(false);
+    m_panelBigBar->setElideMode(Qt::ElideNone);
+    m_panelBigBar->setDrawBase(false);
+    m_panelBigBar->setTabsClosable(false);
+    m_panelBigBar->setMovable(false);
+    m_panelBigBar->setAcceptDrops(false);
+    m_panelBigBar->setCursor(Qt::PointingHandCursor);
+    m_panelBigBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    winLay->addWidget(m_panelBigBar);
+
+    m_panelStack = new QStackedWidget(m_panelWindow);
+    m_variablePanel = new cad::ui::VariablePanel(m_paramDoc, m_panelStack);
+    m_variablePanel->setUndoStack(m_undoStack);
+    m_panelStack->addWidget(m_variablePanel);
+
+    auto* layerPage = new QWidget(m_panelStack);
     auto* layerLay = new QVBoxLayout(layerPage);
     layerLay->setContentsMargins(12, 12, 12, 12);
     m_layerPanel = new LayerPanel(m_paramDoc, layerPage);
     m_layerPanel->setUndoStack(m_undoStack);
     layerLay->addWidget(m_layerPanel);
+    m_panelStack->addWidget(layerPage);
 
-    auto* groupPage = new QWidget(this);
+    auto* groupPage = new QWidget(m_panelStack);
     auto* groupLay = new QVBoxLayout(groupPage);
     groupLay->setContentsMargins(12, 12, 12, 12);
     m_groupPanel = new GroupPanel(m_paramDoc, groupPage);
     m_groupPanel->setUndoStack(m_undoStack);
     groupLay->addWidget(m_groupPanel);
+    m_panelStack->addWidget(groupPage);
+
+    winLay->addWidget(m_panelStack, 1);
+
+    // 悬浮窗内切换大标签 → 切换面板内容页; 主窗口对应按钮跟随高亮。
+    connect(m_panelBigBar, &QTabBar::currentChanged, this, [this](int category) {
+        if (m_panelStack && m_panelStack->currentIndex() != category)
+            m_panelStack->setCurrentIndex(category);
+        if (!m_tabSyncGuard && m_panelWindow->isVisible())
+            syncPanelTabs();
+    });
 
     // 网页式标签页导航：顶部标签栏（画布/变量/图层/组）+ 自建页面堆栈，
     // 替代 ElaWindow 左侧竖列导航（隐藏导航栏，页面整体迁入自建堆栈）。
+    // 变量/图层/组 标签是面板悬浮窗开关, 不进页面堆栈（堆栈只剩画布页）。
     m_pageTabs = new ElaTabBar(this);
     m_pageTabs->addTab(QStringLiteral("画布"));
     m_pageTabs->addTab(QStringLiteral("变量"));
     m_pageTabs->addTab(QStringLiteral("图层"));
     m_pageTabs->addTab(QStringLiteral("组"));
     m_pageTabs->setTabSize(QSize(88, 30));
+    m_pageTabs->setIconSize(QSize(14, 14));  // 面板打开时的激活指示圆点
+    m_pageTabs->setTabToolTip(1,
+        QString::fromUtf8("面板 · 变量页（点击显示/隐藏）"));
+    m_pageTabs->setTabToolTip(2,
+        QString::fromUtf8("面板 · 图层页（点击显示/隐藏）"));
+    m_pageTabs->setTabToolTip(3,
+        QString::fromUtf8("面板 · 组页（点击显示/隐藏）"));
     // ElaTabBar 默认 closable+movable+drag-drop：每个标签带 × 关闭按钮，
     // 标签还可拖拽换序 —— 换序后 currentChanged 的下标与 QStackedWidget
     // 页面错位（点图层会打开别的页）。锁死为固定网页式标签条。
@@ -807,11 +919,8 @@ void MainWindow::setupPages()
 
     m_pageStack = new QStackedWidget(this);
     m_pageStack->addWidget(m_centerContainer);
-    m_pageStack->addWidget(varPage);
-    m_pageStack->addWidget(layerPage);
-    m_pageStack->addWidget(groupPage);
     connect(m_pageTabs, &QTabBar::currentChanged,
-            m_pageStack, &QStackedWidget::setCurrentIndex);
+            this, &MainWindow::onPageTabChanged);
 
     auto* pageHost = new QWidget(this);
     auto* pageLay = new QVBoxLayout(pageHost);
@@ -838,12 +947,13 @@ void MainWindow::setupPages()
     if (auto* navBar = findChild<ElaNavigationBar*>())
         navBar->hide();
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < m_pageTabs->count(); ++i) {
         auto* sc = new QShortcut(QKeySequence(Qt::CTRL | (Qt::Key_1 + i)), this);
         const int idx = i;
+        // 只改标签选中: onPageTabChanged 统一负责 页面映射/变量悬浮窗切换。
         connect(sc, &QShortcut::activated, this, [this, idx] {
-            m_pageTabs->setCurrentIndex(idx);
-            m_pageStack->setCurrentIndex(idx);
+            if (m_pageTabs)
+                m_pageTabs->setCurrentIndex(idx);
         });
     }
 
@@ -918,6 +1028,95 @@ void MainWindow::setupPages()
     });
 }
 
+void MainWindow::onPageTabChanged(int index)
+{
+    if (m_tabSyncGuard || !m_pageTabs || !m_pageStack)
+        return;
+
+    if (index == 0) {
+        // 画布页: 主区域恒为画布。面板开着时把高亮留在分类按钮上, 避免
+        // 标签条高亮一个与面板状态无关的标签。
+        if (m_panelWindow->isVisible()) {
+            m_tabSyncGuard = true;
+            m_pageTabs->setCurrentIndex(1 + m_panelBigBar->currentIndex());
+            m_tabSyncGuard = false;
+        }
+        return;
+    }
+
+    const int category = index - 1;  // 0=变量 1=图层 2=组
+    if (m_panelWindow->isVisible() && m_panelBigBar->currentIndex() == category) {
+        // 再点当前分类 = 隐藏面板（开关语义）。Hide 事件经 eventFilter
+        // 触发 syncPanelTabs 把主标签同步回画布。
+        m_panelWindow->hide();
+        return;
+    }
+
+    // 打开面板 / 切换分类: 大标签跟随, 悬浮窗显示并置前。
+    m_panelBigBar->setCurrentIndex(category);
+    ensurePanelWindowPosition();
+    m_panelWindow->show();
+    m_panelWindow->raise();
+    m_panelWindow->activateWindow();
+    syncPanelTabs();
+}
+
+void MainWindow::syncPanelTabs()
+{
+    if (!m_pageTabs || !m_panelWindow || !m_panelBigBar)
+        return;
+
+    // 主标签选中态 = 面板状态: 打开 → 当前分类按钮选中; 关闭 → 画布。
+    const bool open = m_panelWindow->isVisible();
+    const int target = open ? 1 + m_panelBigBar->currentIndex() : 0;
+    if (m_pageTabs->currentIndex() != target) {
+        m_tabSyncGuard = true;
+        m_pageTabs->setCurrentIndex(target);
+        m_tabSyncGuard = false;
+    }
+
+    // 激活指示: 面板打开时当前分类按钮带强调色圆点, 其余清空。
+    for (int i = 1; i < m_pageTabs->count(); ++i) {
+        const bool active = open && (i - 1) == m_panelBigBar->currentIndex();
+        m_pageTabs->setTabIcon(i,
+            active ? panelActiveDot(cad::ui::Theme::tokens().accent) : QIcon());
+    }
+}
+
+bool MainWindow::eventFilter(QObject* obj, QEvent* event)
+{
+    if (obj == m_panelWindow && event->type() == QEvent::Hide && !m_tabSyncGuard)
+        syncPanelTabs();  // X 关闭 / hide() → 主标签回画布、清激活指示
+    return QObject::eventFilter(obj, event);
+}
+
+void MainWindow::ensurePanelWindowPosition()
+{
+    if (!m_panelWindow)
+        return;
+    m_panelWindowPositioned = true;
+
+    QScreen* scr = screen() ? screen() : QGuiApplication::primaryScreen();
+    const QRect avail = scr ? scr->availableGeometry() : QRect(0, 0, 1280, 800);
+
+    // 侧边栏样式: 长竖条但不要太长 —— 宽 ~360, 高不超过屏幕可用区的 80%
+    // 且封顶 660px。高度留有余量, 用户仍可拖动边框自行调整。
+    const int w = qBound(320, avail.width() / 5, 380);
+    const int h = qBound(400, avail.height() * 8 / 10, 660);
+    m_panelWindow->resize(w, h);
+
+    // 贴主窗口右缘, 从标签栏下方起排, 像一个脱开的右侧边栏。
+    const QRect mainGeo = geometry();
+    int x = mainGeo.right() - m_panelWindow->width() - 12;
+    int y = mainGeo.top() + 96;
+    if (x + m_panelWindow->width() > avail.right())
+        x = avail.right() - m_panelWindow->width() - 8;
+    if (y + m_panelWindow->height() > avail.bottom())
+        y = avail.bottom() - m_panelWindow->height() - 8;
+    x = qMax(x, avail.left() + 8);
+    y = qMax(y, avail.top() + 8);
+    m_panelWindow->move(x, y);
+}
 // ============================================================
 // File operations
 // ============================================================
@@ -935,18 +1134,23 @@ bool MainWindow::maybeSave()
     if (m_undoStack->isClean())
         return true;
 
+    // 按钮布局: [取消] [不保存] [保存·主] —— 右按钮是主按钮(高亮)。
+    // 2026-08 用户反馈: 旧布局 [保存] [不保存] [取消·主] 中"取消"是
+    // 高亮主按钮, 用户按习惯点主按钮以为会退出, 实际却中止关闭,
+    // 造成"点取消关闭不了程序"的困惑。主按钮必须是对应"退出"的动作。
     auto ret = cad::ui::ElaMsgBox::show(this, QString::fromUtf8("野风帖"),
         QString::fromUtf8("文档已修改，是否保存？"),
-        QString::fromUtf8("保存"), QString::fromUtf8("取消"),
-        QString::fromUtf8("不保存"));
+        QString::fromUtf8("取消"),    // Left: 中止关闭, 回到程序
+        QString::fromUtf8("保存"),    // Right: 主按钮, 保存并退出
+        QString::fromUtf8("不保存")); // Middle: 不保存退出
 
-    if (ret == cad::ui::ElaMsgBox::Result::Left) {
+    if (ret == cad::ui::ElaMsgBox::Result::Right) {
         onSaveDocument();
         return m_undoStack->isClean();  // false if save failed
     }
-    if (ret == cad::ui::ElaMsgBox::Result::Right)
-        return false;
-    return true;  // 不保存
+    if (ret == cad::ui::ElaMsgBox::Result::Middle)
+        return true;  // 不保存 → 退出
+    return false;     // 取消 → 中止关闭
 }
 
 void MainWindow::updateTitle()

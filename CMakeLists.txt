@@ -95,9 +95,13 @@ add_executable(${PROJECT_NAME}
     src/app/MainWindow.cpp
     src/app/SegmentEditBar.h
     src/app/SegmentEditBar.cpp
+    src/app/SmartPenPreInputBar.h
+    src/app/SmartPenPreInputBar.cpp
     src/app/DemoData.h
     src/app/DemoData.cpp
     src/geometry/Vec2.h
+    src/geometry/TriangleUnfold.h
+    src/geometry/TriangleUnfold.cpp
     src/geometry/Units.h
     src/geometry/Angle.h
     src/geometry/CurveMath.h
@@ -122,6 +126,8 @@ add_executable(${PROJECT_NAME}
     src/canvas/CurveItem.cpp
     src/parametric/ParamPoint.h
     src/parametric/Segment.h
+    src/parametric/TrianglePrototypeBlock.h
+    src/parametric/TrianglePrototypeBlock.cpp
     src/parametric/Block.h
     src/parametric/Block.cpp
     src/parametric/Attachment.h
@@ -274,7 +280,11 @@ add_executable(${PROJECT_NAME}
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets miniz ElaWidgetTools spdlog::spdlog Tracy::TracyClient)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets miniz ElaWidgetTools spdlog::spdlog Tracy::TracyClient avatar_view)
+
+# Avatar assets location for the 3D virtual model panel (absolute, runtime read-only).
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
 
 # --- Unit Tests (CTest + Qt Test) ---
 enable_testing()
@@ -493,6 +503,96 @@ add_executable(test_curve
 target_include_directories(test_curve PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(test_curve PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_curve COMMAND test_curve)
+
+# Test: triangle sloper surface unfolding (edge-preserving paper-space layout)
+add_executable(test_triangle_unfold
+    tests/test_triangle_unfold.cpp
+    src/geometry/TriangleUnfold.h
+    src/geometry/TriangleUnfold.cpp
+    src/geometry/Vec2.h
+)
+target_include_directories(test_triangle_unfold PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_triangle_unfold PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_triangle_unfold COMMAND test_triangle_unfold)
+
+# ---------------------------------------------------------------------------
+# Avatar 3D 模块：核心引擎（纯 C++23，无 Qt 依赖）
+# ---------------------------------------------------------------------------
+add_library(avatar_core STATIC
+    src/avatar/AvatarVec3.h
+    src/avatar/JsonReader.h
+    src/avatar/JsonReader.cpp
+    src/avatar/Mesh3D.h
+    src/avatar/Mesh3D.cpp
+    src/avatar/TargetData.h
+    src/avatar/TargetData.cpp
+    src/avatar/AvatarModel.h
+    src/avatar/AvatarModel.cpp
+    src/avatar/MeasureSystem.h
+    src/avatar/MeasureSystem.cpp
+    src/avatar/AvatarSolver.h
+    src/avatar/AvatarSolver.cpp
+)
+target_include_directories(avatar_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(avatar_core PUBLIC Qt6::Core Qt6::Gui miniz)
+
+# Avatar 3D 模块：渲染/视口/控制面板（Qt OpenGL + Widgets）
+add_library(avatar_view STATIC
+    src/avatar/AvatarMat4.h
+    src/avatar/AvatarRenderMesh.h
+    src/avatar/AvatarRenderMesh.cpp
+    src/avatar/AvatarView3D.h
+    src/avatar/AvatarView3D.cpp
+    src/avatar/AvatarPanel.h
+    src/avatar/AvatarPanel.cpp
+)
+target_include_directories(avatar_view PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(avatar_view PUBLIC
+    avatar_core Qt6::OpenGL Qt6::OpenGLWidgets ElaWidgetTools)
+# Avatar 资源绝对路径：库内代码（AvatarPanel）与所有调用方统一拿到绝对路径，
+# 避免 #ifndef 兜底相对路径随 cwd 漂移（ctest 的 cwd 是 build 目录）。
+target_compile_definitions(avatar_view PUBLIC
+    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
+
+# Test: avatar core engine (MakeHuman-compatible morph / measure pipeline)
+add_executable(test_avatar_core tests/test_avatar_core.cpp)
+target_include_directories(test_avatar_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_avatar_core PRIVATE avatar_core Qt6::Test)
+target_compile_definitions(test_avatar_core PRIVATE
+    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
+add_test(NAME test_avatar_core COMMAND test_avatar_core)
+
+# Test: avatar measure solver (single binary-search + multi Gauss-Seidel)
+add_executable(test_avatar_solver tests/test_avatar_solver.cpp)
+target_include_directories(test_avatar_solver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_avatar_solver PRIVATE avatar_core Qt6::Test)
+target_compile_definitions(test_avatar_solver PRIVATE
+    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
+add_test(NAME test_avatar_solver COMMAND test_avatar_solver)
+
+# Test: avatar render data layer (CPU-side VBO/EBO packing + bounds)
+add_executable(test_avatar_render tests/test_avatar_render.cpp)
+target_include_directories(test_avatar_render PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_avatar_render PRIVATE avatar_core avatar_view Qt6::Test)
+target_compile_definitions(test_avatar_render PRIVATE
+    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
+add_test(NAME test_avatar_render COMMAND test_avatar_render)
+
+# Test: avatar 3D view (orbit camera matrices + GL smoke, QSKIP when no GL)
+add_executable(test_avatar_view tests/test_avatar_view.cpp)
+target_include_directories(test_avatar_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_avatar_view PRIVATE avatar_core avatar_view Qt6::Test)
+target_compile_definitions(test_avatar_view PRIVATE
+    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
+add_test(NAME test_avatar_view COMMAND test_avatar_view)
+
+# Test: avatar control panel (CLO four-measures + sliders drive the mesh)
+add_executable(test_avatar_panel tests/test_avatar_panel.cpp)
+target_include_directories(test_avatar_panel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_avatar_panel PRIVATE avatar_core avatar_view Qt6::Test)
+target_compile_definitions(test_avatar_panel PRIVATE
+    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
+add_test(NAME test_avatar_panel COMMAND test_avatar_panel)
 
 # Benchmark: layered dirty-marking resolve pipeline (aux frozen vs full)
 add_executable(test_perf
@@ -1471,6 +1571,8 @@ add_executable(test_realdoc_full
     resources/icons.qrc
     src/app/MainWindow.cpp
     src/app/SegmentEditBar.cpp
+    src/app/SmartPenPreInputBar.h
+    src/app/SmartPenPreInputBar.cpp
     src/app/DemoData.cpp
     src/geometry/CurveMath.cpp
     src/canvas/CanvasView.h
@@ -1567,7 +1669,7 @@ add_executable(test_realdoc_full
     src/document/commands/BreakCommands.cpp
 )
 target_include_directories(test_realdoc_full PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_realdoc_full PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+target_link_libraries(test_realdoc_full PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools avatar_view)
 
 # Smoke test: ElaWindow navigation stack switching (reproduces the
 # "点击图层=闪退" crash). Not registered with ctest — run manually.
@@ -1576,6 +1678,8 @@ add_executable(test_nav_smoke
     resources/icons.qrc
     src/app/MainWindow.cpp
     src/app/SegmentEditBar.cpp
+    src/app/SmartPenPreInputBar.h
+    src/app/SmartPenPreInputBar.cpp
     src/app/DemoData.cpp
     src/geometry/CurveMath.cpp
     src/canvas/CanvasView.h
@@ -1672,7 +1776,7 @@ add_executable(test_nav_smoke
     src/document/commands/BreakCommands.cpp
 )
 target_include_directories(test_nav_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_nav_smoke PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+target_link_libraries(test_nav_smoke PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools avatar_view)
 
 # Test: spdlog + Tracy integration (file-sink log write + ZoneScoped probe)
 add_executable(test_log_probe

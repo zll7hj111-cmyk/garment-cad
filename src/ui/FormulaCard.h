@@ -64,6 +64,7 @@ private:
 
     QUuid m_id;
     QUuid m_groupId;  ///< Mirrors the model's group membership.
+    bool m_alternate = false;   ///< 行交替: 奇数行橙、偶数行蓝 (左侧竖线).
 
     ElaText*         m_indexLabel = nullptr;  ///< Ordinal + drag handle.
     QPoint           m_dragStartPos;
@@ -71,6 +72,7 @@ private:
     ElaText*         m_valueLabel = nullptr;
     ElaText*         m_condDot = nullptr;   ///< Small dot indicator for conditions.
     ElaToolButton*     m_deleteBtn = nullptr;
+    QWidget*         m_deleteBtnSlot = nullptr;  ///< 悬停占位: 与删除按钮同尺寸互斥显隐, 防布局跳动.
 
     QWidget*         m_detail = nullptr;
     ElaLineEdit*       m_exprEdit = nullptr;

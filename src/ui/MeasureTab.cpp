@@ -66,15 +66,15 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
     m_scroll->setWidgetResizable(true);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scroll->setFrameShape(QFrame::NoFrame);
-    // Recessed list background (theme-token driven).
+    // Recessed list background: 画布纸色 (canvasBg), 与画布背景呼应.
     m_scroll->setStyleSheet(QStringLiteral(
         "QScrollArea { background: %1; border: none; }")
-        .arg(cad::ui::Theme::tokens().surface2.name()));
+        .arg(cad::ui::Theme::tokens().canvasBg.name()));
     m_scroll->setObjectName(QStringLiteral("cardListArea"));
 
     m_container = new QWidget();
     m_container->setStyleSheet(QStringLiteral(
-        "background: %1;").arg(cad::ui::Theme::tokens().surface2.name()));
+        "background: %1;").arg(cad::ui::Theme::tokens().canvasBg.name()));
     m_container->setObjectName(QStringLiteral("cardListContainer"));
     auto* layout = new QVBoxLayout(m_container);
     layout->setContentsMargins(0, 0, 0, 0);

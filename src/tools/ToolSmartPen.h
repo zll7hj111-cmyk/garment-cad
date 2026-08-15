@@ -23,6 +23,24 @@ namespace cad::tools {
 class QuickAuxDialog;
 class LeaderCandidatePicker;
 
+/// One-shot pre-input for the NEXT line the smart pen creates (预输入).
+/// Typed in the status-bar pre-input strip while the smart pen is active;
+/// the values are consumed by the next committed line and then cleared.
+/// Length is in cm and angle in degrees — both accept numbers or formulas,
+/// matching the SegmentEditBar semantics.
+struct LinePreInput
+{
+    QString name;      ///< Segment name for the next line.
+    QString lengthCm;  ///< Length in cm: number or formula.
+    QString angleDeg;  ///< Angle in degrees: number or formula.
+
+    /// Angle display convention (与 HUD/闭合基准一致): with a snapped start
+    /// it is the follower fold angle (0° = 折叠重叠, 180° = 直行延续);
+    /// with a free start it is the absolute world angle (0~360° CCW).
+    [[nodiscard]] bool hasLength() const { return !lengthCm.trimmed().isEmpty(); }
+    [[nodiscard]] bool hasAngle() const { return !angleDeg.trimmed().isEmpty(); }
+};
+
 /// Screen-space HUD label that follows the cursor during line drawing.
 class HudItem : public QGraphicsItem
 {
@@ -58,6 +76,11 @@ public:
     void mouseRelease(QGraphicsSceneMouseEvent* event) override;
     void keyPress(QKeyEvent* event) override;
     void keyRelease(QKeyEvent* event) override;
+
+    /// Replace the pending one-shot pre-input (预输入). The host pushes the
+    /// status-bar field values here on every edit and after each tool switch.
+    void setPreInput(const LinePreInput& input) { m_preInput = input; }
+    [[nodiscard]] const LinePreInput& preInput() const { return m_preInput; }
 
     [[nodiscard]] const char* name() const override { return "\xe6\x99\xba\xe8\x83\xbd\xe7\xac\x94"; }
 
@@ -105,10 +128,40 @@ private:
     [[nodiscard]] bool isBlankSpace(const QPointF& userPos) const;
     /// Transition Idle → Drawing: create the preview/rubber-band items.
     void beginStroke(Qt::KeyboardModifiers mods);
+    /// Resolve the pending pre-input into stroke constraints; when BOTH length
+    /// and angle are valid the line is committed immediately (one click).
+    /// Invalid entries are ignored (toast) without blocking the stroke.
+    void startStroke(Qt::KeyboardModifiers mods);
+    /// Parse/evaluate the current pre-input into m_strokeInput.
+    void captureStrokeInput();
+    /// Apply active pre-input constraints to the cursor position (length-only:
+    /// keeps the cursor direction; angle-only: projects onto the fixed ray).
+    [[nodiscard]] cad::geo::Vec2 applyPreInputConstraints(const cad::geo::Vec2& cursor) const;
+    /// Fully determined endpoint (both length and angle present).
+    [[nodiscard]] cad::geo::Vec2 fixedPreInputEnd() const;
+    /// Input-space angle → world angle: follower convention for a snapped
+    /// start, absolute world angle for a free start.
+    [[nodiscard]] double toWorldAngleDeg(double displayDeg) const;
+    /// Build the LineFactory options snapshot from m_strokeInput.
+    [[nodiscard]] LineBuildOptions strokeBuildOptions() const;
+    /// One-shot consumption: clear every field that was actually used.
+    void consumePreInput();
 
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::Idle;
+
+    LinePreInput m_preInput;       ///< Pending pre-input from the status bar.
+    struct StrokeInput {
+        LinePreInput raw;          ///< Snapshot taken at stroke start.
+        bool   hasLength  = false;
+        double lengthMm   = 0.0;   ///< Evaluated length (mm).
+        QString lengthFormula;     ///< Non-empty when the length was a formula.
+        bool   hasAngle   = false;
+        double displayAngleDeg = 0.0;  ///< Input-space angle (follower/world).
+        QString angleFormula;      ///< Non-empty when the angle was a formula.
+    };
+    StrokeInput m_strokeInput;     ///< Active stroke's pre-input snapshot.
 
     cad::geo::Vec2 m_startPoint;
     bool m_angleSnap = false;

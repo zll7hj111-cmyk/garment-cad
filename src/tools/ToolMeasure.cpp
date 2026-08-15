@@ -1,4 +1,4 @@
-#include "ToolMeasure.h"
+﻿#include "ToolMeasure.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -210,23 +210,27 @@ void ToolMeasure::commitMeasure()
         m_paramDoc->addMeasure(mv);
 
     // 2) Result dialog (pure data in/out — it never touches the document).
-    //    Accepted → write name/comment via the existing SetMeasureCommand as
-    //    a second, independent undo step; Rejected/Esc keeps the measure as
-    //    committed and continues silently.
+    //    Accepted → write refName/name/comment via the existing
+    //    SetMeasureCommand as a second, independent undo step; Rejected/Esc
+    //    keeps the measure as committed and continues silently. 引用名输入框
+    //    初始为空: 用户填了就用用户的 (大写), 留空保留自动生成的 M_xxx。
     QWidget* parent = (m_scene && !m_scene->views().isEmpty())
         ? static_cast<QWidget*>(m_scene->views().first()) : nullptr;
     MeasureResultDialog dlg(mv.value, mv.refName, QString(), QString(), parent);
     if (dlg.exec() == QDialog::Accepted) {
-        const QString newName = dlg.enteredName();
+        const QString newRef     = dlg.enteredRefName();
+        const QString newName    = dlg.enteredName();
         const QString newComment = dlg.enteredComment();
-        if (!newName.isEmpty() || !newComment.isEmpty()) {
+        if (!newRef.isEmpty() || !newName.isEmpty() || !newComment.isEmpty()) {
             cad::param::MeasureVariable updated = mv;
-            if (!newName.isEmpty())    updated.name    = newName;
-            if (!newComment.isEmpty()) updated.comment = newComment;
+            if (!newRef.isEmpty())     updated.refName    = newRef;
+            if (!newName.isEmpty())    updated.name       = newName;
+            if (!newComment.isEmpty()) updated.comment    = newComment;
             if (m_undoStack)
                 m_undoStack->push(new cad::cmd::SetMeasureCommand(m_paramDoc, updated));
             else
                 m_paramDoc->updateMeasure(updated);
+            mv = updated;
         }
     }
 

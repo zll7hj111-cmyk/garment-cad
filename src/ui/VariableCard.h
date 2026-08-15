@@ -46,6 +46,8 @@ private:
     void updateValueLabel();
 
     QUuid m_id;
+    bool m_alternate = false;   ///< 行交替: 奇数行橙、偶数行蓝 (左侧竖线).
+    QWidget* m_deleteBtnSlot = nullptr;  ///< 悬停占位: 与删除按钮同尺寸互斥显隐, 防布局跳动.
 
     cad::ui::CopyChip* m_nameChip = nullptr;
     ElaText*         m_valueLabel = nullptr;

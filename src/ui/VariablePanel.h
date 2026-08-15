@@ -28,9 +28,11 @@ namespace cad::ui {
 class FormulaTabModel;
 class MeasureTab;
 
-/// Sidebar page with two sub-tabs:
-///   Tab 0 "尺寸变量": plain value variables (editable cards)
-///   Tab 1 "公式变量": formula variables (expression -> computed value)
+/// Sidebar page with four sub-tabs:
+///   Tab 0 "变量": plain value variables (editable cards)
+///   Tab 1 "公式": formula variables (expression -> computed value)
+///   Tab 2 "关联": linked variables
+///   Tab 3 "测量": measure variables (length + angle cards)
 /// Data is owned by ParamDocument; this panel is a pure editor/view.
 class VariablePanel : public QWidget
 {

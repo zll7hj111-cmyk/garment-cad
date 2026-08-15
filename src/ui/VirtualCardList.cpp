@@ -1,4 +1,4 @@
-#include "VirtualCardList.h"
+﻿#include "VirtualCardList.h"
 
 #include "ElaScrollArea.h"
 #include <QScrollBar>

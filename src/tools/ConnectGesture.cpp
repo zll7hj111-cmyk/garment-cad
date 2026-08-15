@@ -135,7 +135,7 @@ void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPoi
         }
     }
 
-    m_setState(SelectState::Connecting);
+    setState(SelectState::Connecting);
     updateConnectHalo();
 }
 
@@ -237,7 +237,7 @@ void ConnectGesture::release(const Vec2& pos)
                 // leader by clicking one of the candidate segments.
                 m_confirmCandidates = collectConfirmCandidates(refPos);
                 if (!m_confirmCandidates.empty()) {
-                    m_setState(SelectState::ConfirmTarget);
+                    setState(SelectState::ConfirmTarget);
                     if (m_scene)
                         m_scene->showToast(QString::fromUtf8(
                             "连接位置存在多个重叠点：点选基准线段确认连接"));  // 连接位置存在多个重叠点：点选基准线段确认连接
@@ -311,7 +311,7 @@ void ConnectGesture::cancel()
     m_connectTarget.reset();
     m_connectOldAtt.reset();
     if (m_angleHud) hideAngleHud();
-    m_setState(SelectState::Confirmed);
+    setState(SelectState::Confirmed);
 }
 
 bool ConnectGesture::keyPress(QKeyEvent* event)
@@ -384,7 +384,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
             ? m_connectTarget->worldPos : toBlk->worldPos(toPointId);
         showAngleHud(anchor);
     }
-    m_setState(SelectState::AngleInput);
+    setState(SelectState::AngleInput);
     return true;
 }
 
@@ -469,7 +469,7 @@ void ConnectGesture::commitConnectMove()
 {
     auto* blk = m_paramDoc ? m_paramDoc->findBlock(m_connectFromBlock) : nullptr;
     if (!blk) {
-        m_setState(m_selectionEmpty() ? SelectState::Idle : SelectState::Confirmed);
+        setState(m_selectionEmpty() ? SelectState::Idle : SelectState::Confirmed);
         return;
     }
 
@@ -495,7 +495,7 @@ void ConnectGesture::commitConnectMove()
     }
 
     m_scene->refreshAllBlockItems();
-    m_setState(m_selectionEmpty() ? SelectState::Idle : SelectState::Confirmed);
+    setState(m_selectionEmpty() ? SelectState::Idle : SelectState::Confirmed);
 }
 
 // ── Angle HUD ──
@@ -749,6 +749,11 @@ void ConnectGesture::finalizeConnection()
     m_connectOldAtt.reset();
     if (m_scene) m_scene->refreshAllBlockItems();
     m_clearSelectionAndIdle();
+    // The owner tool is now Idle — sync the gesture's own state too, or
+    // active() would stay true (AngleInput) and swallow every later press
+    // in ToolSelect::mousePress's connect branch (regression: 连接完成后
+    // 线段/画布无法再选中或移动).
+    setState(SelectState::Idle);
 }
 
 // ── Visual helpers ──

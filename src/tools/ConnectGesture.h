@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QSet>
@@ -95,6 +95,13 @@ public:
     [[nodiscard]] std::optional<SnapResult> hitPoint(const Vec2& worldPos) const;
 
 private:
+    /// Update the gesture's OWN state and forward it to the owning tool. The
+    /// owner routes events back into this gesture through active()/move()/
+    /// release()/keyPress(), all of which read m_state — so the local state
+    /// MUST stay in sync with the tool's state (the tool dispatches on the
+    /// value this gesture handed it via m_setState).
+    void setState(SelectState s) { m_state = s; m_setState(s); }
+
     /// Establish the attachment toward the given leader point/segment and move
     /// into AngleInput. Returns false when rejected (cycle etc.).
     bool attachToTarget(const QUuid& toBlockId, const QUuid& toPointId,
@@ -136,7 +143,7 @@ private:
     std::function<void()> m_clearSelectionAndIdle;
     std::function<bool()> m_selectionEmpty;
 
-    SelectState m_state = SelectState::Idle;   ///< The owning tool's state.
+    SelectState m_state = SelectState::Idle;   ///< This gesture's state (mirrors the tool's).
 
     // Connection state (block physically follows the cursor while connecting)
     QUuid m_connectFromBlock;

@@ -58,6 +58,8 @@ private:
     QUuid m_id;
     QUuid m_sourceBlockId;   ///< Block to highlight on click (reference line A).
     QString m_refName;
+    bool m_alternate = false;   ///< 行交替: 奇数行橙、偶数行蓝 (左侧竖线).
+    QWidget* m_deleteBtnSlot = nullptr;  ///< 悬停占位: 与删除按钮同尺寸互斥显隐, 防布局跳动.
     bool m_danglingStyled = false;   ///< current value-label style state (avoids per-frame setStyleSheet)
     bool m_hasShownValue = false;   ///< value guard armed after the first refresh
     double m_lastValueDeg = 0.0;    ///< last shown value (no-op guard for per-frame sync)

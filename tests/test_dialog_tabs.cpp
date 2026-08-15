@@ -312,7 +312,11 @@ void TestDialogTabs::probeTabHitArea()
         const QRect r = bar->tabRect(tabIdx);
         const QPoint p = bar->mapToGlobal(
             r.topLeft() + QPoint(r.width() / 2, qMax(1, r.height() * yFrac / 4)));
-        auto* w = QApplication::widgetAt(p);
+        // widget-tree hit test: QApplication::widgetAt() 是窗口像素级命中，
+        // 对 ElaDialog 的透明阴影 margin 区返回 null（Windows GetWindowFromPoint
+        // 不命中全透明像素），与字体/阴影环境耦合；childAt 走纯 widget 几何，
+        // 同时仍能检出 aux 容器盖住 tabbar 的回归。
+        auto* w = dlg->childAt(dlg->mapFromGlobal(p));
         return w ? QString::fromLatin1(w->metaObject()->className()) : QStringLiteral("null");
     };
     qInfo() << "[hit] auxTab visible:" << auxTab->isVisible();

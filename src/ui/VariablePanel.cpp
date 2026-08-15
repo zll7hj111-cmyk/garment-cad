@@ -2,6 +2,7 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QSizePolicy>
 #include "ElaScrollArea.h"
 #include <QScrollBar>
 #include <QStackedWidget>
@@ -95,14 +96,15 @@ VariablePanel::~VariablePanel()
 
 void VariablePanel::applyTheme()
 {
-    // The recessed list areas bake surface2 at construction; re-derive them.
-    // findChildren by objectName also covers the MeasureTab instances
+    // The recessed list areas bake their color at construction; re-derive
+    // them. findChildren by objectName also covers the MeasureTab instances
     // (they reuse the same names), so one pass restyles every list page.
+    // 列表底色 = 画布纸色 (canvasBg), 与画布背景呼应 (2026-08 用户要求).
     const QString scrollQss = QStringLiteral(
         "QScrollArea { background: %1; border: none; }")
-        .arg(cad::ui::Theme::tokens().surface2.name());
+        .arg(cad::ui::Theme::tokens().canvasBg.name());
     const QString containerQss = QStringLiteral("background: %1;")
-        .arg(cad::ui::Theme::tokens().surface2.name());
+        .arg(cad::ui::Theme::tokens().canvasBg.name());
     for (ElaScrollArea* sa : findChildren<ElaScrollArea*>(QStringLiteral("cardListArea")))
         sa->setStyleSheet(scrollQss);
     for (QWidget* c : findChildren<QWidget*>(QStringLiteral("cardListContainer")))
@@ -124,20 +126,29 @@ void VariablePanel::setupUi()
     wrapperLayout->setContentsMargins(0, 0, 0, 0);
     wrapperLayout->setSpacing(0);
 
-    // ===== Header: tabs + count + add =====
+    // ===== Header =====
+    // 窄悬浮窗下头部重新设计为两行：
+    //   行 1 = 变量/公式/关联/测量 四个子标签独占整行、自动拉伸铺满，
+    //           不会再被计数标签或添加按钮挤出可视区（空间问题: 后两个
+    //           标签页在 300~380px 宽的侧边栏窗口里看不到）。
+    //   行 2 = 计数 pill + 新建分组 + 添加 按钮。
     auto* header = new QWidget(this);
-    auto* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(8, 6, 10, 0);
-    headerLayout->setSpacing(8);
+    auto* headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(8, 6, 10, 4);
+    headerLayout->setSpacing(4);
 
     m_tabBar = new ElaTabBar(header);
-    m_tabBar->addTab(QStringLiteral("\u5c3a\u5bf8"));    // 尺寸
+    m_tabBar->addTab(QStringLiteral("\u53d8\u91cf"));    // 变量
     m_tabBar->addTab(QStringLiteral("\u516c\u5f0f"));    // 公式
     m_tabBar->addTab(QStringLiteral("\u5173\u8054"));    // 关联
     m_tabBar->addTab(QStringLiteral("\u6d4b\u91cf"));    // 测量
-    m_tabBar->setExpanding(false);
+    m_tabBar->setTabSize(QSize(80, 30)); // Ela 默认标签 sizeHint ~220px, 4 个必裁剪; 显式紧凑.
+    m_tabBar->setExpanding(true);          // 四个标签平均铺满整行.
+    m_tabBar->setUsesScrollButtons(false); // 禁用滚动箭头, 不允许裁剪标签.
+    m_tabBar->setElideMode(Qt::ElideNone); // 窄窗下也不省略标签文字.
     m_tabBar->setDrawBase(false);
     m_tabBar->setCursor(Qt::PointingHandCursor);
+    m_tabBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // Fixed tabs: ElaTabBar defaults to closable/movable — the × would
     // delete the stacked page via onTabCloseRequested. Disable it here.
     m_tabBar->setTabsClosable(false);
@@ -146,13 +157,18 @@ void VariablePanel::setupUi()
     // Tab look comes from the global theme (underline style, accent active).
     headerLayout->addWidget(m_tabBar);
 
-    m_countLabel = new ElaText(QString(), 13, header);
+    auto* metaRow = new QWidget(header);
+    auto* metaLayout = new QHBoxLayout(metaRow);
+    metaLayout->setContentsMargins(0, 0, 0, 0);
+    metaLayout->setSpacing(8);
+
+    m_countLabel = new ElaText(QString(), 13, metaRow);
     m_countLabel->setObjectName(QStringLiteral("panelCountPill"));
-    headerLayout->addWidget(m_countLabel);
+    metaLayout->addWidget(m_countLabel);
 
-    headerLayout->addStretch();
+    metaLayout->addStretch();
 
-    m_addGroupBtn = new ElaToolButton(header);
+    m_addGroupBtn = new ElaToolButton(metaRow);
     m_addGroupBtn->setIcon(cad::ui::IconHelper::iconByName(
         QStringLiteral("tree-structure"), QColor(0x2F, 0x6F, 0xED)));
     m_addGroupBtn->setIconSize(QSize(14, 14));
@@ -161,14 +177,16 @@ void VariablePanel::setupUi()
     m_addGroupBtn->setCursor(Qt::PointingHandCursor);
     m_addGroupBtn->setVisible(false);  // Formula tab only.
     m_addGroupBtn->setObjectName(QStringLiteral("outlineToolButton"));
-    headerLayout->addWidget(m_addGroupBtn);
+    metaLayout->addWidget(m_addGroupBtn);
 
-    m_addBtn = new ElaPushButton(QStringLiteral("添加"), header);
+    m_addBtn = new ElaPushButton(QStringLiteral("添加"), metaRow);
     m_addBtn->setIcon(cad::ui::IconHelper::iconByName(QStringLiteral("plus"), Qt::white));
     m_addBtn->setIconSize(QSize(12, 12));
     m_addBtn->setCursor(Qt::PointingHandCursor);
     m_addBtn->setObjectName(QStringLiteral("primaryButton"));
-    headerLayout->addWidget(m_addBtn);
+    metaLayout->addWidget(m_addBtn);
+
+    headerLayout->addWidget(metaRow);
 
     wrapperLayout->addWidget(header);
 
@@ -184,7 +202,7 @@ void VariablePanel::setupUi()
 
     m_stack->addWidget(buildListPage(
         m_varScroll, m_varContainer, m_varHost, m_varEmptyHint,
-        QStringLiteral("暂无尺寸变量\n点击右上角「＋ 添加」创建")));
+        QStringLiteral("暂无变量\n点击右上角「＋ 添加」创建")));
 
     m_stack->addWidget(buildListPage(
         m_formulaScroll, m_formulaContainer, m_formulaHost, m_formulaEmptyHint,
@@ -247,15 +265,15 @@ QWidget* VariablePanel::buildListPage(ElaScrollArea*& scrollOut, QWidget*& conta
     scrollOut->setWidgetResizable(true);
     scrollOut->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scrollOut->setFrameShape(QFrame::NoFrame);
-    // Recessed list background (theme-token driven).
+    // Recessed list background: 画布纸色 (canvasBg), 与画布背景呼应.
     scrollOut->setStyleSheet(QStringLiteral(
         "QScrollArea { background: %1; border: none; }")
-        .arg(cad::ui::Theme::tokens().surface2.name()));
+        .arg(cad::ui::Theme::tokens().canvasBg.name()));
     scrollOut->setObjectName(QStringLiteral("cardListArea"));
 
     containerOut = new QWidget();
     containerOut->setStyleSheet(QStringLiteral(
-        "background: %1;").arg(cad::ui::Theme::tokens().surface2.name()));
+        "background: %1;").arg(cad::ui::Theme::tokens().canvasBg.name()));
     containerOut->setObjectName(QStringLiteral("cardListContainer"));
     auto* layout = new QVBoxLayout(containerOut);
     layout->setContentsMargins(0, 0, 0, 0);

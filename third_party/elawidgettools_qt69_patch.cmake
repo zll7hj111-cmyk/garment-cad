@@ -143,3 +143,38 @@ foreach(f ${ELA_MENU_CPPS})
         message(STATUS "ElaMenu animation block removed in ${f}")
     endif()
 endforeach()
+
+# ---------------------------------------------------------------------------
+# Part 4 — ElaAppBar default close path: respect a rejected close().
+#
+# The app-bar close button runs, unconditionally:
+#     window->close();
+#     QApplication::processEvents();
+#     windowHandle->close();
+# When the top-level widget's closeEvent IGNORES the event (e.g. the user
+# cancels a "save changes?" prompt in MainWindow::closeEvent), window->close()
+# returns false but the code force-closes the native window handle anyway —
+# that delivers a SECOND QCloseEvent to the widget (QWidgetWindow forwards
+# window close events), re-entering closeEvent and showing the prompt twice.
+# Fix: abort the default-close path when window->close() was rejected. For an
+# accepted close the widget is already hidden, so the trailing
+# windowHandle->close() was a no-op anyway.
+# ---------------------------------------------------------------------------
+
+file(GLOB_RECURSE ELA_APPBAR_CPPS "ElaWidgetTools/private/ElaAppBarPrivate.cpp")
+foreach(f ${ELA_APPBAR_CPPS})
+    file(READ "${f}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    string(REPLACE
+"        const auto window = q->window();
+        window->close();
+        QApplication::processEvents();"
+"        const auto window = q->window();
+        if (!window->close())
+        {
+            return;
+        }
+        QApplication::processEvents();"
+        content "${content}")
+    file(WRITE "${f}" "${content}")
+endforeach()

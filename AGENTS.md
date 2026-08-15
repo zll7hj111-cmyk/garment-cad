@@ -1,4 +1,4 @@
-﻿# AGENTS.md
+# AGENTS.md
 
 ## 经验库使用规则
 
@@ -20,7 +20,7 @@ WildWind Pattern（野风帖）——参数化服装 CAD 系统，基于 C++23 /
 | `src/tools` | 交互工具：选择、智能笔、曲线编辑、捕捉引擎、工具管理器 |
 | `src/canvas` | 画布渲染：CanvasView/CanvasScene、BlockItem/CurveItem、图层、OpenGL 视口 |
 | `src/geometry` | 基础几何：Vec2、单位定义、CurveMath |
-| `src/app` | 应用入口与演示数据 |
+| `src/app` | 应用入口、状态栏组件（SegmentEditBar/预输入条）与演示数据 |
 
 ## 架构原则（不可破坏）
 
@@ -34,30 +34,26 @@ WildWind Pattern（野风帖）——参数化服装 CAD 系统，基于 C++23 /
 ## 构建命令
 
 ```bash
-cmake --preset default        # Debug（binaryDir=build/out）
-cmake --preset release        # Release（如需）
-cmake --build --preset default
+tools\build.bat               # 一键：vcvars64 + configure + build（Ninja Debug，binaryDir=build/out）
+tools\build.bat release       # Release（binaryDir=build/out-rel）
 ```
 
-**clangd 编译数据库刷新**（LSP 用，VS 生成器不导出 compile_commands.json，需 Ninja 专用目录）：
-```bash
-cmd /c ""C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" && cmake -S E:\garment-cad -B E:\garment-cad\build\clangd -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_STANDARD=23 -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/msvc2022_64 -DFETCHCONTENT_SOURCE_DIR_ELAWIDGETOOLS=E:\garment-cad\build\out\_deps\elawidgettools-src"
-```
-- 新增/删除源文件或改 CMakeLists.txt 后必须重跑，否则 clangd 索引陈旧（大量"不可能的错误"，构建其实通过）——现象与处理详见 `TROUBLESHOOTING.md` 第 1 组。
-- 命令中的 `FETCHCONTENT_SOURCE_DIR_ELAWIDGETOOLS` 必须指向 `build/out/_deps/elawidgettools-src`（patch 版源码）：一是 github.com:443 不可达（无代理环境），二保证 clangd 索引与真实构建源码一致。
-- clangd 安装于 `C:\Users\Administrator\AppData\Local\Programs\clangd\clangd_22.1.6\bin\clangd.exe`，opencode 的 LSP 配置指向 `build\clangd`（见 opencode.json）。
+- **Ninja 生成器需要 MSVC 环境**：普通 PowerShell 直接跑 `cmake` 找不到 cl.exe 会失败，必须走 `tools\build.bat`（内部先 call vcvars64.bat）或 Developer PowerShell。
+- compile_commands.json 由 Ninja 生成器自动导出到 `build/out`（`CMAKE_EXPORT_COMPILE_COMMANDS`），clangd 直接使用并热重载——增删源文件/改 CMakeLists 后只需重跑构建脚本，**无需手动刷 db**。
+- clangd 安装于 `C:\Users\Administrator\AppData\Local\Programs\clangd\clangd_22.1.6\bin\clangd.exe`，opencode 的 LSP 配置指向 `build\out`（见 opencode.json）。
 - PowerShell 5.1 下 `cmd /c ""...&&..."` 嵌套引号会失败（报 'C:\Program' 不是内部或外部命令），改走临时 .bat（先 call vcvars64.bat 再 cmake）。
+- 如需换回 VS 生成器：改 CMakePresets.json 后删 `build/out/CMakeCache.txt`+`CMakeFiles` 及 `_deps/*-subbuild` 缓存（`_deps/*-src` 保留即可离线复用依赖源码）。
 
 ## 验证命令
 
 ```bash
 cd build/out
-ctest -C Debug
+ctest
 ```
 
-- default preset 的 binaryDir 是 `build/out`；VS 多配置生成器必须加 `-C Debug`。
-- ctest 共 22 个用例（test_expression/resolver/serializer/p612_colinearity/group/duplicate/break/intersection/commands/curve/perf/aux_layer/smartpen_aux/segment_edit_bar/group_guards/tool_intersection/select_wkey/rotate_copy/dialog_tabs/canvas_perf/hold_show/log_probe）。**test_canvas_perf 的 singleCurveFrame 在 Debug 下段错误为存量问题**（与换肤类改动无关，疑似环境/软渲染），用基线对照法排查，勿误判回归（详见 `TROUBLESHOOTING.md` 第 5 组）。
-- 不进 ctest 需手动跑：test_realdoc_perf、test_realdoc_full（env `GCAD_DOC=<.gcad路径>`，可叠加 `GCAD_PROFILE=1`）。
+- default preset 的 binaryDir 是 `build/out`（单配置 Debug，无需 `-C`）；release 是 `build/out-rel`。
+- ctest 共 28 个用例（test_expression/resolver/serializer/p612_colinearity/group/duplicate/break/intersection/commands/curve/triangle_unfold/perf/aux_layer/smartpen_aux/segment_edit_bar/group_guards/tool_intersection/select_wkey/rotate_copy/dialog_tabs/canvas_perf/hold_show/log_probe + test_avatar_core/solver/render/view/panel）。**test_canvas_perf 的 singleCurveFrame 曾为 Debug 段错误存量问题**（疑似环境/软渲染），当前 Ninja Debug 下通过；复现时用基线对照法排查，勿误判回归（详见 `TROUBLESHOOTING.md` 第 5 组）。
+- 不进 ctest 需手动跑：test_realdoc_perf、test_realdoc_full（env `GCAD_DOC=<.gcad路径>`，可叠加 `GCAD_PROFILE=1`）、test_nav_smoke（ElaWindow 导航栈冒烟，无 env）。
 - 性能探针：src/parametric/PerfProbe.h，`GCAD_PROFILE=1` 启用；GUI 点击链路遥测日志固定路径 `e:\garment-cad\gcad_click_log.txt`。
 - 新增 .cpp 必须检查所有引用该文件的 target 源列表（CMake 无自动扫描，漏加会 LNK2019）。
 
@@ -75,7 +71,7 @@ Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指�
 ## 依赖管理
 
 - FetchContent 内嵌于 CMakeLists.txt（无 vcpkg.json/conanfile）：miniz `https://github.com/richgel999/miniz.git` Tag `3.0.2` 浅克隆。
-- **ElaWidgetTools**（`https://github.com/Liniyous/ElaWidgetTools.git`，GIT_TAG `aa1856b8f8589ba0a82e50c0ac01e289eb3ff2c4`，GIT_SHALLOW）：主项目 CMakeLists.txt 用 `PATCH_COMMAND` 执行 `third_party/elawidgettools_qt69_patch.cmake`（共 3 个 Part：Qt 6.9 编译兼容 / 弹窗按钮同步 emit 修 UAF + 隐藏空文本中间按钮 / ElaMenu 移除 400ms 动画，均幂等）。库为静态库，主程序以 dllimport 语义链接产生 LNK4217 警告属正常。重建流程与链接坑详见 `TROUBLESHOOTING.md` 第 2 组。
+- **ElaWidgetTools**（`https://github.com/Liniyous/ElaWidgetTools.git`，GIT_TAG `aa1856b8f8589ba0a82e50c0ac01e289eb3ff2c4`，GIT_SHALLOW）：主项目 CMakeLists.txt 用 `PATCH_COMMAND` 执行 `third_party/elawidgettools_qt69_patch.cmake`（共 4 个 Part：Qt 6.9 编译兼容 / 弹窗按钮同步 emit 修 UAF + 隐藏空文本中间按钮 / ElaMenu 移除 400ms 动画 / ElaAppBar 默认关闭路径尊重 close() 被拒，均幂等）。库为静态库，主程序以 dllimport 语义链接产生 LNK4217 警告属正常。重建流程与链接坑详见 `TROUBLESHOOTING.md` 第 2 组。
 - **spdlog**（`https://github.com/gabime/spdlog.git`，GIT_TAG `v1.17.0`，GIT_SHALLOW，MIT）：编译版静态库，自带 fmt；链接 `spdlog::spdlog`，头文件 `spdlog/spdlog.h`。Qt sink 可用（`spdlog/sinks/qt_sinks.h`）。
 - **Tracy Profiler**（`https://github.com/wolfpld/tracy.git`，GIT_TAG `v0.14.0`，GIT_SHALLOW，BSD-3）：客户端库 `Tracy::TracyClient`，头文件 `tracy/Tracy.hpp`，探针 `ZoneScoped`；`TRACY_ON_DEMAND=ON`（无 profiler 连接时零收集），发布版可用 `-DTRACY_ENABLE=OFF` 整体关闭；GUI 为独立工具（GitHub releases 的 windows-x64 预编译 zip）。
 - Qt6 组件：Widgets Svg OpenGLWidgets Test；AUTOMOC/AUTORCC/AUTOUIC 已启用。
@@ -95,6 +91,9 @@ Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指�
 
 ## 领域建模决策（用户拍板，勿翻案）
 
+- **默认主题**：默认使用白色（亮色）模式（`Theme::apply(Light)`，src/main.cpp）；暗色仅经 视图 → 暗色主题（Ctrl+D）显式切换，不做持久化默认翻转。
+- **面板悬浮窗（原变量悬浮窗，2026-08 重构）**：变量/图层/组 三个面板统一为 Qt::Tool 悬浮窗口（侧边栏样式：长竖条、宽 ≤480、初始高按屏幕可用区 ≤660、贴主窗口右缘）；窗口内顶部为分类大标签 变量/图层/组（ElaTabBar，与主窗口后三个标签一一对应）。「变量」大标签页头部两行：变量/公式/关联/测量 四个子标签独占整行自动铺满（无滚动箭头、不裁剪），计数与操作按钮在第二行。主窗口顶部标签 画布/变量/图层/组 中，后三个是悬浮窗开关：点击显示窗口并切到对应大标签页，再点当前分类 = 隐藏；悬浮窗打开时对应按钮保持选中高亮 + 强调色圆点指示（`syncPanelTabs`，MainWindow.cpp），X 关闭/隐藏后主标签回画布；悬浮窗内切换大标签 → 主窗口按钮跟随高亮。主窗口页面堆栈只剩画布页。用户拖动后不再自动归位，X 关闭 = 隐藏。主窗口标签条与悬浮窗大标签的同步入口：`onPageTabChanged` / `syncPanelTabs` / `eventFilter(Hide)`；悬浮窗大标签 `currentChanged` 必须同时切 `m_panelStack` 内容页 + 同步主窗口按钮高亮（漏接 stack 会导致内容永远停在变量页）。**卡片行区分（2026-08 用户拍板，最终方案）**：左侧竖线统一**蓝/橙按行交替**——偶数行蓝 `#2F6FED`、奇数行橙 `#F59E0B`，四页（变量/公式/关联/测量）一致；卡片构造函数 `alternate` 参数（`row % 2` / 公式页 `localIndex % 2`）存为 `m_alternate` 驱动竖线颜色。背景斑马纹方案已废弃删除（VirtualCardList 无 paintEvent 覆盖、无 stripe token——曾尝试 `ThemeTokens::stripe` 亮 #E3E8EF/暗 #333B45，用户反馈与底色区分度不够且不美观，两次迭代后放弃）；类型色条（蓝=变量/紫=公式/橄榄=关联/陶土=测量）亦被取消（各页签内类型本就单一）。**卡片列表底色 = 画布纸色 `ThemeTokens::canvasBg`**（2026-08 用户要求，亮 #F6F3EC / 暗 #14181E，VariablePanel.cpp buildListPage + applyTheme、MeasureTab.cpp 同步）；**悬停删除按钮防跳动**：五张卡片（VariableCard/FormulaCard/LinkedCard/MeasureCard/AngleMeasureCard）的悬停显隐删除按钮都配同尺寸透明占位 `m_deleteBtnSlot` 互斥换显隐——布局空间恒定，按钮出现不引起行宽挤压/行高变化（否则 VirtualCardList 重测整列下移）。引用名输入框（2026-08 用户要求）：测量结果对话框「引用名」行改为可编辑输入框、初始为空（不显示自动生成的 M_xxx，留空保留自动生成名；输入即转大写）；变量/关联/测量/角度卡片上的引用名 chip 不再显示灰色占位文字「引用名」，无值时纯空框（tooltip 仍提示双击编辑）。**chip 静态态 = 输入框样式（2026-08 用户拍板，最终方案）**：所有 CopyChip（名称/引用名/公式名）**空闲时即显示输入框**——背景 `@surface`（hover `@surface2`）+ 1px 圆角描边，**由 `CopyChip::paintEvent` 自绘**（**坑：ElaText 不渲染 QSS 边框**——它自带内联表 `#ElaText{background-color:transparent}` 且文本路径不画 PE_Widget，QSS 的 background 能渲染（曾有"空白蓝色小方块"为证）但 border 完全无效，两次 QSS 尝试用户均反馈无差别）。**描边用专用中灰色**（亮 `#9AA4B2` / 暗 `#4E5866`，2026-08 三次迭代：`@border`→`@borderStrong`→专用色——前两版在画布纸色底上肉眼不可见，用户两次反馈"完全没有生效"；像素探针 chipBox/cardBorderPx/lightCardBorderPx 验证渲染），空值/占位态也是完整空输入框、不"空一块"；`m_label->setMinimumHeight(16)` 防塌成细条；编辑态覆盖层 (ElaLineEdit) 与静态框同尺寸同形制，输入结束收起后描边仍在；hover 由 chip 自绘（label 的 Enter/Leave 事件经 eventFilter 转发 setHovered）。引用名 chip 无值时纯空框（tooltip 仍提示双击编辑）。
+- **智能笔预输入**：切到智能笔时状态栏显示一次性预输入条（名称/长度 cm/角度 °）；长度+角度齐全 → 一击成线（起点即吸附点）；仅长度/角度 → 预览锁该维度、第二击定另一维；无效表达式 toast 后忽略。角度语义与 HUD 一致：自由起点 = 绝对世界角，吸附起点 = 跟随折角（闭合基准）。数值或公式均可；内容被创建使用后清空，回到空白预输入态。
 - **桥接线范式**：自由线 + 长度公式引用测量变量 M_xxx + 可选端点跟随（起点跟随宿主 / 终点指向 endTarget，LinePropertyDialog 开关）；创建后与普通线段无异，无 isBridge/pin 标志。终点指向 = Block 的 endTargetBlockId/endTargetPointId/endTargetOffset 字段，Resolver Step 7 驱动（容差 5° 吸附，琥珀环高亮）。
 - **曲线系统**：分段三次 Bézier + 过点锚点；AUTO 点 C2 曲率连续（solveC2Tangents Thomas 算法，tension 不作用于 C2 解）；MANUAL 点（autoTangent=false）存储切线为已知边界；智能笔只画直线，曲线编辑全部在 ToolCurveEdit（快捷键 C）；共线不等长切线手柄（tangentLocked=true 时跟随转向保长度）。桥接线禁止加曲线点。打断需贝塞尔细分（de Casteljau）。
 - **辅助计算层**：全局唯一、固定在图层列表最底部（index 0）、不可删除。层间契约：唯一出口 = 发布的测量标量；工作层对辅助层不可见、不可捕捉、不可附着。非激活时完全隐身，求解照常。

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <QString>
+#include <QVBoxLayout>
 #include <QWidget>
 
 #include "ElaContentDialog.h"
@@ -23,11 +24,17 @@ inline ElaContentDialog* makeDialog(QWidget* parent, const QString& title,
 {
     auto* dlg = new ElaContentDialog(parent);
     dlg->setWindowTitle(title);
-    auto* body = new ElaText(text, 13, dlg);
+    // ElaContentDialog 主布局无外边距，默认中央部件自带 (15,25,15,10)；
+    // setCentralWidget 换掉默认部件后必须自己补边距，否则文字贴边框。
+    auto* bodyHost = new QWidget(dlg);
+    auto* bodyLay = new QVBoxLayout(bodyHost);
+    bodyLay->setContentsMargins(15, 25, 15, 10);
+    auto* body = new ElaText(text, 13, bodyHost);
     body->setWordWrap(true);
     body->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     body->setMinimumWidth(320);
-    dlg->setCentralWidget(body);
+    bodyLay->addWidget(body);
+    dlg->setCentralWidget(bodyHost);
     return dlg;
 }
 

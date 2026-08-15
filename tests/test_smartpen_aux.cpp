@@ -117,6 +117,16 @@ private slots:
     /// AND 拖动保护-locked by default — otherwise the stroke degrades into a
     /// free line with no attachment (拖动保护失效).
     void auxPointEndFlipsAndCreatesLockedConnection();
+
+    // ── 预输入 (status-bar pre-input): 名称/长度/角度一次性构造 ──
+    void preInputLengthAngleCreatesLineInOneClick();
+    void preInputLengthOnlyLocksDistance();
+    void preInputAngleOnlyLocksDirection();
+    void preInputNameAppliesToTwoClickLine();
+    void preInputFormulaDrivesLine();
+    void preInputAttachedAngleUsesFollowerConvention();
+    void preInputInvalidLengthIsIgnored();
+    void preInputSurvivesCancelledStroke();
 };
 
 void TestSmartPenAux::idleHoverShowsXMarker()
@@ -460,6 +470,294 @@ void TestSmartPenAux::auxPointEndFlipsAndCreatesLockedConnection()
     const ParamPoint* ep = nb.findPoint(ns.endPointId);
     QVERIFY(ep && ep->resolved);
     QVERIFY(nb.transform.toWorld(ep->resolvedPos).distanceTo(Vec2(200.0, 100.0)) < 1e-6);
+    pen.deactivate();
+}
+
+// ---------------------------------------------------------------------------
+// 预输入 (status-bar pre-input): the pending 名称/长度/角度 are consumed by
+// the next committed line and then cleared (一次性预输入).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void makePress(QGraphicsSceneMouseEvent& press, const QPointF& userPos)
+{
+    press.setScenePos(userPos);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+}
+
+} // namespace
+
+void TestSmartPenAux::preInputLengthAngleCreatesLineInOneClick()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.name     = QString::fromUtf8("肩线");
+    in.lengthCm = QStringLiteral("10");
+    in.angleDeg = QStringLiteral("90");
+    pen.setPreInput(in);
+
+    // 长度+角度齐全 → 一击成线: start (100,100), end (100,200) mm.
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    makePress(press, QPointF(100.0, 100.0));
+    pen.mousePress(&press);
+
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    const Block& nb = doc.blocks().back();
+    QCOMPARE(nb.segments.size(), size_t(1));
+    QCOMPARE(nb.segments.front().name, QString::fromUtf8("肩线"));
+
+    const ParamPoint* sp = nb.findPoint(nb.segments.front().startPointId);
+    const ParamPoint* ep = nb.findPoint(nb.segments.front().endPointId);
+    QVERIFY(sp && ep && sp->resolved && ep->resolved);
+    QVERIFY(nb.transform.toWorld(sp->resolvedPos).distanceTo(Vec2(100.0, 100.0)) < 1e-6);
+    QVERIFY(nb.transform.toWorld(ep->resolvedPos).distanceTo(Vec2(100.0, 200.0)) < 1e-6);
+    QVERIFY(std::abs(ep->distance - 100.0) < 1e-6);
+    QVERIFY(std::abs(ep->angle - 90.0) < 1e-6);
+
+    // 一次性语义: 工具侧立即清空已使用的预输入.
+    QVERIFY(pen.preInput().name.isEmpty());
+    QVERIFY(pen.preInput().lengthCm.isEmpty());
+    QVERIFY(pen.preInput().angleDeg.isEmpty());
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputLengthOnlyLocksDistance()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.lengthCm = QStringLiteral("10");
+    pen.setPreInput(in);
+
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(0.0, 0.0));
+    pen.mousePress(&press1);
+    // 第二击只决定方向: (160,120) 方向 → 长度锁 100mm → end (80,60).
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(160.0, 120.0));
+    pen.mousePress(&press2);
+
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    const Block& nb = doc.blocks().back();
+    const ParamPoint* ep = nb.findPoint(nb.segments.front().endPointId);
+    QVERIFY(ep && ep->resolved);
+    const Vec2 end = nb.transform.toWorld(ep->resolvedPos);
+    QVERIFY(end.distanceTo(Vec2(80.0, 60.0)) < 1e-6);
+    QVERIFY(std::abs(ep->distance - 100.0) < 1e-6);
+    QVERIFY(pen.preInput().lengthCm.isEmpty());
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputAngleOnlyLocksDirection()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.angleDeg = QStringLiteral("30");
+    pen.setPreInput(in);
+
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(0.0, 0.0));
+    pen.mousePress(&press1);
+    // 第二击沿固定 30° 射线投影: end = dir(30°) * ((40,80)·dir(30°)).
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(40.0, 80.0));
+    pen.mousePress(&press2);
+
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    const Block& nb = doc.blocks().back();
+    const ParamPoint* ep = nb.findPoint(nb.segments.front().endPointId);
+    QVERIFY(ep && ep->resolved);
+    const Vec2 end = nb.transform.toWorld(ep->resolvedPos);
+
+    const double rad = 30.0 * 3.14159265358979323846 / 180.0;
+    const Vec2 dir(std::cos(rad), std::sin(rad));
+    const double t = Vec2(40.0, 80.0).dot(dir);
+    QVERIFY(end.distanceTo(dir * t) < 1e-6);
+    // Polar 存储角 = 绝对世界角 (自由起点).
+    QVERIFY(std::abs(ep->angle - 30.0) < 1e-6);
+    QVERIFY(pen.preInput().angleDeg.isEmpty());
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputNameAppliesToTwoClickLine()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.name = QString::fromUtf8("口袋线");
+    pen.setPreInput(in);
+
+    // 仅名称预输入 → 保持经典两击流程, 名称落在创建的线段上.
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(0.0, 0.0));
+    pen.mousePress(&press1);
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(100.0, 0.0));
+    pen.mousePress(&press2);
+
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    const Block& nb = doc.blocks().back();
+    QCOMPARE(nb.segments.front().name, QString::fromUtf8("口袋线"));
+    QVERIFY(pen.preInput().name.isEmpty());
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputFormulaDrivesLine()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.name     = QString::fromUtf8("公式线");
+    in.lengthCm = QStringLiteral("5+5");
+    in.angleDeg = QStringLiteral("30+60");
+    pen.setPreInput(in);
+
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    makePress(press, QPointF(0.0, 0.0));
+    pen.mousePress(&press);
+
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    const Block& nb = doc.blocks().back();
+    const Segment& ns = nb.segments.front();
+    QCOMPARE(ns.name, QString::fromUtf8("公式线"));
+    QCOMPARE(ns.lengthFormula, QStringLiteral("5+5"));
+    const ParamPoint* ep = nb.findPoint(ns.endPointId);
+    QVERIFY(ep && ep->resolved);
+    QCOMPARE(ep->distanceFormula, QStringLiteral("5+5"));
+    QCOMPARE(ep->angleFormula, QStringLiteral("30+60"));
+    QVERIFY(nb.transform.toWorld(ep->resolvedPos).distanceTo(Vec2(0.0, 100.0)) < 1e-6);
+    QVERIFY(pen.preInput().lengthCm.isEmpty());
+    QVERIFY(pen.preInput().angleDeg.isEmpty());
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputAttachedAngleUsesFollowerConvention()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    makeLineBlock(doc, 0);  // B: (0,0) → (100,0), end point at (100,0)
+    doc.resolveAll();
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.name     = QString::fromUtf8("延伸线");
+    in.lengthCm = QStringLiteral("10");
+    in.angleDeg = QStringLiteral("180");  // 闭合基准: 180° = 沿 leader 直行延伸
+    pen.setPreInput(in);
+
+    // 吸附 B 的终点 → 一击成线, 跟随角 180° = 继续沿 +X 延伸 100mm.
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    makePress(press, QPointF(100.0, 0.0));
+    pen.mousePress(&press);
+
+    QCOMPARE(doc.blocks().size(), size_t(2));
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Block& nb = doc.blocks().back();
+    QCOMPARE(nb.segments.front().name, QString::fromUtf8("延伸线"));
+
+    const ParamPoint* ep = nb.findPoint(nb.segments.front().endPointId);
+    QVERIFY(ep && ep->resolved);
+    QVERIFY(nb.transform.toWorld(ep->resolvedPos).distanceTo(Vec2(200.0, 0.0)) < 1e-6);
+
+    const Attachment& att = doc.attachments().front();
+    QCOMPARE(att.fromBlockId, nb.id);
+    QVERIFY(std::abs(att.followerAngle - 180.0) < 1e-6);
+    QVERIFY(pen.preInput().angleDeg.isEmpty());
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputInvalidLengthIsIgnored()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.lengthCm = QStringLiteral("abc");  // 无效 → 忽略, 不阻断画线
+    in.angleDeg = QStringLiteral("45");
+    pen.setPreInput(in);
+
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(0.0, 0.0));
+    pen.mousePress(&press1);
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(100.0, 100.0));
+    pen.mousePress(&press2);
+
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    const Block& nb = doc.blocks().back();
+    const ParamPoint* ep = nb.findPoint(nb.segments.front().endPointId);
+    QVERIFY(ep && ep->resolved);
+    // 长度失效 → 退化为角度锁定; (100,100) 在 45° 射线上, 距离为投影长度.
+    const Vec2 end = nb.transform.toWorld(ep->resolvedPos);
+    QVERIFY(end.distanceTo(Vec2(100.0, 100.0)) < 1e-6);
+    QVERIFY(std::abs(ep->angle - 45.0) < 1e-6);
+    QVERIFY(pen.preInput().angleDeg.isEmpty());
+    QCOMPARE(pen.preInput().lengthCm, QStringLiteral("abc"));  // 未生效的不清
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputSurvivesCancelledStroke()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    CanvasScene scene(&doc);
+    QGraphicsView view(&scene);
+
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+    cad::tools::LinePreInput in;
+    in.lengthCm = QStringLiteral("10");
+    pen.setPreInput(in);
+
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    makePress(press, QPointF(0.0, 0.0));
+    pen.mousePress(&press);
+
+    // 右键取消画线 → 值未使用, 预输入必须保留.
+    QGraphicsSceneMouseEvent right(QEvent::GraphicsSceneMousePress);
+    right.setScenePos(QPointF(50.0, 50.0));
+    right.setButton(Qt::RightButton);
+    right.setButtons(Qt::RightButton);
+    pen.mousePress(&right);
+
+    QCOMPARE(doc.blocks().size(), size_t(0));
+    QCOMPARE(pen.preInput().lengthCm, QStringLiteral("10"));
     pen.deactivate();
 }
 

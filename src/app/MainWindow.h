@@ -12,7 +12,9 @@ class QAction;
 class QMenu;
 class QUndoStack;
 class QWidget;
+class QEvent;
 class QStackedWidget;
+class QSplitter;
 class ElaToolButton;
 class ElaTabBar;
 class ElaMenu;
@@ -26,7 +28,7 @@ namespace cad::ui { class VariablePanel; }
 
 namespace cad::param { class ParamDocument; }
 namespace cad::tools { class ToolManager; enum class ToolType; }
-namespace cad::app { class SegmentEditBar; }
+namespace cad::app { class SegmentEditBar; class SmartPenPreInputBar; }
 class MainWindow : public ElaWindow
 {
     Q_OBJECT
@@ -40,6 +42,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    /// 面板悬浮窗隐藏（X 关闭 / 程序 hide）时同步主窗口标签选中态。
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private slots:
     void onSceneMouseMoved(qreal x, qreal y);
@@ -54,12 +58,17 @@ private slots:
     void onLinePreview(double lenCm, double angleDeg);
     /// Esc in the edit strip = 撤销创建 (delete the line) + hide the strip.
     void onEditStripCancel();
+    /// Smart-pen pre-input strip values changed — push them to the active tool.
+    void onPreInputChanged();
     /// Selection tool's single-segment pick → edit strip (both ids null =
     /// clear, e.g. multi-select or deselection).
     void onEditTargetChanged(const QUuid& blockId, const QUuid& segmentId);
     /// Hold-to-show (N/L keys) changed on canvas — keep open
     /// LinePropertyDialogs' display toggles in sync.
     void onForceShowChanged(bool showNames, bool showLengths);
+    /// 网页式标签切换：变量/图层/组 标签不再对应主窗口页面, 而是切换
+    /// 独立悬浮窗（面板窗）的大标签页。
+    void onPageTabChanged(int index);
 
     void actionSelect();
     void actionSmartPen();
@@ -88,10 +97,17 @@ private:
     void setupMenuBar();
     void setupToolBar();
     void setupStatusBar();
-    /// Build the Fluent navigation pages (画布 / 变量 / 图层 / 组) — the
-    /// right-hand SidePanel dock was replaced by ElaWindow navigation pages.
+    /// Build the Fluent navigation pages (画布) + 面板悬浮窗 (变量/图层/组) —
+    /// the right-hand SidePanel dock was replaced by ElaWindow navigation pages.
     void setupPages();
     void connectSignals();
+
+    /// 面板悬浮窗（Qt::Tool 侧边栏样式）: 主窗口顶部 变量/图层/组 标签是
+    /// 开关, 点击显示/切换大标签页, 再点当前分类隐藏。
+    /// 同步主窗口标签选中态 + 激活指示圆点到当前面板状态。
+    void syncPanelTabs();
+    /// 首次显示时按侧边栏样式定位: 主窗口右侧、长竖条、不超屏幕可用区。
+    void ensurePanelWindowPosition();
 
     /// Rebuild the eight tool-action icons from the current theme tokens
     /// (normal = secondary text, active = accent) so both themes stay legible.
@@ -117,6 +133,9 @@ private:
     /// 网页式标签页导航：顶部标签栏 + 自建页面堆栈（替代 Ela 左侧导航）。
     ElaTabBar* m_pageTabs = nullptr;
     QStackedWidget* m_pageStack = nullptr;
+    /// 变量/图层/组 标签不再是页面：它们是面板悬浮窗的开关, 打开时对应
+    /// 按钮保持选中高亮 + 强调色圆点 (syncPanelTabs)。
+    bool m_tabSyncGuard = false;       ///< 防 currentChanged 重入.
     /// Fluent tool buttons inside the pill (order matches the tool actions).
     QList<ElaToolButton*> m_toolButtons;
     /// Canvas-toolbar layer chip: dot + active layer name, popup = switch
@@ -146,8 +165,14 @@ private:
     ElaText* m_toolHintLabel = nullptr;
     ElaText* m_diagLabel = nullptr;   ///< Attachment diagnostics warning (hidden when healthy).
     cad::app::SegmentEditBar* m_segmentEditBar = nullptr;  ///< 创建后内嵌编辑条 (状态栏).
+    cad::app::SmartPenPreInputBar* m_preInputBar = nullptr;  ///< 智能笔预输入条 (状态栏).
 
     cad::ui::VariablePanel* m_variablePanel = nullptr;
+    /// 面板悬浮窗 (Qt::Tool, 侧边栏样式长竖条): 变量/图层/组 三个大标签页。
+    QWidget* m_panelWindow = nullptr;
+    ElaTabBar*     m_panelBigBar = nullptr;   ///< 悬浮窗内 变量/图层/组 大标签.
+    QStackedWidget* m_panelStack = nullptr;
+    bool     m_panelWindowPositioned = false;  ///< 用户移动后不再自动归位.
     LayerPanel* m_layerPanel = nullptr;
     GroupPanel* m_groupPanel = nullptr;
 

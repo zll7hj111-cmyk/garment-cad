@@ -1,7 +1,8 @@
-﻿#include "CopyChip.h"
+#include "CopyChip.h"
 
 #include "ElaText.h"
 #include "ElaLineEdit.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QClipboard>
 #include <QApplication>
@@ -9,8 +10,57 @@
 #include <QTimer>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QPainter>
 
 namespace cad::ui {
+
+// ============================================================
+// ChipLabel — 常驻输入框样式的承载控件
+//
+// 背景 + 描边画在 label 的 paintEvent 里 (与文本同一绘制上下文)。
+// 为什么不在 chip 本体画: 2026-08 排查确认 chip 本体的 paintEvent 被
+// Qt 合成器以空 clip 调用 —— visibleRegion / ev->region() / QPainter
+// device / engine / deviceTransform 全部正常, 唯独 painter clip 为
+// 0x0, 所有自绘静默丢弃 (grab / render / 屏幕全不可见), 而其子控件
+// (ElaText label) 的绘制路径正常。故描边由 label 绘制, 编辑态覆盖层
+// (ElaLineEdit) 收起后描边仍在, 空值/占位态也不会"空一块"。
+// ============================================================
+
+ChipLabel::ChipLabel(const QString& text, int pixelSize, CopyChip* host,
+                     QWidget* parent)
+    : ElaText(text, pixelSize, parent)
+    , m_host(host)
+{
+}
+
+void ChipLabel::setHovered(bool hovered)
+{
+    if (m_hovered == hovered)
+        return;
+    m_hovered = hovered;
+    update();  // 重绘描边底色
+}
+
+void ChipLabel::paintEvent(QPaintEvent* event)
+{
+    // 先画输入框样式 (背景 + 1px 圆角描边), 再让 ElaText 画文本。
+    // 描边用明显可见的中灰: borderStrong 在画布纸色底上太浅 (用户反馈
+    // "看不出描边"), 亮/暗各取一档更深的专用色。
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const auto& t = cad::ui::Theme::tokens();
+    const bool dark = cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark;
+    const QColor borderColor = dark ? QColor(0x4E, 0x58, 0x66)   // 暗: 中灰, 比底亮一档
+                                    : QColor(0x9A, 0xA4, 0xB2);   // 亮: 中灰, 纸色上清晰可见
+    p.setPen(QPen(borderColor, 1));
+    p.setBrush(m_hovered ? t.surface2 : t.surface);
+    p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 3, 3);
+    ElaText::paintEvent(event);
+}
+
+// ============================================================
+// CopyChip
+// ============================================================
 
 CopyChip::CopyChip(Variant variant, QWidget* parent)
     : QWidget(parent)
@@ -21,11 +71,14 @@ CopyChip::CopyChip(Variant variant, QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_label = new ElaText(QString(), 13, this);
+    m_label = new ChipLabel(QString(), 13, this, this);
     m_label->setObjectName(QStringLiteral("chipLabel"));
     m_label->setProperty("variant", variantKey());
     m_label->setCursor(Qt::PointingHandCursor);
     m_label->installEventFilter(this);
+    // 静态态输入框样式 (浅色底+细边框, Theme QSS): 空文本时也要保持
+    // 完整输入框高度, 不能塌成细条 (ElaText 不保证认 QSS min-height).
+    m_label->setMinimumHeight(16);
     layout->addWidget(m_label);
 
     // Edit overlay: hidden, positioned on top of label when editing.
@@ -99,6 +152,14 @@ void CopyChip::focusEdit()
 bool CopyChip::eventFilter(QObject* obj, QEvent* event)
 {
     if (obj == m_label) {
+        if (event->type() == QEvent::Enter) {
+            setHovered(true);
+            return false;  // 继续交给 label 默认处理 (光标/工具提示)
+        }
+        if (event->type() == QEvent::Leave) {
+            setHovered(false);
+            return false;
+        }
         if (event->type() == QEvent::MouseButtonPress) {
             auto* me = static_cast<QMouseEvent*>(event);
             if (me->button() == Qt::LeftButton && m_copyEnabled && !m_text.isEmpty())
@@ -128,6 +189,15 @@ bool CopyChip::eventFilter(QObject* obj, QEvent* event)
         }
     }
     return QWidget::eventFilter(obj, event);
+}
+
+void CopyChip::setHovered(bool hovered)
+{
+    if (m_hovered == hovered)
+        return;
+    m_hovered = hovered;
+    // 描边/底色画在 label 的 paintEvent 里, hover 状态同步给 label 重绘。
+    m_label->setHovered(hovered);
 }
 
 void CopyChip::updateDisplay()
@@ -166,6 +236,8 @@ void CopyChip::commitEdit()
     QString t = m_edit->text().trimmed();
     if (m_variant == Variant::Ref)
         t = t.toUpper();
+    // 覆盖层 (ElaLineEdit) 隐藏后, 其覆盖区域重新暴露 —— Qt 会自动重绘
+    // 下方 label (描边+文本在 label 的 paintEvent 里, 正常上屏)。
     m_edit->hide();
     const bool changed = (t != m_text);
     m_text = t;

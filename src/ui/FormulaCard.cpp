@@ -37,6 +37,7 @@ FormulaCard::FormulaCard(const cad::param::FormulaVariable& formula,
     , m_groupId(formula.groupId)
     , m_conditions(formula.conditions)
     , m_conditionsEnabled(formula.conditionsEnabled)
+    , m_alternate(alternate)
 {
     setAttribute(Qt::WA_StyledBackground, true);
     setupUi(formula, alternate);
@@ -168,20 +169,24 @@ void FormulaCard::paintEvent(QPaintEvent*)
     QPainter p(this);
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 
-    // Left accent bar (purple for formula variables).
+    // Left accent bar — 行交替竖线: 偶数行蓝 / 奇数行橙 (2026-08 用户拍板
+    // 统一蓝橙交替, 替代原类型色条与背景斑马纹).
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0x8E, 0x44, 0xAD));
+    p.setBrush(m_alternate ? QColor(0xF5, 0x9E, 0x0B)   // 橙
+                           : QColor(0x2F, 0x6F, 0xED)); // 蓝
     p.drawRoundedRect(0, 2, 3, height() - 4, 1.5, 1.5);
 }
 
 void FormulaCard::enterEvent(QEnterEvent*)
 {
     m_deleteBtn->setVisible(true);
+    m_deleteBtnSlot->setVisible(false);
 }
 
 void FormulaCard::leaveEvent(QEvent*)
 {
     m_deleteBtn->setVisible(false);
+    m_deleteBtnSlot->setVisible(true);
 }
 
 bool FormulaCard::eventFilter(QObject* obj, QEvent* event)
@@ -224,7 +229,7 @@ bool FormulaCard::eventFilter(QObject* obj, QEvent* event)
 void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alternate)
 {
     setObjectName(QStringLiteral("FormulaCard"));
-    (void)alternate;  // ElaScrollPageArea paints the card from the active theme.
+    (void)alternate;  // 竖线颜色已按 alternate 存为 m_alternate (构造时).
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
@@ -261,6 +266,12 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     m_condDot->setStyleSheet("font-size: 8px; background: transparent;");
     m_condDot->setVisible(false);
     header->addWidget(m_condDot, 0);
+
+    // 悬停占位: 与删除按钮同尺寸, 二者互斥显隐 → 布局空间恒定,
+    // 按钮出现/消失不引起行宽挤压或行高变化 (VirtualCardList 不重测).
+    m_deleteBtnSlot = new QWidget(this);
+    m_deleteBtnSlot->setFixedSize(20, 20);
+    header->addWidget(m_deleteBtnSlot, 0);
 
     m_deleteBtn = new ElaToolButton(this);
     m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(

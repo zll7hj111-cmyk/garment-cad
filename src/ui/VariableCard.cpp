@@ -44,6 +44,7 @@ VariableCard::VariableCard(const cad::param::Variable& var, bool alternate,
                            QWidget* parent)
     : QWidget(parent)
     , m_id(var.id)
+    , m_alternate(alternate)
 {
     setAttribute(Qt::WA_StyledBackground, true);
     setupUi(var, alternate);
@@ -92,26 +93,30 @@ void VariableCard::paintEvent(QPaintEvent* event)
     QPainter p(this);
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 
-    // Left accent bar (type identity: blue for plain variables).
+    // Left accent bar — 行交替竖线: 偶数行蓝 / 奇数行橙 (2026-08 用户拍板
+    // 统一蓝橙交替, 替代原类型色条与背景斑马纹).
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0x2E, 0x86, 0xC1));
+    p.setBrush(m_alternate ? QColor(0xF5, 0x9E, 0x0B)   // 橙
+                           : QColor(0x2F, 0x6F, 0xED)); // 蓝
     p.drawRoundedRect(0, 2, 3, height() - 4, 1.5, 1.5);
 }
 
 void VariableCard::enterEvent(QEnterEvent*)
 {
     m_deleteBtn->setVisible(true);
+    m_deleteBtnSlot->setVisible(false);
 }
 
 void VariableCard::leaveEvent(QEvent*)
 {
     m_deleteBtn->setVisible(false);
+    m_deleteBtnSlot->setVisible(true);
 }
 
 void VariableCard::setupUi(const cad::param::Variable& var, bool alternate)
 {
     setObjectName(QStringLiteral("VariableCard"));
-    (void)alternate;  // ElaScrollPageArea paints the card from the active theme.
+    (void)alternate;  // 竖线颜色已按 alternate 存为 m_alternate (构造时).
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
@@ -131,6 +136,12 @@ void VariableCard::setupUi(const cad::param::Variable& var, bool alternate)
         "font-family: 'Consolas','Courier New',monospace;"
         "font-size: 12px; font-weight: bold; background: transparent;");
     header->addWidget(m_valueLabel, 0);
+
+    // 悬停占位: 与删除按钮同尺寸, 二者互斥显隐 → 布局空间恒定,
+    // 按钮出现/消失不引起行宽挤压或行高变化 (VirtualCardList 不重测).
+    m_deleteBtnSlot = new QWidget(this);
+    m_deleteBtnSlot->setFixedSize(20, 20);
+    header->addWidget(m_deleteBtnSlot, 0);
 
     m_deleteBtn = new ElaToolButton(this);
     m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
@@ -152,7 +163,7 @@ void VariableCard::setupUi(const cad::param::Variable& var, bool alternate)
     detailLayout->setSpacing(6);
 
     m_refChip = new cad::ui::CopyChip(cad::ui::CopyChip::Variant::Ref, m_detail);
-    m_refChip->setPlaceholderText(QStringLiteral("引用名"));
+    m_refChip->setPlaceholderText(QString());  // 无引用名时保持纯空, 不显示占位文字
     m_refChip->setText(var.refName);
     m_refChip->setFixedWidth(56);
     detailLayout->addWidget(m_refChip, 0);

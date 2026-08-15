@@ -14,11 +14,14 @@ namespace cad::tools {
 ///
 /// Content:
 ///   - Read-only readout of the measured distance (Units::formatLength).
-///   - Read-only reference name (e.g. "M_A3KX9") — the formula identity.
+///   - Optional reference-name input, initially EMPTY (the caller keeps its
+///     auto-generated refName when the field is left empty; a typed value
+///     replaces it — uppercase by convention).
 ///   - Optional name input (display label, no reference effect).
 ///   - Optional comment input.
 ///
-/// Accepted  → caller writes the filled name/comment via SetMeasureCommand.
+/// Accepted  → caller writes the filled refName/name/comment via
+///             SetMeasureCommand.
 /// Rejected  → the measure is kept as committed; nothing else happens.
 class MeasureResultDialog : public ElaDialog
 {
@@ -26,7 +29,8 @@ class MeasureResultDialog : public ElaDialog
 
 public:
     /// @param valueMm  Measured distance in mm (internal unit).
-    /// @param refName  Reserved reference name of the new measure variable.
+    /// @param refName  Reserved reference name of the new measure variable
+    ///                 (used only when the user leaves the field empty).
     /// @param name     Pre-filled display name (usually empty).
     /// @param comment  Pre-filled comment (usually empty).
     MeasureResultDialog(double valueMm,
@@ -35,12 +39,16 @@ public:
                         const QString& comment = QString(),
                         QWidget* parent = nullptr);
 
+    /// The user-typed reference name (trimmed/uppercased; empty = keep the
+    /// auto-generated one).
+    [[nodiscard]] QString enteredRefName() const;
     /// The user-typed display name (trimmed; empty = keep default).
     [[nodiscard]] QString enteredName() const;
     /// The user-typed comment (trimmed; empty = keep default).
     [[nodiscard]] QString enteredComment() const;
 
 private:
+    ElaLineEdit* m_refEdit     = nullptr;
     ElaLineEdit* m_nameEdit    = nullptr;
     ElaLineEdit* m_commentEdit = nullptr;
 };

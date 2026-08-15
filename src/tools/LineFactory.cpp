@@ -56,14 +56,14 @@ LineFactory::LineFactory(cad::param::ParamDocument* doc, QUndoStack* undoStack,
 {
 }
 
-void LineFactory::createFreeLine(const Vec2& start, const Vec2& end)
+void LineFactory::createFreeLine(const Vec2& start, const Vec2& end,
+                                 const LineBuildOptions& opts)
 {
     if (!m_paramDoc) return;
 
     cad::param::Block block;
     block.layer = m_paramDoc->activeLayer();
-    // Segment names default to empty; the user assigns them via the property
-    // dialog or the group panel.
+    // Segment names default to empty; the pre-input strip may provide one.
 
     // Block origin at start point (local (0,0) = start)
     block.transform.origin = start;
@@ -77,14 +77,19 @@ void LineFactory::createFreeLine(const Vec2& start, const Vec2& end)
 
     // End point: Polar relative to start
     const Vec2 delta = end - start;
-    const double dist = delta.length();
-    const double angleDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
+    const double dist = opts.hasLength ? opts.lengthMm : delta.length();
+    // 自由起点：预输入角度 = 绝对世界角；无预输入则从几何反解。
+    const double angleDeg = opts.hasAngle
+        ? opts.displayAngleDeg
+        : std::atan2(delta.y, delta.x) * 180.0 / M_PI;
 
     cad::param::ParamPoint ptEnd;
     ptEnd.constraint = cad::param::PointConstraint::Polar;
     ptEnd.refPointId = startId;
     ptEnd.distance = dist;
+    ptEnd.distanceFormula = opts.lengthFormula;
     ptEnd.angle = angleDeg;
+    ptEnd.angleFormula = opts.angleFormula;
     QUuid endId = ptEnd.id;
 
     block.addPoint(std::move(ptStart));
@@ -92,8 +97,10 @@ void LineFactory::createFreeLine(const Vec2& start, const Vec2& end)
 
     // Segment connecting them
     cad::param::Segment seg;
+    seg.name = opts.name;
     seg.startPointId = startId;
     seg.endPointId = endId;
+    seg.lengthFormula = opts.lengthFormula;
     block.addSegment(std::move(seg));
 
     if (m_undoStack) {
@@ -107,7 +114,8 @@ void LineFactory::createFreeLine(const Vec2& start, const Vec2& end)
 
 void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& end,
                                      int leaderIndex,
-                                     const std::vector<LeaderCandidate>& candidates)
+                                     const std::vector<LeaderCandidate>& candidates,
+                                     const LineBuildOptions& opts)
 {
     if (!m_paramDoc) return;
 
@@ -144,7 +152,7 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
 
     cad::param::Block block;
     block.layer = m_paramDoc->activeLayer();
-    // Segment names default to empty (see createFreeLine).
+    // Segment names default to empty; the pre-input strip may provide one.
 
     // Block origin at the attached point
     block.transform.origin = startWorld;
@@ -158,13 +166,14 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
 
     // End point: Polar relative to start
     const Vec2 delta = end - startWorld;
-    const double dist = delta.length();
+    const double dist = opts.hasLength ? opts.lengthMm : delta.length();
     const double angleDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
 
     cad::param::ParamPoint ptEnd;
     ptEnd.constraint = cad::param::PointConstraint::Polar;
     ptEnd.refPointId = startId;
     ptEnd.distance = dist;
+    ptEnd.distanceFormula = opts.lengthFormula;
     ptEnd.angle = angleDeg;
     QUuid endId = ptEnd.id;
 
@@ -172,8 +181,10 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
     block.addPoint(std::move(ptEnd));
 
     cad::param::Segment seg;
+    seg.name = opts.name;
     seg.startPointId = startId;
     seg.endPointId = endId;
+    seg.lengthFormula = opts.lengthFormula;
     block.addSegment(std::move(seg));
 
     const QUuid newBlockId = block.id;
@@ -187,10 +198,18 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
 
     // Follower angle = 180° − (new line's world angle − leader segment world
     // direction)（闭合基准, 用户拍板 2026-08 定稿：angle 0° = 折叠重叠，
-    // 180° = 延伸展开）, 归一化 [0, 360°)。
-    att.followerAngle = std::fmod(
-        180.0 - (angleDeg - refWorldRad * 180.0 / M_PI), 360.0);
-    if (att.followerAngle < 0.0) att.followerAngle += 360.0;
+    // 180° = 延伸展开）, 归一化 [0, 360°)。预输入角度直接就是该显示基准。
+    double followerAngle;
+    if (opts.hasAngle) {
+        followerAngle = std::fmod(opts.displayAngleDeg, 360.0);
+        if (followerAngle < 0.0) followerAngle += 360.0;
+    } else {
+        followerAngle = std::fmod(
+            180.0 - (angleDeg - refWorldRad * 180.0 / M_PI), 360.0);
+        if (followerAngle < 0.0) followerAngle += 360.0;
+    }
+    att.followerAngle = followerAngle;
+    att.followerAngleFormula = opts.angleFormula;
 
     // Cross-layer toast bookkeeping (captured BEFORE block is moved away).
     const QUuid fromLayer = block.layer;
@@ -220,7 +239,8 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
 void LineFactory::createBridgeLine(const SnapResult& snapStart,
                                    const SnapResult& snapEnd,
                                    int leaderIndex,
-                                   const std::vector<LeaderCandidate>& candidates)
+                                   const std::vector<LeaderCandidate>& candidates,
+                                   const LineBuildOptions& opts)
 {
     if (!m_paramDoc) return;
 
@@ -250,6 +270,7 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
     mv.blockB = snapEnd.blockId;
     mv.pointB = snapEnd.pointId;
     mv.value = startWorld.distanceTo(endWorld);
+    mv.name = opts.name;  // 桥接线测量卡跟随线段名（与属性面板/编辑条一致）。
     // Reference names are uppercase by convention (CopyChip force-uppercases
     // them for display/editing); generate uppercase so the stored refName
     // matches what the user sees and types back into formula fields.
@@ -287,6 +308,7 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
     block.addPoint(std::move(ptEnd));
 
     cad::param::Segment seg;
+    seg.name = opts.name;
     seg.startPointId = startId;
     seg.endPointId = endId;
     seg.lengthFormula = mv.refName;

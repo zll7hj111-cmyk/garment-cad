@@ -23,9 +23,8 @@ int main(int argc, char* argv[])
 
     // Global design system: Fusion base style + token-driven palette, with
     // the ElaTheme mode switched in lockstep (Theme::apply drives both).
-    // Dark is the default (professional CAD look, less glare); toggle via
-    // 视图 → 暗色主题 (Ctrl+D).
-    cad::ui::Theme::apply(cad::ui::ThemeMode::Dark);
+    // 用户拍板：默认使用白色（亮色）模式；暗色经 视图 → 暗色主题 (Ctrl+D) 切换。
+    cad::ui::Theme::apply(cad::ui::ThemeMode::Light);
 
     MainWindow window;
     window.show();
