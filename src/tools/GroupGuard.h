@@ -11,8 +11,9 @@ namespace cad::tools {
 
 /// Group protection guard (组成员保护): when @p blockId belongs to a user
 /// group, show a toast naming the group and return true — the caller must
-/// abort the structural operation (打断 / 交点 / 删除…). @p actionText is the
-/// blocked verb (e.g. 打断 / 创建交点).
+/// abort the structural operation (打断 / 创建交点 / 曲线点 / 辅助点…).
+/// Delete is intentionally NOT covered by this guard (see Group.h).
+/// @p actionText is the blocked verb (e.g. 打断 / 创建交点).
 inline bool guardGroupedBlock(CanvasScene* scene, cad::param::ParamDocument* doc,
                               const QUuid& blockId, const QString& actionText)
 {

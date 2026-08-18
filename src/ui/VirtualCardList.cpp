@@ -107,6 +107,13 @@ void VirtualCardList::setRows(const QVector<QUuid>& keys)
     relayoutHeights();
     repositionRows();
     refreshWindow();
+
+    // Structural changes keep SURVIVING widgets (same key, new neighbors) —
+    // their content would otherwise go stale: group headers keep the old
+    // member count / caret after a formula joined the group or a collapse
+    // toggle, card ordinals go stale after a reorder. Rebind everything
+    // materialized so survivors refresh too (idempotent, O(visible)).
+    rebindAll();
 }
 
 void VirtualCardList::rebindAll()
@@ -159,20 +166,42 @@ QWidget* VirtualCardList::createRow(int row)
     if (auto* existing = m_widgets.value(key, nullptr))
         return existing;
 
-    QWidget* w = m_factory(row);
-    if (!w)
-        return nullptr;
-    if (w->parent() != this)
-        w->setParent(this);
-    w->installEventFilter(this);
+    QWidget* w = nullptr;
+    if (m_cache.contains(key)) {
+        // Reuse the parked instance (widget construction is the expensive
+        // part of scrolling/expanding — pool it). Same-key reuse keeps the
+        // widget's ctor-captured id valid; the binder refreshes all content.
+        w = takeCached(key);
+        if (w->parent() != this)
+            w->setParent(this);
+        w->installEventFilter(this);
+        // Vanished rows had their height pruned (setRows) — re-measure the
+        // reused widget before placing, or it would sit at the default height.
+        if (!m_heights.contains(key)) {
+            w->setGeometry(kMarginLeft, m_tops[row], contentWidth(),
+                           kDefaultRowHeight);
+            const int h = qMax(w->sizeHint().height(), 1);
+            if (h != kDefaultRowHeight) {
+                m_heights.insert(key, h);
+                relayoutHeights();
+            }
+        }
+    } else {
+        w = m_factory(row);
+        if (!w)
+            return nullptr;
+        if (w->parent() != this)
+            w->setParent(this);
+        w->installEventFilter(this);
 
-    const int cached = m_heights.value(key, kDefaultRowHeight);
-    w->setGeometry(kMarginLeft, m_tops[row], contentWidth(), cached);
-    // Measure with the real width so wrapped content gets its true height.
-    const int h = qMax(w->sizeHint().height(), 1);
-    if (h != cached) {
-        m_heights.insert(key, h);
-        relayoutHeights();
+        const int cached = m_heights.value(key, kDefaultRowHeight);
+        w->setGeometry(kMarginLeft, m_tops[row], contentWidth(), cached);
+        // Measure with the real width so wrapped content gets its true height.
+        const int h = qMax(w->sizeHint().height(), 1);
+        if (h != cached) {
+            m_heights.insert(key, h);
+            relayoutHeights();
+        }
     }
     w->setGeometry(kMarginLeft, m_tops[row], contentWidth(),
                    m_heights.value(key, kDefaultRowHeight));
@@ -197,7 +226,41 @@ void VirtualCardList::destroyWidget(const QUuid& key, QWidget* w)
     w->removeEventFilter(this);
     m_widgets.remove(key);
     w->hide();
-    w->deleteLater();
+    // Park in the reuse pool instead of destroying: rows re-entering the
+    // window (scroll-back, expand) rebind the same instance, which skips the
+    // expensive widget construction. The pool is bounded by kCacheCap.
+    parkWidget(key, w);
+}
+
+QWidget* VirtualCardList::takeCached(const QUuid& key)
+{
+    auto it = m_cache.find(key);
+    if (it == m_cache.end())
+        return nullptr;
+    QWidget* w = it.value();
+    m_cache.erase(it);
+    m_cacheOrder.removeAll(key);
+    return w;
+}
+
+void VirtualCardList::parkWidget(const QUuid& key, QWidget* w)
+{
+    if (m_cache.contains(key)) {
+        // Same key parked twice (cannot normally happen) — drop the older one.
+        w->deleteLater();
+        return;
+    }
+    m_cache.insert(key, w);
+    m_cacheOrder.append(key);
+    while (static_cast<int>(m_cache.size()) > kCacheCap) {
+        const QUuid oldest = m_cacheOrder.takeFirst();
+        auto it = m_cache.find(oldest);
+        if (it == m_cache.end())
+            continue;
+        QWidget* victim = it.value();
+        m_cache.erase(it);
+        victim->deleteLater();
+    }
 }
 
 void VirtualCardList::refreshWindow()

@@ -2,6 +2,7 @@
 
 #include <QSet>
 
+
 #include "parametric/ParamDocument.h"
 
 namespace cad::cmd {
@@ -141,6 +142,191 @@ void MoveGroupCommand::undo()
 {
     if (m_doc && m_from >= 0 && m_to >= 0)
         m_doc->moveGroup(m_to, m_from);
+}
+
+// ─── SetGroupBoundingBoxCommand ───
+
+SetGroupBoundingBoxCommand::SetGroupBoundingBoxCommand(cad::param::ParamDocument* doc,
+                                                       const QUuid& groupId,
+                                                       bool visible,
+                                                       QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_groupId(groupId)
+    , m_newVisible(visible)
+{
+    setText(visible ? QStringLiteral("\xe6\x98\xbe\xe7\xa4\xba\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86")   // 显示包围框
+                    : QStringLiteral("\xe9\x9a\x90\xe8\x97\x8f\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86"));  // 隐藏包围框
+    if (!doc) return;
+    if (const auto* g = doc->findGroup(groupId)) {
+        m_oldVisible = g->showBoundingBox;
+        m_valid = true;
+    }
+}
+
+void SetGroupBoundingBoxCommand::redo()
+{
+    if (m_valid && m_doc)
+        m_doc->setGroupBoundingBoxVisible(m_groupId, m_newVisible);
+}
+
+void SetGroupBoundingBoxCommand::undo()
+{
+    if (m_valid && m_doc)
+        m_doc->setGroupBoundingBoxVisible(m_groupId, m_oldVisible);
+}
+
+
+// ─── SetComponentHingeCommand ───
+
+SetComponentHingeCommand::SetComponentHingeCommand(cad::param::ParamDocument* doc,
+                                                   const QUuid& groupId,
+                                                   const cad::param::ComponentHinge& hinge,
+                                                   QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_groupId(groupId)
+    , m_newHinge(hinge)
+{
+    setText(QStringLiteral("\xe8\xae\xbe\xe7\xbd\xae\xe7\xbb\x84\xe4\xbb\xb6\xe4\xb8\xbb\xe8\xbf\x9e\xe6\x8e\xa5"));  // 设置组件主连接
+    if (!doc) return;
+    if (const auto* g = doc->findGroup(groupId)) {
+        m_oldHasHinge = g->hasHinge;
+        m_oldHinge = g->hinge;
+        m_valid = true;
+    }
+}
+
+void SetComponentHingeCommand::redo()
+{
+    if (m_valid && m_doc) {
+        if (m_doc->hasComponentHinge(m_groupId))
+            m_doc->clearComponentHinge(m_groupId);
+        m_doc->setComponentHinge(m_groupId, m_newHinge);
+    }
+}
+
+void SetComponentHingeCommand::undo()
+{
+    if (m_valid && m_doc) {
+        m_doc->clearComponentHinge(m_groupId);
+        if (m_oldHasHinge)
+            m_doc->setComponentHinge(m_groupId, m_oldHinge);
+    }
+}
+
+// ─── ClearComponentHingeCommand ───
+
+ClearComponentHingeCommand::ClearComponentHingeCommand(cad::param::ParamDocument* doc,
+                                                       const QUuid& groupId,
+                                                       QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_groupId(groupId)
+{
+    setText(QStringLiteral("\xe6\xb8\x85\xe9\x99\xa4\xe7\xbb\x84\xe4\xbb\xb6\xe4\xb8\xbb\xe8\xbf\x9e\xe6\x8e\xa5"));  // 清除组件主连接
+    if (!doc) return;
+    if (const auto* g = doc->findGroup(groupId)) {
+        m_oldHasHinge = g->hasHinge;
+        m_oldHinge = g->hinge;
+        m_valid = true;
+    }
+}
+
+void ClearComponentHingeCommand::redo()
+{
+    if (m_valid && m_doc)
+        m_doc->clearComponentHinge(m_groupId);
+}
+
+void ClearComponentHingeCommand::undo()
+{
+    if (m_valid && m_doc) {
+        if (m_oldHasHinge)
+            m_doc->setComponentHinge(m_groupId, m_oldHinge);
+    }
+}
+// ─── AddGroupMembersCommand ───
+
+AddGroupMembersCommand::AddGroupMembersCommand(cad::param::ParamDocument* doc,
+                                               const QUuid& groupId,
+                                               const QList<QUuid>& memberIds,
+                                               QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_groupId(groupId)
+    , m_memberIds(memberIds)
+{
+    setText(QStringLiteral("\xe5\x90\x91\xe7\xbb\x84\xe6\xb7\xbb\xe5\x8a\xa0\xe6\x88\x90\xe5\x91\x98"));  // 向组添加成员
+    if (!doc) return;
+    const auto* g = doc->findGroup(groupId);
+    if (!g) return;
+    m_group = *g;
+    m_originalMembers = doc->blocksInGroup(groupId);
+    if (m_memberIds.isEmpty()) return;
+
+    // New members must exist, be ungrouped and share the group's layer
+    // (same invariants as createGroup).
+    const QList<QUuid> existing = m_originalMembers;
+    const cad::param::Block* firstMember = existing.isEmpty() ? nullptr : doc->findBlock(existing.first());
+    const QUuid layer = firstMember ? firstMember->layer : QUuid();
+    for (const QUuid& id : m_memberIds) {
+        const auto* b = doc->findBlock(id);
+        if (!b) return;
+        if (!doc->groupOfBlock(id).isNull()) return;
+        if (!layer.isNull() && b->layer != layer) return;
+    }
+    m_valid = true;
+}
+
+void AddGroupMembersCommand::redo()
+{
+    if (!m_valid || !m_doc) return;
+    for (const QUuid& id : m_memberIds)
+        m_doc->addGroupMember(m_groupId, id);
+}
+
+void AddGroupMembersCommand::undo()
+{
+    if (m_valid && m_doc)
+        m_doc->restoreGroup(m_group, m_originalMembers);
+}
+
+// ─── RemoveGroupMembersCommand ───
+
+RemoveGroupMembersCommand::RemoveGroupMembersCommand(cad::param::ParamDocument* doc,
+                                                     const QUuid& groupId,
+                                                     const QList<QUuid>& memberIds,
+                                                     QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_groupId(groupId)
+    , m_memberIds(memberIds)
+{
+    setText(QStringLiteral("\xe4\xbb\x8e\xe7\xbb\x84\xe7\xa7\xbb\xe9\x99\xa4\xe6\x88\x90\xe5\x91\x98"));  // 从组移除成员
+    if (!doc) return;
+    const auto* g = doc->findGroup(groupId);
+    if (!g) return;
+    m_group = *g;
+    m_originalMembers = doc->blocksInGroup(groupId);
+    if (m_memberIds.isEmpty()) return;
+    const QSet<QUuid> current(m_originalMembers.begin(), m_originalMembers.end());
+    for (const QUuid& id : m_memberIds)
+        if (!current.contains(id)) return;
+    m_valid = true;
+}
+
+void RemoveGroupMembersCommand::redo()
+{
+    if (!m_valid || !m_doc) return;
+    for (const QUuid& id : m_memberIds)
+        m_doc->removeGroupMember(m_groupId, id);
+}
+
+void RemoveGroupMembersCommand::undo()
+{
+    if (m_valid && m_doc)
+        m_doc->restoreGroup(m_group, m_originalMembers);
 }
 
 } // namespace cad::cmd

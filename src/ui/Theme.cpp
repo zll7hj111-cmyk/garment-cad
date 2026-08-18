@@ -117,6 +117,23 @@ QWidget {
 QFrame#divider { background: @border; border: none; max-height: 1px; min-height: 1px; }
 QFrame#accentBar { background: @accent; border: none; }
 
+/* ── 分组头 / 组卡片: 悬停 + 拖放目标高亮 ───────────────
+   拖拽公式卡悬停在分组头上时, [dropping] 属性置位由
+   FormulaGroupHeader::setDropHighlight / GroupCard::setDropHighlight
+   触发 (style()->unpolish/polish). 缺这两条规则 = 高亮完全不可见. */
+
+QWidget#FormulaGroupHeader { background: transparent; border-radius: 4px; }
+QWidget#FormulaGroupHeader:hover { background: @surface2; }
+QWidget#FormulaGroupHeader[dropping="true"] {
+    background: @accentTint; border: 1px solid @accent;
+}
+
+QFrame#GroupCard { background: transparent; border-radius: 4px; }
+QFrame#GroupCard:hover { background: @surface2; }
+QFrame#GroupCard[dropping="true"] {
+    background: @accentTint; border: 1px solid @accent;
+}
+
 /* ── Semantic text on ElaText (QSS color beats forced palette) ── */
 
 QLabel#mutedText   { color: @text2; }

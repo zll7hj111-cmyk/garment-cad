@@ -13,6 +13,18 @@ enum class RotationMode {
                 ///< follows the same follower-angle direction convention as Angle.
 };
 
+/// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): 连接姿态保持 —— 旋转照旧由
+/// 基准线方向 + followerAngle 驱动 —— 但位置只保留一个自由度，在基准线
+/// 局部坐标系 (x = 沿基准线方向, y = 垂直基准线) 下单向滑动，如同抽屉，
+/// 用于微调。基准线旋转时滑轨跟着转。
+enum class SlideMode {
+    None       = 0,  ///< 普通全连接: 位置吸附 + 角度跟随 (默认)。
+    AlongLeader,     ///< 沿线滑动 (模式A): 连接点沿基准线方向滑,
+                     ///< 垂直偏移锁定 (slidePerpMm, 激活时快照)。
+    PerpLeader,      ///< 垂直拉出 (模式B): 连接点垂直基准线拉动,
+                     ///< 沿线位置锁定 (slideAlongMm, 激活时快照)。
+};
+
 /// Defines a snapping/attachment relationship between two Blocks.
 /// The "from" Block's point is constrained to coincide with the "to" Block's point,
 /// and the from Block's rotation is driven so that its attached segment makes the
@@ -34,6 +46,16 @@ enum class RotationMode {
 ///                         逆时针为正。
 ///                         旧称“构造角”。
 ///   吸附 (Snap)          = 创建连接的动作（SmartPen 起点落在已有点上）。
+///   拆开 (Detach)        = 解除位置吸附但保留角度跟随（angleOnly=true，
+///                          用户拍板 2026-08：拆开默认保留角度）。彻底断开
+///                          = 删除 Attachment（自由线段，世界角冻结）。
+///   滑轨 (Slide)         = 抽屉式单向滑动（slideMode + slideAlongMm/
+///                          slidePerpMm，用户拍板 2026-08）：位置只剩一个
+///                          自由度 —— 沿基准线局部系 x（沿线滑动）或 y
+///                          （垂直拉出）—— 角度跟随始终保留。滑轨与
+///                          拆开 (angleOnly) 互斥：进滑轨自动清 angleOnly
+///                          并解除拖动保护（位置必须可滑动）；切回
+///                          None 恢复全连接（重新焊接，拖动保护默认开）。
 ///
 /// 约束：每个 Block 至多作为一条连接的跟随线（附着图是一棵树/森林）。
 /// ────────────────────────────────────────────────────────────────────────────
@@ -85,6 +107,25 @@ struct Attachment {
                             ///< 统一默认置位 (只要建立跟随就保护); 辅助层线段建立的
                             ///< 连接同样默认锁定。工作层可由属性面板手动开关。锁定
                             ///< 时拖动跟随线也不拆 (普通连接拖跟随线拆散、拖宿主不拆)。
+
+    bool angleOnly = false;  ///< 拆开保留角度 (用户拍板 2026-08): 位置吸附已解除,
+                             ///< 但角度跟随保留 —— Resolver 只驱动跟随线的旋转
+                             ///< (基准线方向 + followerAngle), 跳过位置约束, 因此
+                             ///< 线段位置自由、平移不动角度、基准线旋转时跟着转。
+                             ///< 所有拆开路径 (拖端点快拆 / 拖跟随线拆散 / 属性面板
+                             ///< 取消「跟随宿主」) 统一置位; 彻底断开 = 删除本结构。
+                             ///< angleOnly 与拖动保护互斥 (位置自由 ↔ 焊接语义),
+                             ///< 置位时自动清 isLocked; 与滑轨 (slideMode) 互斥,
+                             ///< 置位时自动清 slideMode。
+
+    /// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08); 与 angleOnly 互斥.
+    SlideMode slideMode = SlideMode::None;
+    double slideAlongMm = 0.0;  ///< 锁轴坐标快照 (mm, 基准线局部系 x):
+                                ///< 沿基准线方向的偏移 —— PerpLeader 锁此轴,
+                                ///< AlongLeader 忽略 (该轴自由, 拖动回写).
+    double slidePerpMm = 0.0;   ///< 锁轴坐标快照 (mm, 基准线局部系 y):
+                                ///< 垂直基准线方向的偏移 —— AlongLeader 锁此轴,
+                                ///< PerpLeader 忽略 (该轴自由, 拖动回写).
 };
 
 } // namespace cad::param

@@ -80,6 +80,140 @@ void RemoveAttachmentCommand::undo()
     m_doc->resolveAll();
 }
 
+// ─── SetAttachmentAngleOnlyCommand ───
+
+SetAttachmentAngleOnlyCommand::SetAttachmentAngleOnlyCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId, bool angleOnly,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newAngleOnly(angleOnly)
+    , m_oldAngleOnly(false)
+    , m_oldLocked(false)
+    , m_oldSlideMode(cad::param::SlideMode::None)
+{
+    setText(QStringLiteral("\xe6\x8b\x86\xe5\xbc\x80\xe4\xbf\x9d\xe7\x95\x99\xe8\xa7\x92\xe5\xba\xa6"));  // 拆开保留角度
+
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldAngleOnly = a.angleOnly;
+            m_oldLocked = a.isLocked;
+            m_oldSlideMode = a.slideMode;
+            break;
+        }
+    }
+}
+
+void SetAttachmentAngleOnlyCommand::redo()
+{
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->angleOnly = m_newAngleOnly;
+        if (m_newAngleOnly) {
+            a->isLocked = false;      // 拆开 = 位置自由: 与焊接互斥
+            a->slideMode = cad::param::SlideMode::None;  // 与滑轨互斥
+        } else {
+            a->isLocked = m_oldLocked;
+        }
+    }
+    m_doc->resolveAll();
+}
+
+void SetAttachmentAngleOnlyCommand::undo()
+{
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->angleOnly = m_oldAngleOnly;
+        a->isLocked = m_oldLocked;
+        a->slideMode = m_oldSlideMode;
+    }
+    m_doc->resolveAll();
+}
+
+// ─── SetAttachmentSlideModeCommand ───
+
+SetAttachmentSlideModeCommand::SetAttachmentSlideModeCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId,
+    cad::param::SlideMode mode, QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newMode(mode)
+{
+    setText(QStringLiteral("\xe6\xbb\x91\xe8\xbd\xa8\xe6\xa8\xa1\xe5\xbc\x8f"));  // 滑轨模式
+
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldMode = a.slideMode;
+            m_oldAlongMm = a.slideAlongMm;
+            m_oldPerpMm = a.slidePerpMm;
+            m_oldAngleOnly = a.angleOnly;
+            m_oldLocked = a.isLocked;
+            break;
+        }
+    }
+}
+
+void SetAttachmentSlideModeCommand::redo()
+{
+    m_doc->setAttachmentSlideMode(m_attId, m_newMode);
+}
+
+void SetAttachmentSlideModeCommand::undo()
+{
+    // Restore the pre-switch mode, lock-axis snapshots and flags verbatim
+    // (快照完整性 — re-running the doc API would re-snapshot offsets and lose
+    // the pre-switch locked coordinate).
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->slideMode = m_oldMode;
+        a->slideAlongMm = m_oldAlongMm;
+        a->slidePerpMm = m_oldPerpMm;
+        a->angleOnly = m_oldAngleOnly;
+        a->isLocked = m_oldLocked;
+    }
+    m_doc->resolveAll();
+}
+
+// ─── SetSlideOffsetsCommand ───
+
+SetSlideOffsetsCommand::SetSlideOffsetsCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId,
+    double oldAlong, double oldPerp, double newAlong, double newPerp,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_oldAlong(oldAlong)
+    , m_oldPerp(oldPerp)
+    , m_newAlong(newAlong)
+    , m_newPerp(newPerp)
+{
+    setText(QStringLiteral("\xe6\xbb\x91\xe5\x8a\xa8\xe5\xbe\xae\xe8\xb0\x83"));  // 滑动微调
+}
+
+void SetSlideOffsetsCommand::redo()
+{
+    // 只回写坐标, **不 resolve**: 本命令永远与 MoveBlockCommand 同宏使用,
+    // redo 路径由 MoveBlockCommand 的 redo (自带 resolveAll) 统一落位 ——
+    // 若偏移命令先 resolve 会把块钉到新位, 后面的移动命令再叠一次 delta
+    // (双倍位移)。
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->slideAlongMm = m_newAlong;
+        a->slidePerpMm = m_newPerp;
+    }
+}
+
+void SetSlideOffsetsCommand::undo()
+{
+    // undo 路径**必须 resolve**: 宏撤销时 MoveBlockCommand 的 undo 先跑
+    // (此时附件仍是新坐标, 会把块钉回拖后位置), 本命令随后恢复旧坐标 —
+    // 不 resolve 的话块会留在错误位置 (用户 undo 后跟随线回不到拖前滑轨位)。
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->slideAlongMm = m_oldAlong;
+        a->slidePerpMm = m_oldPerp;
+    }
+    m_doc->resolveAll();
+}
+
 // ─── SetFollowerAngleCommand ───
 
 SetFollowerAngleCommand::SetFollowerAngleCommand(cad::param::ParamDocument* doc,

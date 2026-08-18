@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QUndoStack>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -50,6 +50,13 @@ private slots:
     void deleteWholeGroupUndo();
     void duplicateWholeGroup();
     void moveGroupReorder();
+    void boundingBoxVisibilityUndo();
+    void groupHingeRotation();
+    void addGroupMemberValidationAndUndo();
+    void removeGroupMemberCascadeAndUndo();
+    void componentHingeDrivesWholeGroup();
+    void componentHingeSingleOnly();
+    void serializeComponentHinge();
     void serializeRoundTrip();
     void serializeOrphanWarning();
 };
@@ -362,6 +369,78 @@ void TestGroup::moveGroupReorder()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+void TestGroup::boundingBoxVisibilityUndo()
+{
+    ParamDocument doc;
+    auto a = makeLine(doc, 100.0);
+    auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId});
+    QVERIFY(doc.isGroupBoundingBoxVisible(gid));
+
+    doc.undoStack()->push(new cad::cmd::SetGroupBoundingBoxCommand(&doc, gid, false));
+    QVERIFY(!doc.isGroupBoundingBoxVisible(gid));
+
+    doc.undoStack()->undo();
+    QVERIFY(doc.isGroupBoundingBoxVisible(gid));
+
+    doc.undoStack()->redo();
+    QVERIFY(!doc.isGroupBoundingBoxVisible(gid));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void TestGroup::groupHingeRotation()
+{
+    ParamDocument doc;
+    // Leader line: horizontal (0,0) -> (100,0)
+    auto leader = makeLine(doc, 100.0);
+    // Group members:
+    // A: (0,0) -> (0,50)
+    // B: (0,50) -> (50,50)
+    auto a = makeLine(doc, 50.0);
+    auto b = makeLine(doc, 50.0, Vec2{0.0, 50.0});
+    // Internal link: B starts at A's end
+    Attachment internalAtt;
+    internalAtt.fromBlockId = b.blockId;
+    internalAtt.fromPointId = b.startId;
+    internalAtt.toBlockId   = a.blockId;
+    internalAtt.toPointId   = a.endId;
+    internalAtt.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(internalAtt));
+
+    // Form component/group {A, B}
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId});
+    QVERIFY(!gid.isNull());
+
+    // External hinge link: A's start connects to leader's end (100,0)
+    Attachment hingeAtt;
+    hingeAtt.fromBlockId = a.blockId;
+    hingeAtt.fromPointId = a.startId;
+    hingeAtt.toBlockId   = leader.blockId;
+    hingeAtt.toPointId   = leader.endId;
+    hingeAtt.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(hingeAtt));
+    doc.resolveAll();
+
+    // Verify A starts at leader's end (100,0)
+    Vec2 aStartPos = doc.findBlock(a.blockId)->worldPos(a.startId);
+    QVERIFY(aStartPos.distanceTo(Vec2{100.0, 0.0}) < 1e-5);
+
+    // Rotate component via hinge angle: change followerAngle to 180 (straight extension)
+    Attachment* att = doc.findAttachment(hingeAtt.id);
+    QVERIFY(att != nullptr);
+    att->followerAngle = 180.0;
+    doc.resolveAll();
+
+    // Hinge position remains fixed at (100,0)
+    aStartPos = doc.findBlock(a.blockId)->worldPos(a.startId);
+    QVERIFY(aStartPos.distanceTo(Vec2{100.0, 0.0}) < 1e-5);
+    // B followed A's end in rigid formation
+    Vec2 bStartPos = doc.findBlock(b.blockId)->worldPos(b.startId);
+    Vec2 aEndPos = doc.findBlock(a.blockId)->worldPos(a.endId);
+    QVERIFY(bStartPos.distanceTo(aEndPos) < 1e-5);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 void TestGroup::serializeRoundTrip()
 {
     ParamDocument doc;
@@ -417,6 +496,227 @@ void TestGroup::serializeOrphanWarning()
     QVERIFY(!warnings.isEmpty());
     QVERIFY(restored.groups().empty());
     QCOMPARE(restored.blocks().size(), size_t(1));
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+void TestGroup::addGroupMemberValidationAndUndo()
+{
+    ParamDocument doc;
+    auto a = makeLine(doc, 100.0);
+    auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});
+    auto c = makeLine(doc, 100.0, Vec2{0.0, -100.0});
+    auto d = makeLine(doc, 100.0, Vec2{200.0, 0.0});
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId});
+    QVERIFY(!gid.isNull());
+
+    // Add one ungrouped same-layer block.
+    QVERIFY(doc.addGroupMember(gid, c.blockId));
+    QCOMPARE(doc.blocksInGroup(gid).size(), 3);
+    QCOMPARE(doc.groupOfBlock(c.blockId), gid);
+
+    // Already-a-member / already-grouped / missing are rejected.
+    QVERIFY(!doc.addGroupMember(gid, c.blockId));
+    QVERIFY(!doc.addGroupMember(gid, a.blockId));
+    QVERIFY(!doc.addGroupMember(gid, QUuid::createUuid()));
+
+    // Cross-layer add rejected (same invariant as createGroup).
+    auto cross = makeLine(doc, 100.0, Vec2{0.0, -150.0});
+    doc.findBlock(cross.blockId)->layer = doc.auxLayerId();
+    QVERIFY(!doc.addGroupMember(gid, cross.blockId));
+
+    // Undoable command: add d then undo/redo.
+    QUndoStack stack;
+    stack.push(new cad::cmd::AddGroupMembersCommand(
+        &doc, gid, {d.blockId}));
+    QCOMPARE(doc.blocksInGroup(gid).size(), 4);
+    QCOMPARE(doc.groupOfBlock(d.blockId), gid);
+    stack.undo();
+    QCOMPARE(doc.blocksInGroup(gid).size(), 3);
+    QVERIFY(doc.groupOfBlock(d.blockId).isNull());
+    stack.redo();
+    QCOMPARE(doc.blocksInGroup(gid).size(), 4);
+    QCOMPARE(doc.groupOfBlock(d.blockId), gid);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void TestGroup::removeGroupMemberCascadeAndUndo()
+{
+    ParamDocument doc;
+    auto leader = makeLine(doc, 100.0);
+    auto a = makeLine(doc, 50.0);
+    auto b = makeLine(doc, 50.0, Vec2{0.0, -50.0});
+    auto c = makeLine(doc, 50.0, Vec2{0.0, -100.0});
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId, c.blockId});
+    QVERIFY(!gid.isNull());
+
+    // Set a hinge whose member endpoint is A.
+    ComponentHinge hinge;
+    hinge.memberBlockId = a.blockId;
+    hinge.memberPointId = a.startId;
+    hinge.leaderBlockId = leader.blockId;
+    hinge.leaderPointId = leader.endId;
+    hinge.followerAngle = 180.0;
+    QVERIFY(doc.setComponentHinge(gid, hinge));
+    QVERIFY(doc.hasComponentHinge(gid));
+
+    QUndoStack stack;
+    // Remove C: 3 -> 2, group and hinge survive; undo/redo restore exactly.
+    stack.push(new cad::cmd::RemoveGroupMembersCommand(&doc, gid, {c.blockId}));
+    QCOMPARE(doc.blocksInGroup(gid).size(), 2);
+    QVERIFY(doc.groupOfBlock(c.blockId).isNull());
+    QVERIFY(doc.hasComponentHinge(gid));
+
+    stack.undo();
+    QCOMPARE(doc.blocksInGroup(gid).size(), 3);
+    QCOMPARE(doc.groupOfBlock(c.blockId), gid);
+    QVERIFY(doc.hasComponentHinge(gid));
+
+    stack.redo();
+    QCOMPARE(doc.blocksInGroup(gid).size(), 2);
+    QVERIFY(doc.groupOfBlock(c.blockId).isNull());
+
+    // Return to the 3-member state so removing A still leaves B and C.
+    stack.undo();
+
+    // Remove the hinge member A while B/C remain: group survives, hinge clears.
+    stack.push(new cad::cmd::RemoveGroupMembersCommand(&doc, gid, {a.blockId}));
+    QCOMPARE(doc.groups().size(), size_t(1));
+    QCOMPARE(doc.blocksInGroup(gid).size(), 2);
+    QVERIFY(!doc.hasComponentHinge(gid));
+    QVERIFY(doc.groupOfBlock(a.blockId).isNull());
+
+    stack.undo();
+    QCOMPARE(doc.blocksInGroup(gid).size(), 3);
+    QCOMPARE(doc.groupOfBlock(a.blockId), gid);
+    QVERIFY(doc.hasComponentHinge(gid));
+
+    // Remove B and C: 3 -> 1 -> auto-dissolve; undo restores the full group.
+    stack.push(new cad::cmd::RemoveGroupMembersCommand(&doc, gid, {b.blockId, c.blockId}));
+    QVERIFY(doc.groups().empty());
+    QVERIFY(doc.groupOfBlock(a.blockId).isNull());
+    QVERIFY(doc.groupOfBlock(b.blockId).isNull());
+    QVERIFY(doc.groupOfBlock(c.blockId).isNull());
+
+    stack.undo();
+    QCOMPARE(doc.groups().size(), size_t(1));
+    QCOMPARE(doc.groupOfBlock(a.blockId), gid);
+    QCOMPARE(doc.groupOfBlock(b.blockId), gid);
+    QCOMPARE(doc.groupOfBlock(c.blockId), gid);
+    QVERIFY(doc.hasComponentHinge(gid));
+    QCOMPARE(doc.groups().front().hinge.memberBlockId, a.blockId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void TestGroup::componentHingeDrivesWholeGroup()
+{
+    ParamDocument doc;
+    auto leader = makeLine(doc, 100.0);                 // horizontal leader
+    auto a = makeLine(doc, 50.0);                       // A: (0,0)->(50,0)
+    auto b = makeLine(doc, 50.0, Vec2{0.0, -50.0});     // B local origin at (0,-50)
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId});
+    QVERIFY(!gid.isNull());
+
+    // 路由B: 组件任意成员端点可作为连接点; 这里是 A 的起点.
+    ComponentHinge hinge;
+    hinge.memberBlockId = a.blockId;
+    hinge.memberPointId = a.startId;
+    hinge.leaderBlockId = leader.blockId;
+    hinge.leaderPointId = leader.endId;
+    hinge.followerAngle = 180.0;   // 闭合基准: 180° = 沿 leader 直行延续
+    QVERIFY(doc.setComponentHinge(gid, hinge));
+    QVERIFY(doc.hasComponentHinge(gid));
+
+    doc.resolveAll();
+
+    const Block* blkA = doc.findBlock(a.blockId);
+    QVERIFY(blkA != nullptr);
+    QVERIFY(blkA->worldPos(a.startId).distanceTo(Vec2{100.0, 0.0}) < 1e-5);
+    const Block* blkB = doc.findBlock(b.blockId);
+    QVERIFY(blkB != nullptr);
+    // B keeps its local (0,-50) offset from A -> world (100,-50) at angle 0.
+    QVERIFY(blkB->transform.origin.distanceTo(Vec2{100.0, -50.0}) < 1e-5);
+
+    // Rotating the component via the hinge rotates the WHOLE assembly and the
+    // hinge point stays pinned to the leader point.
+    Group* g = doc.findGroup(gid);
+    QVERIFY(g != nullptr);
+    g->hinge.followerAngle = 90.0;
+    doc.resolveAll();
+
+    QVERIFY(blkA->worldPos(a.startId).distanceTo(Vec2{100.0, 0.0}) < 1e-5);
+    const Vec2 aOrigin = blkA->transform.origin;
+    const Vec2 bOrigin = blkB->transform.origin;
+    const Vec2 rel = bOrigin - aOrigin;
+    QVERIFY(rel.length() > 49.0 && rel.length() < 51.0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void TestGroup::componentHingeSingleOnly()
+{
+    ParamDocument doc;
+    auto a = makeLine(doc, 50.0);
+    auto b = makeLine(doc, 50.0, Vec2{0.0, -50.0});
+    auto leader1 = makeLine(doc, 100.0);
+    auto leader2 = makeLine(doc, 100.0, Vec2{200.0, 0.0});
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId});
+    QVERIFY(!gid.isNull());
+
+    ComponentHinge h1;
+    h1.memberBlockId = a.blockId;
+    h1.memberPointId = a.startId;
+    h1.leaderBlockId = leader1.blockId;
+    h1.leaderPointId = leader1.endId;
+    h1.followerAngle = 180.0;
+    QVERIFY(doc.setComponentHinge(gid, h1));
+
+    ComponentHinge h2;
+    h2.memberBlockId = a.blockId;
+    h2.memberPointId = a.startId;
+    h2.leaderBlockId = leader2.blockId;
+    h2.leaderPointId = leader2.endId;
+    h2.followerAngle = 180.0;
+    QVERIFY(!doc.setComponentHinge(gid, h2));   // 单一主连接铰链
+
+    QVERIFY(doc.hasComponentHinge(gid));
+    doc.clearComponentHinge(gid);
+    QVERIFY(!doc.hasComponentHinge(gid));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void TestGroup::serializeComponentHinge()
+{
+    ParamDocument doc;
+    auto a = makeLine(doc, 50.0);
+    auto b = makeLine(doc, 50.0, Vec2{0.0, -50.0});
+    auto leader = makeLine(doc, 100.0);
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId});
+    ComponentHinge hinge;
+    hinge.memberBlockId = a.blockId;
+    hinge.memberPointId = a.startId;
+    hinge.leaderBlockId = leader.blockId;
+    hinge.leaderPointId = leader.endId;
+    hinge.leaderSegmentId = QUuid();
+    hinge.followerAngle = 90.0;
+    QVERIFY(doc.setComponentHinge(gid, hinge));
+    doc.resolveAll();
+
+    const QJsonObject json = DocumentSerializer::serialize(doc);
+    ParamDocument restored;
+    QStringList warnings;
+    DocumentSerializer::deserialize(restored, json, &warnings);
+    QVERIFY(warnings.isEmpty());
+
+    QCOMPARE(restored.groups().size(), size_t(1));
+    const Group& rg = restored.groups().front();
+    QVERIFY(rg.hasHinge);
+    QCOMPARE(rg.hinge.memberBlockId, a.blockId);
+    QCOMPARE(rg.hinge.memberPointId, a.startId);
+    QCOMPARE(rg.hinge.leaderBlockId, leader.blockId);
+    QCOMPARE(rg.hinge.leaderPointId, leader.endId);
+    QCOMPARE(rg.hinge.followerAngle, 90.0);
+    QVERIFY(restored.hasComponentHinge(rg.id));
+    QVERIFY(!restored.groupComponentRootBlockId(rg.id).isNull());
 }
 
 QTEST_MAIN(TestGroup)

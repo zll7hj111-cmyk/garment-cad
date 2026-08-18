@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QList>
 #include <QVector>
 #include <QUuid>
 #include <functional>
@@ -12,9 +13,10 @@ class ElaScrollArea;
 ///
 /// Rows are identified by stable keys (QUuid). Only rows intersecting the
 /// viewport (plus a buffer band) are materialized as real widgets; rows far
-/// outside are destroyed and rebuilt on demand. Per-key height caching keeps
-/// the scrollbar geometry stable and scroll-back cheap, so panel cost stays
-/// O(visible rows) instead of O(total rows).
+/// outside are parked in a bounded reuse pool (same-key rebind on return,
+/// no reconstruction) and evicted beyond the cap. Per-key height caching
+/// keeps the scrollbar geometry stable and scroll-back cheap, so panel cost
+/// stays O(visible rows) instead of O(total rows).
 ///
 /// The host lives inside a QScrollArea (widgetResizable = true) and lays its
 /// rows out manually — no QLayout — mirroring the old container margins.
@@ -63,6 +65,8 @@ protected:
 private:
     QWidget* createRow(int row);
     void destroyWidget(const QUuid& key, QWidget* w);
+    QWidget* takeCached(const QUuid& key);    ///< Pop a parked widget (or nullptr).
+    void parkWidget(const QUuid& key, QWidget* w);  ///< Park + evict beyond cap.
     void relayoutHeights();   ///< Recompute prefix tops + total height.
     void repositionRows();    ///< Fit widths + move materialized rows.
     void remeasureRow(const QUuid& key);
@@ -77,6 +81,8 @@ private:
     QHash<QUuid, int> m_keyIndex;       ///< key → row position.
     QHash<QUuid, int> m_heights;        ///< Cached row heights.
     QHash<QUuid, QWidget*> m_widgets;   ///< Materialized rows.
+    QHash<QUuid, QWidget*> m_cache;     ///< Parked (hidden) widgets, same-key reuse.
+    QList<QUuid> m_cacheOrder;          ///< FIFO order of parked keys (eviction).
     QVector<int> m_tops;                ///< Prefix offsets (incl. top margin).
     int m_totalHeight = 0;
     bool m_remeasureQueued = false;
@@ -91,4 +97,5 @@ private:
     static constexpr int kBufferPx     = 400;  ///< Materialize band.
     static constexpr int kDestroyPx    = 1000; ///< Destroy band.
     static constexpr int kDefaultRowHeight = 64;
+    static constexpr int kCacheCap     = 64;  ///< Parked-widget pool bound.
 };

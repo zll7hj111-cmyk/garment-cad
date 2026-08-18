@@ -1,4 +1,4 @@
-﻿#include "parametric/MeasurementStore.h"
+#include "parametric/MeasurementStore.h"
 
 #include <algorithm>
 #include <cmath>
@@ -304,10 +304,17 @@ bool MeasurementStore::measureMeasureVars(bool skipAuxSource)
         const ParamPoint* pb = blkB->findPoint(mv.pointB);
         if (!pa || !pb || !pa->resolved || !pb->resolved) continue;
 
-        // World-space distance (points may be on different blocks).
+        // World-space span (points may be on different blocks). The measured
+        // quantity follows the variable's kind: Euclidean distance, or the
+        // horizontal/vertical projection of it.
         const geo::Vec2 wa = blkA->transform.toWorld(pa->resolvedPos);
         const geo::Vec2 wb = blkB->transform.toWorld(pb->resolvedPos);
-        const double dist = wa.distanceTo(wb);
+        double dist = wa.distanceTo(wb);
+        switch (mv.kind) {
+            case MeasureKind::Horizontal: dist = std::abs(wb.x - wa.x); break;
+            case MeasureKind::Vertical:   dist = std::abs(wb.y - wa.y); break;
+            case MeasureKind::Distance:   break;
+        }
 
         mv.dangling = false;
         if (std::abs(dist - mv.value) > 1e-9) {

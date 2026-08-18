@@ -6,8 +6,10 @@
 #include <QString>
 #include <QList>
 #include <vector>
+#include <utility>
 
 #include "parametric/Condition.h"
+#include "parametric/Group.h"
 
 namespace cad::param {
 
@@ -68,6 +70,11 @@ public:
     ///                    reference (same semantics as out-of-scope blocks).
     ///                    Null = full resolve (default). The set is treated as
     ///                    an intersection with the layer @p scope.
+    /// @param components  Resolver-facing component snapshots (路线B). Active
+    ///                    components (hasHinge) are rigid bodies driven by their
+    ///                    single main hinge; ordinary attachments owned by their
+    ///                    members are skipped so the component pose is the only
+    ///                    authority for those blocks. Empty = legacy behaviour.
     static void resolveAll(std::vector<Block>& blocks,
                            const std::vector<Attachment>& attachments,
                            const QHash<QString, double>& params = {},
@@ -75,7 +82,8 @@ public:
                            std::vector<ResolveDiagnostic>* diagnostics = nullptr,
                            Scope scope = Scope::All,
                            const QUuid& auxLayerId = QUuid(),
-                           const QSet<QUuid>* affectedOnly = nullptr);
+                           const QSet<QUuid>* affectedOnly = nullptr,
+                           const std::vector<Component>& components = {});
 
 private:
     /// Process a single attachment: position and rotate the from-block
@@ -95,5 +103,12 @@ private:
                                 EvalContext* ctx,
                                 bool preserveEndTargetRotation = false);
 };
+
+/// 滑轨投影快照 (用户拍板 2026-08): 把跟随线当前 from-point 的世界位置,
+/// 投影到基准线在吸附点处的局部系 (x = 基准线延长方向, y = 垂直基准线),
+/// 返回 {沿向偏移 slideAlongMm, 垂直偏移 slidePerpMm} (mm)。用于滑轨模式
+/// (SlideMode) 激活 / 重定向时快照锁轴坐标。任一点缺失或未解析返回 {0,0}。
+[[nodiscard]] std::pair<double, double> computeSlideOffsets(
+    const Block& from, const Attachment& att, const Block& to);
 
 } // namespace cad::param

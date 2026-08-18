@@ -28,8 +28,10 @@ class MarqueeGesture;
 /// Selection tool with ETCAD-style interaction:
 ///   - Left-drag on empty space → marquee (intersect = select; toggle add/remove)
 ///   - Click an object → toggle it in/out of the selection (red highlight);
-///     a GROUP member toggles the WHOLE group (group = minimal selection unit)
-///   - SINGLE mode: clicking selects ONE block (replaces previous); no marquee
+///     a GROUP member toggles the WHOLE group (group = minimal selection unit;
+///     点成员=选整组, both modes)
+///   - SINGLE mode: clicking replaces the selection (whole group when the
+///     clicked block is a member); no marquee
 ///   - Both modes share ONE 选中→确认→操作 flow: right-click confirms the
 ///     selection (stays red, becomes drag/connect-ready); right-click AGAIN on
 ///     the confirmed set opens the context menu (做成组 / 解散组 / 取消选择)
@@ -44,8 +46,9 @@ class MarqueeGesture;
 ///     target → attach, then angle HUD (live preview, formula-aware) —
 ///     handled by ConnectGesture
 ///   - Double-click segment → property dialog; Del → delete; Esc → clear
-///   - 组是纯选择快捷方式 (零限制): 成组/解散不动几何, 连接/拆/删不受组约束,
-///     组员整组进整组出 (badge/点击整选)
+///   - 组模型层零限制: 成组/解散不动几何/连接; 工具层提供整组进整组出
+///     (多选/框选/外部选中)、整组拖动/旋转、结构编辑守卫 (打断/交点/曲线点/
+///     辅助点/终点指向), 删除不设保护且不足 2 成员自动解散.
 class ToolSelect : public Tool
 {
 public:
@@ -61,6 +64,7 @@ public:
 
     [[nodiscard]] const char* name() const override { return "\xe9\x80\x89\xe6\x8b\xa9"; }
     [[nodiscard]] SelectState state() const { return m_state; }
+    [[nodiscard]] const QSet<QUuid>& selection() const { return m_selection; }
 
     /// Drop the current selection (used when the active canvas layer switches,
     /// since selection is scoped to the active layer).
@@ -77,9 +81,9 @@ public:
         m_editTargetCb = std::move(cb);
     }
 
-    /// True when the given user-coordinate position hits a group badge —
-    /// badge clicks belong to the badge (选中整组), the tool must not act
-    /// on the block underneath.
+    /// True when the given user-coordinate position hits a group badge outline.
+    /// Badge clicks belong to the badge (GroupBadgeItem emits clicked()); the
+    /// tool must not act on the block underneath.
     [[nodiscard]] bool badgeAt(const cad::geo::Vec2& pos) const;
 
 private:
@@ -166,6 +170,9 @@ private:
     QList<QUuid>   m_dragBlockIds;
     QHash<QUuid, cad::geo::Vec2> m_dragOrigins;
     QList<QUuid>   m_detachedAttachments;      ///< Cross-boundary attachments to break.
+    /// 滑轨模式 (抽屉式滑动): attachmentId → pre-drag (slideAlongMm, slidePerpMm)
+    /// snapshot for slide attachments whose FOLLOWER is inside the drag set.
+    QHash<QUuid, std::pair<double, double>> m_dragOldSlideOffsets;
 
     // Extracted gestures (connection + quick copy + marquee)
     ConnectGesture*    m_connectGesture = nullptr;

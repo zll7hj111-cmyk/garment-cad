@@ -30,6 +30,16 @@ public:
     /// Skips the value spin when it has keyboard focus (user is typing).
     void syncFromModel(const cad::param::Variable& var);
 
+    /// Set the view-row ordinal shown in the header (1-based, "N").
+    /// Pure presentation — cards are virtualized and reused, so the panel
+    /// re-applies this on every (re)bind.
+    void setIndex(int n);
+
+    /// Set the alternating row parity (odd = orange bar, even = blue).
+    /// Re-applied on every (re)bind — reused cards must not keep a stale
+    /// parity from their previous row position.
+    void setAlternate(bool alternate);
+
     void focusName();
 
 signals:
@@ -50,6 +60,7 @@ private:
     QWidget* m_deleteBtnSlot = nullptr;  ///< 悬停占位: 与删除按钮同尺寸互斥显隐, 防布局跳动.
 
     cad::ui::CopyChip* m_nameChip = nullptr;
+    ElaText*         m_indexLabel = nullptr;
     ElaText*         m_valueLabel = nullptr;
     ElaToolButton*     m_deleteBtn = nullptr;
 

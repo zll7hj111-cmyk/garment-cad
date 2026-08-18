@@ -11,6 +11,12 @@ namespace cad::param { class ParamDocument; }
 
 namespace cad::tools {
 
+/// Two snap candidates "stack on the same spot" when their world positions
+/// are within this distance (mm). Drives the overlap disambiguation in the
+/// connect gesture (ConfirmTarget) and the smart pen's start/end point
+/// confirm flow (点选线段确认落点). Single shared source of truth.
+inline constexpr double kSnapOverlapEps = 0.5;  // mm
+
 /// Result of a successful snap operation.
 struct SnapResult {
     cad::geo::Vec2 worldPos;  ///< World-coordinate position of the snapped point.

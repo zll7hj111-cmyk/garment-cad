@@ -10,6 +10,7 @@
 #include "parametric/FormulaVariable.h"
 #include "parametric/ExpressionEvaluator.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/AttachmentCommands.h"
 #include "document/commands/VariableCommands.h"
 #include "document/commands/DocumentCommands.h"
 #include "document/commands/LayerCommands.h"
@@ -94,6 +95,20 @@ private slots:
     // Dirty-subgraph resolve (阶段2: 依赖边表 + 脏传播)
     void resolveForDrag_incrementalMatchesFull();
     void resolveForDrag_ignoresDetachedAttachments();
+
+    // 拆开保留角度 (用户拍板 2026-08: 位置吸附解除, 角度跟随保留)
+    void setAttachmentAngleOnly_keepsFollowAngle();
+    void setAttachmentAngleOnly_docHelperAndLockedClosure();
+    // 滑轨模式 (抽屉式滑动, 用户拍板 2026-08)
+    void slideMode_alongAndPerpConstraints();
+    void slideMode_dragOffsetsUndoRedo();
+    // REPRO (曲线点连接跟随)
+    void curvePointAttach_followsLeader();
+
+    // 省道线 (用户拍板 2026-08: 起点挂A、终点 = B 沿线段方向转 β 偏移 d)
+    void dartLine_computesEndAndFollows();
+    void dartLine_undoRedo();
+    void dartLine_degradeOnHostDelete();
 
     // Render cache in the data layer (阶段3: 几何缓存前移)
     void curveRenderCache_filledByResolve();
@@ -1318,6 +1333,683 @@ void TestCommands::layerCommands_activeLayerRestored()
     rmCmd.undo();
     QCOMPARE(doc.activeLayer(), layerIdAt(doc, 2));
     QCOMPARE(doc.layerById(doc.activeLayer())->name, QStringLiteral("w2"));
+}
+
+// ---------------------------------------------------------------------------
+// 拆开保留角度 (用户拍板 2026-08): SetAttachmentAngleOnlyCommand releases the
+// POSITION constraint only — the follower's rotation keeps being driven by the
+// leader's direction + followerAngle. Translating the follower must NOT change
+// its angle; rotating the leader MUST rotate the follower along (the relative
+// angle α is preserved). Undo restores the full connection (position re-snaps
+// onto the leader point).
+// ---------------------------------------------------------------------------
+void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);   // leader A: (0,0)→(100,0)
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);     // follower B: 50mm
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 90.0;   // 闭合基准: 90° = 垂直
+    QVERIFY(doc.addAttachment(att));
+    QVERIFY(doc.attachments().front().isLocked);   // 新建连接默认拖动保护
+
+    // Baseline: B's start sits exactly on A's end; B is perpendicular.
+    const Vec2 joint = doc.findBlock(aId)->worldPos(aEnd);
+    QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint).length() < 1e-6);
+    const double rotBefore = doc.findBlock(bId)->transform.rotation;
+    QVERIFY(std::abs(rotBefore - M_PI / 2.0) < 1e-9);
+
+    // 拆开保留角度: convert to angle-only through the undo command.
+    QUndoStack stack;
+    stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, true));
+    {
+        const Attachment& a = doc.attachments().front();
+        QVERIFY2(a.angleOnly, "拆开 = angleOnly");
+        QVERIFY2(!a.isLocked, "位置自由 ↔ 拖动保护互斥");
+    }
+    // Conversion itself changes nothing geometrically.
+    QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9);
+
+    // Translate B far away: angle must NOT change (位置自由, 平移不动角度).
+    {
+        auto* b = doc.blockById(bId);
+        b->transform.origin = b->transform.origin + Vec2{120.0, 40.0};
+    }
+    doc.resolveAll();
+    QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9);
+    QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint).length() > 100.0);
+
+    // Rotate the leader by +30°: B must follow (keeps the relative angle).
+    {
+        auto* a = doc.blockById(aId);
+        a->transform.rotation += 30.0 * M_PI / 180.0;
+    }
+    doc.resolveAll();
+    QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation
+                     - (rotBefore + 30.0 * M_PI / 180.0)) < 1e-9);
+
+    // Undo: the FULL connection is restored — B re-snaps onto A's end.
+    stack.undo();
+    {
+        const Attachment& a = doc.attachments().front();
+        QVERIFY(!a.angleOnly);
+        QVERIFY(a.isLocked);
+    }
+    const Vec2 joint2 = doc.findBlock(aId)->worldPos(aEnd);
+    QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint2).length() < 1e-6);
+
+    // Redo: angle-only again, position stays wherever it currently is.
+    stack.redo();
+    QVERIFY(doc.attachments().front().angleOnly);
+}
+
+// ---------------------------------------------------------------------------
+// 拆开保留角度 doc helper: setAttachmentAngleOnly() toggles the mode with the
+// welded/position-free invariant, and lockedClosure() must never weld an
+// angle-only pair back together.
+// ---------------------------------------------------------------------------
+void TestCommands::setAttachmentAngleOnly_docHelperAndLockedClosure()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    QVERIFY(doc.addAttachment(att));
+    const QUuid attId = doc.attachments().front().id;
+
+    // Full connection: locked closure welds the pair.
+    QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 2);
+
+    // 拆开: angleOnly + unlocked; closure no longer spans the pair.
+    doc.setAttachmentAngleOnly(attId, true);
+    QVERIFY(doc.attachments().front().angleOnly);
+    QVERIFY(!doc.attachments().front().isLocked);
+    QVERIFY(doc.lockedClosure({bId}) == QSet<QUuid>{bId});
+
+    // 恢复完整连接: re-welded (只要建立跟随就保护), angleOnly cleared.
+    doc.setAttachmentAngleOnly(attId, false);
+    QVERIFY(!doc.attachments().front().angleOnly);
+    QVERIFY(doc.attachments().front().isLocked);
+    QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 2);
+}
+
+// ---------------------------------------------------------------------------
+// 抽屉式单向滑动 — 滑轨模式 (slideMode, 用户拍板 2026-08): the follower keeps
+// its driven rotation (relative angle α preserved) while its position loses
+// exactly ONE degree of freedom in the leader-local frame. AlongLeader = slide
+// along the leader's direction (perpendicular offset locked); PerpLeader =
+// pull perpendicular (along-position locked). The leader's rigid motion
+// carries the follower along the rail (rail coordinates preserved).
+// ---------------------------------------------------------------------------
+void TestCommands::slideMode_alongAndPerpConstraints()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);   // leader A
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);     // follower B
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 90.0;   // 垂直
+    QVERIFY(doc.addAttachment(att));
+    const QUuid attId = doc.attachments().front().id;
+
+    const Vec2 joint = doc.findBlock(aId)->worldPos(aEnd);
+    QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint).length() < 1e-6);
+    const double rotBefore = doc.findBlock(bId)->transform.rotation;
+    QVERIFY(std::abs(rotBefore - M_PI / 2.0) < 1e-9);
+
+    // ── AlongLeader: 沿线滑动, 垂直锁定 (激活快照 = 0) ──
+    QUndoStack stack;
+    stack.push(new cad::cmd::SetAttachmentSlideModeCommand(
+        &doc, attId, cad::param::SlideMode::AlongLeader));
+    {
+        const Attachment& a = doc.attachments().front();
+        QVERIFY(a.slideMode == cad::param::SlideMode::AlongLeader);
+        QVERIFY(!a.isLocked);   // 滑轨必须可滑动 (拖动保护互斥)
+        QVERIFY(!a.angleOnly);  // 与拆开互斥
+        QVERIFY(std::abs(a.slideAlongMm) < 1e-9);
+        QVERIFY(std::abs(a.slidePerpMm) < 1e-9);
+    }
+    // 滑轨附件不参与焊接闭包.
+    QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 1);
+    // 激活不改几何.
+    QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9);
+    QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint).length() < 1e-6);
+
+    // 斜着拖 (30, 12): 沿线分量生效 (s=30), 垂直分量被锁回 0 (贴基准线).
+    {
+        auto* b = doc.blockById(bId);
+        b->transform.origin = b->transform.origin + Vec2{30.0, 12.0};
+    }
+    doc.updateSlideOffsetsFromCurrent(attId);
+    doc.resolveAll();
+    {
+        const auto* b = doc.findBlock(bId);
+        QVERIFY(std::abs(b->transform.rotation - rotBefore) < 1e-9);
+        const Vec2 p = b->worldPos(bStart);
+        QVERIFY(std::abs(p.x - 130.0) < 1e-6);   // 沿线滑到 +30
+        QVERIFY(std::abs(p.y - 0.0) < 1e-6);     // 垂直锁 0
+    }
+
+    // 纯垂直推 (0, 20): 被锁回, 沿线位置保持 30.
+    {
+        auto* b = doc.blockById(bId);
+        b->transform.origin = b->transform.origin + Vec2{0.0, 20.0};
+    }
+    doc.updateSlideOffsetsFromCurrent(attId);
+    doc.resolveAll();
+    {
+        const auto* b = doc.findBlock(bId);
+        const Vec2 p = b->worldPos(bStart);
+        QVERIFY(std::abs(p.x - 130.0) < 1e-6);
+        QVERIFY(std::abs(p.y - 0.0) < 1e-6);
+    }
+
+    // 基准线旋转 +30°: 滑轨跟着转 — 相对角 α 保持 + 局部坐标 (s=30, t=0) 不变.
+    {
+        auto* a = doc.blockById(aId);
+        a->transform.rotation += 30.0 * M_PI / 180.0;
+    }
+    doc.resolveAll();
+    {
+        const auto* b = doc.findBlock(bId);
+        QVERIFY(std::abs(b->transform.rotation
+                         - (rotBefore + 30.0 * M_PI / 180.0)) < 1e-9);
+        const auto* a = doc.findBlock(aId);
+        const Vec2 anchor = a->worldPos(aEnd);
+        const Vec2 p = b->worldPos(bStart);
+        const double rail = a->transform.rotation
+                          + a->exitDirectionAtPoint(aEnd, aSeg);
+        const Vec2 unit(std::cos(rail), std::sin(rail));
+        const Vec2 rel = p - anchor;
+        // 骑在滑轨上: 沿线 30, 垂直 0 (刚性携带).
+        QVERIFY(std::abs(rel.x * unit.x + rel.y * unit.y - 30.0) < 1e-6);
+        QVERIFY(std::abs(-rel.x * unit.y + rel.y * unit.x) < 1e-6);
+    }
+
+    // ── PerpLeader: 垂直拉出, 沿线锁定 (激活快照 = 当前投影 s=30, t=0) ──
+    stack.push(new cad::cmd::SetAttachmentSlideModeCommand(
+        &doc, attId, cad::param::SlideMode::PerpLeader));
+    {
+        const Attachment& a = doc.attachments().front();
+        QVERIFY(a.slideMode == cad::param::SlideMode::PerpLeader);
+        QVERIFY(!a.isLocked);
+        QVERIFY(std::abs(a.slideAlongMm - 30.0) < 1e-6);
+        QVERIFY(std::abs(a.slidePerpMm) < 1e-6);
+    }
+    // 拖动 (30, 60): 沿线锁回 30, 垂直分量生效 (拖向的垂直投影).
+    {
+        auto* b = doc.blockById(bId);
+        b->transform.origin = b->transform.origin + Vec2{30.0, 60.0};
+    }
+    doc.updateSlideOffsetsFromCurrent(attId);
+    doc.resolveAll();
+    {
+        const auto* b = doc.findBlock(bId);
+        QVERIFY(std::abs(b->transform.rotation
+                         - (rotBefore + 30.0 * M_PI / 180.0)) < 1e-9);
+        const auto* a = doc.findBlock(aId);
+        const Vec2 anchor = a->worldPos(aEnd);
+        const double rail = a->transform.rotation
+                          + a->exitDirectionAtPoint(aEnd, aSeg);
+        const Vec2 unit(std::cos(rail), std::sin(rail));
+        const Vec2 rel = b->worldPos(bStart) - anchor;
+        QVERIFY(std::abs(rel.x * unit.x + rel.y * unit.y - 30.0) < 1e-6);  // 沿线锁 30
+        const double dragPerp = 30.0 * (-unit.y) + 60.0 * unit.x;          // (30,60) 的垂直投影
+        QVERIFY(std::abs(-rel.x * unit.y + rel.y * unit.x - dragPerp) < 1e-6);
+    }
+
+    // Undo ×2: PerpLeader → AlongLeader → 完整连接 (重新焊接) — B 重新吸附回锚点.
+    stack.undo();
+    QVERIFY(doc.attachments().front().slideMode == cad::param::SlideMode::AlongLeader);
+    stack.undo();
+    {
+        const Attachment& a = doc.attachments().front();
+        QVERIFY(a.slideMode == cad::param::SlideMode::None);
+        QVERIFY(a.isLocked);
+    }
+    const Vec2 joint2 = doc.findBlock(aId)->worldPos(aEnd);
+    QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint2).length() < 1e-6);
+
+    // Redo: 回到 AlongLeader (位置从当前几何重快照 = 吸附点 → (0,0)).
+    stack.redo();
+    QVERIFY(doc.attachments().front().slideMode == cad::param::SlideMode::AlongLeader);
+    QVERIFY(std::abs(doc.attachments().front().slideAlongMm) < 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// 滑轨拖动撤销: dragging a slide follower writes the free-axis coordinate back
+// with updateSlideOffsetsFromCurrent(); the tool wraps it into
+// SetSlideOffsetsCommand + MoveBlockCommand in one macro so a single undo
+// restores the pre-drag rail position (and redo re-applies it). The offsets
+// command does NOT resolve by itself — the move command's resolve settles.
+// ---------------------------------------------------------------------------
+void TestCommands::slideMode_dragOffsetsUndoRedo()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 0.0;
+    QVERIFY(doc.addAttachment(att));
+    const QUuid attId = doc.attachments().front().id;
+
+    QUndoStack stack;
+    stack.push(new cad::cmd::SetAttachmentSlideModeCommand(
+        &doc, attId, cad::param::SlideMode::AlongLeader));
+
+    // Simulate a tool drag: follower origin + (40, 0) — along the leader.
+    const Vec2 delta{40.0, 0.0};
+    const Vec2 preOrigin = doc.findBlock(bId)->transform.origin;
+    {
+        auto* b = doc.blockById(bId);
+        b->transform.origin = b->transform.origin + delta;
+    }
+    doc.updateSlideOffsetsFromCurrent(attId);
+    doc.resolveAll();
+    const double slidAlong = doc.attachments().front().slideAlongMm;
+    QVERIFY(std::abs(slidAlong - 40.0) < 1e-9);   // 沿线自由轴回写生效
+    QVERIFY(std::abs(doc.attachments().front().slidePerpMm) < 1e-9);
+
+    // Mirror the tool commit: restore pre-drag origin, then the macro
+    // [SetSlideOffsets(old→new), MoveBlockCommand(delta)].
+    doc.blockById(bId)->transform.origin = preOrigin;
+    stack.beginMacro(QStringLiteral("滑动并移动"));
+    stack.push(new cad::cmd::SetSlideOffsetsCommand(
+        &doc, attId, 0.0, 0.0, slidAlong,
+        doc.attachments().front().slidePerpMm));
+    stack.push(new cad::cmd::MoveBlockCommand(&doc, {bId}, delta));
+    stack.endMacro();
+
+    const Vec2 slidPos = doc.findBlock(bId)->worldPos(bStart);
+    QVERIFY(std::abs(slidPos.x - 140.0) < 1e-6);   // 滑轨上 x=140
+    QVERIFY(std::abs(slidPos.y) < 1e-6);
+
+    // Undo: rail position + origin both restored.
+    stack.undo();
+    {
+        const Attachment& a = doc.attachments().front();
+        QVERIFY(std::abs(a.slideAlongMm) < 1e-9);
+        QVERIFY(std::abs(a.slidePerpMm) < 1e-9);
+    }
+    const Vec2 backPos = doc.findBlock(bId)->worldPos(bStart);
+    QVERIFY(std::abs(backPos.x - 100.0) < 1e-6);
+    QVERIFY(std::abs(backPos.y) < 1e-6);
+
+    // Redo: rail position re-applied.
+    stack.redo();
+    const Vec2 rePos = doc.findBlock(bId)->worldPos(bStart);
+    QVERIFY(std::abs(rePos.x - 140.0) < 1e-6);
+    QVERIFY(std::abs(rePos.y) < 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// 曲线点连接跟随 (用户报告 2026-08: 连接曲线点的线"不可靠、不跟随"):
+// ① follower attached to a CurveAnchor / Interpolated aux point on the leader
+//    must track the point on rigid moves AND shape changes (full resolve and
+//    the resolveForDrag path);
+// ② the exact reported scenario — a curve anchor that FOLLOWS a target point
+//    moves in the ParamDocument follow post-pass which runs AFTER the
+//    attachment settle; a line attached to that anchor must still land on the
+//    anchor's NEW position within the SAME drag frame (regression for the
+//    follow re-settle fix).
+// ---------------------------------------------------------------------------
+void TestCommands::curvePointAttach_followsLeader()
+{
+    const auto mkLeader = [](ParamDocument& doc, bool curve) {
+        Block block;
+        ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
+        const QUuid p1Id = p1.id;
+        ParamPoint p2; p2.constraint = PointConstraint::Polar; p2.refPointId = p1Id;
+        p2.distance = 100.0; p2.angle = 0.0;
+        const QUuid p2Id = p2.id;
+        block.addPoint(std::move(p1));
+        block.addPoint(std::move(p2));
+        Segment seg;
+        seg.startPointId = p1Id; seg.endPointId = p2Id;
+        if (curve) {
+            seg.type = SegmentType::Bezier;
+            ParamPoint pp; pp.constraint = PointConstraint::CurveAnchor;
+            pp.hostSegmentId = seg.id; pp.interpPercent = 0.5; pp.interpOffsetDist = 20.0;
+            pp.autoTangent = true;
+            const QUuid ppId = pp.id;
+            block.addPoint(std::move(pp));
+            seg.passPointIds = {ppId};
+        }
+        const QUuid segId = seg.id;
+        block.addSegment(std::move(seg));
+        const QUuid bId = block.id;
+        doc.addBlock(std::move(block));
+        return std::tuple{bId, segId};
+    };
+    const auto toWorking = [](ParamDocument& doc) {
+        for (const auto& b : doc.blocks())
+            if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+    };
+
+    // ① straight leader + CurveAnchor midpoint: move + rotate (full resolve).
+    {
+        ParamDocument doc;
+        auto [aId, aSeg] = mkLeader(doc, false);
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);
+        toWorking(doc);
+
+        ParamPoint anchor; anchor.constraint = PointConstraint::CurveAnchor;
+        anchor.hostSegmentId = aSeg; anchor.interpPercent = 0.5; anchor.interpOffsetDist = 0.0;
+        const QUuid anchorId = anchor.id;
+        doc.blockById(aId)->addPoint(std::move(anchor));
+        doc.resolveAll();
+
+        Attachment att; att.fromBlockId = bId; att.fromPointId = bStart;
+        att.toBlockId = aId; att.toPointId = anchorId; att.toSegmentId = aSeg;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+        QVERIFY((doc.findBlock(bId)->worldPos(bStart)
+                 - doc.findBlock(aId)->worldPos(anchorId)).length() < 1e-6);
+
+        doc.blockById(aId)->transform.origin += Vec2{30.0, 0.0};
+        doc.resolveAll();
+        QVERIFY((doc.findBlock(bId)->worldPos(bStart)
+                 - doc.findBlock(aId)->worldPos(anchorId)).length() < 1e-6);
+
+        doc.blockById(aId)->transform.rotation += 30.0 * M_PI / 180.0;
+        doc.resolveAll();
+        QVERIFY((doc.findBlock(bId)->worldPos(bStart)
+                 - doc.findBlock(aId)->worldPos(anchorId)).length() < 1e-6);
+    }
+
+    // ② Bezier leader + INTERPOLATED aux point on the curve: rigid move,
+    //    shape change (anchor offset edit), and the resolveForDrag path.
+    {
+        ParamDocument doc;
+        auto [aId, aSeg] = mkLeader(doc, true);
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);
+        toWorking(doc);
+
+        ParamPoint aux; aux.constraint = PointConstraint::Interpolated;
+        aux.hostSegmentId = aSeg; aux.interpPercent = 0.5; aux.interpOffsetDist = 0.0;
+        aux.isAuxiliary = true;
+        const QUuid auxId = aux.id;
+        doc.blockById(aId)->addPoint(std::move(aux));
+        doc.resolveAll();
+
+        Attachment att; att.fromBlockId = bId; att.fromPointId = bStart;
+        att.toBlockId = aId; att.toPointId = auxId; att.toSegmentId = aSeg;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+        QVERIFY((doc.findBlock(bId)->worldPos(bStart)
+                 - doc.findBlock(aId)->worldPos(auxId)).length() < 1e-6);
+
+        doc.blockById(aId)->transform.origin += Vec2{30.0, 0.0};
+        doc.resolveAll();
+        QVERIFY((doc.findBlock(bId)->worldPos(bStart)
+                 - doc.findBlock(aId)->worldPos(auxId)).length() < 1e-6);
+
+        // Shape change via the drag path: pass-point offset 20 → 60.
+        for (auto& p : doc.blockById(aId)->points)
+            if (p.constraint == PointConstraint::CurveAnchor) p.interpOffsetDist = 60.0;
+        doc.resolveForDrag({aId});
+        QVERIFY((doc.findBlock(bId)->worldPos(bStart)
+                 - doc.findBlock(aId)->worldPos(auxId)).length() < 1e-6);
+    }
+
+    // ③ THE REPORTED BUG: a curve anchor with a follow target moves in the
+    //    follow post-pass AFTER the attachment settle — the line attached to
+    //    that anchor must track it within the SAME drag frame (pre-fix it
+    //    stayed on the old anchor position: delta = 30mm).
+    {
+        ParamDocument doc;
+        auto [aId, aSeg] = mkLeader(doc, true);
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);
+        toWorking(doc);
+
+        QUuid anchorId;
+        for (auto& p : doc.blockById(aId)->points)
+            if (p.constraint == PointConstraint::CurveAnchor) { anchorId = p.id; break; }
+        QVERIFY(!anchorId.isNull());
+
+        // Anchor follows the follower line B's start point.
+        auto* anchorPt = doc.blockById(aId)->findPoint(anchorId);
+        anchorPt->followBlockId = bId;
+        anchorPt->followPointId = bStart;
+        anchorPt->followOffset = Vec2::zero();
+        doc.resolveAll();
+
+        // Line L attached to the anchor (leader = the curve block).
+        auto [cId, cStart, cEnd, cSeg] = makeLine(doc, 30.0);
+        doc.blockById(cId)->layer = layerIdAt(doc, 1);
+        Attachment att; att.fromBlockId = cId; att.fromPointId = cStart;
+        att.toBlockId = aId; att.toPointId = anchorId; att.toSegmentId = aSeg;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+        QVERIFY((doc.findBlock(cId)->worldPos(cStart)
+                 - doc.findBlock(aId)->worldPos(anchorId)).length() < 1e-6);
+
+        // Drag the anchor's follow target: the anchor follows via the post-pass
+        // AND the attached line must land on the anchor in the SAME frame.
+        doc.blockById(bId)->transform.origin += Vec2{30.0, 0.0};
+        doc.resolveForDrag({bId});
+        QVERIFY((doc.findBlock(aId)->worldPos(anchorId)
+                 - Vec2{30.0, 0.0}).length() < 1e-6);   // anchor followed the target
+        QVERIFY((doc.findBlock(cId)->worldPos(cStart)
+                 - doc.findBlock(aId)->worldPos(anchorId)).length() < 1e-6);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 省道线 (用户拍板 2026-08):
+//   起点 A 挂已有点；终点 E = B 沿 B 所在线段方向转 β 角、偏移 d；
+//   线方向/线长由 Resolver 自动算出，B 旋转/移动/A 移动时持续跟随。
+// ---------------------------------------------------------------------------
+
+/// Build a dart block (same construction as LineFactory::createDartLine) on a
+/// horizontal datum block; returns the leak of created ids + the dart block id.
+static QUuid addDartLine(ParamDocument& doc,
+                         const QUuid& aBlockId, const QUuid& aPointId,
+                         const QUuid& bBlockId, const QUuid& bPointId,
+                         const QUuid& bSegId,
+                         double offsetMm, double angleDeg)
+{
+    Block block;
+    block.transform.origin = Vec2::zero();
+    ParamPoint p1;
+    p1.constraint = PointConstraint::Free;
+    p1.freePos = Vec2::zero();
+    QUuid startId = p1.id;
+    ParamPoint p2;
+    p2.constraint = PointConstraint::Polar;
+    p2.refPointId = startId;
+    p2.distance = 100.0;  // placeholder — the Resolver writes the real |A−E|
+    p2.angle = 0.0;
+    QUuid endId = p2.id;
+    block.addPoint(std::move(p1));
+    block.addPoint(std::move(p2));
+    Segment seg;
+    seg.startPointId = startId;
+    seg.endPointId = endId;
+    block.addSegment(std::move(seg));
+    block.dartStartBlockId = aBlockId;
+    block.dartStartPointId = aPointId;
+    block.dartRefBlockId   = bBlockId;
+    block.dartRefPointId   = bPointId;
+    block.dartRefSegmentId = bSegId;
+    block.dartOffsetMm     = offsetMm;
+    block.dartAngleDeg     = angleDeg;
+    QUuid dartId = block.id;
+    doc.addBlock(std::move(block));
+    return dartId;
+}
+
+void TestCommands::dartLine_computesEndAndFollows()
+{
+    ParamDocument doc;
+    // Datum line B: horizontal (0,0)→(100,0), segment 0°.
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 100.0);
+    // Line A: horizontal at y=50, start point is the dart's pin A.
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 50.0, Vec2{0.0, 50.0});
+
+    const QUuid dartId = addDartLine(doc, aId, aStart, bId, bEnd, bSeg,
+                                     20.0 /*d*/, 90.0 /*β*/);
+    QVERIFY(doc.findBlock(dartId)->isDart());
+    doc.resolveAll();
+
+    // A = (0,50); θ_B = 0°; E = (100,0) + 20·dir(90°) = (100,20).
+    const Block* dart = doc.findBlock(dartId);
+    QVERIFY(dart);
+    QVERIFY(dart->transform.origin.distanceTo(Vec2{0.0, 50.0}) < 1e-6);
+    const double expectRotation = std::atan2(20.0 - 50.0, 100.0 - 0.0);
+    QVERIFY(std::abs(dart->transform.rotation - expectRotation) < 1e-9);
+    // End point world = E.
+    const Segment& seg = dart->segments.front();
+    const Vec2 endWorld = dart->transform.toWorld(
+        dart->findPoint(seg.endPointId)->resolvedPos);
+    QVERIFY(endWorld.distanceTo(Vec2{100.0, 20.0}) < 1e-6);
+    // Line length = |A−E|.
+    QVERIFY(std::abs(dart->findPoint(seg.endPointId)->distance
+                     - Vec2{100.0, 20.0}.distanceTo(Vec2{0.0, 50.0})) < 1e-6);
+
+    // Translate the reference block: E follows rigidly (B + same offset).
+    doc.blockById(bId)->transform.origin += Vec2{10.0, 0.0};
+    doc.resolveAll();
+    {
+        const Block* d2 = doc.findBlock(dartId);
+        QVERIFY(std::abs(d2->transform.rotation
+                         - std::atan2(20.0 - 50.0, 110.0 - 0.0)) < 1e-9);
+        QVERIFY(d2->transform.toWorld(d2->findPoint(seg.endPointId)->resolvedPos)
+                    .distanceTo(Vec2{110.0, 20.0}) < 1e-6);
+    }
+
+    // Rotate the reference block by +30°: the dart must rotate WITH the
+    // segment (angle basis = B's segment, not the world).
+    doc.blockById(bId)->transform.rotation = 30.0 * M_PI / 180.0;
+    doc.resolveAll();
+    {
+        const Block* d3 = doc.findBlock(dartId);
+        const Vec2 bEndWorld = doc.findBlock(bId)->worldPos(bEnd);
+        // θ_B = 30°; E = B_world + 20·dir(30°+90°=120°).
+        const Vec2 expectE = bEndWorld
+            + Vec2(std::cos(120.0 * M_PI / 180.0),
+                   std::sin(120.0 * M_PI / 180.0)) * 20.0;
+        const Vec2 actualE = d3->transform.toWorld(
+            d3->findPoint(seg.endPointId)->resolvedPos);
+        QVERIFY(actualE.distanceTo(expectE) < 1e-6);
+        QVERIFY(std::abs(d3->transform.rotation
+                         - std::atan2(expectE.y - 50.0, expectE.x - 0.0)) < 1e-9);
+    }
+
+    // Moving A re-pins the origin and recomputes the direction.
+    doc.blockById(aId)->transform.origin += Vec2{0.0, -30.0};
+    doc.resolveAll();
+    {
+        const Block* d4 = doc.findBlock(dartId);
+        QVERIFY(d4->transform.origin.distanceTo(Vec2{0.0, 20.0}) < 1e-6);
+    }
+
+    // Editing the offset d moves E along the β ray.
+    doc.blockById(dartId)->dartOffsetMm = 40.0;
+    doc.resolveAll();
+    {
+        const Block* d5 = doc.findBlock(dartId);
+        const Vec2 bEndWorld = doc.findBlock(bId)->worldPos(bEnd);
+        const Vec2 expectE = bEndWorld
+            + Vec2(std::cos(120.0 * M_PI / 180.0),
+                   std::sin(120.0 * M_PI / 180.0)) * 40.0;
+        QVERIFY(d5->transform.toWorld(d5->findPoint(seg.endPointId)->resolvedPos)
+                    .distanceTo(expectE) < 1e-6);
+    }
+}
+
+void TestCommands::dartLine_undoRedo()
+{
+    ParamDocument doc;
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 100.0);
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 50.0, Vec2{0.0, 50.0});
+
+    // Create the dart through the same command the factory uses
+    // (DrawLineCommand with a dummy attachment).
+    Block block;
+    ParamPoint p1;
+    p1.constraint = PointConstraint::Free;
+    p1.freePos = Vec2::zero();
+    QUuid startId = p1.id;
+    ParamPoint p2;
+    p2.constraint = PointConstraint::Polar;
+    p2.refPointId = startId;
+    p2.distance = 100.0;
+    p2.angle = 0.0;
+    QUuid endId = p2.id;
+    block.addPoint(std::move(p1));
+    block.addPoint(std::move(p2));
+    Segment seg;
+    seg.startPointId = startId;
+    seg.endPointId = endId;
+    block.addSegment(std::move(seg));
+    block.dartStartBlockId = aId;
+    block.dartStartPointId = aStart;
+    block.dartRefBlockId   = bId;
+    block.dartRefPointId   = bEnd;
+    block.dartRefSegmentId = bSeg;
+    block.dartOffsetMm     = 20.0;
+    block.dartAngleDeg     = 90.0;
+    const QUuid dartId = block.id;
+
+    cad::param::Attachment dummy;
+    cad::cmd::DrawLineCommand cmd(&doc, std::move(block), dummy, false);
+    cmd.redo();
+    QVERIFY(doc.findBlock(dartId));
+    QVERIFY(doc.findBlock(dartId)->isDart());
+
+    cmd.undo();
+    QVERIFY(!doc.findBlock(dartId));
+
+    cmd.redo();
+    QVERIFY(doc.findBlock(dartId));
+    QVERIFY(doc.findBlock(dartId)->isDart());
+    QCOMPARE(doc.findBlock(dartId)->dartOffsetMm, 20.0);
+    QCOMPARE(doc.findBlock(dartId)->dartAngleDeg, 90.0);
+}
+
+void TestCommands::dartLine_degradeOnHostDelete()
+{
+    ParamDocument doc;
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 100.0);
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 50.0, Vec2{0.0, 50.0});
+    const QUuid dartId = addDartLine(doc, aId, aStart, bId, bEnd, bSeg, 20.0, 90.0);
+    doc.resolveAll();
+
+    // Deleting the REFERENCE block degrades the dart to a plain line.
+    const auto impact = doc.deleteImpactReport(bId);
+    QCOMPARE(impact.dartLinesDegraded, 1);
+    doc.removeBlock(bId);
+    QVERIFY(!doc.findBlock(dartId)->isDart());
+    QVERIFY(doc.findBlock(dartId)->dartStartBlockId.isNull());
+    QVERIFY(doc.findBlock(dartId)->dartRefBlockId.isNull());
+
+    // Deleting the START host after the line already degraded: no additional
+    // dart impact (the constraint fields were cleared by the first delete).
+    const auto impact2 = doc.deleteImpactReport(aId);
+    QCOMPARE(impact2.dartLinesDegraded, 0);
+    doc.removeBlock(aId);
+    QVERIFY(!doc.findBlock(dartId)->isDart());
+    QVERIFY(doc.findBlock(dartId)->dartStartBlockId.isNull());
 }
 
 QTEST_MAIN(TestCommands)

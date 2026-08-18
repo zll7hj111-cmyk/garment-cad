@@ -1,4 +1,4 @@
-﻿#include "ParamDocument.h"
+#include "ParamDocument.h"
 
 #include <algorithm>
 #include <cmath>
@@ -193,9 +193,20 @@ const std::vector<Group>& ParamDocument::groups() const { return m_groupRegistry
 Group* ParamDocument::findGroup(const QUuid& groupId) { return m_groupRegistry->findGroup(groupId); }
 QUuid ParamDocument::groupOfBlock(const QUuid& blockId) const { return m_groupRegistry->groupOfBlock(blockId); }
 QList<QUuid> ParamDocument::blocksInGroup(const QUuid& groupId) const { return m_groupRegistry->blocksInGroup(groupId); }
+bool ParamDocument::addGroupMember(const QUuid& groupId, const QUuid& blockId) { return m_groupRegistry->addGroupMember(groupId, blockId); }
+bool ParamDocument::removeGroupMember(const QUuid& groupId, const QUuid& blockId) { return m_groupRegistry->removeGroupMember(groupId, blockId); }
 void ParamDocument::setGroupName(const QUuid& groupId, const QString& name) { m_groupRegistry->setGroupName(groupId, name); }
+void ParamDocument::setGroupBoundingBoxVisible(const QUuid& groupId, bool visible) { m_groupRegistry->setGroupBoundingBoxVisible(groupId, visible); }
+bool ParamDocument::isGroupBoundingBoxVisible(const QUuid& groupId) const { return m_groupRegistry->isGroupBoundingBoxVisible(groupId); }
 void ParamDocument::restoreGroups(std::vector<Group> groups, QHash<QUuid, QUuid> blockGroup)
 { m_groupRegistry->restoreGroups(std::move(groups), std::move(blockGroup)); }
+void ParamDocument::ensureGroupComponentRoot(const QUuid& groupId) { m_groupRegistry->ensureComponentRoot(groupId); }
+QUuid ParamDocument::groupComponentRootBlockId(const QUuid& groupId) const { return m_groupRegistry->componentRootBlockId(groupId); }
+bool ParamDocument::hasComponentHinge(const QUuid& groupId) const { return m_groupRegistry->hasComponentHinge(groupId); }
+bool ParamDocument::setComponentHinge(const QUuid& groupId, const ComponentHinge& hinge) { return m_groupRegistry->setComponentHinge(groupId, hinge); }
+bool ParamDocument::updateComponentHinge(const QUuid& groupId, const ComponentHinge& hinge) { return m_groupRegistry->updateComponentHinge(groupId, hinge); }
+void ParamDocument::clearComponentHinge(const QUuid& groupId) { m_groupRegistry->clearComponentHinge(groupId); }
+const ComponentHinge* ParamDocument::componentHinge(const QUuid& groupId) const { return m_groupRegistry->componentHinge(groupId); }
 
 // --- Parameters ---
 
@@ -358,6 +369,21 @@ void ParamDocument::removeBlock(const QUuid& id)
     }
     m_measureStore->purgeBlockReferences(id);
 
+    // Dart lines (省道线) that referenced the removed block (as start pin A
+    // or offset point B) lose their constraint and degrade to plain lines —
+    // their current geometry stays frozen in place (降级普通线).
+    for (auto& b : m_blocks) {
+        if (b.dartStartBlockId == id || b.dartRefBlockId == id) {
+            b.dartStartBlockId = {};
+            b.dartStartPointId = {};
+            b.dartRefBlockId   = {};
+            b.dartRefPointId   = {};
+            b.dartRefSegmentId = {};
+            b.dartOffsetFormula.clear();
+            b.dartAngleFormula.clear();
+        }
+    }
+
     emit blockRemoved(id);
     // Bridges pinned to the removed block just lost a pin — they are released
     // as independent segments (父线段删除后桥接线独立, see Block::isBridge).
@@ -466,6 +492,14 @@ ParamDocument::DeleteImpact ParamDocument::deleteImpactReport(const QUuid& id) c
             }
         }
     }
+
+    // 9. Dart lines (省道线) that referenced the victim (start pin A or offset
+    //    point B) degrade to plain lines, keeping their current geometry.
+    for (const auto& b : m_blocks) {
+        if (b.id == id) continue;
+        if (b.dartStartBlockId == id || b.dartRefBlockId == id)
+            ++r.dartLinesDegraded;
+    }
     return r;
 }
 
@@ -535,7 +569,7 @@ bool ParamDocument::addAttachment(Attachment att)
     }
     if (checkAttachment(m_attachments, att) != AttachmentIssue::Ok)
         return false;
-    // NOTE: 组对连接零限制 (组只是选择快捷方式, 2026-08-04 设计定稿) ——
+    // NOTE: 组对连接零限制 (模型层组零限制, 2026-08-04 设计定稿) ——
     // 无主连接预算, 组内外连接自由建立/断开, 与自由线段完全一致.
 
     // Value-cycle pre-check (值循环预检): a cross-layer edge that hangs a
@@ -578,6 +612,85 @@ void ParamDocument::setAttachmentLocked(const QUuid& id, bool locked)
     resolveAll();
 }
 
+void ParamDocument::setAttachmentAngleOnly(const QUuid& id, bool angleOnly)
+{
+    auto it = std::find_if(m_attachments.begin(), m_attachments.end(),
+        [&id](const Attachment& a) { return a.id == id; });
+    if (it == m_attachments.end() || it->angleOnly == angleOnly)
+        return;
+    it->angleOnly = angleOnly;
+    // 位置自由 ↔ 焊接互斥: 拆开自动解锁; 恢复完整连接重新焊接 (默认保护).
+    it->isLocked = !angleOnly;
+    // 拆开 (位置全自由) 与滑轨 (一轴自由) 互斥: 拆开时清除滑轨模式.
+    it->slideMode = SlideMode::None;
+    resolveAll();
+}
+
+void ParamDocument::setAttachmentSlideMode(const QUuid& id, SlideMode mode)
+{
+    auto it = std::find_if(m_attachments.begin(), m_attachments.end(),
+        [&id](const Attachment& a) { return a.id == id; });
+    if (it == m_attachments.end() || it->slideMode == mode)
+        return;
+    if (mode != SlideMode::None) {
+        // Snapshot the locked-axis coordinate from the CURRENT settled
+        // geometry BEFORE switching (the follower's from-point projected onto
+        // the leader-local rail frame). For a plain full connection this is
+        // (0, 0) — the from-point sits exactly on the anchor.
+        const Block* from = blockById(it->fromBlockId);
+        const Block* to = blockById(it->toBlockId);
+        if (from && to) {
+            const auto [s, t] = computeSlideOffsets(*from, *it, *to);
+            it->slideAlongMm = s;
+            it->slidePerpMm = t;
+        }
+        // 滑轨与拆开/拖动保护互斥: 位置只留一轴自由度 — 必须解锁 (可滑动).
+        it->angleOnly = false;
+        it->isLocked = false;
+        it->slideMode = mode;
+    } else {
+        // 切回普通全连接: 位置吸附 + 角度跟随恢复, 重新焊接 (只要建立跟随
+        // 就保护). 锁轴快照保留 (切回滑轨时按当时几何重快照, 不依赖旧值).
+        it->slideMode = SlideMode::None;
+        it->angleOnly = false;
+        it->isLocked = true;
+    }
+    resolveAll();
+}
+
+void ParamDocument::refreshSlideOffsets(const QUuid& id)
+{
+    auto it = std::find_if(m_attachments.begin(), m_attachments.end(),
+        [&id](const Attachment& a) { return a.id == id; });
+    if (it == m_attachments.end() || it->slideMode == SlideMode::None)
+        return;
+    const Block* from = blockById(it->fromBlockId);
+    const Block* to = blockById(it->toBlockId);
+    if (!from || !to) return;
+    const auto [s, t] = computeSlideOffsets(*from, *it, *to);
+    it->slideAlongMm = s;
+    it->slidePerpMm = t;
+    resolveAll();
+}
+
+void ParamDocument::updateSlideOffsetsFromCurrent(const QUuid& id)
+{
+    auto it = std::find_if(m_attachments.begin(), m_attachments.end(),
+        [&id](const Attachment& a) { return a.id == id; });
+    if (it == m_attachments.end()
+        || it->slideMode == SlideMode::None)
+        return;
+    const Block* from = blockById(it->fromBlockId);
+    const Block* to = blockById(it->toBlockId);
+    if (!from || !to) return;
+    const auto [s, t] = computeSlideOffsets(*from, *it, *to);
+    // 只回写自由轴; 锁轴坐标保持激活时快照 (拖动只改变自由轴).
+    if (it->slideMode == SlideMode::AlongLeader)
+        it->slideAlongMm = s;
+    else
+        it->slidePerpMm = t;
+}
+
 QSet<QUuid> ParamDocument::lockedClosure(const QSet<QUuid>& seed) const
 {
     QSet<QUuid> result = seed;
@@ -585,7 +698,11 @@ QSet<QUuid> ParamDocument::lockedClosure(const QSet<QUuid>& seed) const
     while (expanded) {
         expanded = false;
         for (const auto& att : m_attachments) {
-            if (!att.isLocked) continue;
+            // angleOnly (拆开保留角度) / 滑轨 (slideMode) attachments are
+            // position-constrained picks (free / one-axis-free): they must
+            // never weld the pair back together for drags.
+            if (!att.isLocked || att.angleOnly
+                || att.slideMode != SlideMode::None) continue;
             const bool fromIn = result.contains(att.fromBlockId);
             const bool toIn   = result.contains(att.toBlockId);
             if (fromIn != toIn) {
@@ -1003,6 +1120,11 @@ bool ParamDocument::blockReferences(const Block& b, const QUuid& targetBlockId) 
     // Endpoint-aim target (终点指向).
     if (b.endTargetBlockId == targetBlockId)
         return true;
+    // Dart-line references (省道线): the start pin A and the offset point B
+    // must both re-solve (the dart block re-computes its transform) whenever
+    // their host blocks move.
+    if (b.dartStartBlockId == targetBlockId || b.dartRefBlockId == targetBlockId)
+        return true;
     // Curve-anchor follow target (曲线点跟随).
     for (const auto& pt : b.points)
         if (pt.followBlockId == targetBlockId)
@@ -1128,6 +1250,10 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         passAttachments = &filteredAttachments;
     }
 
+    // Component (组件) snapshots: assembled once per resolve so active
+    // components are driven by their single hinge.
+    const std::vector<Component> components = m_groupRegistry->components();
+
     // Dirty-subgraph narrowing: starts as the caller-provided subset; upgraded
     // to null (full resolve) the moment a measurement changes, because a
     // measured value can feed formulas in blocks OUTSIDE the subset.
@@ -1145,14 +1271,14 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         measureAngleMeasureVars();
         Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                              &auxDiag, Resolver::Scope::AuxOnly, kAuxLayer,
-                             effAffected);
+                             effAffected, components);
         for (int i = 0; i < 4 && (measureLinkedVars() || measureMeasureVars()
                                   || measureAngleMeasureVars()); ++i) {
             if (effAffected) effAffected = nullptr;  // measurement changed → full
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &auxDiag,
                                  Resolver::Scope::AuxOnly, kAuxLayer,
-                                 effAffected);
+                                 effAffected, components);
         }
         m_layerRegistry->setAuxDirty(false);
         auxRan = true;
@@ -1176,7 +1302,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         measureAngleMeasureVars(/*skipAuxSource=*/true);
         Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                              &m_diagnostics, Resolver::Scope::WorkingOnly, kAuxLayer,
-                             effAffected);
+                             effAffected, components);
         // Linked measurements are taken BEFORE the pass; if the pass moved any
         // measured geometry (e.g. the source segment of a length-linked copy was
         // just edited), propagate to consumers until stable (bounded: linked
@@ -1189,7 +1315,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &m_diagnostics,
                                  Resolver::Scope::WorkingOnly, kAuxLayer,
-                                 effAffected);
+                                 effAffected, components);
         }
         m_layerRegistry->setWorkingDirty(false);
         workingRan = true;
@@ -1228,7 +1354,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                 Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                      m_conditioned, &auxDiag2,
                                      Resolver::Scope::AuxOnly, kAuxLayer,
-                                     nullptr);
+                                     nullptr, components);
                 if (!(measureLinkedVars() || measureMeasureVars()
                       || measureAngleMeasureVars()))
                     break;
@@ -1256,7 +1382,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             std::vector<ResolveDiagnostic> xDiag;  // discarded (phase 2 owns m_diagnostics)
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                                  &xDiag, Resolver::Scope::AuxOnly, kAuxLayer,
-                                 effAffected);
+                                 effAffected, components);
             // No skipAuxSource here: cross-layer-linked aux geometry may have
             // moved, and its published values must be re-measured fully.
             if (!(measureLinkedVars() || measureMeasureVars()
@@ -1280,7 +1406,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             std::vector<ResolveDiagnostic> finalDiag;  // discarded (NotConverged reported below)
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                                  &finalDiag, Resolver::Scope::AuxOnly, kAuxLayer,
-                                 effAffected);
+                                 effAffected, components);
             m_diagnostics.push_back({ResolveDiagnostic::Kind::NotConverged, QUuid()});
         }
     }
@@ -1289,6 +1415,12 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     // CurveAnchor points with a follow connection track their target point:
     // recompute chord-relative params so the anchor stays at target + offset.
     // Only blocks in layer groups that actually re-resolved are touched.
+    // NOTE: this pass runs AFTER every Resolver pass (including the attachment
+    // settle), so an anchor moved here leaves attached followers on the OLD
+    // anchor position for the rest of this frame — the final drag frame would
+    // show the follower one frame behind (曲线点连接不跟随, 用户报告 2026-08).
+    // followMoved tracks that case so the re-settle below closes the gap.
+    bool followMoved = false;
     for (auto& blk : m_blocks) {
         const bool blkAux = isAuxLayer(blk.layer);
         if (!(blkAux ? (auxRan || xLayerMoved) : workingRan)) continue;
@@ -1332,10 +1464,36 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             // curve cache this frame (Block::resolve's own epoch bump already
             // ran BEFORE this post-pass, so without this the curve would keep
             // passing through the OLD anchor until the next resolve).
-            if (pt.resolvedPos.distanceSquaredTo(newPos) > 1e-6)
+            if (pt.resolvedPos.distanceSquaredTo(newPos) > 1e-6) {
                 ++blk.geometryEpoch;
+                followMoved = true;
+            }
             pt.resolvedPos = newPos;
             pt.resolved = true;
+        }
+    }
+
+    // ── Curve-anchor follow re-settle (曲线点连接同帧跟随, 2026-08) ──
+    // The post-pass moved anchor(s) AFTER the attachment settle. Re-run the
+    // same scoped resolve(s) (affected-narrowed) so followers attached to the
+    // moved anchors land on the fresh positions in THIS frame — and the curve
+    // span cache is rebuilt against the moved anchor (exit-direction lookups
+    // stay consistent). Bounded: the re-settle is a plain Resolver pass and
+    // never re-enters this post-pass (it lives below), so no recursion.
+    if (followMoved) {
+        if (workingRan) {
+            GCAD_PERF_SCOPE("resolve.followResettle");
+            std::vector<ResolveDiagnostic> reDiag;  // discarded (phase 2 owns m_diagnostics)
+            Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
+                                 &reDiag, Resolver::Scope::WorkingOnly, kAuxLayer,
+                                 effAffected, components);
+        }
+        if (auxRan || xLayerMoved) {
+            GCAD_PERF_SCOPE("resolve.followResettleAux");
+            std::vector<ResolveDiagnostic> reDiag;  // discarded
+            Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
+                                 &reDiag, Resolver::Scope::AuxOnly, kAuxLayer,
+                                 effAffected, components);
         }
     }
 

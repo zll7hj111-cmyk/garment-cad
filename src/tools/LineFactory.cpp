@@ -1,4 +1,4 @@
-#include "LineFactory.h"
+﻿#include "LineFactory.h"
 
 #include <cmath>
 #include <optional>
@@ -362,6 +362,88 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
         if (const QString toast = crossLayerToast(m_paramDoc, fromLayer, toLayer);
             !toast.isEmpty())
             m_scene->showToast(toast);
+    }
+}
+
+void LineFactory::createDartLine(const SnapResult& startA, const SnapResult& refB,
+                                 double offsetMm, double angleDeg,
+                                 const LineBuildOptions& opts,
+                                 const QString& offsetFormula,
+                                 const QString& angleFormula)
+{
+    if (!m_paramDoc) return;
+
+    const auto* aBlock = m_paramDoc->findBlock(startA.blockId);
+    const auto* bBlock = m_paramDoc->findBlock(refB.blockId);
+    if (!aBlock || !bBlock) return;
+    const cad::param::ParamPoint* aPt = aBlock->findPoint(startA.pointId);
+    const cad::param::ParamPoint* bPt = bBlock->findPoint(refB.pointId);
+    if (!aPt || !bPt) return;
+
+    const geo::Vec2 aWorld = aBlock->worldPos(startA.pointId);
+    const geo::Vec2 bWorld = bBlock->worldPos(refB.pointId);
+
+    // Direction basis = the reference segment's exit direction at B (extend
+    // straight past the point) — the angle reference is ALWAYS B's segment.
+    QUuid refSegmentId = bBlock->exitSegmentAtPoint(refB.pointId);
+    const double thetaB = bBlock->transform.rotation
+        + bBlock->exitDirectionAtPoint(refB.pointId, refSegmentId);
+
+    const double betaRad = angleDeg * M_PI / 180.0;
+    const geo::Vec2 eWorld = bWorld
+        + geo::Vec2(std::cos(thetaB + betaRad), std::sin(thetaB + betaRad)) * offsetMm;
+
+    cad::param::Block block;
+    block.layer = m_paramDoc->activeLayer();
+
+    // Placed by the Resolver every pass; born already placed.
+    block.transform.origin = aWorld;
+    const geo::Vec2 delta = eWorld - aWorld;
+    block.transform.rotation = std::atan2(delta.y, delta.x);
+    const double lenMm = delta.length();
+
+    cad::param::ParamPoint ptStart;
+    ptStart.constraint = cad::param::PointConstraint::Free;
+    ptStart.freePos = geo::Vec2::zero();
+    QUuid startId = ptStart.id;
+
+    // End point: Polar along local X — the block rotation carries the A→E
+    // direction and the Resolver writes back the computed |A−E| distance.
+    cad::param::ParamPoint ptEnd;
+    ptEnd.constraint = cad::param::PointConstraint::Polar;
+    ptEnd.refPointId = startId;
+    ptEnd.distance = lenMm;
+    ptEnd.angle = 0.0;
+    QUuid endId = ptEnd.id;
+
+    block.addPoint(std::move(ptStart));
+    block.addPoint(std::move(ptEnd));
+
+    cad::param::Segment seg;
+    seg.name = opts.name;
+    seg.startPointId = startId;
+    seg.endPointId = endId;
+    block.addSegment(std::move(seg));
+
+    // The dart constraint (references + parameters). Start A must be attached
+    // (enforced at the tool layer); the Resolver recomputes origin/rotation/
+    // length from these fields on every pass.
+    block.dartStartBlockId = startA.blockId;
+    block.dartStartPointId = startA.pointId;
+    block.dartRefBlockId   = refB.blockId;
+    block.dartRefPointId   = refB.pointId;
+    block.dartRefSegmentId = refSegmentId;
+    block.dartOffsetMm     = offsetMm;
+    block.dartOffsetFormula = offsetFormula;
+    block.dartAngleDeg     = angleDeg;
+    block.dartAngleFormula = angleFormula;
+
+    if (m_undoStack) {
+        cad::param::Attachment dummy;
+        m_undoStack->push(new cad::cmd::DrawLineCommand(
+            m_paramDoc, std::move(block), dummy, false));
+    } else {
+        m_paramDoc->addBlock(std::move(block));
     }
 }
 

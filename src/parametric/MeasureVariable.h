@@ -5,6 +5,15 @@
 
 namespace cad::param {
 
+/// What a MeasureVariable's value measures between its two source points.
+/// Distance = Euclidean |A-B|; Horizontal = |dx|; Vertical = |dy| (world
+/// axes, regardless of the other axis' difference).
+enum class MeasureKind : quint8 {
+    Distance,    ///< Two-point Euclidean distance (original behaviour).
+    Horizontal,  ///< Horizontal span |B.x - A.x|.
+    Vertical,    ///< Vertical span |B.y - A.y|.
+};
+
 /// A measurement variable whose value is the distance between two arbitrary
 /// points (possibly on different blocks). Unlike LinkedVariable (which tracks
 /// a segment's own length), a MeasureVariable captures the spatial distance
@@ -16,6 +25,7 @@ struct MeasureVariable {
     QUuid   id = QUuid::createUuid();
     QString name;       ///< Display name (optional, no reference effect).
     QString refName;    ///< Reference name for formulas (e.g. "M_a3kx9").
+    MeasureKind kind = MeasureKind::Distance;  ///< Distance / horizontal / vertical.
 
     // --- Measurement source: two points (may be on different blocks) ---
     QUuid blockA;       ///< Block containing point A.

@@ -39,6 +39,11 @@ public:
     /// re-applies this on every (re)bind.
     void setIndex(int n);
 
+    /// Set the alternating row parity (odd = orange bar, even = blue).
+    /// Re-applied on every (re)bind — reused cards must not keep a stale
+    /// parity from their previous row position.
+    void setAlternate(bool alternate);
+
 signals:
     void deleteRequested(const QUuid& id);
     void edited(const cad::param::AngleMeasureVariable& am);

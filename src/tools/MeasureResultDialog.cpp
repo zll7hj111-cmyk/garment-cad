@@ -1,4 +1,4 @@
-﻿#include "MeasureResultDialog.h"
+#include "MeasureResultDialog.h"
 
 #include <QFormLayout>
 #include "ElaText.h"
@@ -15,6 +15,7 @@ MeasureResultDialog::MeasureResultDialog(double valueMm,
                                          const QString& refName,
                                          const QString& name,
                                          const QString& comment,
+                                         cad::param::MeasureKind kind,
                                          QWidget* parent)
     : ElaDialog(parent)
 {
@@ -25,12 +26,24 @@ MeasureResultDialog::MeasureResultDialog(double valueMm,
     setWindowTitle(QStringLiteral("测量结果"));
     setModal(true);
 
+    QString valueLabel = QStringLiteral("实测值:");
+    switch (kind) {
+        case cad::param::MeasureKind::Horizontal:
+            valueLabel = QStringLiteral("水平实测值:");
+            break;
+        case cad::param::MeasureKind::Vertical:
+            valueLabel = QStringLiteral("垂直实测值:");
+            break;
+        case cad::param::MeasureKind::Distance:
+            break;
+    }
+
     auto* layout = new QVBoxLayout(this);
     layout->setSpacing(8);
 
     // Read-only identity / readout rows.
     auto* infoForm = new QFormLayout();
-    infoForm->addRow(QStringLiteral("实测值:"),
+    infoForm->addRow(valueLabel,
                      new ElaText(cad::geo::Units::formatLength(valueMm), 13, this));
     layout->addLayout(infoForm);
 

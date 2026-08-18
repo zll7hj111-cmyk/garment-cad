@@ -4,16 +4,16 @@
 #include <QString>
 #include <QUuid>
 
-/// Canvas pill badge for a user group (组徽标): renders the group's label
-/// (user name, falling back to the serial, plus the member count) anchored
-/// at the top-left of the group's bounding box.
+/// Canvas visual marker for a user group (组包围框): dashed bounding box
+/// around the member union, anchored at the top-left of the union bounds.
+/// It is interactive: shape() returns a stroked outline of the dashed box so
+/// mouse/hover hits land on the border (the interior stays transparent to
+/// clicks, preserving point-level endpoint gestures on members). A left click
+/// emits clicked(groupId); hover enters/leaves emit hoverChanged(bool).
 ///
 /// States:
-///   - Normal: subtle white pill with a light border.
-///   - Accent (hovered or selected): blue-tinted pill + accent text — the
-///     group reads as one unit at a glance.
-///   - Click: selects the whole group on canvas (CanvasScene re-emits the
-///     click; the host window drives the selection tool).
+///   - Normal: dashed outline in the soft border color.
+///   - Accent (group selected or hovered): dashed outline in the accent color.
 class GroupBadgeItem : public QGraphicsObject
 {
     Q_OBJECT
@@ -27,28 +27,33 @@ public:
 
     [[nodiscard]] const QUuid& groupId() const { return m_groupId; }
     [[nodiscard]] QRectF boundingRect() const override;
+    [[nodiscard]] QPainterPath shape() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option,
                QWidget* widget) override;
 
-    /// Label text (already formatted, e.g. "前片 · 3条"); re-sizes the pill.
-    void setText(const QString& text);
     /// Accent state: the group is hovered or selected.
     void setAccent(bool on);
+    /// Show or hide the dashed bounding box outline.
+    void setShowBoundingBox(bool show);
+    [[nodiscard]] bool showBoundingBox() const { return m_showBoundingBox; }
+    /// Update member bounds in scene coordinates to adjust the dashed outline.
+    void setMemberSceneBounds(const QRectF& sceneBounds);
+
+    /// Legacy compatibility no-op.
+    void setText(const QString&) {}
 
 signals:
     void clicked(const QUuid& groupId);
     void hoverChanged(bool hovered);
 
 protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent* event) override;
     void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override;
     void hoverLeaveEvent(QGraphicsSceneHoverEvent* event) override;
-    void mousePressEvent(QGraphicsSceneMouseEvent* event) override;
-    void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override;
 
 private:
     QUuid m_groupId;
-    QString m_text;
-    QRectF m_rect;
+    QRectF m_boxRectLocal;  ///< Dashed bounding box rect (local).
     bool m_accent = false;
-    bool m_pressedInside = false;
+    bool m_showBoundingBox = true;
 };

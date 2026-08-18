@@ -321,7 +321,8 @@ void CanvasScene::setGroupHoverSource(const QUuid& blockId)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Group badges (组徽标): one pill per group, anchored above the member union
+// Group visual markers (组包围框): one dashed bounding box per group,
+// anchored at the member union bounds top-left
 // ═════════════════════════════════════════════════════════════════════════
 
 void CanvasScene::reconcileGroupBadges()
@@ -364,6 +365,8 @@ void CanvasScene::reconcileGroupBadges()
         badge->setToolTip(QString::fromUtf8("%1\xef\xbc\x88%2\xef\xbc\x89")
                               .arg(label, g.serial));
 
+        badge->setShowBoundingBox(g.showBoundingBox);
+
         // A badge whose members are ALL on manually hidden layers is hidden
         // too — a floating label over invisible geometry would look orphaned.
         bool anyVisible = false;
@@ -386,6 +389,9 @@ void CanvasScene::updateGroupBadgePositions()
     if (!m_paramDoc) return;
     for (auto it = m_groupBadges.cbegin(); it != m_groupBadges.cend(); ++it) {
         GroupBadgeItem* badge = it.value();
+        const auto* g = m_paramDoc->findGroup(it.key());
+        if (g)
+            badge->setShowBoundingBox(g->showBoundingBox);
         QRectF bounds;
         bool first = true;
         for (const QUuid& memberId : m_paramDoc->blocksInGroup(it.key())) {
@@ -395,9 +401,12 @@ void CanvasScene::updateGroupBadgePositions()
                 first = false;
             }
         }
-        if (first) { badge->hide(); continue; }
-        const QRectF br = badge->boundingRect();
-        badge->setPos(bounds.left(), bounds.top() - br.height() - 4.0);
+        if (first) {
+            badge->setMemberSceneBounds(QRectF());
+            continue;
+        }
+        badge->setPos(bounds.topLeft());
+        badge->setMemberSceneBounds(bounds);
     }
 }
 
@@ -427,7 +436,9 @@ void CanvasScene::onBadgeHover(const QUuid& groupId, bool hovered)
 {
     if (!m_paramDoc) return;
     if (hovered) {
-        // Badge hover lights the whole group (same path as block hover).
+        // Badge hover is now driven by GroupBadgeItem's own hover events;
+        // the badge uses the first member as the hover source so BlockItem's
+        // hover broadcast and the badge accent stay in sync.
         const QList<QUuid> members = m_paramDoc->blocksInGroup(groupId);
         if (!members.isEmpty())
             setGroupHoverSource(members.first());

@@ -38,6 +38,11 @@ public:
     /// re-applies this on every (re)bind.
     void setIndex(int n);
 
+    /// Set the alternating row parity (odd = orange bar, even = blue).
+    /// Re-applied on every (re)bind — reused cards must not keep a stale
+    /// parity from their previous row position.
+    void setAlternate(bool alternate);
+
 signals:
     void deleteRequested(const QUuid& id);
     void edited(const cad::param::MeasureVariable& mv);
@@ -61,6 +66,8 @@ private:
     bool m_danglingStyled = false;   ///< current value-label style state (avoids per-frame setStyleSheet)
     bool m_hasShownValue = false;   ///< value guard armed after the first refresh
     double m_lastValueMm = 0.0;     ///< last shown value (no-op guard for per-frame sync)
+    cad::param::MeasureKind m_kind = cad::param::MeasureKind::Distance;      ///< 测量模式 (值前缀)
+    cad::param::MeasureKind m_lastShownKind = cad::param::MeasureKind::Distance;  ///< guard 的一部分 (虚拟化跨行复用)
 
     cad::ui::CopyChip* m_nameChip = nullptr;
     ElaText*         m_indexLabel = nullptr;

@@ -1,4 +1,4 @@
-﻿#include "DocumentSerializer.h"
+#include "DocumentSerializer.h"
 
 #include <QJsonArray>
 #include <QJsonValue>
@@ -332,6 +332,15 @@ QJsonObject blockJson(const Block& b) {
         {"endTargetPointId", uuidStr(b.endTargetPointId)},
         {"endTargetOffset", b.endTargetOffset},
         {"endTargetOffsetFormula", b.endTargetOffsetFormula},
+        {"dartStartBlockId", uuidStr(b.dartStartBlockId)},
+        {"dartStartPointId", uuidStr(b.dartStartPointId)},
+        {"dartRefBlockId", uuidStr(b.dartRefBlockId)},
+        {"dartRefPointId", uuidStr(b.dartRefPointId)},
+        {"dartRefSegmentId", uuidStr(b.dartRefSegmentId)},
+        {"dartOffsetMm", b.dartOffsetMm},
+        {"dartOffsetFormula", b.dartOffsetFormula},
+        {"dartAngleDeg", b.dartAngleDeg},
+        {"dartAngleFormula", b.dartAngleFormula},
         {"points", pts},
         {"segments", segs},
     };
@@ -361,6 +370,16 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr,
     b.endTargetPointId = uuidFrom(o["endTargetPointId"].toString());
     b.endTargetOffset = o["endTargetOffset"].toDouble();
     b.endTargetOffsetFormula = o["endTargetOffsetFormula"].toString();
+    // Dart-line constraint (省道线, Optional since v7 — absent = plain line).
+    b.dartStartBlockId  = uuidFrom(o["dartStartBlockId"].toString());
+    b.dartStartPointId  = uuidFrom(o["dartStartPointId"].toString());
+    b.dartRefBlockId    = uuidFrom(o["dartRefBlockId"].toString());
+    b.dartRefPointId    = uuidFrom(o["dartRefPointId"].toString());
+    b.dartRefSegmentId  = uuidFrom(o["dartRefSegmentId"].toString());
+    b.dartOffsetMm      = o["dartOffsetMm"].toDouble();
+    b.dartOffsetFormula = o["dartOffsetFormula"].toString();
+    b.dartAngleDeg      = o["dartAngleDeg"].toDouble(90.0);
+    b.dartAngleFormula  = o["dartAngleFormula"].toString();
     for (const auto& v : o["points"].toArray())
         b.addPoint(pointFrom(v.toObject(), warnings));
     for (const auto& v : o["segments"].toArray())
@@ -384,6 +403,10 @@ QJsonObject attachmentJson(const Attachment& a) {
         {"arcLengthFormula", a.arcLengthFormula},
         {"isPin", a.isPin},
         {"isLocked", a.isLocked},
+        {"angleOnly", a.angleOnly},
+        {"slideMode", static_cast<int>(a.slideMode)},
+        {"slideAlongMm", a.slideAlongMm},
+        {"slidePerpMm", a.slidePerpMm},
     };
 }
 Attachment attachmentFrom(const QJsonObject& o) {
@@ -409,18 +432,59 @@ Attachment attachmentFrom(const QJsonObject& o) {
     a.arcLengthFormula = o["arcLengthFormula"].toString();
     a.isPin = o["isPin"].toBool();  // Optional since v3 — defaults to false.
     a.isLocked = o["isLocked"].toBool();  // Optional since v4 — defaults to false.
+    a.angleOnly = o["angleOnly"].toBool();  // Optional since v5 — defaults to false.
+    // 滑轨模式 (Optional since v6): raw int with enum-range validation —
+    // unknown values degrade to None (same defensive pattern as rotationMode).
+    const int sm = o["slideMode"].toInt(0);
+    a.slideMode = (sm >= static_cast<int>(cad::param::SlideMode::None)
+                   && sm <= static_cast<int>(cad::param::SlideMode::PerpLeader))
+        ? static_cast<cad::param::SlideMode>(sm) : cad::param::SlideMode::None;
+    a.slideAlongMm = o["slideAlongMm"].toDouble();
+    a.slidePerpMm = o["slidePerpMm"].toDouble();
     return a;
 }
 
 // ─── Group ───
 QJsonObject groupJson(const Group& g) {
-    return {{"id", uuidStr(g.id)}, {"serial", g.serial}, {"name", g.name}};
+    QJsonObject o{
+        {"id", uuidStr(g.id)},
+        {"serial", g.serial},
+        {"name", g.name},
+        {"showBoundingBox", g.showBoundingBox},
+        {"componentRootBlockId", uuidStr(g.componentRootBlockId)},
+        {"hasHinge", g.hasHinge}
+    };
+    if (g.hasHinge) {
+        o["hinge"] = QJsonObject{
+            {"memberBlockId", uuidStr(g.hinge.memberBlockId)},
+            {"memberPointId", uuidStr(g.hinge.memberPointId)},
+            {"leaderBlockId", uuidStr(g.hinge.leaderBlockId)},
+            {"leaderPointId", uuidStr(g.hinge.leaderPointId)},
+            {"leaderSegmentId", uuidStr(g.hinge.leaderSegmentId)},
+            {"followerAngle", g.hinge.followerAngle},
+            {"followerAngleFormula", g.hinge.followerAngleFormula}
+        };
+    }
+    return o;
 }
 Group groupFrom(const QJsonObject& o) {
     Group g;
     g.id = uuidFrom(o["id"].toString());
     g.serial = o["serial"].toString();
     g.name = o["name"].toString();
+    g.showBoundingBox = o.contains("showBoundingBox") ? o["showBoundingBox"].toBool(true) : true;
+    g.componentRootBlockId = uuidFrom(o["componentRootBlockId"].toString());
+    g.hasHinge = o["hasHinge"].toBool(false);
+    if (g.hasHinge) {
+        const QJsonObject h = o["hinge"].toObject();
+        g.hinge.memberBlockId = uuidFrom(h["memberBlockId"].toString());
+        g.hinge.memberPointId = uuidFrom(h["memberPointId"].toString());
+        g.hinge.leaderBlockId = uuidFrom(h["leaderBlockId"].toString());
+        g.hinge.leaderPointId = uuidFrom(h["leaderPointId"].toString());
+        g.hinge.leaderSegmentId = uuidFrom(h["leaderSegmentId"].toString());
+        g.hinge.followerAngle = h["followerAngle"].toDouble(0.0);
+        g.hinge.followerAngleFormula = h["followerAngleFormula"].toString();
+    }
     return g;
 }
 
@@ -549,11 +613,30 @@ LinkedVariable linkedFrom(const QJsonObject& o) {
 }
 
 // ─── MeasureVariable ───
+namespace {
+QString measureKindStr(cad::param::MeasureKind k)
+{
+    switch (k) {
+        case cad::param::MeasureKind::Horizontal: return QStringLiteral("h");
+        case cad::param::MeasureKind::Vertical:   return QStringLiteral("v");
+        case cad::param::MeasureKind::Distance:   break;
+    }
+    return QStringLiteral("dist");
+}
+cad::param::MeasureKind measureKindFrom(const QString& s)
+{
+    if (s == QStringLiteral("h")) return cad::param::MeasureKind::Horizontal;
+    if (s == QStringLiteral("v")) return cad::param::MeasureKind::Vertical;
+    return cad::param::MeasureKind::Distance;  // missing / legacy → distance
+}
+} // namespace
+
 QJsonObject measureJson(const MeasureVariable& mv) {
     return {
         {"id", uuidStr(mv.id)},
         {"name", mv.name},
         {"refName", mv.refName},
+        {"kind", measureKindStr(mv.kind)},
         {"blockA", uuidStr(mv.blockA)},
         {"pointA", uuidStr(mv.pointA)},
         {"blockB", uuidStr(mv.blockB)},
@@ -567,6 +650,7 @@ MeasureVariable measureFrom(const QJsonObject& o) {
     mv.id = uuidFrom(o["id"].toString());
     mv.name = o["name"].toString();
     mv.refName = o["refName"].toString();
+    mv.kind = measureKindFrom(o["kind"].toString());
     mv.blockA = uuidFrom(o["blockA"].toString());
     mv.pointA = uuidFrom(o["pointA"].toString());
     mv.blockB = uuidFrom(o["blockB"].toString());

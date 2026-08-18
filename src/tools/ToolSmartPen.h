@@ -15,6 +15,7 @@ class QGraphicsEllipseItem;
 class QGraphicsRectItem;
 class QGraphicsPathItem;
 class QGraphicsView;
+class QDialog;
 
 namespace cad::param { class ParamDocument; class Block; struct ParamPoint; struct Segment; }
 
@@ -60,11 +61,17 @@ private:
 
 /// Smart Pen tool — parametric line creation with snapping.
 ///
-/// Flow B interaction:
-///   Click → set start (auto-snap) → move → preview + HUD → click → set end (auto-snap)
-///   → line created (host shows the status-bar edit strip, no dialog) → back to Idle.
+/// Two drawing modes cycled with W while idle (直线 ↔ 省道线):
+///   Flow B interaction (直线):
+///     Click → set start (auto-snap) → move → preview + HUD → click → set end (auto-snap)
+///     → line created (host shows the status-bar edit strip, no dialog) → back to Idle.
+///   Dart-line flow (省道线, 用户拍板 2026-08):
+///     Click A (must snap to an existing point) → click B (a point on a segment)
+///     → dialog (offset d, angle β default 90°, name) → line created with its
+///     END point computed as B + d·dir(segment at B + β); length/direction are
+///     recalculated by the Resolver on every change (线是算出来的).
 ///
-/// Right-click / Esc cancels.  Hold Shift for 45° angle constraint.
+/// Right-click / Esc cancels.  Hold Shift for 45° angle constraint (line mode).
 class ToolSmartPen : public Tool
 {
 public:
@@ -85,12 +92,32 @@ public:
     [[nodiscard]] const char* name() const override { return "\xe6\x99\xba\xe8\x83\xbd\xe7\xac\x94"; }
 
 private:
-    enum class State { Idle, Drawing };
+    enum class State { Idle, Drawing, ConfirmEnd };
+
+    /// Construction mode, cycled with W while idle.
+    enum class Mode {
+        Line,  ///< Ordinary parametric line (直线).
+        Dart,  ///< Dart line: computed end offset from reference point B (省道线).
+    };
 
     void commitLine(const cad::geo::Vec2& end,
                     const std::optional<SnapResult>& endSnap);
     void cancelLine();
     void clearPreview();
+
+    /// Cycle the construction mode (W while Idle) and announce it.
+    void cycleMode();
+    /// Commit a dart line from the picked start A and reference B.
+    /// Offset/angle formulas (cm domain) are stored live-linked when non-empty.
+    void commitDartLine(const QUuid& aBlockId, const QUuid& aPointId,
+                        const QUuid& bBlockId, const QUuid& bPointId,
+                        double offsetMm, double angleDeg, const QString& name,
+                        const QString& offsetFormula = {},
+                        const QString& angleFormula = {});
+    /// Open the NON-modal dart parameter dialog (offset d, angle β default 90,
+    /// name). Non-modal so the user can switch to the variable/formula panel
+    /// and copy while it stays open; canvas clicks stay ignored until answered.
+    void openDartDialog(const SnapResult& bSnap);
 
     [[nodiscard]] cad::geo::Vec2 applyAngleSnap(const cad::geo::Vec2& raw) const;
     void updatePreview(const cad::geo::Vec2& effectiveEnd);
@@ -102,6 +129,41 @@ private:
     /// leader-candidate segments (their body click switches the reference).
     void updateSegMarker(const cad::geo::Vec2& worldPos);
     void hideSegMarker();
+
+    // --- 落点确认 (stacked-point disambiguation, 2026-08) ---
+    /// All snappable candidates at the SAME spot as @p snap (within
+    /// kSnapOverlapEps), nearest first. Empty when the spot is unambiguous.
+    /// findSnapCandidates applies the same layer policy as findSnap, so the
+    /// pool only ever contains LEGAL attachment targets.
+    [[nodiscard]] std::vector<SnapResult> overlapPool(
+        const cad::geo::Vec2& spot, const SnapResult& snap) const;
+    /// Prefer the active layer's point among @p pool (先选活动层: at a
+    /// stacked spot the default pick is the layer the user is working in);
+    /// fall back to @p fallback (the raw findSnap result) when none matches.
+    [[nodiscard]] std::optional<SnapResult> preferActiveLayer(
+        const std::vector<SnapResult>& pool,
+        const std::optional<SnapResult>& fallback) const;
+    /// The end placement hit several stacked candidates → ConfirmEnd state.
+    /// Default target = active-layer pick; clicking a candidate segment
+    /// commits with THAT point; blank click accepts the default; Esc cancels
+    /// the whole stroke.
+    void enterEndConfirm(const SnapResult& snap, const std::vector<SnapResult>& pool);
+    /// ConfirmEnd left-click: candidate segment → that point, else default.
+    void handleConfirmEndPress(const cad::geo::Vec2& clickPos);
+    /// Commit the stroke end pinned to @p endSnap — flips the line when the
+    /// start was free (same rule as a plain end snap).
+    void commitEndSnap(const SnapResult& endSnap);
+    /// Click on a leader-candidate segment during the rubber band: when the
+    /// candidate's point is a DIFFERENT stacked candidate at the start spot
+    /// (and thus a legal attachment target), switch the START POINT to it.
+    /// Returns false when the click stays a pure angle-reference switch.
+    bool trySwitchStartPoint(const LeaderCandidate& cand, int candIndex);
+    /// Hover highlight of confirmable end candidates (teal — same visual
+    /// language as the leader-candidate highlight).
+    void updateEndConfirmHighlight(const cad::geo::Vec2& worldPos);
+    void clearEndConfirmHighlight();
+    /// Drop all stacked-point bookkeeping (start pool / end confirm state).
+    void resetStrokeTargets();
 
     /// Open the NON-modal quick-aux dialog for the snapped segment (percent
     /// pre-filled with the projection t). The user may freely switch to the
@@ -150,6 +212,7 @@ private:
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::Idle;
+    Mode  m_mode  = Mode::Line;  ///< Construction mode (W cycles while Idle).
 
     LinePreInput m_preInput;       ///< Pending pre-input from the status bar.
     struct StrokeInput {
@@ -182,10 +245,27 @@ private:
     bool m_auxDialogForStart = false;          ///< true = start scenario, false = end.
     SegmentSnapResult m_auxDialogSegSnap;      ///< Host segment captured at open time.
 
+    // Non-modal dart parameter dialog (省道线弹窗). Kept non-modal so the
+    // user can switch to the variable/formula panel and copy while it is open.
+    QPointer<QDialog> m_dartDialog;            ///< Open dialog (null when none).
+
     // Leader candidate state (valid while Drawing with a snapped start)
     std::vector<LeaderCandidate> m_leaderCandidates;
     int   m_leaderIndex = -1;        ///< Index into m_leaderCandidates (-1 = none).
     QUuid m_highlightBlockId;        ///< Block item currently showing the highlight.
+
+    // Stacked-point disambiguation state (落点确认)
+    std::vector<SnapResult> m_startPool;  ///< Coincident candidates at the start spot.
+    struct EndConfirmCandidate {
+        QUuid blockId;
+        QUuid segId;
+        QUuid pointId;
+        SnapResult snap;   ///< The point as a snap target (worldPos = spot).
+    };
+    std::vector<EndConfirmCandidate> m_endCands; ///< Confirmable segments at the end spot.
+    std::optional<SnapResult> m_endAutoPick;     ///< Default end target (active layer preferred).
+    QUuid m_endHighlightBlockId;                 ///< End-confirm hover highlight.
+    QUuid m_endHighlightSegId;
 
     // Preview graphics
     QGraphicsLineItem*    m_previewLine  = nullptr;

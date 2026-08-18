@@ -1,4 +1,4 @@
-﻿#include "ToolMeasure.h"
+#include "ToolMeasure.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -21,6 +21,13 @@
 
 namespace cad::tools {
 
+namespace {
+/// Two points are considered "coincident on the measured axis" when the span
+/// is below this epsilon (mm). Below the 0.1 mm display precision the result
+/// would read 0.00 cm — refuse instead of publishing a useless measure.
+constexpr double kAxisZeroEps = 0.05;
+} // namespace
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -30,6 +37,16 @@ void ToolMeasure::activate(CanvasScene& scene, cad::param::ParamDocument* paramD
     m_scene = &scene;
     m_paramDoc = paramDoc;
     m_state = State::SelectA;
+    m_kind = cad::param::MeasureKind::Distance;
+
+    // Persistent mode HUD: tells the user which mode is active even before
+    // point A is picked (and after every W cycle).
+    if (!m_hud) {
+        m_hud = new HudItem();
+        m_scene->addItem(m_hud);
+    }
+    m_hud->setText(modeHint());
+    m_hud->setVisible(true);
 }
 
 void ToolMeasure::deactivate()
@@ -83,11 +100,6 @@ void ToolMeasure::mousePress(QGraphicsSceneMouseEvent* event)
         }
         m_markerA->setPos(cad::geo::Coord::toScene(snap->worldPos));
         m_markerA->setVisible(true);
-
-        if (!m_hud) {
-            m_hud = new HudItem();
-            m_scene->addItem(m_hud);
-        }
     } else {
         // Second point: ensure it is a different point, then commit.
         if (m_snapA && snap->pointId != m_snapA->pointId) {
@@ -103,6 +115,7 @@ void ToolMeasure::mouseMove(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
+    m_lastCursor = cursorPos;
     double zoom = 1.0;
     if (!m_scene->views().isEmpty())
         zoom = m_scene->views().first()->transform().m11();
@@ -110,6 +123,8 @@ void ToolMeasure::mouseMove(QGraphicsSceneMouseEvent* event)
     updateHover(cursorPos, zoom);
     if (m_state == State::SelectB)
         updatePreview(cursorPos);
+    else if (m_hud && m_hud->isVisible())
+        m_hud->moveToPoint(cursorPos, m_scene->views().isEmpty() ? nullptr : m_scene->views().first());
 }
 
 void ToolMeasure::mouseRelease(QGraphicsSceneMouseEvent* event)
@@ -119,8 +134,68 @@ void ToolMeasure::mouseRelease(QGraphicsSceneMouseEvent* event)
 
 void ToolMeasure::keyPress(QKeyEvent* event)
 {
-    if (event->key() == Qt::Key_Escape)
+    if (event->key() == Qt::Key_W) {
+        // 工具模式切换统一用 W 键（Tab 是焦点导航键，禁用）。
+        cycleKind();
+        event->accept();
+    } else if (event->key() == Qt::Key_Escape) {
         resetToSelectA();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mode helpers
+// ---------------------------------------------------------------------------
+
+void ToolMeasure::cycleKind()
+{
+    switch (m_kind) {
+        case cad::param::MeasureKind::Distance:   m_kind = cad::param::MeasureKind::Horizontal; break;
+        case cad::param::MeasureKind::Horizontal: m_kind = cad::param::MeasureKind::Vertical;   break;
+        case cad::param::MeasureKind::Vertical:   m_kind = cad::param::MeasureKind::Distance;   break;
+    }
+    if (!m_hud) return;
+    if (m_state == State::SelectA) {
+        // Before point A: only the mode hint matters (position follows the
+        // cursor on the next mouse move).
+        m_hud->setText(modeHint());
+    } else {
+        // Mid-selection: refresh the preview + readout immediately.
+        updatePreview(m_lastCursor);
+    }
+}
+
+QString ToolMeasure::modeHint() const
+{
+    switch (m_kind) {
+        case cad::param::MeasureKind::Horizontal:
+            return QStringLiteral("\u6c34\u5e73\u6d4b\u91cf\uff1a\u70b9\u9009\u7b2c\u4e00\u4e2a\u70b9");  // 水平测量：点选第一个点
+        case cad::param::MeasureKind::Vertical:
+            return QStringLiteral("\u5782\u76f4\u6d4b\u91cf\uff1a\u70b9\u9009\u7b2c\u4e00\u4e2a\u70b9");  // 垂直测量：点选第一个点
+        case cad::param::MeasureKind::Distance:
+            break;
+    }
+    return QStringLiteral("\u8ddd\u79bb\u6d4b\u91cf\uff1a\u70b9\u9009\u7b2c\u4e00\u4e2a\u70b9");  // 距离测量：点选第一个点
+}
+
+double ToolMeasure::spanValue(const cad::geo::Vec2& a, const cad::geo::Vec2& b) const
+{
+    switch (m_kind) {
+        case cad::param::MeasureKind::Horizontal: return std::abs(b.x - a.x);
+        case cad::param::MeasureKind::Vertical:   return std::abs(b.y - a.y);
+        case cad::param::MeasureKind::Distance:   break;
+    }
+    return a.distanceTo(b);
+}
+
+bool ToolMeasure::axisCoincident(const cad::geo::Vec2& a, const cad::geo::Vec2& b) const
+{
+    switch (m_kind) {
+        case cad::param::MeasureKind::Horizontal: return std::abs(b.x - a.x) < kAxisZeroEps;
+        case cad::param::MeasureKind::Vertical:   return std::abs(b.y - a.y) < kAxisZeroEps;
+        case cad::param::MeasureKind::Distance:   break;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +222,24 @@ void ToolMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
     cad::geo::Vec2 endPos = cursorPos;
     if (m_hoverSnap) endPos = m_hoverSnap->worldPos;
 
+    const cad::geo::Vec2 wa = m_snapA->worldPos;
+
+    // Dimension-line style preview: 距离 = straight A→cursor; 水平 = horizontal
+    // span at the cursor's y (both x projected); 垂直 = vertical span at the
+    // cursor's x (both y projected). The line visually answers "what is being
+    // measured" for each mode.
+    cad::geo::Vec2 lineStart = wa;
+    switch (m_kind) {
+        case cad::param::MeasureKind::Horizontal:
+            lineStart = cad::geo::Vec2(wa.x, endPos.y);
+            break;
+        case cad::param::MeasureKind::Vertical:
+            lineStart = cad::geo::Vec2(endPos.x, wa.y);
+            break;
+        case cad::param::MeasureKind::Distance:
+            break;
+    }
+
     if (!m_previewLine) {
         m_previewLine = new QGraphicsLineItem();
         QPen pen(QColor(0xFF, 0x98, 0x00), 1.4);  // amber
@@ -156,13 +249,24 @@ void ToolMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
         m_previewLine->setZValue(101.0);
         m_scene->addItem(m_previewLine);
     }
-    m_previewLine->setLine(QLineF(cad::geo::Coord::toScene(m_snapA->worldPos),
+    m_previewLine->setLine(QLineF(cad::geo::Coord::toScene(lineStart),
                                   cad::geo::Coord::toScene(endPos)));
     m_previewLine->setVisible(true);
 
     if (m_hud) {
-        const double distMm = m_snapA->worldPos.distanceTo(endPos);
-        m_hud->setText(cad::geo::Units::formatLength(distMm));
+        const double valueMm = spanValue(wa, endPos);
+        QString text = cad::geo::Units::formatLength(valueMm);
+        switch (m_kind) {
+            case cad::param::MeasureKind::Horizontal:
+                text.prepend(QStringLiteral("\u6c34\u5e73 "));  // 水平
+                break;
+            case cad::param::MeasureKind::Vertical:
+                text.prepend(QStringLiteral("\u5782\u76f4 "));  // 垂直
+                break;
+            case cad::param::MeasureKind::Distance:
+                break;
+        }
+        m_hud->setText(text);
         QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
         m_hud->moveToPoint(endPos, view);
         m_hud->setVisible(true);
@@ -191,12 +295,28 @@ void ToolMeasure::commitMeasure()
 {
     if (!m_paramDoc || !m_snapA || !m_hoverSnap) return;
 
+    const cad::geo::Vec2 wa = m_snapA->worldPos;
+    const cad::geo::Vec2 wb = m_hoverSnap->worldPos;
+
+    // 水平/垂直模式: 两点在测量轴上重合时拒绝创建 (dx≈0 / dy≈0 会量出
+    // 0.00cm, 没有意义)。第二击被忽略, 停留在 SelectB 让用户换点或 W 切模式。
+    if (axisCoincident(wa, wb)) {
+        if (m_scene) {
+            m_scene->showToast(
+                m_kind == cad::param::MeasureKind::Horizontal
+                    ? QStringLiteral("\u4e24\u70b9\u6c34\u5e73\u91cd\u5408\uff0c\u65e0\u6cd5\u6c34\u5e73\u6d4b\u91cf\uff1a\u8bf7\u6362\u70b9\u6216\u6309 W \u5207\u6362\u8ddd\u79bb/\u5782\u76f4\u6a21\u5f0f")  // 两点水平重合，无法水平测量：请换点或按 W 切换距离/垂直模式
+                    : QStringLiteral("\u4e24\u70b9\u5782\u76f4\u91cd\u5408\uff0c\u65e0\u6cd5\u5782\u76f4\u6d4b\u91cf\uff1a\u8bf7\u6362\u70b9\u6216\u6309 W \u5207\u6362\u8ddd\u79bb/\u6c34\u5e73\u6a21\u5f0f"));  // 两点垂直重合，无法垂直测量：请换点或按 W 切换距离/水平模式
+        }
+        return;  // 停留在 SelectB (不重置), 用户可以换点继续或 W 切模式。
+    }
+
     cad::param::MeasureVariable mv;
     mv.blockA = m_snapA->blockId;
     mv.pointA = m_snapA->pointId;
     mv.blockB = m_hoverSnap->blockId;
     mv.pointB = m_hoverSnap->pointId;
-    mv.value = m_snapA->worldPos.distanceTo(m_hoverSnap->worldPos);
+    mv.kind = m_kind;
+    mv.value = spanValue(wa, wb);
     // Reference names are uppercase by convention (CopyChip force-uppercases
     // them for display/editing); generate uppercase so the stored refName
     // matches what the user sees and types back into formula fields.
@@ -216,7 +336,7 @@ void ToolMeasure::commitMeasure()
     //    初始为空: 用户填了就用用户的 (大写), 留空保留自动生成的 M_xxx。
     QWidget* parent = (m_scene && !m_scene->views().isEmpty())
         ? static_cast<QWidget*>(m_scene->views().first()) : nullptr;
-    MeasureResultDialog dlg(mv.value, mv.refName, QString(), QString(), parent);
+    MeasureResultDialog dlg(mv.value, mv.refName, QString(), QString(), m_kind, parent);
     if (dlg.exec() == QDialog::Accepted) {
         const QString newRef     = dlg.enteredRefName();
         const QString newName    = dlg.enteredName();

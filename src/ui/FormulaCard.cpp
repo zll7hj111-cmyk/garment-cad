@@ -98,6 +98,24 @@ void FormulaCard::setIndex(int index)
     m_indexLabel->setText(QString::number(index));
 }
 
+void FormulaCard::setGrouped(bool grouped)
+{
+    if (m_grouped == grouped)
+        return;
+    m_grouped = grouped;
+    // 组内成员: 内容整体右移 kGroupIndent (左侧竖线同步右移, paintEvent).
+    m_mainLayout->setContentsMargins((m_grouped ? kGroupIndent : 0) + 12, 7, 8, 7);
+    update();
+}
+
+void FormulaCard::setAlternate(bool alternate)
+{
+    if (m_alternate == alternate)
+        return;
+    m_alternate = alternate;
+    update();
+}
+
 void FormulaCard::syncFromModel(const cad::param::FormulaVariable& f)
 {
     m_groupId = f.groupId;
@@ -170,11 +188,13 @@ void FormulaCard::paintEvent(QPaintEvent*)
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 
     // Left accent bar — 行交替竖线: 偶数行蓝 / 奇数行橙 (2026-08 用户拍板
-    // 统一蓝橙交替, 替代原类型色条与背景斑马纹).
+    // 统一蓝橙交替, 替代原类型色条与背景斑马纹). 组内成员整条右移
+    // kGroupIndent, 与未分组公式形成缩进层级.
     p.setPen(Qt::NoPen);
     p.setBrush(m_alternate ? QColor(0xF5, 0x9E, 0x0B)   // 橙
                            : QColor(0x2F, 0x6F, 0xED)); // 蓝
-    p.drawRoundedRect(0, 2, 3, height() - 4, 1.5, 1.5);
+    const int barX = m_grouped ? kGroupIndent : 0;
+    p.drawRoundedRect(barX, 2, 3, height() - 4, 1.5, 1.5);
 }
 
 void FormulaCard::enterEvent(QEnterEvent*)
@@ -234,12 +254,14 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
     mainLayout->setSpacing(3);
+    m_mainLayout = mainLayout;
 
     // === Header row ===
     auto* header = new QHBoxLayout();
     header->setSpacing(6);
 
     m_indexLabel = new ElaText(QString(), 13, this);
+    m_indexLabel->setObjectName(QStringLiteral("cardIndex"));
     m_indexLabel->setAlignment(Qt::AlignCenter);
     m_indexLabel->setFixedWidth(18);
     m_indexLabel->setCursor(Qt::OpenHandCursor);

@@ -8,6 +8,7 @@
 #include "geometry/Vec2.h"
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
+#include "parametric/Group.h"
 #include "parametric/Duplicate.h"
 
 class QGraphicsEllipseItem;
@@ -87,6 +88,14 @@ private:
     /// Non-pin follower attachment whose follower point is @p pointId
     /// (nullptr when no link hangs on that point).
     [[nodiscard]] cad::param::Attachment* attachmentAtPoint(const QUuid& pointId);
+    /// Live editable attachment: real attachment in ordinary connected mode,
+    /// synthetic mirror of the component hinge in component mode.
+    [[nodiscard]] cad::param::Attachment* editableAttachment();
+    [[nodiscard]] const cad::param::Attachment* editableAttachment() const;
+    /// Push the synthetic hinge editing state into the real component hinge.
+    void syncComponentHingeFromEdit();
+    /// Authored hinge attachment connecting this block's group to the outside world.
+    [[nodiscard]] cad::param::Attachment* findGroupHingeAttachment(const QUuid& blockId);
 
     // ── Anchor point (锚心: 起点 ↔ 终点) ──
     /// Toggle the anchor between the start and end points (X key or a click
@@ -180,6 +189,10 @@ private:
     QUuid m_blockId;               ///< Rotation target.
     bool  m_connected = false;     ///< true = connected (followerAngle), false = free (transform).
     QUuid m_attId;                 ///< Follower attachment id (connected mode).
+    bool  m_componentHinge = false;  ///< Connected mode backed by a component main hinge (路线B).
+    QUuid m_componentHingeGroupId;   ///< Group holding the component hinge.
+    cad::param::ComponentHinge m_componentHingeBase; ///< Base hinge snapshot for undo/restore.
+    cad::param::Attachment m_componentHingeEditAtt;  ///< Synthetic attachment mirroring the live hinge.
     cad::geo::Vec2 m_pivot;        ///< Rotation centre (world, mm).
     double m_refWorldRad = 0.0;    ///< Reference direction (rad): leader exit dir (connected) or 0 (free).
 
@@ -203,6 +216,7 @@ private:
     double  m_baseArcLength = 0.0; ///< connected: base arc length (mm).
     QString m_baseArcFormula;      ///< connected: base arc length formula.
     cad::param::Transform2D m_baseTf;  ///< free: base transform.
+    QHash<QUuid, cad::param::Transform2D> m_groupBaseTransforms; ///< free group: base transforms for all members
     QUuid m_baseEndTargetBlock;    ///< free: endpoint-aim constraint at selection
     QUuid m_baseEndTargetPoint;    ///< (released by rotation, restored on undo).
 

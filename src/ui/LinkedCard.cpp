@@ -96,6 +96,23 @@ void LinkedCard::syncFromModel(const cad::param::LinkedVariable& lv,
     refreshValue(lv.value, lv.dangling);
 }
 
+void LinkedCard::setIndex(int n)
+{
+    if (!m_indexLabel) return;
+    // Pure presentation: only touch the label when the ordinal changed.
+    const QString text = n > 0 ? QString::number(n) : QString();
+    if (m_indexLabel->text() != text)
+        m_indexLabel->setText(text);
+}
+
+void LinkedCard::setAlternate(bool alternate)
+{
+    if (m_alternate == alternate)
+        return;
+    m_alternate = alternate;
+    update();
+}
+
 void LinkedCard::paintEvent(QPaintEvent* event)
 {
         QStyleOption opt;
@@ -143,6 +160,13 @@ void LinkedCard::setupUi(const cad::param::LinkedVariable& lv,
     // === Header row ===
     auto* header = new QHBoxLayout();
     header->setSpacing(6);
+
+    // 视图行序号 (虚拟化跨行复用, 每次 (re)bind 重设 — 见 setIndex).
+    m_indexLabel = new ElaText(QString(), 13, this);
+    m_indexLabel->setObjectName(QStringLiteral("linkedIndex"));
+    m_indexLabel->setStyleSheet("font-size: 11px; background: transparent;");
+    m_indexLabel->setToolTip(QStringLiteral("关联参数序号（视图行号）"));
+    header->addWidget(m_indexLabel, 0);
 
     m_nameChip = new cad::ui::CopyChip(cad::ui::CopyChip::Variant::Name, this);
     m_nameChip->setPlaceholderText(QStringLiteral("名称"));

@@ -1,4 +1,4 @@
-﻿#include "SegmentEditBar.h"
+#include "SegmentEditBar.h"
 
 #include <cmath>
 
@@ -420,14 +420,58 @@ void SegmentEditBar::refreshFields()
 
 bool SegmentEditBar::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::ShortcutOverride) {
+        auto* ke = static_cast<QKeyEvent*>(event);
+        // 输入包含 (Input containment): Accept shortcut overrides inside line edits
+        // so window action shortcuts (L, V, C, R, B, I, A, H, etc.) never fire while editing.
+        ke->accept();
+        return true;
+    }
     if (event->type() == QEvent::KeyPress) {
         auto* ke = static_cast<QKeyEvent*>(event);
         if (ke->key() == Qt::Key_Escape) {
             emit cancelRequested();
             return true;  // swallow — the host owns the creation-undo.
         }
+        if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+            if (watched == m_nameEdit) {
+                m_lenEdit->setFocus();
+                m_lenEdit->selectAll();
+            } else if (watched == m_lenEdit) {
+                m_angleEdit->setFocus();
+                m_angleEdit->selectAll();
+            }
+            return true;
+        }
+        if (ke->key() == Qt::Key_Tab) {
+            if (watched == m_nameEdit) {
+                m_lenEdit->setFocus();
+                m_lenEdit->selectAll();
+            } else if (watched == m_lenEdit) {
+                m_angleEdit->setFocus();
+                m_angleEdit->selectAll();
+            } else if (watched == m_angleEdit) {
+                m_nameEdit->setFocus();
+                m_nameEdit->selectAll();
+            }
+            return true;
+        }
+        if (ke->key() == Qt::Key_Backtab) {
+            if (watched == m_angleEdit) {
+                m_lenEdit->setFocus();
+                m_lenEdit->selectAll();
+            } else if (watched == m_lenEdit) {
+                m_nameEdit->setFocus();
+                m_nameEdit->selectAll();
+            } else if (watched == m_nameEdit) {
+                m_angleEdit->setFocus();
+                m_angleEdit->selectAll();
+            }
+            return true;
+        }
     }
     return QWidget::eventFilter(watched, event);
 }
 
 } // namespace cad::app
+

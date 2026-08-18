@@ -102,6 +102,14 @@ void AngleMeasureCard::setIndex(int n)
         m_indexLabel->setText(text);
 }
 
+void AngleMeasureCard::setAlternate(bool alternate)
+{
+    if (m_alternate == alternate)
+        return;
+    m_alternate = alternate;
+    update();
+}
+
 void AngleMeasureCard::paintEvent(QPaintEvent* event)
 {
         QStyleOption opt;
@@ -151,6 +159,7 @@ void AngleMeasureCard::setupUi(const cad::param::AngleMeasureVariable& am,
     header->setSpacing(6);
 
     m_indexLabel = new ElaText(QString(), 13, this);
+    m_indexLabel->setObjectName(QStringLiteral("angleIndex"));
     m_indexLabel->setStyleSheet("font-size: 11px; background: transparent;");
     m_indexLabel->setToolTip(QStringLiteral("角度测量序号（视图行号）"));
     header->addWidget(m_indexLabel, 0);
@@ -209,7 +218,7 @@ void AngleMeasureCard::setupUi(const cad::param::AngleMeasureVariable& am,
     m_sourceInfo = new ElaText(QString(), 13, m_detail);
     m_sourceInfo->setText(sourceLabel);
     m_sourceInfo->setStyleSheet("font-size: 11px; background: transparent;");
-    m_sourceInfo->setToolTip(QStringLiteral("测量来源：两条线段（只读）"));
+    m_sourceInfo->setToolTip(QStringLiteral("测量来源：两条线段及所在图层（只读）"));
     detailLayout->addWidget(m_sourceInfo, 0);
 
     m_commentEdit = new ElaLineEdit(m_detail);     m_commentEdit->setText(am.comment);

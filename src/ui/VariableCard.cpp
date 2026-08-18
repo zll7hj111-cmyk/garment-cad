@@ -61,6 +61,23 @@ cad::param::Variable VariableCard::variable() const
     return v;
 }
 
+void VariableCard::setIndex(int n)
+{
+    if (!m_indexLabel) return;
+    // Pure presentation: only touch the label when the ordinal changed.
+    const QString text = n > 0 ? QString::number(n) : QString();
+    if (m_indexLabel->text() != text)
+        m_indexLabel->setText(text);
+}
+
+void VariableCard::setAlternate(bool alternate)
+{
+    if (m_alternate == alternate)
+        return;
+    m_alternate = alternate;
+    update();
+}
+
 void VariableCard::focusName()
 {
     m_nameChip->focusEdit();
@@ -125,6 +142,13 @@ void VariableCard::setupUi(const cad::param::Variable& var, bool alternate)
     // === Header row ===
     auto* header = new QHBoxLayout();
     header->setSpacing(6);
+
+    // 视图行序号 (虚拟化跨行复用, 每次 (re)bind 重设 — 见 setIndex).
+    m_indexLabel = new ElaText(QString(), 13, this);
+    m_indexLabel->setObjectName(QStringLiteral("varIndex"));
+    m_indexLabel->setStyleSheet("font-size: 11px; background: transparent;");
+    m_indexLabel->setToolTip(QStringLiteral("变量序号（视图行号）"));
+    header->addWidget(m_indexLabel, 0);
 
     m_nameChip = new cad::ui::CopyChip(cad::ui::CopyChip::Variant::Name, this);
     m_nameChip->setPlaceholderText(QStringLiteral("名称"));

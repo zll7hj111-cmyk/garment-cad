@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 
@@ -78,6 +78,24 @@ public:
                           int leaderIndex,
                           const std::vector<LeaderCandidate>& candidates,
                           const LineBuildOptions& opts = {});
+
+/// Create a dart line (省道线, 用户拍板 2026-08): the block's START point
+    /// pins to @p startA (an existing attached point) and its END point is
+    /// computed from reference point @p refB on another block's segment:
+    ///     E = B_world + d · dir(refSegment rotation + β)
+    /// where d = @p offsetMm (signed; the sign picks the side) and β =
+    /// @p angleDeg (relative to the reference segment, default 90°). The block
+    /// is born placed (origin = A, rotation = A→E, end Polar distance = |A−E|)
+    /// and the Resolver keeps re-computing it from the stored references —
+    /// length/direction are calculated, not user-editable. Only @p opts.name
+    /// applies from the pre-input (length/angle are consumed by the dart).
+    /// No Attachment is created: the start pin is a pure reference (a separate
+    /// attachment would fight the computed rotation).
+    void createDartLine(const SnapResult& startA, const SnapResult& refB,
+                        double offsetMm, double angleDeg,
+                        const LineBuildOptions& opts = {},
+                        const QString& offsetFormula = {},
+                        const QString& angleFormula = {});
 
 private:
     cad::param::ParamDocument* m_paramDoc = nullptr;

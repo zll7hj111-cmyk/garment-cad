@@ -1,4 +1,4 @@
-﻿/// @file test_aux_layer.cpp
+/// @file test_aux_layer.cpp
 /// Verifies auxiliary-layer rendering: with the auxiliary layer ACTIVE, an
 /// auxiliary point (green disc) on an aux-layer segment must be rendered;
 /// with a working layer active the aux layer renders GRAYED (visible draft,
@@ -237,6 +237,7 @@ private slots:
     void auxLayerGrayedWhenWorkingLayerActive();
     void auxLayerNotSnappableWhenWorkingLayerActive();
     void auxActiveSnapsWorkingPoints();
+    void snapTieBreaksToActiveLayer();   // 同点堆叠时活动层优先
     void auxPointAddedAfterBlockRenders();   // AddAuxPointCommand flow
     void auxPointSurvivesLayerSwitch();
     // ── One-way cross-layer attachment (aux follower → working leader) ──
@@ -427,6 +428,44 @@ void TestAuxLayer::auxActiveSnapsWorkingPoints()
     const Vec2 leaderEnd = doc.findBlock(w.blockId)->worldPos(w.endId);
     QVERIFY(doc.findBlock(f.blockId)->worldPos(f.startId)
                 .distanceTo(leaderEnd) < 1e-6);
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// Coincident-point tie-break: at an EXACT stack the ACTIVE layer wins
+// ═════════════════════════════════════════════════════════════════════
+
+void TestAuxLayer::snapTieBreaksToActiveLayer()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));  // aux layer ACTIVE
+    // Working leader FIRST, then an aux line STARTING on the working start:
+    // an exact coincidence — pure nearest-distance would pick the
+    // traversal-order first-comer (the working block, created first).
+    const LineRef w = makeLineBlock(doc, 1, Vec2(0.0, 0.0), 100.0);  // (0,0)→(100,0)
+    const LineRef a = makeLineBlock(doc, 0, Vec2(0.0, 0.0), 60.0, 90.0);  // (0,0)→(0,60)
+    doc.resolveAll();
+
+    cad::tools::SnapEngine snap;
+    const auto s = snap.findSnap(Vec2(0.0, 0.0), &doc, 1.0);
+    QVERIFY(s.has_value());
+    QCOMPARE(s->blockId, a.blockId);   // exact stack → ACTIVE (aux) layer wins
+    QCOMPARE(s->pointId, a.startId);
+
+    // The candidates API still reports BOTH stacked points — the smart pen's
+    // confirm/switch flow needs the full pool.
+    const auto cands = snap.findSnapCandidates(Vec2(0.0, 0.0), &doc, 1.0);
+    QCOMPARE(cands.size(), static_cast<size_t>(2));
+
+    // Working layer ACTIVE → the grayed aux point is not snappable; the
+    // working point is the single candidate (one-way rule unchanged).
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    doc.resolveAll();
+    const auto s2 = snap.findSnap(Vec2(0.0, 0.0), &doc, 1.0);
+    QVERIFY(s2.has_value());
+    QCOMPARE(s2->blockId, w.blockId);
+    QCOMPARE(s2->pointId, w.startId);
+    const auto cands2 = snap.findSnapCandidates(Vec2(0.0, 0.0), &doc, 1.0);
+    QCOMPARE(cands2.size(), static_cast<size_t>(1));
 }
 
 // ═════════════════════════════════════════════════════════════════════

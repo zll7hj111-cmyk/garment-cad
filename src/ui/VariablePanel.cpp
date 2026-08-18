@@ -237,6 +237,10 @@ void VariablePanel::setupUi()
             m_measureTab, &MeasureTab::sync);
     connect(m_doc, &cad::param::ParamDocument::resolved,
             m_measureTab, &MeasureTab::sync);
+    // Measure card source labels show layer names — refresh on layer
+    // add/remove/rename/visibility so the labels never go stale.
+    connect(m_doc, &cad::param::ParamDocument::layersChanged,
+            m_measureTab, &MeasureTab::sync);
 
     setupCardProviders();
 
@@ -305,6 +309,7 @@ void VariablePanel::setupCardProviders()
             if (row < 0 || row >= static_cast<int>(vars.size()))
                 return nullptr;
             auto* card = new VariableCard(vars[row], row % 2 == 1, m_varHost);
+            card->setIndex(row + 1);
             connect(card, &VariableCard::deleteRequested,
                     this, &VariablePanel::onVariableDeleted);
             connect(card, &VariableCard::edited,
@@ -315,7 +320,10 @@ void VariablePanel::setupCardProviders()
             const auto& vars = m_doc->variables();
             if (row < 0 || row >= static_cast<int>(vars.size()))
                 return;
-            static_cast<VariableCard*>(w)->syncFromModel(vars[row]);
+            auto* card = static_cast<VariableCard*>(w);
+            card->syncFromModel(vars[row]);
+            card->setIndex(row + 1);
+            card->setAlternate(row % 2 == 1);  // 缓存复用: 奇偶随新行号重设
         });
 
     // ---- Tab 1: formulas (cards + group headers) ----
@@ -346,6 +354,7 @@ void VariablePanel::setupCardProviders()
                 return nullptr;
             auto* card = new FormulaCard(*f, fr.localIndex % 2 == 1, m_formulaHost);
             card->setIndex(fr.localIndex + 1);
+            card->setGrouped(!fr.groupId.isNull());
             connect(card, &FormulaCard::deleteRequested,
                     this, &VariablePanel::onFormulaDeleted);
             connect(card, &FormulaCard::edited,
@@ -373,6 +382,8 @@ void VariablePanel::setupCardProviders()
                 auto* card = static_cast<FormulaCard*>(w);
                 card->syncFromModel(*f);
                 card->setIndex(fr.localIndex + 1);
+                card->setGrouped(!fr.groupId.isNull());
+                card->setAlternate(fr.localIndex % 2 == 1);  // 缓存复用: 奇偶重设
             }
         });
 
@@ -385,6 +396,7 @@ void VariablePanel::setupCardProviders()
             auto* card = new LinkedCard(linked[row],
                                         linkedSourceLabel(m_doc, linked[row]),
                                         row % 2 == 1, m_linkedHost);
+            card->setIndex(row + 1);
             connect(card, &LinkedCard::deleteRequested,
                     this, &VariablePanel::onLinkedDeleted);
             connect(card, &LinkedCard::edited,
@@ -397,8 +409,11 @@ void VariablePanel::setupCardProviders()
             const auto& linked = m_doc->linkedVars();
             if (row < 0 || row >= static_cast<int>(linked.size()))
                 return;
-            static_cast<LinkedCard*>(w)->syncFromModel(
+            auto* card = static_cast<LinkedCard*>(w);
+            card->syncFromModel(
                 linked[row], linkedSourceLabel(m_doc, linked[row]));
+            card->setIndex(row + 1);
+            card->setAlternate(row % 2 == 1);  // 缓存复用: 奇偶随新行号重设
         });
 
 }

@@ -120,8 +120,8 @@ private:
     double  m_hoverTintRatio   = 0.55; ///< Blend strength; print sets 0.
 
     // Palette mirror (light defaults; darkTheme overrides): fills, washes and
-    // soft borders for canvas overlays that QSS cannot reach (group badges,
-    // HUD chips). Kept in sync with ThemeTokens by hand.
+    // soft borders for canvas overlays that QSS cannot reach (group
+    // bounding boxes, HUD chips). Kept in sync with ThemeTokens by hand.
     QColor m_surfaceColor = QColor(255, 255, 255);   // surface
     QColor m_accentWash   = QColor(234, 242, 254);   // accentTint
     QColor m_borderSoft   = QColor(213, 219, 219);   // badge idle border

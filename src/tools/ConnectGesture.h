@@ -10,6 +10,7 @@
 
 #include "geometry/Vec2.h"
 #include "parametric/Attachment.h"
+#include "parametric/Group.h"
 #include "tools/SnapEngine.h"
 #include "tools/SelectState.h"
 
@@ -94,6 +95,9 @@ public:
     /// point-level press dispatch in the owning tool).
     [[nodiscard]] std::optional<SnapResult> hitPoint(const Vec2& worldPos) const;
 
+    /// All candidate endpoints within snap radius (for disambiguating stacked points).
+    [[nodiscard]] std::vector<SnapResult> hitPointCandidates(const Vec2& worldPos) const;
+
 private:
     /// Update the gesture's OWN state and forward it to the owning tool. The
     /// owner routes events back into this gesture through active()/move()/
@@ -148,10 +152,18 @@ private:
     // Connection state (block physically follows the cursor while connecting)
     QUuid m_connectFromBlock;
     QUuid m_connectFromPoint;
+    QUuid m_connectGroupId;               ///< Group ID if connecting a group member.
+    QHash<QUuid, Vec2> m_connectGroupOrigOrigins; ///< Group members' pre-drag origins.
     Vec2 m_connectGrabOffset;         ///< origin − fromPointWorld at press.
     Vec2 m_connectOrigOrigin;         ///< Pre-drag origin (undo restore).
     double m_connectOrigRotation = 0.0;  ///< Pre-drag rotation (undo restore).
     std::optional<cad::param::Attachment> m_connectOldAtt;  ///< Detached at drag start (快拆).
+    // 滑轨模式拖动 (抽屉式滑动, 用户拍板 2026-08): the slide attachment stays
+    // ACTIVE during the drag (never quick-detached) — the endpoint drag slides
+    // along the rail. Snapshot its pre-drag rail coordinates for undo.
+    QUuid m_connectSlideAttId;                    ///< Slide attachment of the dragged block.
+    double m_connectOldSlideAlong = 0.0;          ///< Pre-drag slideAlongMm (undo restore).
+    double m_connectOldSlidePerp  = 0.0;          ///< Pre-drag slidePerpMm (undo restore).
     SnapEngine m_snapEngine;
     std::optional<SnapResult> m_connectTarget;
     QGraphicsEllipseItem* m_connectMarker = nullptr;  ///< Snap-target ring (owned).
@@ -165,6 +177,9 @@ private:
     // Angle HUD state
     QPointer<AngleHud> m_angleHud;   ///< Viewport-overlay angle input (owned).
     QUuid m_editingAttachmentId;            ///< Attachment being angle-tuned.
+    bool m_connectIsComponentHinge = false;   ///< True when the pending connect is a component hinge (路线B).
+    QUuid m_editingComponentGroupId;          ///< Group being hinge-connected.
+    cad::param::ComponentHinge m_editingComponentHinge; ///< Snapshot for finalize/undo.
     double m_initialAngle = 0.0;            ///< Orientation-preserving angle at connect time.
     bool  m_angleValid = true;
     cad::param::RotationMode m_angleMode = cad::param::RotationMode::Angle;

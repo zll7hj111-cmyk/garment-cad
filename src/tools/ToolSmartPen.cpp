@@ -13,6 +13,10 @@
 #include <QBrush>
 #include <QSet>
 #include <QFontMetricsF>
+#include <QDialog>
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QDialogButtonBox>
 #include <QtMath>
 #include <QUndoStack>
 
@@ -128,6 +132,8 @@ void ToolSmartPen::deactivate()
 {
     if (m_auxDialog)
         m_auxDialog->close();  // WA_DeleteOnClose; finished(Rejected) → no-op
+    if (m_dartDialog)
+        m_dartDialog->close();  // finished(Rejected) → keeps Drawing state
     cancelLine();
     delete m_lineFactory;
     m_lineFactory = nullptr;
@@ -141,12 +147,12 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
 {
     if (!m_scene) return;
 
-    // While the non-modal quick-aux dialog is open, canvas clicks are
-    // ignored — the stroke waits for the dialog to be answered.
-    if (m_auxDialog) return;
+    // While a non-modal helper dialog (quick-aux / dart) is open, canvas
+    // clicks are ignored — the stroke waits for the dialog to be answered.
+    if (m_auxDialog || m_dartDialog) return;
 
     if (event->button() == Qt::RightButton) {
-        if (m_state == State::Drawing) {
+        if (m_state == State::Drawing || m_state == State::ConfirmEnd) {
             cancelLine();
         } else if (m_state == State::Idle && isBlankSpace(event->scenePos())) {
             // 空白右键 = 切到选择工具 (无状态时; 实体右键留给未来上下文菜单).
@@ -161,7 +167,30 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
 
+    if (m_state == State::ConfirmEnd) {
+        handleConfirmEndPress(clickPos);
+        return;
+    }
+
     if (m_state == State::Idle) {
+        if (m_mode == Mode::Dart) {
+            // 省道线起点 A：必须吸附到已有点（自由起点禁止进入省道模式；
+            // 系统设计点不孤立，均挂线/端点）。线段身点击不创建辅助点。
+            double zoom = 1.0;
+            if (!m_scene->views().isEmpty())
+                zoom = m_scene->views().first()->transform().m11();
+            auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
+            if (!snap) {
+                if (m_scene)
+                    m_scene->showToast(QStringLiteral("省道线起点必须吸附到已有点"));
+                return;
+            }
+            setupSnappedStart(*snap);
+            m_startPool.clear();
+            beginStroke(event->modifiers());  // rubber-band preview toward B
+            return;
+        }
+
         // Line-body quick aux point: the X marker (m_segSnap) is live while
         // the cursor hovers a non-candidate segment body — a click opens the
         // QuickAuxDialog, creates the auxiliary point on the host segment and
@@ -181,14 +210,34 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         if (snap) {
             // Curve points are valid snap targets too — start a line from them.
             setupSnappedStart(*snap);
+            // Stacked-point bookkeeping: every candidate at the same spot is a
+            // switchable start target while the rubber band is live (点线切换).
+            m_startPool = overlapPool(clickPos, *snap);
         } else {
             m_startPoint = clickPos;
             m_startSnap.reset();
             m_leaderPicker->setRefDirDeg(0.0);
+            m_startPool.clear();
         }
         startStroke(event->modifiers());
     }
     else if (m_state == State::Drawing) {
+        if (m_mode == Mode::Dart) {
+            // 省道线第二击：选择偏移点 B（线段上的点）。预览线已显示
+            // A→光标；B 确定后弹窗填 偏移 d / 角度 β（默认 90）/ 名称。
+            double zoom = 1.0;
+            if (!m_scene->views().isEmpty())
+                zoom = m_scene->views().first()->transform().m11();
+            auto bSnap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
+            if (!bSnap) {
+                if (m_scene)
+                    m_scene->showToast(QStringLiteral("省道线偏移点必须选择线段上的点"));
+                return;  // stay in Drawing — pick another B
+            }
+            openDartDialog(*bSnap);
+            return;
+        }
+
         // --- Set end point and commit ---
         // 预输入约束优先：长度/角度已由状态栏给定，终点按约束计算，
         // 不再借用线段身辅助点或终点吸附（预输入 = 几何已确定）。
@@ -218,29 +267,37 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
             zoom = m_scene->views().first()->transform().m11();
         auto endSnap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
         if (endSnap) {
-            end = endSnap->worldPos;
-            // 用户拍板: 起点自由 + 终点吸附 = 翻转新线 —— 吸附点成为新线
-            // 起点, 原起点位置成为自由终点 (终点线变起点, 解开后语义不变:
-            // 线段几何/长度/角度完全一致, 仅端点身份互换). 这样终点吸附
-            // 也能走统一的“起点连接”路径创建连接, 而非被忽略成自由线.
-            if (!m_startSnap) {
-                const cad::geo::Vec2 origStart = m_startPoint;
-                m_startPoint = endSnap->worldPos;
-                m_startSnap = endSnap;
-                m_leaderPicker->setRefDirDeg(0.0);
-                commitLine(origStart, std::nullopt);
+            // Stacked candidates at the end spot (several layers' points on
+            // the same place) → confirm state: the default is the ACTIVE
+            // layer's point (先选活动层); clicking a candidate segment
+            // commits with that point, blank click accepts the default,
+            // Esc cancels the whole stroke.
+            const std::vector<SnapResult> pool = overlapPool(clickPos, *endSnap);
+            if (pool.size() >= 2) {
+                enterEndConfirm(*endSnap, pool);
                 return;
             }
-        } else {
-            // Click priority: point snap > leader-candidate switch > free end.
-            // A click on a candidate's body switches the construction-angle
-            // reference instead of placing the endpoint.
-            if (m_startSnap) {
-                const int idx = m_leaderPicker->candidateAt(clickPos, zoom);
-                if (idx >= 0) {
+            commitEndSnap(*endSnap);
+            return;
+        }
+        // Click priority: point snap > leader-candidate switch > free end.
+        // A click on a candidate's body either switches the START POINT (when
+        // the candidate's point is another stacked candidate at the start
+        // spot — a legal attachment target), or — for the SAME point — the
+        // construction-angle reference. A different point that is NOT a legal
+        // target (e.g. a grayed aux segment while a working layer is active)
+        // is ignored: the attachment target follows the leader candidate, so
+        // switching there would silently reject the attachment and degrade
+        // the line into a free line.
+        if (m_startSnap) {
+            const int idx = m_leaderPicker->candidateAt(clickPos, zoom);
+            if (idx >= 0) {
+                const LeaderCandidate& cand =
+                    m_leaderPicker->candidates()[static_cast<size_t>(idx)];
+                if (trySwitchStartPoint(cand, idx)) return;
+                if (cand.pointId == m_startSnap->pointId)
                     m_leaderPicker->setIndex(idx);
-                    return;
-                }
+                return;
             }
         }
 
@@ -262,12 +319,26 @@ void ToolSmartPen::setupSnappedStart(const SnapResult& snap)
                      + lb->exitDirectionAtPoint(snap.pointId)) * 180.0 / M_PI;
     // Multiple segments may meet here (coincident points stack across
     // blocks). Collect them as leader candidates and auto-pick the
-    // first; the user can click a candidate's body or press W to
-    // switch while the rubber band is live.
+    // candidate ON THE SNAPPED POINT — the attachment target follows the
+    // leader candidate (LineFactory::createAttachedLine), so it must agree
+    // with what findSnap picked (which resolves exact cross-layer stacks to
+    // the ACTIVE layer). Without this, the ranking (creation order) could
+    // override the snap and attach to another layer's coincident point —
+    // the "总是捕捉到别的图层" trap. The user can still click a candidate's
+    // body or press W to switch while the rubber band is live.
     m_leaderPicker->collect(snap);
     m_leaderPicker->setRefDirDeg(refDirDeg);
-    if (!m_leaderPicker->candidates().empty())
-        m_leaderPicker->setIndex(0);
+    if (!m_leaderPicker->candidates().empty()) {
+        int autoIdx = 0;
+        for (int i = 0; i < static_cast<int>(m_leaderPicker->candidates().size()); ++i) {
+            const auto& cand = m_leaderPicker->candidates()[static_cast<size_t>(i)];
+            if (cand.blockId == snap.blockId && cand.pointId == snap.pointId) {
+                autoIdx = i;
+                break;
+            }
+        }
+        m_leaderPicker->setIndex(autoIdx);
+    }
 }
 
 void ToolSmartPen::startStroke(Qt::KeyboardModifiers mods)
@@ -445,17 +516,30 @@ void ToolSmartPen::mouseMove(QGraphicsSceneMouseEvent* event)
 {
     if (!m_scene) return;
 
-    // Freeze hover feedback while the quick-aux dialog is open.
-    if (m_auxDialog) return;
+    // Freeze hover feedback while a non-modal helper dialog is open.
+    if (m_auxDialog || m_dartDialog) return;
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
+
+    if (m_state == State::ConfirmEnd) {
+        // 落点确认: rubber band locked on the default pick; hovering a
+        // confirmable candidate segment teal-highlights it (no X marker or
+        // stray snap rings in this state).
+        if (m_endAutoPick)
+            updatePreview(m_endAutoPick->worldPos);
+        updateEndConfirmHighlight(cursorPos);
+        return;
+    }
 
     if (m_state != State::Drawing) {
         // Idle: keep the segment-body X marker (quick aux point) in sync with
         // the cursor. This is the ONLY place it is refreshed — without it the
         // marker never appears and line-body aux points cannot be created.
-        updateSegMarker(cursorPos);
+        // Dart mode keeps the marker hidden (segment-body clicks are reserved
+        // for line mode; the dart flow only snaps to existing points).
+        if (m_mode == Mode::Line)
+            updateSegMarker(cursorPos);
         return;
     }
 
@@ -478,25 +562,30 @@ void ToolSmartPen::mouseRelease(QGraphicsSceneMouseEvent* event)
 
 void ToolSmartPen::keyPress(QKeyEvent* event)
 {
-    // The open quick-aux dialog owns keyboard interaction (its Esc/Enter
+    // The open non-modal helper dialog owns keyboard interaction (its Esc/Enter
     // must not cancel or disturb the pending stroke).
-    if (m_auxDialog) return;
+    if (m_auxDialog || m_dartDialog) return;
 
     if (event->key() == Qt::Key_Shift) {
         m_angleSnap = true;
     }
     else if (event->key() == Qt::Key_W) {
-        // Cycle through leader candidates while the rubber band is live.
-        // (W instead of Tab: Tab is a focus-navigation key and would move focus.)
-        if (m_state == State::Drawing
+        if (m_state == State::Idle) {
+            // 工具模式切换统一用 W 键：空闲时循环 直线 ↔ 省道线。
+            // (W instead of Tab: Tab is a focus-navigation key and would move focus.)
+            cycleMode();
+            event->accept();
+        } else if (m_state == State::Drawing
             && m_leaderPicker->candidates().size() > 1) {
+            // 画线中：W 循环 leader 候选（构造角参考/吸附目标的切换）。
             m_leaderPicker->setIndex((m_leaderPicker->index() + 1)
                 % static_cast<int>(m_leaderPicker->candidates().size()));
             event->accept();
         }
     }
     else if (event->key() == Qt::Key_Escape) {
-        if (m_state == State::Drawing) cancelLine();
+        if (m_state == State::Drawing || m_state == State::ConfirmEnd)
+            cancelLine();
     }
 }
 
@@ -542,6 +631,7 @@ void ToolSmartPen::commitLine(const cad::geo::Vec2& end,
     m_state = State::Idle;
     m_startSnap.reset();
     m_currentSnap.reset();
+    resetStrokeTargets();
 
     // addBlock/addAttachment already triggered resolveAll + refreshAllBlockItems
     // via ParamDocument signals — no manual re-resolve needed.
@@ -562,8 +652,330 @@ void ToolSmartPen::cancelLine()
     m_state = State::Idle;
     m_startSnap.reset();
     m_currentSnap.reset();
+    resetStrokeTargets();
     // Aborted stroke: withdraw the status-bar preview readout.
     if (m_scene) m_scene->notifyLinePreview(0.0, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// 省道线模式 (dart line, 用户拍板 2026-08)
+// ---------------------------------------------------------------------------
+
+void ToolSmartPen::cycleMode()
+{
+    m_mode = (m_mode == Mode::Line) ? Mode::Dart : Mode::Line;
+    if (m_scene)
+        m_scene->showToast(m_mode == Mode::Dart
+            ? QStringLiteral("\u7701\u9053\u7ebf\u6a21\u5f0f\uff1a\u70b9\u8d77\u70b9 A \u2192 \u70b9\u504f\u79fb\u70b9 B \u2192 \u586b\u504f\u79fb d \u4e0e\u89d2\u5ea6")
+            : QStringLiteral("\u667a\u80fd\u7b14\uff1a\u76f4\u7ebf\u6a21\u5f0f"));
+}
+
+void ToolSmartPen::openDartDialog(const SnapResult& bSnap)
+{
+    if (!m_startSnap || !m_paramDoc || !m_scene || m_dartDialog) return;
+
+    QWidget* parent = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
+    auto* dlg = new QDialog(parent);
+    dlg->setWindowTitle(QStringLiteral("\u7701\u9053\u7ebf"));
+    // NON-modal on purpose: the user must be able to switch to the
+    // variable/formula panel and copy a name/expression while this dialog
+    // stays open.
+    dlg->setModal(false);
+    auto* form = new QFormLayout(dlg);
+    auto* nameEdit = new QLineEdit(dlg);
+    nameEdit->setPlaceholderText(QStringLiteral("\u7ebf\u6bb5\u540d\u79f0\uff08\u53ef\u9009\uff09"));
+    nameEdit->setText(m_preInput.name.trimmed());
+    auto* offEdit = new QLineEdit(dlg);
+    offEdit->setPlaceholderText(QStringLiteral("\u504f\u79fb\u8ddd\u79bb d\uff08\u6570\u5b57=mm\uff1b\u516c\u5f0f=cm \u57df\uff09"));
+    auto* angEdit = new QLineEdit(dlg);
+    angEdit->setText(QStringLiteral("90"));
+    form->addRow(QStringLiteral("\u540d\u79f0"), nameEdit);
+    form->addRow(QStringLiteral("\u504f\u79fb d"), offEdit);
+    form->addRow(QStringLiteral("\u89d2\u5ea6 \u03b2"), angEdit);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
+    form->addRow(buttons);
+
+    // Validate + commit on OK, but keep the dialog open when the input is
+    // invalid so the user can fix it (or go copy a variable name).
+    QObject::connect(buttons, &QDialogButtonBox::accepted, dlg,
+        [this, dlg, bSnap, nameEdit, offEdit, angEdit]() {
+            if (!m_startSnap || !m_paramDoc || !m_lineFactory) return;
+
+            // Offset d: a pure number is mm; anything else is a cm-domain formula.
+            const QString offText = offEdit->text().trimmed();
+            if (offText.isEmpty()) {
+                if (m_scene)
+                    m_scene->showToast(QStringLiteral("\u504f\u79fb\u8ddd\u79bb d \u4e0d\u80fd\u4e3a\u7a7a"));
+                return;
+            }
+            QString offsetFormula;
+            bool isNum = false;
+            double offsetMm = offText.toDouble(&isNum);
+            if (!isNum) {
+                auto r = cad::param::ConditionEngine::evaluate(
+                    offText, m_paramDoc->parameters(), m_paramDoc->conditions());
+                if (!r.ok) {
+                    if (m_scene)
+                        m_scene->showToast(QStringLiteral("\u504f\u79fb\u8ddd\u79bb\u516c\u5f0f\u65e0\u6cd5\u8ba1\u7b97"));
+                    return;
+                }
+                offsetMm = cad::geo::Units::cmToMm(r.value);
+                offsetFormula = offText;
+            }
+
+            // Angle β relative to the reference segment (default 90°).
+            QString angleFormula;
+            double betaDeg = 90.0;
+            const QString angText = angEdit->text().trimmed();
+            if (!angText.isEmpty()) {
+                bool okNum = false;
+                betaDeg = angText.toDouble(&okNum);
+                if (!okNum) {
+                    auto r = cad::param::ConditionEngine::evaluate(
+                        angText, m_paramDoc->parameters(), m_paramDoc->conditions());
+                    if (!r.ok) {
+                        if (m_scene)
+                            m_scene->showToast(QStringLiteral("\u89d2\u5ea6\u516c\u5f0f\u65e0\u6cd5\u8ba1\u7b97"));
+                        return;
+                    }
+                    betaDeg = r.value;
+                    angleFormula = angText;
+                }
+            }
+
+            commitDartLine(m_startSnap->blockId, m_startSnap->pointId,
+                           bSnap.blockId, bSnap.pointId,
+                           offsetMm, betaDeg, nameEdit->text().trimmed(),
+                           offsetFormula, angleFormula);
+            dlg->accept();
+        });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+
+    m_dartDialog = dlg;
+    QObject::connect(dlg, &QDialog::finished, dlg, [this, dlg](int result) {
+        if (m_dartDialog == dlg)
+            m_dartDialog = nullptr;
+        dlg->deleteLater();
+        // Rejected / closed: nothing committed — Drawing keeps its rubber
+        // band so the user may pick another offset point B.
+        (void)result;
+    });
+
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
+}
+
+void ToolSmartPen::commitDartLine(const QUuid& aBlockId, const QUuid& aPointId,
+                                  const QUuid& bBlockId, const QUuid& bPointId,
+                                  double offsetMm, double angleDeg,
+                                  const QString& name,
+                                  const QString& offsetFormula,
+                                  const QString& angleFormula)
+{
+    if (!m_lineFactory || !m_paramDoc || !m_startSnap) return;
+
+    const SnapResult aSnap{m_startSnap->worldPos, aBlockId, aPointId};
+    const SnapResult bSnap{cad::geo::Vec2(), bBlockId, bPointId};
+    // The pre-input strip does not drive dart geometry (calculated from
+    // A/B/d/β); only the dialog-provided name is forwarded.
+    LineBuildOptions opts;
+    opts.name = name;
+    m_lineFactory->createDartLine(aSnap, bSnap, offsetMm, angleDeg,
+                                  opts, offsetFormula, angleFormula);
+
+    consumePreInput();
+    m_leaderPicker->clear();
+    clearPreview();
+    m_state = State::Idle;
+    m_startSnap.reset();
+    m_currentSnap.reset();
+    resetStrokeTargets();
+
+    if (m_scene && m_paramDoc && !m_paramDoc->blocks().empty()) {
+        const auto& lastBlock = m_paramDoc->blocks().back();
+        if (!lastBlock.segments.empty())
+            m_scene->notifyLineCreated(lastBlock.id, lastBlock.segments.back().id);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 落点确认 (stacked-point disambiguation)
+// ---------------------------------------------------------------------------
+
+std::vector<SnapResult> ToolSmartPen::overlapPool(
+    const cad::geo::Vec2& spot, const SnapResult& snap) const
+{
+    std::vector<SnapResult> out;
+    if (!m_paramDoc) return out;
+    double zoom = 1.0;
+    if (m_scene && !m_scene->views().isEmpty())
+        zoom = m_scene->views().first()->transform().m11();
+    // findSnapCandidates applies the same layer policy as findSnap
+    // (layerSnappable) — only LEGAL attachment targets ever enter the pool,
+    // so a switch can never propose a rejected cross-layer attachment.
+    const auto cands = m_snapEngine.findSnapCandidates(spot, m_paramDoc, zoom);
+    for (const auto& c : cands)
+        if (c.worldPos.distanceTo(snap.worldPos) <= kSnapOverlapEps)
+            out.push_back(c);
+    return out;
+}
+
+std::optional<SnapResult> ToolSmartPen::preferActiveLayer(
+    const std::vector<SnapResult>& pool,
+    const std::optional<SnapResult>& fallback) const
+{
+    if (!m_paramDoc) return fallback;
+    const QUuid active = m_paramDoc->activeLayer();
+    for (const auto& c : pool) {   // nearest first
+        const auto* blk = m_paramDoc->findBlock(c.blockId);
+        if (blk && blk->layer == active) return c;
+    }
+    return fallback;
+}
+
+void ToolSmartPen::enterEndConfirm(const SnapResult& snap,
+                                   const std::vector<SnapResult>& pool)
+{
+    // 先选活动层: the default end target is the active layer's stacked
+    // point (fallback = the raw nearest pick; findSnap already resolves
+    // exact coincidences to the active layer too).
+    m_endAutoPick = preferActiveLayer(pool, snap);
+
+    // Confirmable segments: every segment incident (endpoint or interpolated
+    // host) to any pool point — same collection rule as the leader picker.
+    m_endCands.clear();
+    QSet<QUuid> seen;
+    for (const auto& p : pool) {
+        const auto* blk = m_paramDoc ? m_paramDoc->findBlock(p.blockId) : nullptr;
+        if (!blk) continue;
+        for (const auto& seg : blk->segments) {
+            const bool isEndpoint = (seg.startPointId == p.pointId
+                                     || seg.endPointId == p.pointId);
+            bool isHost = false;
+            if (const auto* pt = blk->findPoint(p.pointId))
+                isHost = (pt->constraint == cad::param::PointConstraint::Interpolated
+                          && pt->hostSegmentId == seg.id);
+            if (!isEndpoint && !isHost) continue;
+            if (seen.contains(seg.id)) continue;
+            seen.insert(seg.id);
+            m_endCands.push_back({p.blockId, seg.id, p.pointId, p});
+        }
+    }
+
+    m_state = State::ConfirmEnd;
+    if (m_scene)
+        m_scene->showToast(QString::fromUtf8(
+            "落点存在多个重叠点：点选线段切换落点，空白点击接受默认，Esc 取消"));
+    if (m_endAutoPick)
+        updatePreview(m_endAutoPick->worldPos);   // lock the rubber band
+}
+
+void ToolSmartPen::handleConfirmEndPress(const cad::geo::Vec2& clickPos)
+{
+    if (!m_endAutoPick) { cancelLine(); return; }
+
+    std::optional<SnapResult> confirmed;
+    double zoom = 1.0;
+    if (m_scene && !m_scene->views().isEmpty())
+        zoom = m_scene->views().first()->transform().m11();
+    const auto segSnap = m_snapEngine.findSegmentSnap(
+        clickPos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
+    if (segSnap) {
+        for (const auto& cand : m_endCands) {
+            if (cand.blockId == segSnap->blockId
+                && cand.segId == segSnap->segmentId) {
+                confirmed = cand.snap;
+                break;
+            }
+        }
+    }
+    // Candidate segment → that point; blank click = accept the default
+    // (active-layer) pick. Esc cancels the whole stroke (see keyPress).
+    commitEndSnap(confirmed.value_or(*m_endAutoPick));
+}
+
+void ToolSmartPen::commitEndSnap(const SnapResult& endSnap)
+{
+    if (!m_startSnap) {
+        // 用户拍板: 起点自由 + 终点吸附 = 翻转新线 —— 吸附点成为新线
+        // 起点, 原起点位置成为自由终点 (终点线变起点, 解开后语义不变:
+        // 线段几何/长度/角度完全一致, 仅端点身份互换). 这样终点吸附
+        // 也能走统一的“起点连接”路径创建连接, 而非被忽略成自由线.
+        const cad::geo::Vec2 origStart = m_startPoint;
+        m_startPoint = endSnap.worldPos;
+        m_startSnap  = endSnap;
+        m_leaderPicker->setRefDirDeg(0.0);
+        commitLine(origStart, std::nullopt);
+        return;
+    }
+    commitLine(endSnap.worldPos, endSnap);
+}
+
+bool ToolSmartPen::trySwitchStartPoint(const LeaderCandidate& cand, int candIndex)
+{
+    if (!m_startSnap) return false;
+    if (cand.pointId == m_startSnap->pointId) return false;
+    // Only pool members (legal, snappable targets) may become the start
+    // point — a grayed-layer segment in the leader list stays a pure angle
+    // reference and cannot hijack the attachment.
+    for (const auto& p : m_startPool) {
+        if (p.blockId == cand.blockId && p.pointId == cand.pointId) {
+            m_startPoint = p.worldPos;
+            m_startSnap  = p;
+            // Keep the clicked segment as the construction-angle reference.
+            m_leaderPicker->setIndex(candIndex);
+            return true;
+        }
+    }
+    return false;
+}
+
+void ToolSmartPen::updateEndConfirmHighlight(const cad::geo::Vec2& worldPos)
+{
+    if (!m_paramDoc || !m_scene) return;
+    double zoom = 1.0;
+    if (!m_scene->views().isEmpty())
+        zoom = m_scene->views().first()->transform().m11();
+
+    QUuid hitBlock, hitSeg;
+    const auto segSnap = m_snapEngine.findSegmentSnap(
+        worldPos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
+    if (segSnap) {
+        for (const auto& cand : m_endCands) {
+            if (cand.blockId == segSnap->blockId
+                && cand.segId == segSnap->segmentId) {
+                hitBlock = cand.blockId;
+                hitSeg = cand.segId;
+                break;
+            }
+        }
+    }
+    if (hitBlock == m_endHighlightBlockId && hitSeg == m_endHighlightSegId)
+        return;
+    clearEndConfirmHighlight();
+    m_endHighlightBlockId = hitBlock;
+    m_endHighlightSegId = hitSeg;
+    if (!hitBlock.isNull())
+        if (auto* item = m_scene->findBlockItem(hitBlock))
+            item->setLeaderHighlight(hitSeg);
+}
+
+void ToolSmartPen::clearEndConfirmHighlight()
+{
+    if (m_scene && !m_endHighlightBlockId.isNull())
+        if (auto* item = m_scene->findBlockItem(m_endHighlightBlockId))
+            item->setLeaderHighlight(QUuid());
+    m_endHighlightBlockId = QUuid();
+    m_endHighlightSegId = QUuid();
+}
+
+void ToolSmartPen::resetStrokeTargets()
+{
+    m_startPool.clear();
+    m_endCands.clear();
+    m_endAutoPick.reset();
+    clearEndConfirmHighlight();
 }
 
 void ToolSmartPen::clearPreview()

@@ -9,6 +9,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/MeasureVariable.h"
 #include "parametric/AngleMeasureVariable.h"
+#include "parametric/Serial.h"
 #include "document/commands/VariableCommands.h"
 #include "ui/IconHelper.h"
 #include "VirtualCardList.h"
@@ -20,40 +21,82 @@ namespace cad::ui {
 
 namespace {
 
-/// Build a "点A ↔ 点B" source label from a measure variable's two points.
+/// Display name of the layer containing @p blockId ("" when the block is gone
+/// — its layer cannot be resolved).
+QString blockLayerName(const cad::param::ParamDocument* doc, const QUuid& blockId)
+{
+    const auto* blk = doc->findBlock(blockId);
+    if (!blk) return QString();
+    const auto* layer = doc->layerById(blk->layer);
+    return layer ? layer->name : QString();
+}
+
+/// Friendly endpoint label: serial tag without the dedup prefix ("P1") plus
+/// the optional user name ("P1·肩点"); "?" when the point is missing.
+QString pointTagLabel(const cad::param::ParamDocument* doc,
+                      const QUuid& blockId, const QUuid& pointId)
+{
+    const auto* blk = doc->findBlock(blockId);
+    const auto* pt = blk ? blk->findPoint(pointId) : nullptr;
+    if (!pt) return QStringLiteral("?");
+    QString s = cad::param::Serial::tag(pt->serial);
+    if (!pt->name.isEmpty())
+        s += QStringLiteral("·") + pt->name;
+    return s;
+}
+
+/// Same as pointTagLabel but for segments (angle measures): "L3" / "L3·名称".
+QString segTagLabel(const cad::param::ParamDocument* doc,
+                    const QUuid& blockId, const QUuid& segmentId)
+{
+    const auto* blk = doc->findBlock(blockId);
+    const auto* seg = blk ? blk->findSegment(segmentId) : nullptr;
+    if (!seg) return QStringLiteral("?");
+    QString s = cad::param::Serial::tag(seg->serial);
+    if (!seg->name.isEmpty())
+        s += QStringLiteral("·") + seg->name;
+    return s;
+}
+
+/// "层名 · 标签"; falls back to the bare label when the layer is unknown
+/// (block deleted / layer missing) — a dangling end shows only "?".
+QString endpointWithLayer(const QString& layerName, const QString& label)
+{
+    if (layerName.isEmpty()) return label;
+    return layerName + QStringLiteral(" · ") + label;
+}
+
+/// Build a "层 · P1 ↔ P3" source label from a measure variable's two points.
+/// Same layer → the layer name appears once; cross-layer → each endpoint
+/// carries its own layer ("前片 · P1 ↔ 后片 · P3").
 QString measureSourceLabel(const cad::param::ParamDocument* doc,
                            const cad::param::MeasureVariable& mv)
 {
-    auto pointLabel = [doc](const QUuid& blockId, const QUuid& pointId) -> QString {
-        const auto* blk = doc->findBlock(blockId);
-        const auto* pt = blk ? blk->findPoint(pointId) : nullptr;
-        if (!pt) return QStringLiteral("?");
-        QString s = pt->serial;
-        if (!pt->name.isEmpty())
-            s += QStringLiteral("·") + pt->name;
-        return s;
-    };
-    return pointLabel(mv.blockA, mv.pointA)
+    const QString la = blockLayerName(doc, mv.blockA);
+    const QString lb = blockLayerName(doc, mv.blockB);
+    const QString pa = pointTagLabel(doc, mv.blockA, mv.pointA);
+    const QString pb = pointTagLabel(doc, mv.blockB, mv.pointB);
+    if (!la.isEmpty() && la == lb)
+        return la + QStringLiteral(" · ") + pa + QStringLiteral(" \u2194 ") + pb;
+    return endpointWithLayer(la, pa)
          + QStringLiteral(" \u2194 ")
-         + pointLabel(mv.blockB, mv.pointB);
+         + endpointWithLayer(lb, pb);
 }
 
-/// Build a "线A ∠ 线B" source label from an angle measure variable's two segments.
+/// Build a "层 · L1 ∠ L3" source label from an angle measure variable's two
+/// segments (same same-layer merge rule as measureSourceLabel).
 QString angleSourceLabel(const cad::param::ParamDocument* doc,
                          const cad::param::AngleMeasureVariable& am)
 {
-    auto segLabel = [doc](const QUuid& blockId, const QUuid& segmentId) -> QString {
-        const auto* blk = doc->findBlock(blockId);
-        const auto* seg = blk ? blk->findSegment(segmentId) : nullptr;
-        if (!seg) return QStringLiteral("?");
-        QString s = seg->serial;
-        if (!seg->name.isEmpty())
-            s += QStringLiteral("·") + seg->name;
-        return s;
-    };
-    return segLabel(am.blockA, am.segmentA)
+    const QString la = blockLayerName(doc, am.blockA);
+    const QString lb = blockLayerName(doc, am.blockB);
+    const QString sa = segTagLabel(doc, am.blockA, am.segmentA);
+    const QString sb = segTagLabel(doc, am.blockB, am.segmentB);
+    if (!la.isEmpty() && la == lb)
+        return la + QStringLiteral(" · ") + sa + QStringLiteral(" \u2220 ") + sb;
+    return endpointWithLayer(la, sa)
          + QStringLiteral(" \u2220 ")
-         + segLabel(am.blockB, am.segmentB);
+         + endpointWithLayer(lb, sb);
 }
 
 } // namespace
@@ -80,7 +123,7 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_emptyHint = new ElaText(QStringLiteral("暂无测量变量\n使用智能笔连接两个点时自动创建\n（测量两点间距离）\n或使用「角度测量」工具测量两线夹角"), 13, m_container);
+    m_emptyHint = new ElaText(QStringLiteral("暂无测量变量\n使用智能笔连接两个点时自动创建\n（测量两点间距离）\n或使用「角度测量」工具测量两线夹角\n测量工具中按 W 可切换 距离/水平/垂直"), 13, m_container);
     m_emptyHint->setAlignment(Qt::AlignCenter);
     m_emptyHint->setObjectName(QStringLiteral("dimText"));
     layout->addWidget(m_emptyHint);
@@ -148,12 +191,14 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
                 card->syncFromModel(
                     measures[row], measureSourceLabel(m_doc, measures[row]));
                 card->setIndex(row + 1);
+                card->setAlternate(row % 2 == 1);  // 缓存复用: 奇偶随新行号重设
             } else {
                 const int ai = row - m;
                 auto* card = static_cast<AngleMeasureCard*>(w);
                 card->syncFromModel(
                     angles[ai], angleSourceLabel(m_doc, angles[ai]));
                 card->setIndex(ai + 1);
+                card->setAlternate(ai % 2 == 1);  // 缓存复用: 奇偶随新行号重设
             }
         });
 }

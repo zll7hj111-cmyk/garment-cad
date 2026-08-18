@@ -35,6 +35,7 @@ MeasureCard::MeasureCard(const cad::param::MeasureVariable& mv,
     , m_id(mv.id)
     , m_refName(mv.refName)
     , m_alternate(alternate)
+    , m_kind(mv.kind)
 {
     setAttribute(Qt::WA_StyledBackground, true);
     setupUi(mv, sourceLabel, alternate);
@@ -56,13 +57,16 @@ void MeasureCard::refreshValue(double valueMm, bool dangling)
     // Value-level no-op guard: cards are synced on EVERY resolve frame during
     // drags, but most measurements are untouched by the gesture — skip the
     // widget update entirely when nothing visible changed (epsilon is well
-    // below the 0.01 cm display precision).
+    // below the 0.01 cm display precision). The kind participates in the
+    // guard: virtualized cards are reused across rows with different modes.
     if (m_hasShownValue && dangling == m_danglingStyled &&
+        m_kind == m_lastShownKind &&
         (dangling || std::abs(valueMm - m_lastValueMm) < 1e-3)) {
         return;
     }
     m_hasShownValue = true;
     m_lastValueMm = valueMm;
+    m_lastShownKind = m_kind;
     // setStyleSheet() re-parses the rule set and re-polishes the whole panel
     // — it must run ONLY when the dangling state actually flips, never per
     // value update (this runs on every resolve during drags).
@@ -79,7 +83,22 @@ void MeasureCard::refreshValue(double valueMm, bool dangling)
             m_valueLabel->setToolTip(QString());
         }
     }
-    m_valueLabel->setText(dangling ? QStringLiteral("—") : fmtCm(valueMm));
+    if (dangling) {
+        m_valueLabel->setText(QStringLiteral("—"));
+    } else {
+        QString text = fmtCm(valueMm);
+        switch (m_kind) {
+            case cad::param::MeasureKind::Horizontal:
+                text.prepend(QStringLiteral("水平 "));
+                break;
+            case cad::param::MeasureKind::Vertical:
+                text.prepend(QStringLiteral("垂直 "));
+                break;
+            case cad::param::MeasureKind::Distance:
+                break;
+        }
+        m_valueLabel->setText(text);
+    }
 }
 
 void MeasureCard::syncFromModel(const cad::param::MeasureVariable& mv,
@@ -88,6 +107,7 @@ void MeasureCard::syncFromModel(const cad::param::MeasureVariable& mv,
     m_nameChip->setText(mv.name);
     m_refName = mv.refName;
     m_refChip->setText(mv.refName);
+    m_kind = mv.kind;  // 虚拟化复用: 同一实例可被不同模式的测量行复用
     m_sourceInfo->setText(sourceLabel);
     if (!m_commentEdit->hasFocus()) {
         m_commentEdit->blockSignals(true);
@@ -104,6 +124,14 @@ void MeasureCard::setIndex(int n)
     const QString text = n > 0 ? QStringLiteral("测 %1").arg(n) : QString();
     if (m_indexLabel->text() != text)
         m_indexLabel->setText(text);
+}
+
+void MeasureCard::setAlternate(bool alternate)
+{
+    if (m_alternate == alternate)
+        return;
+    m_alternate = alternate;
+    update();
 }
 
 void MeasureCard::paintEvent(QPaintEvent* event)
@@ -155,6 +183,7 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     header->setSpacing(6);
 
     m_indexLabel = new ElaText(QString(), 13, this);
+    m_indexLabel->setObjectName(QStringLiteral("measureIndex"));
     m_indexLabel->setStyleSheet("font-size: 11px; background: transparent;");
     m_indexLabel->setToolTip(QStringLiteral("测量序号（视图行号）"));
     header->addWidget(m_indexLabel, 0);
@@ -213,7 +242,7 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     m_sourceInfo = new ElaText(QString(), 13, m_detail);
     m_sourceInfo->setText(sourceLabel);
     m_sourceInfo->setStyleSheet("font-size: 11px; background: transparent;");
-    m_sourceInfo->setToolTip(QStringLiteral("测量来源：两个点（只读）"));
+    m_sourceInfo->setToolTip(QStringLiteral("测量来源：两个点及所在图层（只读）"));
     detailLayout->addWidget(m_sourceInfo, 0);
 
     m_commentEdit = new ElaLineEdit(m_detail);     m_commentEdit->setText(mv.comment);

@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.25)
 
 project(WildWindPattern
     VERSION 0.1.0
@@ -472,6 +472,7 @@ add_test(NAME test_intersection COMMAND test_intersection)
 add_executable(test_commands
     tests/test_commands.cpp
     src/document/commands/BlockCommands.cpp
+    src/document/commands/AttachmentCommands.cpp
     src/document/commands/VariableCommands.cpp
     src/document/commands/DocumentCommands.cpp
     src/document/commands/LayerCommands.cpp
@@ -755,10 +756,82 @@ add_executable(test_smartpen_aux
     src/ui/IconHelper.cpp
     src/ui/Theme.h
     src/ui/Theme.cpp
+    src/app/SmartPenPreInputBar.h
+    src/app/SmartPenPreInputBar.cpp
 )
 target_include_directories(test_smartpen_aux PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(test_smartpen_aux PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
 add_test(NAME test_smartpen_aux COMMAND test_smartpen_aux)
+
+# Test: measure tool W-mode cycling (距离/水平/垂直), per-kind values, and
+# axis-coincidence rejection (the source set mirrors test_smartpen_aux —
+# HudItem lives in ToolSmartPen.cpp).
+add_executable(test_measure
+    tests/test_measure.cpp
+    src/tools/ToolMeasure.cpp
+    src/tools/ToolSmartPen.cpp
+    src/tools/LineFactory.h
+    src/tools/LineFactory.cpp
+    src/tools/LeaderCandidatePicker.h
+    src/tools/LeaderCandidatePicker.cpp
+    src/tools/ToolSelect.cpp
+    src/tools/MarqueeGesture.h
+    src/tools/MarqueeGesture.cpp
+    src/tools/SelectState.h
+    src/tools/ConnectGesture.h
+    src/tools/ConnectGesture.cpp
+    src/tools/CopyDragController.h
+    src/tools/CopyDragController.cpp
+    src/tools/SnapEngine.cpp
+    src/tools/QuickAuxDialog.cpp
+    src/tools/AuxPointForm.cpp
+    src/tools/LinePropertyDialog.cpp
+    src/tools/SegmentAnchorTab.h
+    src/tools/SegmentAnchorTab.cpp
+    src/tools/SegmentAuxTab.h
+    src/tools/SegmentAuxTab.cpp
+    src/tools/SegmentAimCard.h
+    src/tools/SegmentAimCard.cpp
+    src/tools/SegmentConnectionCard.h
+    src/tools/SegmentConnectionCard.cpp
+    src/tools/PointRefEdit.cpp
+    src/tools/IntersectionForm.cpp
+    src/tools/AngleHud.cpp
+    src/tools/MeasureResultDialog.cpp
+    src/document/commands/BlockCommands.cpp
+    src/document/commands/DocumentCommands.cpp
+    src/document/commands/GroupCommands.cpp
+    src/document/commands/AttachmentCommands.cpp
+    src/document/commands/VariableCommands.cpp
+    src/document/DeleteImpactConfirm.cpp
+    src/parametric/ParamDocument.cpp
+    src/parametric/LayerRegistry.cpp
+    src/parametric/VariableStore.cpp
+    src/parametric/MeasurementStore.cpp
+    src/parametric/GroupRegistry.cpp
+    src/parametric/Block.cpp
+    src/parametric/Duplicate.cpp
+    src/geometry/CurveMath.cpp
+    src/parametric/Resolver.cpp
+    src/parametric/ExpressionEvaluator.cpp
+    src/parametric/ConditionEngine.cpp
+    src/parametric/Serial.cpp
+    src/parametric/LinkedVariable.cpp
+    src/canvas/CanvasScene.cpp
+    src/canvas/GroupBadgeItem.h
+    src/canvas/GroupBadgeItem.cpp
+    src/canvas/CanvasStyle.cpp
+    src/canvas/CanvasAnimator.cpp
+    src/canvas/OriginCrosshair.cpp
+    src/canvas/BlockItem.cpp
+    src/canvas/CurveItem.cpp
+    src/ui/IconHelper.cpp
+    src/ui/Theme.h
+    src/ui/Theme.cpp
+)
+target_include_directories(test_measure PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_measure PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
+add_test(NAME test_measure COMMAND test_measure)
 
 # Test: SegmentEditBar (鍒涘缓鍚庡唴宓岀紪杈戞潯)
 add_executable(test_segment_edit_bar
@@ -783,10 +856,49 @@ target_include_directories(test_segment_edit_bar PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_link_libraries(test_segment_edit_bar PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
 add_test(NAME test_segment_edit_bar COMMAND test_segment_edit_bar)
 
+# Test: formula-tab grouping (VirtualCardList stale-rebind regression —
+# 结构变化后存活行必须重绑定, 否则分组数量/箭头/序号过期; FormulaTabModel
+# 拖入分组/撤销/折叠; FormulaCard 组内缩进).
+add_executable(test_formula_groups
+    tests/test_formula_groups.cpp
+    resources/icons.qrc
+    src/parametric/ParamDocument.cpp
+    src/parametric/LayerRegistry.cpp
+    src/parametric/VariableStore.cpp
+    src/parametric/MeasurementStore.cpp
+    src/parametric/GroupRegistry.cpp
+    src/parametric/Block.cpp
+    src/parametric/Resolver.cpp
+    src/parametric/ExpressionEvaluator.cpp
+    src/parametric/ConditionEngine.cpp
+    src/parametric/Serial.cpp
+    src/parametric/LinkedVariable.cpp
+    src/parametric/Duplicate.cpp
+    src/geometry/CurveMath.cpp
+    src/document/commands/VariableCommands.cpp
+    src/ui/VirtualCardList.cpp
+    src/ui/FormulaTabModel.cpp
+    src/ui/FormulaGroupHeader.cpp
+    src/ui/FormulaCard.cpp
+    src/ui/VariableCard.cpp
+    src/ui/LinkedCard.cpp
+    src/ui/MeasureCard.cpp
+    src/ui/AngleMeasureCard.cpp
+    src/ui/CopyChip.cpp
+    src/ui/IconHelper.cpp
+    src/ui/Theme.cpp
+)
+target_include_directories(test_formula_groups PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_formula_groups PRIVATE Qt6::Widgets Qt6::Svg Qt6::Test ElaWidgetTools)
+add_test(NAME test_formula_groups COMMAND test_formula_groups)
+
 # Test: user-group tool guards (缂佸嫬鍞撮崡鏇犲殠娑撳秴褰查崚?/ 缂佸嫬鍞存潻鐐村复閹峰棔绗夊鈧?
 add_executable(test_group_guards
     tests/test_group_guards.cpp
     src/tools/ToolSelect.cpp
+    src/tools/ToolRotate.cpp
+    src/tools/RotateCopyGesture.cpp
+    src/tools/RotateGizmo.cpp
     src/tools/MarqueeGesture.h
     src/tools/MarqueeGesture.cpp
     src/tools/SelectState.h

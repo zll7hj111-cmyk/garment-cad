@@ -1,4 +1,4 @@
-#include "DeleteImpactConfirm.h"
+﻿#include "DeleteImpactConfirm.h"
 
 #include "ui/ElaMsgBox.h"
 
@@ -58,6 +58,9 @@ bool confirmDeleteImpact(QWidget* parent, const cad::param::ParamDocument* doc,
     if (const QString l = impactLine(
             QString::fromUtf8("%1 \u4e2a\u516c\u5f0f\u5c06\u56e0\u5f15\u7528\u5931\u6548\u800c\u62a5\u9519"),
             total.formulasBroken); !l.isEmpty()) lines << l;
+    if (const QString l = impactLine(
+            QString::fromUtf8("%1 \u6761\u7701\u9053\u7ebf\u5c06\u964d\u7ea7\u4e3a\u666e\u901a\u7ebf\uff08\u51e0\u4f55\u4fdd\u6301\u4e0d\u53d8\uff09"),
+            total.dartLinesDegraded); !l.isEmpty()) lines << l;
 
     const QString text = lines.join(QStringLiteral("\n")) + QStringLiteral("\n\n")
         + QString::fromUtf8("确定删除？");

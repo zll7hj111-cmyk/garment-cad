@@ -1,4 +1,4 @@
-﻿#include "ToolSelect.h"
+#include "ToolSelect.h"
 #include "ToolManager.h"
 
 #include <QGraphicsSceneMouseEvent>
@@ -203,7 +203,9 @@ void ToolSelect::showToast(const QString& text)
 void ToolSelect::toggleBlock(const QUuid& blockId)
 {
     // Group = minimal selection unit: toggling a member toggles the WHOLE
-    // group (整组进整组出).
+    // group (整组进整组出). Single mode also selects the whole group (统一点
+    // 成员=选整组); point-level editing still works through endpoint/curve
+    // gestures before the selection replacement.
     const QSet<QUuid> ids = wholeGroupSet(blockId);
     bool anySelected = false;
     for (const QUuid& id : ids)
@@ -273,8 +275,9 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         return;
     }
 
-    // Badge clicks belong to the badge (选中整组) — the tool must not also
-    // toggle the block underneath.
+    // Badge-click path (选中整组): GroupBadgeItem is hit-testable now; when the
+    // cursor is on a group badge outline, the badge itself emits clicked() and
+    // the tool must NOT also toggle a block underneath.
     if (badgeAt(pos))
         return;
 
@@ -307,17 +310,22 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         }
     }
 
+    // ── Point-level press first (端点连接手势 / 曲线锚点拖拽) ──
+    // 用户直接抓取端点即可发起端点连接 (无论单线还是组件，直观一抓即连)
+    if (tryPointOperation(pos))
+        return;
+
     switch (m_state) {
     case SelectState::Idle:
     case SelectState::Selecting: {
         const QUuid blockHit = hitBlock(pos);
         if (m_selectionMode == SelectionMode::Single) {
             // Single mode: press SELECTS the object only — 右键确认后才可
-            // 拖动/连接 (与多选同一套 选中→确认→操作 语义, 减少误操作).
+            // 拖动 (与多选同一套 选中→确认→操作 语义, 减少误操作).
             // 点击空白清选; 无框选.
             if (!blockHit.isNull()) {
                 m_lastHitSegmentId = hitSegmentAt(pos);
-                m_selection = wholeGroupSet(blockHit);
+                m_selection = wholeGroupSet(blockHit);   // 点成员=选整组
                 m_confirmed = false;
                 syncSelectionVisual();
                 setState(SelectState::Selecting);
@@ -335,20 +343,12 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         // Empty space → marquee.
         if (m_marqueeGesture) {
             m_marqueeGesture->begin(pos, m_selection);
-            // MUST enter the Marquee state here — mouseMove/mouseRelease route
-            // into the gesture only when m_state == Marquee. Regression: the
-            // gesture extraction dropped this transition, leaving the rubber
-            // band invisible and the toggle never applied (W 进多选后框选消失).
             setState(SelectState::Marquee);
         }
         break;
     }
 
     case SelectState::Confirmed: {
-        // Point-level press first (曲线锚点=曲线点拖动, 端点=连接拖拽);
-        // otherwise fall through to block/blank handling below.
-        if (tryPointOperation(pos))
-            return;
         const QUuid blockHit = hitBlock(pos);
         if (m_selectionMode == SelectionMode::Single) {
             // Single mode confirmed: clicking the SAME block again starts a
@@ -357,10 +357,12 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
             // empty space falls through to beginDrag below.
             if (!blockHit.isNull()) {
                 if (!m_selection.contains(blockHit)) {
-                    m_selection = wholeGroupSet(blockHit);
+                    m_lastHitSegmentId = hitSegmentAt(pos);
+                    m_selection = wholeGroupSet(blockHit);   // 点成员=选整组
                     m_confirmed = true;
                     syncSelectionVisual();
                     setState(SelectState::Confirmed);
+                    notifyEditTarget();
                 } else {
                     beginDrag(pos);   // second click on the selected object
                 }
@@ -373,7 +375,7 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
             // selection to it (also confirmed). 确认后不再减选.
             if (!blockHit.isNull()) {
                 if (!m_selection.contains(blockHit)) {
-                    m_selection = wholeGroupSet(blockHit);
+                    m_selection = wholeGroupSet(blockHit);   // 点成员=选整组
                     m_confirmed = true;
                     syncSelectionVisual();
                     setState(SelectState::Confirmed);
@@ -471,7 +473,7 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
 
     const QPointF up = event->scenePos();
     if (badgeAt(cad::geo::Vec2(up.x(), up.y())))
-        return;   // badge clicks never open the property dialog underneath
+        return;   // future badge clicks never open the property dialog underneath
     const QList<QGraphicsItem*> hits = m_scene->items(cad::geo::Coord::toScene(up.x(), up.y()));
     BlockItem* blockItem = nullptr;
     for (QGraphicsItem* item : hits) {
@@ -690,23 +692,39 @@ void ToolSelect::showContextMenu()
 {
     if (!m_paramDoc || m_selection.isEmpty()) return;
 
+    const QUuid selectedGid = wholeSelectedGroup();
+    const bool isBBoxVisible = !selectedGid.isNull() ? m_paramDoc->isGroupBoundingBoxVisible(selectedGid) : true;
+
     QMenu menu;
     QAction* actGroup   = menu.addAction(QString::fromUtf8("\xe5\x81\x9a\xe6\x88\x90\xe7\xbb\x84"));   // 做成组
     QAction* actUngroup = menu.addAction(QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe7\xbb\x84"));   // 解散组
     QAction* actRename  = menu.addAction(QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d\xe7\xbb\x84"));  // 重命名组
+    QAction* actBBox    = nullptr;
+    if (!selectedGid.isNull()) {
+        actBBox = menu.addAction(isBBoxVisible
+            ? QString::fromUtf8("\xe9\x9a\x90\xe8\x97\x8f\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86")   // 隐藏包围框
+            : QString::fromUtf8("\xe6\x98\xbe\xe7\xa4\xba\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86"));  // 显示包围框
+    }
     menu.addSeparator();
     QAction* actCancel  = menu.addAction(QString::fromUtf8("\xe5\x8f\x96\xe6\xb6\x88\xe9\x80\x89\xe6\x8b\xa9"));  // 取消选择
 
     // Enable states: 做成组 needs >= 2 ungrouped same-layer blocks; 解散组
     // needs the selection to be EXACTLY one whole group.
     actGroup->setEnabled(selectionGroupable());
-    actUngroup->setEnabled(!wholeSelectedGroup().isNull());
-    actRename->setEnabled(!wholeSelectedGroup().isNull());
+    actUngroup->setEnabled(!selectedGid.isNull());
+    actRename->setEnabled(!selectedGid.isNull());
 
     QAction* picked = menu.exec(QCursor::pos());
     if (picked == actGroup)          makeGroupFromSelection();
     else if (picked == actUngroup)   ungroupSelection();
     else if (picked == actRename)    renameSelectedGroup();
+    else if (picked == actBBox && !selectedGid.isNull()) {
+        if (m_undoStack)
+            m_undoStack->push(new cad::cmd::SetGroupBoundingBoxCommand(m_paramDoc, selectedGid, !isBBoxVisible));
+        else
+            m_paramDoc->setGroupBoundingBoxVisible(selectedGid, !isBBoxVisible);
+        if (m_scene) m_scene->refreshAllBlockItems();
+    }
     else if (picked == actCancel)    clearSelectionAndIdle();
 }
 
@@ -775,12 +793,16 @@ void ToolSelect::beginDrag(const cad::geo::Vec2& pos)
     m_dragStartPos = pos;
     m_detachedAttachments.clear();
 
-    // Drag set = the confirmed selection, EXPANDED by protected connections
-    // (拖动保护 = 焊接): dragging either side of a protected pair moves the
-    // whole pair, recursively (A保B、B保C → 拖A时B、C一起走). This also makes
-    // the protected attachment span the drag set, so it is never torn apart
-    // below.
-    const QSet<QUuid> dragSet = m_paramDoc->lockedClosure(m_selection);
+    // Drag set = the confirmed selection (expanded by whole groups + protected connections)
+    QSet<QUuid> baseSet = m_selection;
+    for (const QUuid& selId : m_selection) {
+        const QUuid gid = m_paramDoc->groupOfBlock(selId);
+        if (!gid.isNull()) {
+            for (const QUuid& memberId : m_paramDoc->blocksInGroup(gid))
+                baseSet.insert(memberId);
+        }
+    }
+    const QSet<QUuid> dragSet = m_paramDoc->lockedClosure(baseSet);
     m_dragBlockIds = dragSet.values();
     m_dragOrigins.clear();
     for (const QUuid& id : m_dragBlockIds) {
@@ -793,15 +815,30 @@ void ToolSelect::beginDrag(const cad::geo::Vec2& pos)
     // apart — 拖跟随线 = 拆散 (门开着); dragging the LEADER keeps the
     // follower attached so it follows (跟随线跟随, 不拆). 拖动保护
     // (isLocked) attachments are welded: never detached by a drag.
-    // Groups stay zero-restriction — 组内连接与自由连接同样处理 (组只是选择
-    // 快捷方式). 注: 新建连接默认已勾选拖动保护 (addAttachment 统一置位),
-    // 此处只对用户手动取消保护的连接生效.
+    // Groups stay zero-restriction at the model layer — 组内连接与自由连接
+    // 同样处理 (模型层组零限制). 注: 新建连接默认已勾选拖动保护 (addAttachment 统一置位),
+    // 此处只对用户手动取消保护的连接生效. 已拆开 (angleOnly) 的连接位置
+    // 本就自由, 无需再拆. 滑轨连接 (slideMode != None) 位置只留一轴自由度,
+    // 拖动必须保持滑轨约束 (抽屉式滑动) —— 也不拆, 由 Resolver 每帧锁轴.
     for (const auto& att : m_paramDoc->attachments()) {
-        if (att.isLocked) continue;
+        if (att.isLocked || att.angleOnly
+            || att.slideMode != cad::param::SlideMode::None) continue;
         const bool fromIn = dragSet.contains(att.fromBlockId);
         const bool toIn   = dragSet.contains(att.toBlockId);
         if (fromIn && !toIn)
             m_detachedAttachments.append(att.id);
+    }
+
+    // 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): slide attachments are kept
+    // ACTIVE (never detached — dragging a slide follower stays on the rail).
+    // Snapshot their pre-drag rail coordinates so the endDrag macro can undo
+    // the slide back to the pre-drag rail position.
+    m_dragOldSlideOffsets.clear();
+    for (const auto& att : m_paramDoc->attachments()) {
+        if (att.slideMode == cad::param::SlideMode::None) continue;
+        if (!dragSet.contains(att.fromBlockId)) continue;
+        m_dragOldSlideOffsets.insert(att.id,
+            {att.slideAlongMm, att.slidePerpMm});
     }
 
     setState(SelectState::Dragging);
@@ -824,6 +861,11 @@ void ToolSelect::updateDrag(const cad::geo::Vec2& pos)
         if (auto* b = m_paramDoc->findBlock(id))
             m_paramDoc->invalidateLayer(b->layer);
     }
+    // 滑轨模式 (抽屉式滑动): 拖动跟随线时每帧把当前 (拖拽) 位置回写到
+    // 自由轴坐标 (锁轴保持激活时快照), 随后 resolveForDrag 按新坐标落位,
+    // 锁轴分量被弹回 —— 跟随线只沿滑轨动。
+    for (const QUuid& attId : m_dragOldSlideOffsets.keys())
+        m_paramDoc->updateSlideOffsetsFromCurrent(attId);
     m_paramDoc->resolveForDrag(m_dragBlockIds, m_detachedAttachments);
 }
 
@@ -849,8 +891,30 @@ void ToolSelect::endDrag(const cad::geo::Vec2& pos)
     if (m_undoStack) {
         m_undoStack->beginMacro(QStringLiteral(
             "\xe7\xa7\xbb\xe5\x8a\xa8 %1 \xe4\xb8\xaa\xe5\xaf\xb9\xe8\xb1\xa1").arg(m_dragBlockIds.size()));
-        for (const QUuid& attId : m_detachedAttachments)
-            m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(m_paramDoc, attId));
+        for (const QUuid& attId : m_detachedAttachments) {
+            const cad::param::Attachment* att = m_paramDoc->findAttachment(attId);
+            if (att && !att->isPin)
+                // 拆开保留角度 (用户拍板 2026-08): 只解除位置吸附, 角度跟随
+                // 保留; 桥 pin 无角度语义, 仍走彻底删除.
+                m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                    m_paramDoc, attId, /*angleOnly=*/true));
+            else
+                m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(
+                    m_paramDoc, attId));
+        }
+        // 滑轨模式 (抽屉式滑动): 拖动沿滑轨走了 —— 自由轴坐标 old→new 与
+        // 移动一起入栈 (undo 整体回到拖前滑轨位置).
+        for (auto it = m_dragOldSlideOffsets.cbegin();
+             it != m_dragOldSlideOffsets.cend(); ++it) {
+            const cad::param::Attachment* att = m_paramDoc->findAttachment(it.key());
+            if (!att) continue;
+            const auto [oldAlong, oldPerp] = it.value();
+            if (std::abs(att->slideAlongMm - oldAlong) <= 1e-9
+                && std::abs(att->slidePerpMm - oldPerp) <= 1e-9) continue;
+            m_undoStack->push(new cad::cmd::SetSlideOffsetsCommand(
+                m_paramDoc, it.key(), oldAlong, oldPerp,
+                att->slideAlongMm, att->slidePerpMm));
+        }
         m_undoStack->push(new cad::cmd::MoveBlockCommand(m_paramDoc, m_dragBlockIds, delta));
         m_undoStack->endMacro();
     }
@@ -875,38 +939,71 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
         return true;
     }
 
-    // Endpoint: begin a connection drag. The hit point must belong to the
-    // SELECTED set — multi-select members connect individually (长按选中集内
-    // 任一端点 = 该块的连接手势), while an unselected block's point falls
-    // through so the caller starts a plain drag / selection switch instead.
-    // Bridges cannot connect — fall through so the caller starts a plain
-    // drag instead.
-    const auto pt = m_connectGesture ? m_connectGesture->hitPoint(pos)
-                                     : std::optional<SnapResult>();
-    if (pt.has_value() && m_selection.contains(pt->blockId)) {
-        if (const auto* blk = m_paramDoc ? m_paramDoc->findBlock(pt->blockId) : nullptr;
-            blk && blk->isBridge)
-            return false;
-        // Welded endpoint: the point participates in a LOCKED attachment —
-        // either as the follower block (拖动保护焊接: the endpoint drag would
-        // need to detach first) or as the leader's TARGET point (a welded
-        // joint is dragged as a whole closure, never re-connected from the
-        // joint). Fall through so the caller starts a block drag instead
-        // (the whole welded pair/closure moves together).
-        bool weldedJoint = false;
+    if (!m_connectGesture || !m_paramDoc) return false;
+
+    // Endpoint: begin a connection drag. Gather all candidate points stacked at
+    // this location (多点重叠/组内角点) so we can pick a valid member from the
+    // selection or active group, even when multiple endpoints share the spot.
+    const auto cands = m_connectGesture->hitPointCandidates(pos);
+    if (cands.empty()) return false;
+
+    // Collect eligible blocks: explicitly selected blocks + all members of any
+    // selected group (组内任意端点均可发起组件对外挂接).
+    QSet<QUuid> eligibleBlocks = m_selection;
+    QUuid activeGroupId;
+    for (const auto& selId : m_selection) {
+        const QUuid gid = m_paramDoc->groupOfBlock(selId);
+        if (!gid.isNull()) {
+            activeGroupId = gid;
+            for (const auto& bid : m_paramDoc->blocksInGroup(gid))
+                eligibleBlocks.insert(bid);
+        }
+    }
+
+    // Find the best matching candidate: prefer directly selected block, fallback to group member,
+    // and if nothing is selected, any snappable active-layer endpoint can initiate a connection.
+    const SnapResult* pickedCand = nullptr;
+    for (const auto& c : cands) {
+        if (!eligibleBlocks.isEmpty() && !eligibleBlocks.contains(c.blockId))
+            continue;
+        const auto* blk = m_paramDoc->findBlock(c.blockId);
+        if (!blk || blk->isBridge) continue;
+        if (blk->layer != m_paramDoc->activeLayer()) continue;
+
+        // Check external welded attachments (locked external connection):
+        // Internal connections between members of the same group are part of the
+        // group's internal structure and DO NOT prevent active connection to an external leader!
+        const QUuid candGid = m_paramDoc->groupOfBlock(c.blockId);
+        bool externalWelded = false;
         for (const auto& att : m_paramDoc->attachments()) {
             if (!att.isLocked) continue;
-            if (att.fromBlockId == pt->blockId
-                || (att.toBlockId == pt->blockId && att.toPointId == pt->pointId)) {
-                weldedJoint = true;
+            if (!candGid.isNull()
+                && m_paramDoc->groupOfBlock(att.fromBlockId) == candGid
+                && m_paramDoc->groupOfBlock(att.toBlockId) == candGid) {
+                continue;  // internal group attachment -> ignore
+            }
+            if (att.fromBlockId == c.blockId
+                || (att.toBlockId == c.blockId && att.toPointId == c.pointId)) {
+                externalWelded = true;
                 break;
             }
         }
-        if (weldedJoint)
-            return false;
-        m_connectGesture->beginConnect(pt->blockId, pt->pointId, pos);
+        if (externalWelded) continue;
+
+        if (!m_selection.isEmpty() && m_selection.contains(c.blockId)) {
+            pickedCand = &c;
+            break;  // Highest priority: directly selected block
+        }
+        if (!pickedCand) {
+            pickedCand = &c;
+        }
+    }
+
+    if (pickedCand) {
+        m_connectGesture->beginConnect(pickedCand->blockId, pickedCand->pointId, pos);
         return true;
     }
+
     return false;
 }
 
@@ -966,10 +1063,13 @@ void ToolSelect::deleteSelectedBlocks()
 {
     if (!m_scene || !m_paramDoc || m_selection.isEmpty()) return;
 
-    const QList<QUuid> toRemove = m_selection.values();
-
-    // NOTE: 组对删除零限制 —— 选中集可包含组的任意部分成员, 删除照常执行
-    // (组只是选择快捷方式, 不提供结构保护; 剩余成员不足 2 时组自动解散).
+    // 统一点成员=选整组: 删除前把选中集再展开为整组, 因此 Del 删除的是整组
+    // 而不是单个成员 (组内连接与跨边界线随块删除正常善后, 组不设结构保护;
+    // 剩余成员不足 2 时组自动解散).
+    QSet<QUuid> expanded;
+    for (const QUuid& id : m_selection)
+        expanded.unite(wholeGroupSet(id));
+    const QList<QUuid> toRemove = expanded.values();
 
     // Show the aggregated delete-impact report before committing (批量删除
     // 时善后可能合并, 报告计数为上限). The cascade itself is unchanged.

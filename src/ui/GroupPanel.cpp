@@ -1,4 +1,4 @@
-﻿#include "GroupPanel.h"
+#include "GroupPanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -107,6 +107,55 @@ public:
         auto* countLbl = new ElaText(QString::fromUtf8("%1 \xe6\x9d\xa1").arg(count), 13, this);  // N 条
         countLbl->setObjectName(QStringLiteral("groupCardCount"));
         row->addWidget(countLbl);
+
+        // Component hinge status dot (组件主连接 indicator).
+        const bool hasHinge = doc && doc->hasComponentHinge(groupId);
+        auto* hingeLbl = new ElaText(hasHinge
+            ? QString::fromUtf8("\xe9\x93\xbe")  // 链
+            : QString::fromUtf8("\xe2\x80\xa2"), // ·
+            13, this);
+        hingeLbl->setObjectName(QStringLiteral("groupCardHinge"));
+        hingeLbl->setToolTip(hasHinge
+            ? QString::fromUtf8("\xe5\xb7\xb2\xe8\xae\xbe\xe7\xbd\xae\xe7\xbb\x84\xe4\xbb\xb6\xe4\xb8\xbb\xe8\xbf\x9e\xe6\x8e\xa5")   // 已设置组件主连接
+            : QString::fromUtf8("\xe6\x9c\xaa\xe8\xae\xbe\xe7\xbd\xae\xe5\xa5\x97\xe5\x90\x88\xe4\xb8\xbb\xe8\xbf\x9e\xe6\x8e\xa5")); // 未设置主连接
+        row->addWidget(hingeLbl);
+
+        // + Add selected blocks to this group.
+        auto* addBtn = new ElaToolButton(this);
+        addBtn->setFixedSize(22, 22);
+        addBtn->setCursor(Qt::PointingHandCursor);
+        addBtn->setObjectName(QStringLiteral("groupAddMemberBtn"));
+        addBtn->setIcon(cad::ui::IconHelper::iconByName(
+            QStringLiteral("plus"), QColor(0x2F, 0x6F, 0xED)));
+        addBtn->setIconSize(QSize(14, 14));
+        addBtn->setToolTip(QString::fromUtf8(
+            "\xe6\xb7\xbb\xe5\x8a\xa0\xe9\x80\x89\xe4\xb8\xad\xe5\x88\xb0\xe7\xbb\x84"));  // 添加选中到组
+        connect(addBtn, &QToolButton::clicked, this, [this]() {
+            emit addRequested(m_groupId);
+        });
+        row->addWidget(addBtn);
+
+        // Eye button for bounding box visibility
+        bool bBoxVisible = true;
+        if (const auto* g = doc ? doc->findGroup(groupId) : nullptr)
+            bBoxVisible = g->showBoundingBox;
+
+        auto* eyeBtn = new ElaToolButton(this);
+        eyeBtn->setFixedSize(22, 22);
+        eyeBtn->setCursor(Qt::PointingHandCursor);
+        eyeBtn->setObjectName(QStringLiteral("groupEyeBtn"));
+        eyeBtn->setIcon(cad::ui::IconHelper::iconByName(
+            bBoxVisible ? QStringLiteral("eye") : QStringLiteral("eye-slash"),
+            bBoxVisible ? QColor(0x2F, 0x6F, 0xED) : QColor(0x9A, 0xA4, 0xB2)));
+        eyeBtn->setIconSize(QSize(14, 14));
+        eyeBtn->setToolTip(bBoxVisible
+            ? QString::fromUtf8("\xe9\x9a\x90\xe8\x97\x8f\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86")   // 隐藏包围框
+            : QString::fromUtf8("\xe6\x98\xbe\xe7\xa4\xba\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86"));  // 显示包围框
+        connect(eyeBtn, &QToolButton::clicked, this, [this]() {
+            emit eyeClicked(m_groupId);
+        });
+        row->addWidget(eyeBtn);
+
         outer->addLayout(row);
 
         // ── Row 2: member preview (collapsed by default) ──
@@ -136,6 +185,18 @@ public:
                     ? QString::fromUtf8("\xe2\x80\x94") : segName, 13, mrow);  // —
                 mname->setObjectName(QStringLiteral("memberName"));
                 mlay->addWidget(mname, 1);
+                auto* removeBtn = new ElaToolButton(mrow);
+                removeBtn->setFixedSize(18, 18);
+                removeBtn->setCursor(Qt::PointingHandCursor);
+                removeBtn->setObjectName(QStringLiteral("groupMemberRemoveBtn"));
+                removeBtn->setIcon(cad::ui::IconHelper::iconByName(
+                    QStringLiteral("x"), QColor(0x9A, 0xA4, 0xB2)));
+                removeBtn->setIconSize(QSize(12, 12));
+                removeBtn->setToolTip(QString::fromUtf8(
+                    "\xe5\xb0\x86\xe6\xad\xa4\xe6\x88\x90\xe5\x91\x98\xe7\xa7\xbb\xe5\x87\xba\xe7\xbb\x84"));  // 将此成员移出组
+                connect(removeBtn, &QToolButton::clicked, this,
+                        [this, memberId]() { emit memberRemoveRequested(m_groupId, memberId); });
+                mlay->addWidget(removeBtn);
                 m_memberLayout->addWidget(mrow);
             }
         }
@@ -158,6 +219,9 @@ signals:
     void clicked(const QUuid& groupId);              ///< Card body click / Enter.
     void dissolveRequested(const QUuid& groupId);    ///< Delete key.
     void checkChanged(const QUuid& groupId, bool on);///< Batch checkbox.
+    void eyeClicked(const QUuid& groupId);           ///< Bounding box eye toggle.
+    void addRequested(const QUuid& groupId);         ///< + button: add selected blocks.
+    void memberRemoveRequested(const QUuid& groupId, const QUuid& memberId); ///< − button.
 
 protected:
     void mousePressEvent(QMouseEvent* event) override
@@ -323,6 +387,20 @@ void GroupPanel::refresh()
         });
         connect(card, &GroupCard::dissolveRequested, this,
                 [this](const QUuid& gid) { dissolveGroup(gid); });
+        connect(card, &GroupCard::eyeClicked, this, [this](const QUuid& gid) {
+            if (!m_doc) return;
+            const bool cur = m_doc->isGroupBoundingBoxVisible(gid);
+            if (m_undoStack)
+                m_undoStack->push(new cad::cmd::SetGroupBoundingBoxCommand(m_doc, gid, !cur));
+            else
+                m_doc->setGroupBoundingBoxVisible(gid, !cur);
+        });
+        connect(card, &GroupCard::addRequested, this,
+                [this](const QUuid& gid) { emit addMembersRequested(gid); });
+        connect(card, &GroupCard::memberRemoveRequested, this,
+                [this](const QUuid& gid, const QUuid& memberId) {
+                    removeMembersFromGroup(gid, {memberId});
+                });
         connect(card, &GroupCard::checkChanged, this, [this](const QUuid& gid, bool on) {
             if (on) m_checked.insert(gid);
             else    m_checked.remove(gid);
@@ -419,11 +497,35 @@ QWidget* GroupPanel::cardAt(const QPoint& pos) const
 
 void GroupPanel::showGroupMenu(const QPoint& globalPos, const QUuid& groupId)
 {
+    if (!m_doc) return;
+    const bool isBBoxVisible = m_doc->isGroupBoundingBoxVisible(groupId);
+    const bool hasHinge = m_doc->hasComponentHinge(groupId);
+
     QMenu menu;
+    QAction* actAddSelected = menu.addAction(QString::fromUtf8("\xe6\xb7\xbb\xe5\x8a\xa0\xe9\x80\x89\xe4\xb8\xad\xe5\x88\xb0\xe7\xbb\x84")); // 添加选中到组
+    QAction* actClearHinge  = menu.addAction(QString::fromUtf8("\xe6\xb8\x85\xe9\x99\xa4\xe7\xbb\x84\xe4\xbb\xb6\xe4\xb8\xbb\xe8\xbf\x9e\xe6\x8e\xa5")); // 清除组件主连接
+    actClearHinge->setEnabled(hasHinge);
+    menu.addSeparator();
     QAction* actRename   = menu.addAction(QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d"));    // 重命名
+    QAction* actBBox     = menu.addAction(isBBoxVisible
+        ? QString::fromUtf8("\xe9\x9a\x90\xe8\x97\x8f\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86")  // 隐藏包围框
+        : QString::fromUtf8("\xe6\x98\xbe\xe7\xa4\xba\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86")); // 显示包围框
     QAction* actDissolve = menu.addAction(QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe7\xbb\x84"));    // 解散组
     QAction* picked = menu.exec(globalPos);
-    if (picked == actRename)          renameGroup(groupId);
+    if (picked == actAddSelected)     emit addMembersRequested(groupId);
+    else if (picked == actClearHinge && hasHinge) {
+        if (m_undoStack)
+            m_undoStack->push(new cad::cmd::ClearComponentHingeCommand(m_doc, groupId));
+        else
+            m_doc->clearComponentHinge(groupId);
+    }
+    else if (picked == actRename)          renameGroup(groupId);
+    else if (picked == actBBox) {
+        if (m_undoStack)
+            m_undoStack->push(new cad::cmd::SetGroupBoundingBoxCommand(m_doc, groupId, !isBBoxVisible));
+        else
+            m_doc->setGroupBoundingBoxVisible(groupId, !isBBoxVisible);
+    }
     else if (picked == actDissolve)   dissolveGroup(groupId);
 }
 
@@ -453,6 +555,26 @@ void GroupPanel::dissolveGroup(const QUuid& groupId)
         m_undoStack->push(new cad::cmd::UngroupCommand(m_doc, groupId));
     else
         m_doc->dissolveGroup(groupId);
+}
+
+void GroupPanel::addMembersToGroup(const QUuid& groupId, const QList<QUuid>& memberIds)
+{
+    if (!m_doc || memberIds.isEmpty()) return;
+    if (m_undoStack)
+        m_undoStack->push(new cad::cmd::AddGroupMembersCommand(m_doc, groupId, memberIds));
+    else
+        for (const QUuid& id : memberIds)
+            m_doc->addGroupMember(groupId, id);
+}
+
+void GroupPanel::removeMembersFromGroup(const QUuid& groupId, const QList<QUuid>& memberIds)
+{
+    if (!m_doc || memberIds.isEmpty()) return;
+    if (m_undoStack)
+        m_undoStack->push(new cad::cmd::RemoveGroupMembersCommand(m_doc, groupId, memberIds));
+    else
+        for (const QUuid& id : memberIds)
+            m_doc->removeGroupMember(groupId, id);
 }
 
 void GroupPanel::dissolveCheckedGroups()

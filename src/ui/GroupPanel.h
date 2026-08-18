@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -17,10 +17,12 @@ namespace cad::param { class ParamDocument; }
 ///
 /// Card-based design (matches the LayerPanel visual language):
 ///   - Each group card: [batch checkbox] [expand caret] [serial tag]
-///     [name] [member count pill]; expanded cards preview member rows.
+///     [name] [member count pill] [hinge indicator] [+ add] [eye];
+///     expanded cards preview member rows with a per-row remove (−) button.
 ///   - Click card body → select the WHOLE group on canvas.
 ///   - Drag a card → reorder the group list (persisted via groups order).
-///   - Right-click card → rename / dissolve (解散组).
+///   - Right-click card → add selected blocks / clear component hinge /
+///     rename / dissolve (解散组).
 ///   - Batch toolbar: 解散选中 dissolves every checked group (one undo macro).
 ///   - Keyboard on a focused card: Enter = select group, Delete = dissolve.
 ///
@@ -34,11 +36,20 @@ public:
     explicit GroupPanel(cad::param::ParamDocument* doc, QWidget* parent = nullptr);
 
     void setUndoStack(QUndoStack* stack) { m_undoStack = stack; }
+    /// Add the given ungrouped blocks to a group (undoable). The host window
+    /// supplies the current canvas selection; the GroupPanel only applies the
+    /// command.
+    void addMembersToGroup(const QUuid& groupId, const QList<QUuid>& memberIds);
 
 signals:
     /// Card body clicked / Enter: the host window should activate the
     /// selection tool and select+confirm exactly these blocks.
     void selectGroupRequested(const QList<QUuid>& blockIds);
+    /// Card + button / context-menu added: the host window should pass the
+    /// current canvas selection back through addMembersToGroup().
+    void addMembersRequested(const QUuid& groupId);
+    /// Member-row − button: remove exactly this member from the group.
+    void removeMemberRequested(const QUuid& groupId, const QUuid& memberId);
 
 public slots:
     /// Rebuild all group cards from the document's group registry.
@@ -53,6 +64,7 @@ private:
     void showGroupMenu(const QPoint& globalPos, const QUuid& groupId);
     void renameGroup(const QUuid& groupId);
     void dissolveGroup(const QUuid& groupId);
+    void removeMembersFromGroup(const QUuid& groupId, const QList<QUuid>& memberIds);
     void dissolveCheckedGroups();
     void updateBatchButton();
     /// The card whose geometry contains @p pos (container coords), or null.

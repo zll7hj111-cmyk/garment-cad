@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QGraphicsScene>
 #include <QHash>
@@ -96,17 +96,18 @@ public:
     /// lights up (null id clears the broadcast).
     void setGroupHoverSource(const QUuid& blockId);
 
-    /// Reconcile the group badges (组徽标): create/drop pills for groups
-    /// that appeared/vanished, refresh labels + visibility (members all on
-    /// manually hidden layers → badge hidden) and reposition. Runs on group
-    /// registry / layer changes (LOW frequency) — badge geometry during live
-    /// drags is handled by updateGroupBadgePositions() alone.
+    /// Reconcile the group visual markers (组包围框): create/drop dashed
+    /// bounding boxes for groups that appeared/vanished, refresh visibility
+    /// (members all on manually hidden layers → marker hidden) and reposition.
+    /// Runs on group registry / layer changes (LOW frequency) — marker
+    /// geometry during live drags is handled by updateGroupBadgePositions()
+    /// alone.
     void reconcileGroupBadges();
-    /// Reposition every badge above its member union bounds. Cheap — the
-    /// per-frame path after resolves; never creates/drops pills or rewrites
+    /// Reposition every marker at its member union bounds. Cheap — the
+    /// per-frame path after resolves; never creates/drops boxes or rewrites
     /// labels (membership/visibility changes land via reconcile).
     void updateGroupBadgePositions();
-    /// The badge item of a group (null when the group has no badge yet).
+    /// The visual marker item of a group (null when the group has none).
     [[nodiscard]] GroupBadgeItem* groupBadge(const QUuid& groupId) const;
     /// Accent the badges of the given groups (selection state, driven by
     /// ToolSelect's confirmed selection).
@@ -153,9 +154,10 @@ private:
     /// All members of the block's user group (empty when ungrouped).
     [[nodiscard]] QSet<QUuid> groupMemberSet(const QUuid& blockId) const;
 
-    // Group badges (组徽标) — one item per group, reconciled by reconcileGroupBadges.
+    // Group visual markers (组包围框) — one item per group, reconciled by
+    // reconcileGroupBadges.
     QHash<QUuid, GroupBadgeItem*> m_groupBadges;
-    QSet<QUuid> m_selectedGroups;   ///< Groups whose badges are accented.
+    QSet<QUuid> m_selectedGroups;   ///< Groups whose markers are accented.
     void onBadgeHover(const QUuid& groupId, bool hovered);
     void updateBadgeAccents();
 

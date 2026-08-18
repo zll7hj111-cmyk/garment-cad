@@ -1,7 +1,9 @@
-﻿#pragma once
+#pragma once
 
 #include "ElaDialog.h"
 #include <QString>
+
+#include "parametric/MeasureVariable.h"
 
 class ElaLineEdit;
 
@@ -33,10 +35,13 @@ public:
     ///                 (used only when the user leaves the field empty).
     /// @param name     Pre-filled display name (usually empty).
     /// @param comment  Pre-filled comment (usually empty).
+    /// @param kind     Measurement kind — drives the readout label
+    ///                 (距离/水平/垂直 实测值).
     MeasureResultDialog(double valueMm,
                         const QString& refName,
                         const QString& name = QString(),
                         const QString& comment = QString(),
+                        cad::param::MeasureKind kind = cad::param::MeasureKind::Distance,
                         QWidget* parent = nullptr);
 
     /// The user-typed reference name (trimmed/uppercased; empty = keep the

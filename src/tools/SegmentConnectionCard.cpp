@@ -9,6 +9,7 @@
 #include "ElaLineEdit.h"
 #include "ElaPushButton.h"
 #include <QSignalBlocker>
+#include <QComboBox>
 #include <QVBoxLayout>
 
 #include "parametric/ParamDocument.h"
@@ -127,6 +128,20 @@ SegmentConnectionCard::SegmentConnectionCard(cad::param::ParamDocument* doc,
         "\u8de8\u5c42\u8fde\u63a5\uff1a\u57fa\u51c6\u7ebf\u4f4d\u4e8e\u53e6\u4e00\u56fe\u5c42"));  // 跨层连接：基准线位于另一图层
     m_lblLayerBadge->setVisible(false);
     connLayout->addWidget(m_lblLayerBadge);
+    // 拆开保留角度 badge ("仅角度 · 位置自由"): shown while the connection is
+    // angle-only (position constraint released, angle following kept).
+    m_lblAngleOnlyBadge = new ElaText(QString(), 13, m_connRow);
+    m_lblAngleOnlyBadge->setStyleSheet(QStringLiteral(
+        "color:#0F766E; background:#E6F4F2; border-radius:3px;"
+        "padding:0 4px; font-size:11px;"));
+    m_lblAngleOnlyBadge->setToolTip(QString::fromUtf8(
+        "\u62c6\u5f00\u4fdd\u7559\u89d2\u5ea6\uff1a\u4f4d\u7f6e\u5438\u9644\u5df2\u89e3\u9664"
+        "\uff08\u7ebf\u6bb5\u53ef\u81ea\u7531\u79fb\u52a8\uff09\uff0c\u4f46\u89d2\u5ea6\u4ecd"
+        "\u8ddf\u968f\u57fa\u51c6\u7ebf\uff1b\u57fa\u51c6\u7ebf\u65cb\u8f6c\u65f6\u672c\u7ebf"
+        "\u8ddf\u7740\u8f6c\u3002\u518d\u6b21\u52fe\u9009\u201c\u8ddf\u968f\u5bbf\u4e3b\u201d"
+        "\u6062\u590d\u4f4d\u7f6e\u5438\u9644\u3002"));  // 拆开保留角度：位置吸附已解除（线段可自由移动），但角度仍跟随基准线；基准线旋转时本线跟着转。再次勾选“跟随宿主”恢复位置吸附。
+    m_lblAngleOnlyBadge->setVisible(false);
+    connLayout->addWidget(m_lblAngleOnlyBadge);
     connLayout->addWidget(new ElaText(QString::fromUtf8("\u6307\u5411\u70b9:"), 13, m_connRow));  // 指向点:
     m_refConnPoint = new PointRefEdit(m_doc, m_connRow);
     m_refConnPoint->setMaximumWidth(150);
@@ -144,8 +159,10 @@ SegmentConnectionCard::SegmentConnectionCard(cad::param::ParamDocument* doc,
     freeConnLayout->setContentsMargins(0, 0, 0, 0);
     auto* lblConnectTo = new ElaText(QString::fromUtf8("\u8ddf\u968f\u5bbf\u4e3b:"), 13, m_freeConnRow);  // 跟随宿主:
     lblConnectTo->setToolTip(QString::fromUtf8(
-        "\u8f93\u5165\u76ee\u6807\u70b9 P \u7f16\u53f7\u5e76\u56de\u8f66\uff0c\u5373\u53ef\u5c06\u672c\u7ebf\u8d34\u9644\u5230\u8be5\u70b9\uff08\u5efa\u7acb\u8ddf\u968f\u89d2\u5ea6\u8fde\u63a5\uff09\uff1b\u4e0b\u65b9\u201c\u8ddf\u968f\u5bbf\u4e3b\u201d\u590d\u9009\u6846\u53ef\u4e00\u952e\u65ad\u5f00"));
-    // 输入目标点 P 编号并回车，即可将本线贴附到该点（建立跟随角度连接）；下方“跟随宿主”复选框可一键断开
+        "\u8f93\u5165\u76ee\u6807\u70b9 P \u7f16\u53f7\u5e76\u56de\u8f66\uff0c\u5373\u53ef\u5c06\u672c\u7ebf\u8d34\u9644\u5230\u8be5\u70b9\uff08\u5efa\u7acb\u8ddf\u968f\u89d2\u5ea6\u8fde\u63a5\uff09\uff1b"
+        "\u4e0b\u65b9\u201c\u8ddf\u968f\u5bbf\u4e3b\u201d\u590d\u9009\u6846\u53d6\u6d88\u52fe\u9009 = \u62c6\u5f00\uff08\u4fdd\u7559\u89d2\u5ea6\u8ddf\u968f\uff0c\u4f4d\u7f6e\u81ea\u7531\uff09\uff1b"
+        "\u5f7b\u5e95\u65ad\u5f00\u7528\u300c\u6e05\u9664\u300d"));
+    // 输入目标点 P 编号并回车，即可将本线贴附到该点（建立跟随角度连接）；下方“跟随宿主”复选框取消勾选 = 拆开（保留角度跟随，位置自由）；彻底断开用「清除」
     freeConnLayout->addWidget(lblConnectTo);
     m_refConnectTo = new PointRefEdit(m_doc, m_freeConnRow);
     m_refConnectTo->setMaximumWidth(150);
@@ -195,6 +212,116 @@ SegmentConnectionCard::SegmentConnectionCard(cad::param::ParamDocument* doc,
     
     angleLayout->addWidget(m_chkFollowHost);
 
+    // 省道线 row (用户拍板 2026-08): 起点 A + 偏移点 B（只读）+ 反算跟随
+    // 角度（灰只读）+ 偏移 d / 角度 β 编辑。只有 block->isDart() 时可见。
+    m_dartRow = new QWidget(this);
+    auto* dartLayout = new QVBoxLayout(m_dartRow);
+    dartLayout->setContentsMargins(0, 0, 0, 0);
+    dartLayout->setSpacing(4);
+    auto* dartTop = new QHBoxLayout();
+    dartTop->setSpacing(6);
+    dartTop->addWidget(new ElaText(QString::fromUtf8("\u8d77\u70b9 A:"), 13, m_dartRow));  // 起点 A:
+    m_dartStartRef = new ElaText(QString(), 13, m_dartRow);
+    m_dartStartRef->setStyleSheet("font-size:12px;");
+    dartTop->addWidget(m_dartStartRef, 1);
+    dartTop->addWidget(new ElaText(QString::fromUtf8("\u504f\u79fb\u70b9 B:"), 13, m_dartRow));  // 偏移点 B:
+    m_dartRefLabel = new ElaText(QString(), 13, m_dartRow);
+    m_dartRefLabel->setStyleSheet("font-size:12px;");
+    m_dartRefLabel->setToolTip(QString::fromUtf8(
+        "\u504f\u79fb\u70b9 B \u6240\u5728\u7ebf\u6bb5\u5373\u89d2\u5ea6\u57fa\u51c6\uff1a"
+        "\u7ebf\u6bb5\u65cb\u8f6c\u65f6\u672c\u7ebf\u8ddf\u7740\u8f6c\u3002"
+        "\u7701\u9053\u7ebf\u5355\u65b9\u9762\u6302\u9760\uff0cB \u6240\u5728\u7ebf\u6bb5\u4e0d\u663e\u793a\u4e0d\u4fee\u6539\u3002"));
+    // 偏移点 B 所在线段即角度基准：线段旋转时本线跟着转。省道线单方面挂靠，B 所在线段不显示不修改。
+    dartTop->addWidget(m_dartRefLabel, 1);
+    dartLayout->addLayout(dartTop);
+    auto* dartMid = new QHBoxLayout();
+    dartMid->setSpacing(6);
+    auto* lblFold = new ElaText(
+        QString::fromUtf8("\u8ddf\u968f\u89d2\u5ea6\uff08\u53cd\u7b97\uff09:"), 13, m_dartRow);  // 跟随角度（反算）:
+    lblFold->setToolTip(QString::fromUtf8(
+        "\u7ebf\u65b9\u5411\u76f8\u5bf9 B \u6240\u5728\u7ebf\u6bb5\u65b9\u5411\u7684\u89d2\u5ea6\uff08"
+        "\u7531 A/B/d/\u03b2 \u81ea\u52a8\u53cd\u7b97\uff0c\u53ea\u8bfb\u4e0d\u53ef\u7f16\u8f91\uff09\u3002"));
+    // 线方向相对 B 所在线段方向的角度（由 A/B/d/β 自动反算，只读不可编辑）。
+    dartMid->addWidget(lblFold);
+    m_dartFoldLabel = new ElaText(QString(), 13, m_dartRow);
+    m_dartFoldLabel->setStyleSheet(
+        "color:#8a8a8a; font-size:12px; text-decoration:line-through;");
+    m_dartFoldLabel->setToolTip(QString::fromUtf8(
+        "\u53cd\u7b97\u89d2\u5ea6\uff08\u6700\u7ec8\u884c\u4e3a\uff09\uff1a"
+        "\u7ebf\u65b9\u5411\u76f8\u5bf9\u504f\u79fb\u70b9\u7ebf\u6bb5\u65b9\u5411\u7684\u5e26\u7b26\u53f7\u6298\u89d2\uff0c"
+        "\u4e0d\u53ef\u76f4\u63a5\u7f16\u8f91\u2014\u2014\u6539\u2192\u201c\u89d2\u5ea6 \u03b2\u201d\u624d\u80fd\u6539\u53d8\u5b83\u3002"));
+    // 反算角度（最终行为）：线方向相对偏移点线段方向的带符号折角，不可直接编辑——改→“角度 β”才能改变它。
+    dartMid->addWidget(m_dartFoldLabel, 1);
+    dartLayout->addLayout(dartMid);
+    auto* dartParams = new QHBoxLayout();
+    dartParams->setSpacing(6);
+    dartParams->addWidget(new ElaText(QString::fromUtf8("\u504f\u79fb d:"), 13, m_dartRow));  // 偏移 d:
+    m_dartOffsetEdit = new ElaLineEdit(m_dartRow);
+    m_dartOffsetEdit->setMinimumWidth(90);
+    m_dartOffsetEdit->setPlaceholderText(QString::fromUtf8("mm / \u516c\u5f0f(cm)"));
+    m_dartOffsetEdit->setToolTip(QString::fromUtf8(
+        "\u7ec8\u70b9 E \u8ddd\u504f\u79fb\u70b9 B \u7684\u8ddd\u79bb d\uff08\u6cbf B \u6240\u5728\u7ebf\u6bb5\u65b9\u5411\u8f6c \u03b2 \u89d2\uff09\uff1b"
+        "\u6b63\u8d1f\u5929\u7136\u51b3\u5b9a\u65b9\u5411\u3002\u7eaf\u6570\u503c = mm\uff1b\u516c\u5f0f = cm \u57df\u3002"));
+    dartParams->addWidget(m_dartOffsetEdit);
+    dartParams->addWidget(new ElaText(QString::fromUtf8("\u89d2\u5ea6 \u03b2:"), 13, m_dartRow));  // 角度 β:
+    m_dartAngleEdit = new ElaLineEdit(m_dartRow);
+    m_dartAngleEdit->setMinimumWidth(90);
+    m_dartAngleEdit->setPlaceholderText(QString::fromUtf8("\u76f8\u5bf9\u7ebf\u6bb5(\u00b0)"));
+    m_dartAngleEdit->setToolTip(QString::fromUtf8(
+        "\u7ec8\u70b9\u76f8\u5bf9\u504f\u79fb\u70b9\u6240\u5728\u7ebf\u6bb5\u65b9\u5411\u7684\u8f6c\u89d2"
+        "\uff08\u9ed8\u8ba4 90\u00b0\uff09\uff1b\u7ebf\u6bb5\u65cb\u8f6c\u65f6\u7ec8\u70b9\u8ddf\u7740\u8f6c\u3002"));
+    dartParams->addWidget(m_dartAngleEdit);
+    dartLayout->addLayout(dartParams);
+    angleLayout->addWidget(m_dartRow);
+    connect(m_dartOffsetEdit, &ElaLineEdit::editingFinished,
+            this, &SegmentConnectionCard::onDartOffsetEdited);
+    connect(m_dartAngleEdit, &ElaLineEdit::editingFinished,
+            this, &SegmentConnectionCard::onDartAngleEdited);
+
+    // 滑轨模式 row (抽屉式滑动, 用户拍板 2026-08): 全连接 / 沿线滑动 /
+    // 垂直拉出. 进入滑轨后拖动跟随线只沿对应方向动, 角度跟随始终保留.
+    // 只在连接态显示 (free 态与 m_connRow 一起隐藏).
+    m_slideRow = new QWidget(this);
+    auto* slideLayout = new QHBoxLayout(m_slideRow);
+    slideLayout->setContentsMargins(0, 0, 0, 0);
+    slideLayout->setSpacing(6);
+    auto* lblSlide = new ElaText(QString::fromUtf8("\u6ed1\u8f68:"), 13, m_slideRow);  // 滑轨:
+    lblSlide->setToolTip(QString::fromUtf8(
+        "\u62bd\u5c49\u5f0f\u5355\u5411\u6ed1\u52a8\uff08\u7528\u6237\u62cd\u677f 2026-08\uff09\uff1a"
+        "\u8fde\u63a5\u59ff\u6001\u4fdd\u6301\uff08\u89d2\u5ea6\u59cb\u7ec8\u968f\u57fa\u51c6\u7ebf\uff09\uff0c"
+        "\u4f46\u4f4d\u7f6e\u53ea\u7559\u4e00\u4e2a\u81ea\u7531\u5ea6\u3002\u300c\u6cbf\u7ebf\u6ed1\u52a8\u300d="
+        "\u8fde\u63a5\u70b9\u6cbf\u57fa\u51c6\u7ebf\u65b9\u5411\u6ed1\uff08\u5782\u76f4\u504f\u79fb\u9501\u5b9a\uff09\uff1b"
+        "\u300c\u5782\u76f4\u62c9\u51fa\u300d=\u8fde\u63a5\u70b9\u5782\u76f4\u57fa\u51c6\u7ebf\u62c9\u52a8"
+        "\uff08\u6cbf\u7ebf\u4f4d\u7f6e\u9501\u5b9a\uff09\uff1b\u57fa\u51c6\u7ebf\u65cb\u8f6c\u65f6\u6ed1\u8f68\u8ddf\u7740\u8f6c\u3002"
+        "\u5207\u56de\u300c\u5168\u8fde\u63a5\u300d\u4f4d\u7f6e\u91cd\u65b0\u5438\u9644\u56de\u5bbf\u4e3b\u70b9\u3002"));
+    // 抽屉式单向滑动（用户拍板 2026-08）：连接姿态保持（角度始终随基准线），但位置只留一个自由度。「沿线滑动」=连接点沿基准线方向滑（垂直偏移锁定）；「垂直拉出」=连接点垂直基准线拉动（沿线位置锁定）；基准线旋转时滑轨跟着转。切回「全连接」位置重新吸附回宿主点。
+    slideLayout->addWidget(lblSlide);
+    m_cmbSlideMode = new QComboBox(m_slideRow);
+    m_cmbSlideMode->addItem(QString::fromUtf8("\u5168\u8fde\u63a5"));        // 全连接
+    m_cmbSlideMode->addItem(QString::fromUtf8("\u6cbf\u7ebf\u6ed1\u52a8"));  // 沿线滑动
+    m_cmbSlideMode->addItem(QString::fromUtf8("\u5782\u76f4\u62c9\u51fa"));  // 垂直拉出
+    m_cmbSlideMode->setMinimumWidth(120);
+    m_cmbSlideMode->setToolTip(QString::fromUtf8(
+        "\u6ed1\u8f68\u6a21\u5f0f\uff08\u62bd\u5c49\u5f0f\u5355\u5411\u6ed1\u52a8\uff09\uff1a"
+        "\u5168\u8fde\u63a5 = \u4f4d\u7f6e\u5438\u9644 + \u89d2\u5ea6\u8ddf\u968f\uff08\u9ed8\u8ba4\uff09\uff1b"
+        "\u6cbf\u7ebf\u6ed1\u52a8 = \u4ec5\u6cbf\u57fa\u51c6\u7ebf\u65b9\u5411\u53ef\u6ed1\uff1b"
+        "\u5782\u76f4\u62c9\u51fa = \u4ec5\u5782\u76f4\u57fa\u51c6\u7ebf\u53ef\u62c9\u3002"
+        "\u8fdb\u5165\u6ed1\u8f68\u540e\u62d6\u52a8\u8ddf\u968f\u7ebf\u53ea\u6cbf\u5bf9\u5e94\u65b9\u5411\u52a8\uff0c"
+        "\u89d2\u5ea6\u8ddf\u968f\u59cb\u7ec8\u4fdd\u7559\u3002\u4e0e\u300c\u62c6\u5f00\uff08\u4fdd\u7559\u89d2\u5ea6\uff09\u300d"
+        "\u4e92\u65a5\u3002"));
+    slideLayout->addWidget(m_cmbSlideMode);
+    m_lblSlideBadge = new ElaText(QString(), 13, m_slideRow);
+    m_lblSlideBadge->setStyleSheet(QStringLiteral(
+        "color:#0F766E; background:#E6F4F2; border-radius:3px;"
+        "padding:0 4px; font-size:11px;"));
+    m_lblSlideBadge->setToolTip(QString::fromUtf8(
+        "\u6ed1\u8f68\u72b6\u6001\uff1a\u89d2\u5ea6\u8ddf\u968f\u4fdd\u6301\uff0c"
+        "\u4f46\u4f4d\u7f6e\u53ea\u7559\u4e00\u4e2a\u81ea\u7531\u5ea6\uff08\u62bd\u5c49\u5f0f\u5355\u5411\u6ed1\u52a8\uff09\u3002"
+        "\u514d\u91cd\u65b0\u8d34\u5408\u57fa\u51c6\u7ebf\u540e\uff0c\u952e\u76d8\u62d6\u52a8\u8ddf\u968f\u7ebf\u4ec5\u6cbf\u6b64\u65b9\u5411\u79fb\u52a8\u3002"));
+    slideLayout->addWidget(m_lblSlideBadge);
+    slideLayout->addStretch();
+    angleLayout->addWidget(m_slideRow);
+
     // 拖动保护 checkbox (ALL lines, no hidden items): checked = the connection
     // is PROTECTED (拖动保护/焊接) — dragging cannot tear it apart, dragging
     // either side moves the whole pair. Disabled while the line is free (no
@@ -221,6 +348,13 @@ SegmentConnectionCard::SegmentConnectionCard(cad::param::ParamDocument* doc,
             this, &SegmentConnectionCard::onFollowHostToggled);
     connect(m_chkLockConn, &QCheckBox::toggled,
             this, &SegmentConnectionCard::onLockToggled);
+    connect(m_cmbSlideMode, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &SegmentConnectionCard::onSlideModeChanged);
+    // Live readouts: the doc re-resolves per frame during drags (the dialog is
+    // NON-modal, so the leader can move/rotate while the card is open) — the
+    // 绝对角度 hint must track it. Lightweight slot: text only, no input.
+    connect(m_doc, &cad::param::ParamDocument::resolved,
+            this, &SegmentConnectionCard::onDocResolved);
     // Angle: textChanged restarts the dialog debounce; editingFinished
     // (Enter/focus-loss) applies immediately.
     connect(m_editAngle, &QLineEdit::textChanged,
@@ -279,6 +413,19 @@ void SegmentConnectionCard::refreshCard()
 
     const cad::param::Attachment* att = findFollowerAttachment();
 
+    // 省道线 (用户拍板 2026-08): 起点 A 已挂、终点 = B 偏移解算 — 独立于附件
+    // 体系。角度反算只读、d/β 可改、B 所在线段只读不修改（单向挂靠）。
+    if (block && block->isDart()) {
+        showDartState(*block, seg);
+        return;
+    }
+    // Restore the angle-editing row for normal lines (dart state hides it).
+    m_editAngle->setVisible(true);
+    m_lblAngleCaption->setVisible(true);
+    m_lblFollowValue->setVisible(false);
+    m_lblFxAngle->setVisible(false);
+    m_dartRow->setVisible(false);
+
     if (att) {
         // ── Connected state ──
         m_titleLabel->setText(QString::fromUtf8("跟随角度 · 连接"));  // 跟随角度 · 连接
@@ -289,12 +436,32 @@ void SegmentConnectionCard::refreshCard()
         const QString badge = crossLayerBadge(m_doc, *att);
         m_lblLayerBadge->setText(badge);
         m_lblLayerBadge->setVisible(!badge.isEmpty());
+        // 拆开保留角度 badge: 位置自由, 角度仍跟随基准线.
+        m_lblAngleOnlyBadge->setText(att->angleOnly
+            ? QString::fromUtf8("\u4ec5\u89d2\u5ea6 \u00b7 \u4f4d\u7f6e\u81ea\u7531")  // 仅角度 · 位置自由
+            : QString());
+        m_lblAngleOnlyBadge->setVisible(att->angleOnly);
+        // 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): selector 与 badge 同步.
+        // angleOnly (拆开) 与滑轨互斥 — 选择器保持「全连接」并禁用.
+        {
+            const QSignalBlocker cb(m_cmbSlideMode);
+            m_cmbSlideMode->setCurrentIndex(static_cast<int>(att->slideMode));
+            m_cmbSlideMode->setEnabled(!att->angleOnly);
+        }
+        if (att->slideMode == cad::param::SlideMode::AlongLeader)
+            m_lblSlideBadge->setText(QString::fromUtf8("\u6cbf\u7ebf\u6ed1\u52a8"));  // 沿线滑动
+        else if (att->slideMode == cad::param::SlideMode::PerpLeader)
+            m_lblSlideBadge->setText(QString::fromUtf8("\u5782\u76f4\u62c9\u51fa"));  // 垂直拉出
+        else
+            m_lblSlideBadge->setText(QString());
+        m_lblSlideBadge->setVisible(att->slideMode
+                                    != cad::param::SlideMode::None);
+        m_slideRow->setVisible(true);
         m_refConnPoint->setExcludeBlock(m_blockId);
         m_refConnPoint->setPoint(att->toBlockId, att->toPointId);
         m_btnAngleMode->setVisible(true);
 
         // Mode-dependent caption + world-angle hint.
-        const cad::param::Block* leader = m_doc->findBlock(att->toBlockId);
         if (att->rotationMode == cad::param::RotationMode::ArcLength) {
             m_btnAngleMode->setText(QStringLiteral("\xe2\x8c\x92"));  // ⌒
             m_lblAngleCaption->setText(QString::fromUtf8("\u5f27\u957f(cm):"));  // 弧长(cm):
@@ -317,26 +484,7 @@ void SegmentConnectionCard::refreshCard()
             } else {
                 m_lblFollowValue->setVisible(false);
             }
-            double radius = block ? block->segmentLengthAtPoint(att->fromPointId) : 0.0;
-            // 弧长 = 线夹角恒等映射（2026-08 定稿）：弧长 0 = 0° 折叠、
-            // πr = 180° 开平，与 Resolver/HUD 同基准，不再反转。
-            double constDeg = (radius > 1e-9) ? (arcMm / radius) * 180.0 / M_PI : 0.0;
-            constDeg = std::fmod(constDeg, 360.0);
-            if (constDeg < 0.0) constDeg += 360.0;
-            if (leader) {
-                const double refWorldDeg = (leader->transform.rotation
-                    + leader->exitDirectionAtPoint(att->toPointId, att->toSegmentId))
-                    * 180.0 / M_PI;
-                // 闭合基准（2026-08 定稿）：世界角 = refWorld + 180° − 线夹角。
-                // 显示归一化 [0, 360°)：绝对角度不爆表。
-                double absDeg = std::fmod(refWorldDeg + 180.0 - constDeg, 360.0);
-                if (absDeg < 0.0) absDeg += 360.0;
-                m_lblWorldAngle->setText(QString::fromUtf8("= 绝对角度 %1°")
-                    .arg(formatAngleDeg(absDeg)));
-                m_lblWorldAngle->setVisible(true);
-            } else {
-                m_lblWorldAngle->setVisible(false);
-            }
+            updateWorldAngleLabel(*att);
         } else {
             m_btnAngleMode->setText(QStringLiteral("\xe2\x88\xa0"));  // ∠
             m_lblAngleCaption->setText(QString::fromUtf8("\u8ddf\u968f\u89d2\u5ea6(\u00b0):"));  // 跟随角度(°):
@@ -355,21 +503,8 @@ void SegmentConnectionCard::refreshCard()
             } else {
                 m_lblFollowValue->setVisible(false);
             }
-            if (leader) {
-                const double refWorldDeg = (leader->transform.rotation
-                    + leader->exitDirectionAtPoint(att->toPointId, att->toSegmentId))
-                    * 180.0 / M_PI;
-                // 闭合基准（2026-08 定稿）：世界角 = refWorld + 180° − 线夹角
-                // （旧代码 refWorld + α 差 180°，弧长分支靠双重错误碰巧抵消）。
-                // 显示归一化 [0, 360°)：绝对角度不爆表。
-                double absDeg = std::fmod(refWorldDeg + 180.0 - constDeg, 360.0);
-                if (absDeg < 0.0) absDeg += 360.0;
-                m_lblWorldAngle->setText(QString::fromUtf8("= 绝对角度 %1°")
-                    .arg(formatAngleDeg(absDeg)));
-                m_lblWorldAngle->setVisible(true);
-            } else {
-                m_lblWorldAngle->setVisible(false);
-            }
+            // 绝对角度提示 (闭合基准): 世界角 = refWorld + 180° − 线夹角.
+            updateWorldAngleLabel(*att);
         }
     } else {
         // ── Free state ──
@@ -378,8 +513,10 @@ void SegmentConnectionCard::refreshCard()
         // 直接标注“绝对角度”，不再只藏在 toolTip 里。
         m_titleLabel->setText(QString::fromUtf8("绝对角度 · 连接"));  // 绝对角度 · 连接
         m_connRow->setVisible(false);
+        m_slideRow->setVisible(false);
         m_freeConnRow->setVisible(true);
         m_lblLayerBadge->setVisible(false);
+        m_lblAngleOnlyBadge->setVisible(false);
         m_refConnectTo->setExcludeBlock(m_blockId);
         m_refConnectTo->clearPoint();
         m_btnAngleMode->setVisible(false);
@@ -433,20 +570,26 @@ void SegmentConnectionCard::refreshCard()
                 .arg(cad::param::Serial::tag(hostPt->serial))
             : (att ? QString::fromUtf8("\u8ddf\u968f\u5bbf\u4e3b\uff08\u5df2\u5220\u9664\uff09")  // 跟随宿主（已删除）
                    : QString::fromUtf8("\u8ddf\u968f\u5bbf\u4e3b")));  // 跟随宿主
+        if (att && att->angleOnly)
+            m_chkFollowHost->setText(m_chkFollowHost->text()
+                + QString::fromUtf8("\uff08\u4ec5\u89d2\u5ea6\uff09"));  // （仅角度）
         m_chkFollowHost->setChecked(att != nullptr);
         m_chkFollowHost->setEnabled(true);
         m_chkFollowHost->setToolTip(QString::fromUtf8(
             "\u52fe\u9009\u540e\u8d77\u70b9\u8fde\u63a5\u5230\u5bbf\u4e3b\u70b9\uff0c\u5bbf\u4e3b\u79fb\u52a8\u65f6\u6574\u7ebf\u5e73\u79fb\u8ddf\u968f\uff1b"
-            "\u53d6\u6d88\u52fe\u9009\u65ad\u5f00\u8fde\u63a5\u3002\u672a\u8fde\u63a5\u65f6\u5728\u4e0a\u65b9\u8f93\u5165\u5bbf\u4e3b\u70b9 P \u7f16\u53f7\u56de\u8f66\u5373\u53ef\u5efa\u7acb\u8ddf\u968f"));
-        // 勾选后起点连接到宿主点，宿主移动时整线平移跟随；取消勾选断开连接。未连接时在上方输入宿主点 P 编号回车即可建立跟随
+            "\u53d6\u6d88\u52fe\u9009 = \u62c6\u5f00\uff08\u4fdd\u7559\u89d2\u5ea6\u8ddf\u968f\uff0c\u4f4d\u7f6e\u81ea\u7531\uff09\uff0c\u89d2\u5ea6\u4ecd\u968f\u57fa\u51c6\u7ebf\u65cb\u8f6c\u3002"
+            "\u5f7b\u5e95\u65ad\u5f00\u7528\u300c\u6e05\u9664\u300d\u3002\u672a\u8fde\u63a5\u65f6\u5728\u4e0a\u65b9\u8f93\u5165\u5bbf\u4e3b\u70b9 P \u7f16\u53f7\u56de\u8f66\u5373\u53ef\u5efa\u7acb\u8ddf\u968f"));
+        // 勾选后起点连接到宿主点，宿主移动时整线平移跟随；取消勾选 = 拆开（保留角度跟随，位置自由），角度仍随基准线旋转。彻底断开用「清除」。未连接时在上方输入宿主点 P 编号回车即可建立跟随
         m_chkFollowHost->setVisible(true);
 
         // Lock checkbox: connected → shows the attachment's locked state and
-        // is usable; free → disabled (nothing to lock yet). Always VISIBLE
-        // (统一显示, no hidden items).
+        // is usable; free → disabled (nothing to lock yet). Angle-only /
+        // 滑轨 connections keep a free (or one-axis-free) position — 无焊接
+        // 可保护 → disabled. Always VISIBLE (统一显示, no hidden items).
         const QSignalBlocker lb(m_chkLockConn);
         m_chkLockConn->setChecked(att && att->isLocked);
-        m_chkLockConn->setEnabled(att != nullptr);
+        m_chkLockConn->setEnabled(att != nullptr && !att->angleOnly
+            && att->slideMode == cad::param::SlideMode::None);
         m_chkLockConn->setVisible(true);
     }
 }
@@ -628,6 +771,10 @@ void SegmentConnectionCard::applyAngle()
     // Clear dirty indicator (do NOT overwrite the user's input text)
     m_editAngle->setStyleSheet(QString());
     m_lblFxAngle->setVisible(!isNumber && !text.isEmpty());
+    // 绝对角度/跟随值等读数依赖刚写入的角度值 —— 必须就地刷新, 否则
+    // "= 绝对角度 xx°" 停留在旧值 (用户报告 2026-08: 不是实时刷新的)。
+    // refreshCard() 不动 m_editAngle (保留用户输入), 只刷标签/行状态.
+    refreshCard();
     emit changed(ChangeKind::AngleApplied);
 }
 
@@ -720,6 +867,216 @@ void SegmentConnectionCard::onLockToggled(bool on)
     emit changed(ChangeKind::LockToggled);
 }
 
+void SegmentConnectionCard::onSlideModeChanged(int index)
+{
+    if (!m_doc) return;
+    const cad::param::Attachment* att = findFollowerAttachment();
+    if (!att || att->angleOnly) { refreshCard(); return; }  // 拆开态禁用
+
+    // Combo order mirrors cad::param::SlideMode (None=0 / AlongLeader=1 /
+    // PerpLeader=2).
+    const auto mode = static_cast<cad::param::SlideMode>(index);
+    if (att->slideMode == mode) { refreshCard(); return; }
+    m_doc->setAttachmentSlideMode(att->id, mode);
+    refreshCard();
+    emit changed(ChangeKind::SlideModeChanged);
+}
+
+// ── 绝对角度 hint (闭合基准) ─────────────────────────────────────────────
+// 世界角 = refWorld + 180° − 线夹角（角度模式用 followerAngle / 公式求值,
+// 弧长模式用 arcMm/radius 换算成同基准角度）。归一化 [0, 360°) 不爆表。
+// 文本同值短路 —— 供 refreshCard 与每帧 onDocResolved 共用, 帧内调用安全。
+void SegmentConnectionCard::updateWorldAngleLabel(const cad::param::Attachment& att)
+{
+    if (!m_doc) { m_lblWorldAngle->setVisible(false); return; }
+    const cad::param::Block* leader = m_doc->findBlock(att.toBlockId);
+    if (!leader) { m_lblWorldAngle->setVisible(false); return; }
+
+    const double refWorldDeg = (leader->transform.rotation
+        + leader->exitDirectionAtPoint(att.toPointId, att.toSegmentId))
+        * 180.0 / M_PI;
+
+    double constDeg;
+    if (att.rotationMode == cad::param::RotationMode::ArcLength) {
+        double arcMm = att.arcLength;
+        if (!att.arcLengthFormula.isEmpty()) {
+            auto r = cad::param::ConditionEngine::evaluate(
+                att.arcLengthFormula, m_doc->parameters(), {});
+            if (r.ok) arcMm = cad::geo::Units::cmToMm(r.value);
+        }
+        const cad::param::Block* block = m_doc->findBlock(m_blockId);
+        const double radius = block ? block->segmentLengthAtPoint(att.fromPointId) : 0.0;
+        constDeg = (radius > 1e-9) ? (arcMm / radius) * 180.0 / M_PI : 0.0;
+        constDeg = std::fmod(constDeg, 360.0);
+        if (constDeg < 0.0) constDeg += 360.0;
+    } else {
+        constDeg = att.followerAngle;
+        if (!att.followerAngleFormula.isEmpty()) {
+            auto r = cad::param::ConditionEngine::evaluate(
+                att.followerAngleFormula, m_doc->parameters(), {});
+            if (r.ok) constDeg = r.value;
+        }
+    }
+
+    double absDeg = std::fmod(refWorldDeg + 180.0 - constDeg, 360.0);
+    if (absDeg < 0.0) absDeg += 360.0;
+    const QString text = QString::fromUtf8("= 绝对角度 %1°")
+                             .arg(formatAngleDeg(absDeg));
+    if (m_lblWorldAngle->text() != text)
+        m_lblWorldAngle->setText(text);
+    m_lblWorldAngle->setVisible(true);
+}
+
+void SegmentConnectionCard::onDocResolved()
+{
+    // Live path: only the geometry-dependent readouts, never the editor input
+    // (populateAngleField would clobber in-progress typing).
+    const cad::param::Attachment* att = findFollowerAttachment();
+    if (att) {
+        updateWorldAngleLabel(*att);
+        return;
+    }
+    // 省道线 (用户拍板 2026-08): 每帧 resolved 也刷新反算角度, 让基准线段
+    // 被拖动/旋转时读数实时跟. 只动标签文本 (同值短路).
+    if (m_doc) {
+        if (const auto* block = m_doc->findBlock(m_blockId);
+            block && block->isDart()) {
+            const QString text = dartFoldAngleText(*block);
+            if (!text.isEmpty() && m_dartFoldLabel->text() != text)
+                m_dartFoldLabel->setText(text);
+        }
+    }
+}
+
+// ── 省道线态 (用户拍板 2026-08) ────────────────────────────────────────────
+
+QString SegmentConnectionCard::dartFoldAngleText(const cad::param::Block& block) const
+{
+    if (!m_doc || block.segments.empty()) return QString();
+    const auto* aBlk = m_doc->findBlock(block.dartStartBlockId);
+    const auto* bBlk = m_doc->findBlock(block.dartRefBlockId);
+    if (!aBlk || !bBlk) return QString();
+    const auto* aPt = aBlk->findPoint(block.dartStartPointId);
+    const auto* bPt = bBlk->findPoint(block.dartRefPointId);
+    if (!aPt || !bPt || !aPt->resolved || !bPt->resolved) return QString();
+
+    // 线方向: 终点为 Polar(角度=0), 局部方向 = 0 → 线方向 = 块旋转.
+    const double lineAngle = block.transform.rotation;
+    // 角度基准 = B 所在线段出口方向 (永远只取偏移点的线段).
+    const double thetaB = bBlk->transform.rotation
+        + bBlk->exitDirectionAtPoint(block.dartRefPointId,
+                                     block.dartRefSegmentId);
+    double deg = (lineAngle - thetaB) * 180.0 / M_PI;
+    deg = std::fmod(deg, 360.0);
+    if (deg > 180.0) deg -= 360.0;
+    if (deg < -180.0) deg += 360.0;
+    return formatAngleDeg(deg) + QStringLiteral("\u00b0");
+}
+
+void SegmentConnectionCard::showDartState(const cad::param::Block& block,
+                                          cad::param::Segment* seg)
+{
+    (void)seg;
+    m_titleLabel->setText(QString::fromUtf8("\u7701\u9053\u7ebf \u00b7 \u504f\u79fb\u7ec8\u70b9"));  // 省道线 · 偏移终点
+    m_connRow->setVisible(false);
+    m_freeConnRow->setVisible(false);
+    m_slideRow->setVisible(false);
+    m_chkFollowHost->setVisible(false);
+    m_chkLockConn->setVisible(false);
+    m_btnAngleMode->setVisible(false);
+    m_lblAngleCaption->setVisible(false);
+    m_editAngle->setVisible(false);
+    m_lblFollowValue->setVisible(false);
+    m_lblWorldAngle->setVisible(false);
+    m_lblFxAngle->setVisible(false);
+    m_dartRow->setVisible(true);
+
+    // 起点 A (挂靠点) — 只读.
+    QString startText;
+    if (const auto* aBlk = m_doc->findBlock(block.dartStartBlockId)) {
+        if (const auto* aPt = aBlk->findPoint(block.dartStartPointId))
+            startText = cad::param::Serial::tag(aPt->serial);
+    }
+    const QString startLabel =
+        startText.isEmpty() ? QStringLiteral("?") : startText;
+    if (m_dartStartRef->text() != startLabel)
+        m_dartStartRef->setText(startLabel);
+
+    // 偏移点 B + 所在线段 — 只读 (B 的线段 = 角度基准; 单向挂靠不修改).
+    QString refText;
+    if (const auto* bBlk = m_doc->findBlock(block.dartRefBlockId)) {
+        if (const auto* bPt = bBlk->findPoint(block.dartRefPointId)) {
+            refText = cad::param::Serial::tag(bPt->serial);
+            if (const auto* bSeg = bBlk->findSegment(block.dartRefSegmentId)) {
+                refText += QStringLiteral(" \u2190 ");  // ←
+                refText += cad::param::Serial::tag(bSeg->serial);
+                if (!bSeg->name.isEmpty())
+                    refText += QStringLiteral("\u00b7") + bSeg->name;
+            }
+        }
+    }
+    const QString refLabel = refText.isEmpty() ? QStringLiteral("?") : refText;
+    if (m_dartRefLabel->text() != refLabel)
+        m_dartRefLabel->setText(refLabel);
+
+    // 反算跟随角度 — 灰只读 (同值短路).
+    const QString foldText = dartFoldAngleText(block);
+    if (!foldText.isEmpty() && m_dartFoldLabel->text() != foldText)
+        m_dartFoldLabel->setText(foldText);
+
+    // 偏移 d / 角度 β — 可编辑 (数值或公式; 输入聚焦中不被刷新覆盖).
+    const QString offText = block.dartOffsetFormula.isEmpty()
+        ? QString::number(block.dartOffsetMm, 'f', 2)
+        : block.dartOffsetFormula;
+    if (!m_dartOffsetEdit->hasFocus()
+        && m_dartOffsetEdit->text().trimmed() != offText)
+        m_dartOffsetEdit->setText(offText);
+    const QString angText = block.dartAngleFormula.isEmpty()
+        ? formatAngleDeg(block.dartAngleDeg)
+        : block.dartAngleFormula;
+    if (!m_dartAngleEdit->hasFocus()
+        && m_dartAngleEdit->text().trimmed() != angText)
+        m_dartAngleEdit->setText(angText);
+}
+
+void SegmentConnectionCard::onDartOffsetEdited()
+{
+    if (!m_doc) return;
+    auto* block = m_doc->findBlock(m_blockId);
+    if (!block || !block->isDart()) return;
+    const QString text = m_dartOffsetEdit->text().trimmed();
+    if (text.isEmpty()) return;
+    bool isNum = false;
+    const double dMm = text.toDouble(&isNum);
+    if (isNum) {
+        block->dartOffsetMm = dMm;
+        block->dartOffsetFormula.clear();
+    } else {
+        block->dartOffsetFormula = text;
+    }
+    m_doc->resolveAll();
+    emit changed(ChangeKind::AngleApplied);
+}
+
+void SegmentConnectionCard::onDartAngleEdited()
+{
+    if (!m_doc) return;
+    auto* block = m_doc->findBlock(m_blockId);
+    if (!block || !block->isDart()) return;
+    const QString text = m_dartAngleEdit->text().trimmed();
+    if (text.isEmpty()) return;
+    bool isNum = false;
+    const double deg = text.toDouble(&isNum);
+    if (isNum) {
+        block->dartAngleDeg = deg;
+        block->dartAngleFormula.clear();
+    } else {
+        block->dartAngleFormula = text;
+    }
+    m_doc->resolveAll();
+    emit changed(ChangeKind::AngleApplied);
+}
+
 void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& pointId)
 {
     if (!m_doc) return;
@@ -766,6 +1123,11 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     att->rotationMode = cad::param::RotationMode::Angle;
     att->arcLength = 0.0;
     att->arcLengthFormula.clear();
+
+    // 滑轨模式重定向后: 锁轴坐标必须在**新**基准线局部系下重快照 (否则
+    // 锁定的垂直/沿线偏移会沿用旧基准的坐标, 重定向瞬间跟随线会跳).
+    if (att->slideMode != cad::param::SlideMode::None)
+        m_doc->refreshSlideOffsets(att->id);
 
     refresh();
     emit changed(ChangeKind::Retargeted);
@@ -835,46 +1197,59 @@ void SegmentConnectionCard::onFollowHostToggled(bool on)
     if (!block || !seg) { refreshCard(); return; }
 
     const cad::param::Attachment* existing = findFollowerAttachment();
+    const bool wasAngleOnly = existing && existing->angleOnly;
     if (on) {
-        // Host = the current connection target, or the free-state 跟随宿主
-        // input's resolved value (typed P number).
-        const QUuid hostBlock = existing
-            ? existing->toBlockId : m_refConnectTo->resolvedBlockId();
-        const QUuid hostPoint = existing
-            ? existing->toPointId : m_refConnectTo->resolvedPointId();
-        const cad::param::Block* leader = m_doc->findBlock(hostBlock);
-        if (!leader || !leader->findPoint(hostPoint)) {
-            refreshCard();
-            return;  // no host yet — the check rolls back
-        }
+        if (wasAngleOnly) {
+            // 从「仅角度」恢复完整连接: 位置重新吸附回宿主点 (角度值不变).
+            m_doc->setAttachmentAngleOnly(existing->id, false);
+        } else {
+            // Host = the current connection target, or the free-state 跟随宿主
+            // input's resolved value (typed P number).
+            const QUuid hostBlock = existing
+                ? existing->toBlockId : m_refConnectTo->resolvedBlockId();
+            const QUuid hostPoint = existing
+                ? existing->toPointId : m_refConnectTo->resolvedPointId();
+            const cad::param::Block* leader = m_doc->findBlock(hostBlock);
+            if (!leader || !leader->findPoint(hostPoint)) {
+                refreshCard();
+                return;  // no host yet — the check rolls back
+            }
 
-        cad::param::Attachment att;
-        att.fromBlockId = m_blockId;
-        att.fromPointId = seg->startPointId;
-        att.toBlockId   = hostBlock;
-        att.toPointId   = hostPoint;
-        att.toSegmentId = leader->exitSegmentAtPoint(hostPoint);
-        // Back-solve the follower angle so the CURRENT world direction is
-        // preserved (no jump on attach).
-        const double refWorld = leader->transform.rotation
-            + leader->exitDirectionAtPoint(hostPoint, att.toSegmentId);
-        const double localDir = block->directionAtPoint(seg->startPointId);
-        att.followerAngle = cad::param::backSolveFollowerAngle(
-            block->transform.rotation, localDir, refWorld);
+            cad::param::Attachment att;
+            att.fromBlockId = m_blockId;
+            att.fromPointId = seg->startPointId;
+            att.toBlockId   = hostBlock;
+            att.toPointId   = hostPoint;
+            att.toSegmentId = leader->exitSegmentAtPoint(hostPoint);
+            // Back-solve the follower angle so the CURRENT world direction is
+            // preserved (no jump on attach).
+            const double refWorld = leader->transform.rotation
+                + leader->exitDirectionAtPoint(hostPoint, att.toSegmentId);
+            const double localDir = block->directionAtPoint(seg->startPointId);
+            att.followerAngle = cad::param::backSolveFollowerAngle(
+                block->transform.rotation, localDir, refWorld);
 
-        const bool added = m_doc->addAttachment(att);
-        if (added && m_scene && leader) {
-            if (const QString toast = crossLayerToast(m_doc, *block, *leader);
-                !toast.isEmpty())
-                m_scene->showToast(toast);
+            const bool added = m_doc->addAttachment(att);
+            if (added && m_scene && leader) {
+                if (const QString toast = crossLayerToast(m_doc, *block, *leader);
+                    !toast.isEmpty())
+                    m_scene->showToast(toast);
+            }
         }
     } else {
-        if (existing)
-            m_doc->removeAttachment(existing->id);
+        if (existing) {
+            // 拆开保留角度 (用户拍板 2026-08): 取消勾选 = 只解除位置吸附,
+            // 角度跟随保留 (跟随线仍由基准线方向 + 跟随角驱动); 彻底断开
+            // 走「清除」按钮.
+            m_doc->setAttachmentAngleOnly(existing->id, true);
+        }
     }
 
     refresh();
-    emit changed(existing ? ChangeKind::Disconnected : ChangeKind::Connected);
+    if (!existing || (wasAngleOnly && on))
+        emit changed(ChangeKind::Connected);          // free→connected / 仅角度→完整
+    else
+        emit changed(ChangeKind::AngleOnlyToggled);   // 完整连接→仅角度
 }
 
 } // namespace cad::tools

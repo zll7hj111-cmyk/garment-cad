@@ -1,4 +1,4 @@
-﻿#include "Resolver.h"
+#include "Resolver.h"
 
 #include <algorithm>
 #include <cmath>
@@ -35,7 +35,8 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                           std::vector<ResolveDiagnostic>* diagnostics,
                           Scope scope,
                           const QUuid& auxLayerId,
-                          const QSet<QUuid>* affectedOnly)
+                          const QSet<QUuid>* affectedOnly,
+                           const std::vector<Component>& components)
 {
     if (diagnostics) diagnostics->clear();
     GCAD_PERF_SCOPE("r.total");
@@ -76,6 +77,20 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     for (int i = 0; i < static_cast<int>(blocks.size()); ++i)
         blockIndex.insert(blocks[i].id, i);
 
+    // Component (组件) prep: active components own their members, so ordinary
+    // attachments from those members are skipped below; the component pass
+    // later drives the whole assembly from the single hinge.
+    QSet<QUuid> componentMembers;
+    QList<int> activeComponents;
+    for (int ci = 0; ci < static_cast<int>(components.size()); ++ci) {
+        const Component& comp = components[static_cast<size_t>(ci)];
+        if (comp.hasHinge) {
+            activeComponents.push_back(ci);
+            for (const QUuid& mid : comp.memberIds)
+                componentMembers.insert(mid);
+        }
+    }
+
     // Settle the (non-pin) attachment forest in TOPOLOGICAL order. The forest
     // invariant (see AttachmentGraph.h) guarantees every block is the follower
     // of AT MOST one regular attachment and the leader links are acyclic, so
@@ -107,6 +122,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             // Bridge pins are pure position constraints resolved in Step 4 —
             // they never participate in the leader forest settlement.
             if (att.isPin) continue;
+            if (componentMembers.contains(att.fromBlockId)) continue;
             auto fromIt = blockIndex.find(att.fromBlockId);
             if (fromIt == blockIndex.end()) {              // dangling from-block
                 report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
@@ -236,8 +252,89 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // so bridge followers (and anything downstream of them) land correctly.
     // Skipped entirely when no bridge moved — the Step 3 settlement is still
     // valid then, and an extra settle pass is the single biggest per-frame cost.
-    if (bridgesMoved && settleAttachments())
-        report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+    // Step 5b: COMPONENT hinges (路线B). Active components are rigid bodies:
+    // the single main hinge positions/rotates the root block, then every
+    // member transform is derived from the root so the whole assembly moves
+    // as one. Internal/owned attachments were excluded from Steps 3/5.
+    if (!activeComponents.isEmpty()) {
+        GCAD_PERF_SCOPE("r.components");
+        for (const int ci : activeComponents) {
+            const Component& comp = components[static_cast<size_t>(ci)];
+            if (!comp.hasHinge || !comp.hinge.isValid()) continue;
+
+            auto rootIt = blockIndex.find(comp.rootBlockId);
+            if (rootIt == blockIndex.end()) continue;
+            Block& root = blocks[rootIt.value()];
+            if (!inScope(root)) continue;   // frozen group/pass
+
+            auto leaderIt = blockIndex.find(comp.hinge.leaderBlockId);
+            if (leaderIt == blockIndex.end()) continue;
+            const Block& leader = blocks[leaderIt.value()];
+            const ParamPoint* leaderPt = leader.findPoint(comp.hinge.leaderPointId);
+            if (!leaderPt || !leaderPt->resolved) continue;
+
+            auto memberIt = blockIndex.find(comp.hinge.memberBlockId);
+            if (memberIt == blockIndex.end()) continue;
+            const Block& member = blocks[memberIt.value()];
+            const ParamPoint* memberPt = member.findPoint(comp.hinge.memberPointId);
+            if (!memberPt || !memberPt->resolved) continue;
+
+            // Capture the assembly's local layout relative to the root BEFORE
+            // the root transform changes.
+            struct MemberLocal {
+                Block* block = nullptr;
+                geo::Vec2 localOrigin;
+                double localRot = 0.0;
+            };
+            std::vector<MemberLocal> locals;
+            locals.reserve(comp.memberIds.size());
+            for (const QUuid& mid : comp.memberIds) {
+                auto it = blockIndex.find(mid);
+                if (it == blockIndex.end()) continue;
+                Block& b = blocks[it.value()];
+                MemberLocal ml;
+                ml.block = &b;
+                ml.localOrigin = root.transform.toLocal(b.transform.origin);
+                ml.localRot = b.transform.rotation - root.transform.rotation;
+                locals.push_back(ml);
+            }
+            const double memberLocalRot = member.transform.rotation - root.transform.rotation;
+            const geo::Vec2 memberLocalPoint =
+                root.transform.toLocal(member.worldPos(comp.hinge.memberPointId));
+
+            // Same closed-base convention as applyAttachment:
+            //   desired member world direction = refWorld + π − angle − localDir.
+            const double refWorld = leader.transform.rotation
+                                  + leader.exitDirectionAtPoint(comp.hinge.leaderPointId,
+                                                                comp.hinge.leaderSegmentId);
+            double angleDeg = comp.hinge.followerAngle;
+            if (!comp.hinge.followerAngleFormula.isEmpty()) {
+                auto r = ConditionEngine::evaluate(comp.hinge.followerAngleFormula,
+                                                   params, conditioned, &ctx);
+                if (r.ok) angleDeg = r.value;
+            }
+            const double angleRad = angleDeg * M_PI / 180.0;
+            const double localDir = member.directionAtPoint(comp.hinge.memberPointId);
+            const double desiredMemberRot = refWorld + M_PI - angleRad - localDir;
+            const double newRootRot = desiredMemberRot - memberLocalRot;
+
+            const double c = std::cos(newRootRot);
+            const double s = std::sin(newRootRot);
+            const geo::Vec2 rotatedMemberLocalPoint{
+                memberLocalPoint.x * c - memberLocalPoint.y * s,
+                memberLocalPoint.x * s + memberLocalPoint.y * c
+            };
+            const geo::Vec2 targetWorld = leader.worldPos(comp.hinge.leaderPointId);
+            const geo::Vec2 newRootOrigin = targetWorld - rotatedMemberLocalPoint;
+
+            root.transform.rotation = newRootRot;
+            root.transform.origin = newRootOrigin;
+            for (const auto& ml : locals) {
+                ml.block->transform.rotation = newRootRot + ml.localRot;
+                ml.block->transform.origin = root.transform.toWorld(ml.localOrigin);
+            }
+        }
+    }
 
     // Step 6/6b/6c: cross-block intersection points and the interpolated points
     // that depend on them, in a SHARED bounded fixpoint. An intersection's ray
@@ -497,6 +594,110 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         if (runIntersectionFixpoint() && settleAttachments())
             report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
+
+    // Step 8: dart-line constraints (省道线, 用户拍板 2026-08). The block's
+    // start point pins to A on another block and its end point E is derived
+    // from reference point B:
+    //     E = B_world + d · dir(θ_B + β),  θ_B = ref rotation + local exit dir
+    // The block is then placed with origin = A_world and rotation = A→E, and
+    // its end point's Polar distance is written back as |A−E| — the line's
+    // length and direction are computed every pass (线是算出来的). Bounded
+    // iteration handles chains where a start/reference block is itself
+    // dart-driven (B may be another dart line's computed endpoint). Applied
+    // LAST so it overrides any transform the block might have inherited.
+    {
+        GCAD_PERF_SCOPE("r.dart");
+        bool dartMoved = false;
+        for (int dartPass = 0; dartPass < 4; ++dartPass) {
+            bool passMoved = false;
+            for (auto& block : blocks) {
+                if (!inScope(block)) continue;  // frozen group
+                if (!block.isDart()) continue;
+                if (block.segments.empty()) continue;
+
+                const auto startIt = blockIndex.find(block.dartStartBlockId);
+                const auto refIt   = blockIndex.find(block.dartRefBlockId);
+                if (startIt == blockIndex.end() || refIt == blockIndex.end())
+                    continue;  // reference vanished (delete-time cleanup clears fields)
+
+                const Block& startBlock = blocks[startIt.value()];
+                const Block& refBlock   = blocks[refIt.value()];
+                const ParamPoint* aPt = startBlock.findPoint(block.dartStartPointId);
+                const ParamPoint* bPt = refBlock.findPoint(block.dartRefPointId);
+                if (!aPt || !bPt || !aPt->resolved || !bPt->resolved) continue;
+
+                const geo::Vec2 aWorld = startBlock.worldPos(block.dartStartPointId);
+                const geo::Vec2 bWorld = refBlock.worldPos(block.dartRefPointId);
+
+                const double thetaB = refBlock.transform.rotation
+                    + refBlock.exitDirectionAtPoint(block.dartRefPointId,
+                                                    block.dartRefSegmentId);
+
+                // Offset distance d (formula overrides the numeric value;
+                // formula domain is cm, auto-converted to mm).
+                double dMm = block.dartOffsetMm;
+                if (!block.dartOffsetFormula.isEmpty()) {
+                    auto r = ConditionEngine::evaluate(block.dartOffsetFormula,
+                                                       params, conditioned, &ctx);
+                    if (r.ok) dMm = geo::Units::cmToMm(r.value);
+                }
+                // Angle β relative to the reference segment (formula override).
+                double betaDeg = block.dartAngleDeg;
+                if (!block.dartAngleFormula.isEmpty()) {
+                    auto r = ConditionEngine::evaluate(block.dartAngleFormula,
+                                                       params, conditioned, &ctx);
+                    if (r.ok) betaDeg = r.value;
+                }
+                const double betaRad = betaDeg * M_PI / 180.0;
+                const geo::Vec2 eWorld = bWorld
+                    + geo::Vec2(std::cos(thetaB + betaRad),
+                                std::sin(thetaB + betaRad)) * dMm;
+
+                const Segment& seg = block.segments.front();
+                ParamPoint* sp = block.findPoint(seg.startPointId);
+                ParamPoint* ep = block.findPoint(seg.endPointId);
+                if (!sp || !ep) continue;
+
+                const geo::Vec2 delta = eWorld - aWorld;
+                const double newRotation = std::atan2(delta.y, delta.x);
+                const double newLength = delta.length();
+
+                const bool rotChanged =
+                    std::abs(newRotation - block.transform.rotation) > 1e-9;
+                const bool orgChanged =
+                    block.transform.origin.distanceSquaredTo(aWorld) > 1e-12;
+                const bool lenChanged = std::abs(ep->distance - newLength) > 1e-9;
+
+                block.transform.origin   = aWorld;
+                block.transform.rotation = newRotation;
+                // The start point is Free at local (0,0); its resolved cache
+                // stays put under a rigid-body transform move.
+                sp->resolved = true;
+                ep->distance = newLength;
+                const geo::Vec2 newEndLocal(newLength, 0.0);
+                if (ep->resolvedPos.distanceSquaredTo(newEndLocal) > 1e-9) {
+                    ++block.geometryEpoch;  // internal geometry changed → canvas rebuild
+                    ep->resolvedPos = newEndLocal;
+                    ep->resolved = true;
+                }
+
+                if (rotChanged || orgChanged || lenChanged) {
+                    passMoved = true;
+                    dartMoved = true;
+                }
+            }
+            if (!passMoved) break;
+        }
+
+        // Dart-driven endpoints may carry followers (a line snapped to the
+        // computed end point E): re-settle the forest with aim-driven
+        // rotations preserved so followers track the freshly placed points.
+        // Dart blocks themselves own no incoming attachment (start A is a
+        // plain reference, not an Attachment), so the settle never fights
+        // their computed transforms.
+        if (dartMoved && settleAttachments(/*preserveEndTargetRotation=*/true))
+            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+    }
 }
 
 bool Resolver::applyAttachment(Block& from, const Attachment& att,
@@ -581,6 +782,58 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     if (preserveEndTargetRotation && !from.endTargetBlockId.isNull())
         newRotation = from.transform.rotation;
 
+    // 拆开保留角度 (angleOnly, 用户拍板 2026-08): the follower keeps following
+    // the leader's ANGLE — rotation is still driven by leader direction +
+    // followerAngle — but the position constraint is released: the from-point
+    // no longer has to land on the leader's point, so the line translates
+    // freely while its orientation keeps the relative angle.
+    if (att.angleOnly) {
+        const bool moved = std::abs(newRotation - from.transform.rotation) > 1e-9;
+        from.transform.rotation = newRotation;
+        return moved;
+    }
+
+    // ── 滑轨模式 (slideMode, 抽屉式滑动, 用户拍板 2026-08) ──
+    // 连接姿态保持 (rotation 照旧由基准线方向 + followerAngle 驱动), 位置
+    // 只保留一个自由度: 在基准线局部系 (x = 沿基准线延长方向, y = 垂直,
+    // 基准线旋转时滑轨跟着转) 下 —— AlongLeader 沿 x 滑动 (y 锁
+    // slidePerpMm), PerpLeader 沿 y 拉出 (x 锁 slideAlongMm)。
+    //
+    // 位置**只从存储坐标 (slideAlongMm/slidePerpMm) 解算**, 不做现场投影:
+    // 基准线刚体移动 (平移/旋转) 时滑轨局部坐标不变 → 跟随线随滑轨刚性
+    // 携带; 拖动跟随线时由拖拽工具每帧调用
+    // ParamDocument::updateSlideOffsetsFromCurrent() 回写**自由轴**坐标,
+    // 锁轴坐标保持激活时快照不变。
+    if (att.slideMode != SlideMode::None) {
+        // Leader-local rail frame at the anchor point.
+        const double railAngle = refWorld;  // leader's world exit direction
+        const geo::Vec2 alongDir(std::cos(railAngle), std::sin(railAngle));
+        const geo::Vec2 perpDir(-alongDir.y, alongDir.x);
+
+        // from-point world position on the rail, pinned from the stored pair.
+        const geo::Vec2 localOffset = fromPt->resolvedPos;
+        const geo::Vec2 fromPointWorld =
+            targetWorldPos + alongDir * att.slideAlongMm
+                          + perpDir * att.slidePerpMm;
+
+        // origin = from-point world minus the (new-rotation) rotated local offset.
+        const double c = std::cos(newRotation);
+        const double sn = std::sin(newRotation);
+        const geo::Vec2 rotatedOffset{
+            localOffset.x * c - localOffset.y * sn,
+            localOffset.x * sn + localOffset.y * c
+        };
+        const geo::Vec2 newOrigin = fromPointWorld - rotatedOffset;
+
+        const bool moved =
+            std::abs(newRotation - from.transform.rotation) > 1e-9 ||
+            std::abs(newOrigin.x - from.transform.origin.x) > 1e-6 ||
+            std::abs(newOrigin.y - from.transform.origin.y) > 1e-6;
+        from.transform.rotation = newRotation;
+        from.transform.origin = newOrigin;
+        return moved;
+    }
+
     // Now position the from-block so that its from-point lands on targetWorldPos.
     // from-point in local coords:
     geo::Vec2 localOffset = fromPt->resolvedPos;
@@ -606,6 +859,33 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     from.transform.rotation = newRotation;
     from.transform.origin = newOrigin;
     return moved;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 滑轨投影快照 (用户拍板 2026-08): 跟随线当前 from-point 的世界位置投影到
+// 基准线局部系 (x = 基准线在吸附点的延长方向, y = 垂直)。激活/重定向滑轨
+// 模式时锁定轴坐标从此处快照。
+// ────────────────────────────────────────────────────────────────────────────
+std::pair<double, double> computeSlideOffsets(const Block& from,
+                                              const Attachment& att,
+                                              const Block& to)
+{
+    const ParamPoint* toPt = to.findPoint(att.toPointId);
+    const ParamPoint* fromPt = from.findPoint(att.fromPointId);
+    if (!toPt || !toPt->resolved || !fromPt || !fromPt->resolved)
+        return {0.0, 0.0};
+
+    // Leader-local frame at the anchor (same reference as applyAttachment).
+    const double railAngle = to.transform.rotation
+                           + to.exitDirectionAtPoint(att.toPointId, att.toSegmentId);
+    const geo::Vec2 alongDir(std::cos(railAngle), std::sin(railAngle));
+    const geo::Vec2 perpDir(-alongDir.y, alongDir.x);
+
+    const geo::Vec2 fromPtWorldCur = from.worldPos(att.fromPointId);
+    const geo::Vec2 rel = fromPtWorldCur - to.worldPos(att.toPointId);
+    const double s = rel.x * alongDir.x + rel.y * alongDir.y;
+    const double t = rel.x * perpDir.x + rel.y * perpDir.y;
+    return {s, t};
 }
 
 } // namespace cad::param

@@ -32,6 +32,8 @@ private slots:
     void formulaGroupsLegacyDocument();
     void layersRoundTrip();
     void layersLegacyDocument();
+    void measureKindRoundTrip();
+    void measureKindLegacyDefaultsToDistance();
     void removeLayerMovesBlocks();
     void blocksRoundTrip();
     void attachmentsRoundTrip();
@@ -421,6 +423,34 @@ cad::param::Block makeLineBlock(const QUuid& layerId)
     b.layer = layerId;
     return b;
 }
+
+/// Two free points at @p a / @p b on working layer @p layerRow, plus the
+/// ids needed to reference them from a MeasureVariable.
+struct TwoPointBlockRefs {
+    QUuid blockId;
+    QUuid paId;
+    QUuid pbId;
+};
+TwoPointBlockRefs makeTwoPointBlock(ParamDocument& doc, int layerRow,
+                                    const cad::geo::Vec2& a,
+                                    const cad::geo::Vec2& b)
+{
+    cad::param::Block blk;
+    blk.layer = layerIdAt(doc, layerRow);
+    cad::param::ParamPoint pa;
+    pa.constraint = cad::param::PointConstraint::Free;
+    pa.freePos = a;
+    const QUuid paId = pa.id;
+    cad::param::ParamPoint pb;
+    pb.constraint = cad::param::PointConstraint::Free;
+    pb.freePos = b;
+    const QUuid pbId = pb.id;
+    blk.addPoint(std::move(pa));
+    blk.addPoint(std::move(pb));
+    const QUuid blockId = blk.id;
+    doc.addBlock(std::move(blk));
+    return {blockId, paId, pbId};
+}
 } // namespace
 
 void TestSerializer::layersRoundTrip()
@@ -477,6 +507,82 @@ void TestSerializer::layersLegacyDocument()
     QCOMPARE(dst.layers()[1].name, QStringLiteral("图层 1"));
     QCOMPARE(dst.activeLayer(), layerIdAt(dst, 1));
     QCOMPARE(dst.blocks().front().layer, layerIdAt(dst, 1));  // landed on the first working layer
+}
+
+void TestSerializer::measureKindRoundTrip()
+{
+    // MeasureVariable.kind (距离/水平/垂直) must survive a round trip.
+    ParamDocument src;
+    const auto refs = makeTwoPointBlock(src, 1, cad::geo::Vec2(0.0, 0.0),
+                                        cad::geo::Vec2(30.0, 40.0));
+
+    MeasureVariable h;
+    h.kind = MeasureKind::Horizontal;
+    h.refName = QStringLiteral("M_H1");
+    h.blockA = refs.blockId; h.pointA = refs.paId;
+    h.blockB = refs.blockId; h.pointB = refs.pbId;
+    src.addMeasure(h);
+
+    MeasureVariable v;
+    v.kind = MeasureKind::Vertical;
+    v.refName = QStringLiteral("M_V1");
+    v.blockA = refs.blockId; v.pointA = refs.paId;
+    v.blockB = refs.blockId; v.pointB = refs.pbId;
+    src.addMeasure(v);
+
+    MeasureVariable d;
+    d.kind = MeasureKind::Distance;
+    d.refName = QStringLiteral("M_D1");
+    d.blockA = refs.blockId; d.pointA = refs.paId;
+    d.blockB = refs.blockId; d.pointB = refs.pbId;
+    src.addMeasure(d);
+
+    ParamDocument dst;
+    DocumentSerializer::deserialize(dst, DocumentSerializer::serialize(src));
+
+    const auto& ms = dst.measureVars();
+    QCOMPARE(ms.size(), size_t(3));
+    auto kindOf = [&ms](const QString& ref) {
+        for (const auto& m : ms)
+            if (m.refName == ref) return m.kind;
+        return MeasureKind::Distance;  // not found → Distance (also fails the QCOMPARE below)
+    };
+    QCOMPARE(kindOf(QStringLiteral("M_H1")), MeasureKind::Horizontal);
+    QCOMPARE(kindOf(QStringLiteral("M_V1")), MeasureKind::Vertical);
+    QCOMPARE(kindOf(QStringLiteral("M_D1")), MeasureKind::Distance);
+}
+
+void TestSerializer::measureKindLegacyDefaultsToDistance()
+{
+    // A file saved before the kind field existed must load every measure as
+    // Distance (the historical behaviour) — no crash, no wrong mode.
+    ParamDocument src;
+    const auto refs = makeTwoPointBlock(src, 1, cad::geo::Vec2(0.0, 0.0),
+                                        cad::geo::Vec2(30.0, 40.0));
+    MeasureVariable h;
+    h.kind = MeasureKind::Horizontal;
+    h.refName = QStringLiteral("M_H1");
+    h.blockA = refs.blockId; h.pointA = refs.paId;
+    h.blockB = refs.blockId; h.pointB = refs.pbId;
+    src.addMeasure(h);
+
+    QJsonObject json = DocumentSerializer::serialize(src);
+    QJsonObject varObj = json["variables"].toObject();
+    QJsonArray arr = varObj["measureVars"].toArray();
+    QVERIFY(!arr.isEmpty());
+    for (QJsonValueRef item : arr) {
+        QJsonObject o = item.toObject();
+        o.remove(QStringLiteral("kind"));
+        item = o;
+    }
+    varObj["measureVars"] = arr;
+    json["variables"] = varObj;
+
+    ParamDocument dst;
+    DocumentSerializer::deserialize(dst, json);
+    const auto& ms = dst.measureVars();
+    QCOMPARE(ms.size(), size_t(1));
+    QCOMPARE(ms.front().kind, MeasureKind::Distance);
 }
 
 void TestSerializer::removeLayerMovesBlocks()
@@ -545,6 +651,20 @@ void TestSerializer::blocksRoundTrip()
     seg.lengthFormula = QStringLiteral("w/3");
     block.addSegment(std::move(seg));
 
+    // 省道线字段 (用户拍板 2026-08, Optional since v7): plain ids are enough
+    // to prove the round-trip — the serializer is a field mirror (references
+    // are validated later by the Resolver, not by blockJson).
+    block.dartStartBlockId = QUuid::createUuid();
+    block.dartStartPointId = QUuid::createUuid();
+    block.dartRefBlockId   = QUuid::createUuid();
+    block.dartRefPointId   = QUuid::createUuid();
+    block.dartRefSegmentId = QUuid::createUuid();
+    block.dartOffsetMm     = 12.5;
+    block.dartOffsetFormula = QStringLiteral("hip/10");
+    block.dartAngleDeg     = 90.0;
+    block.dartAngleFormula = QStringLiteral("beta+5");
+    QVERIFY(block.isDart());
+
     QUuid blockId = block.id;
     src.addBlock(std::move(block));
 
@@ -571,12 +691,40 @@ void TestSerializer::blocksRoundTrip()
     QCOMPARE(rs.showName, true);
     QCOMPARE(rs.showLength, false);
     QCOMPARE(rs.lengthFormula, QStringLiteral("w/3"));
+
+    // 省道线 round-trip.
+    QVERIFY(rb.isDart());
+    QCOMPARE(rb.dartStartBlockId, block.dartStartBlockId);
+    QCOMPARE(rb.dartStartPointId, block.dartStartPointId);
+    QCOMPARE(rb.dartRefBlockId, block.dartRefBlockId);
+    QCOMPARE(rb.dartRefPointId, block.dartRefPointId);
+    QCOMPARE(rb.dartRefSegmentId, block.dartRefSegmentId);
+    QVERIFY(qFuzzyCompare(rb.dartOffsetMm, 12.5));
+    QCOMPARE(rb.dartOffsetFormula, QStringLiteral("hip/10"));
+    QVERIFY(qFuzzyCompare(rb.dartAngleDeg, 90.0));
+    QCOMPARE(rb.dartAngleFormula, QStringLiteral("beta+5"));
 }
 
 void TestSerializer::attachmentsRoundTrip()
 {
     ParamDocument src;
     populateDocument(src);
+
+    // 拆开保留角度 (angleOnly, Optional since v5): mark the connection
+    // angle-only before the round trip so the flag must survive.
+    // 滑轨模式 (slideMode, Optional since v6): the serializer stores the mode
+    // and the rail-coordinate snapshots verbatim (it does NOT enforce the
+    // angleOnly/slideMode mutual exclusion — that is a model-layer invariant).
+    {
+        const QUuid attId = src.attachments().front().id;
+        Attachment* mut = src.findAttachment(attId);
+        QVERIFY(mut);
+        mut->angleOnly = true;
+        mut->isLocked = false;
+        mut->slideMode = cad::param::SlideMode::PerpLeader;
+        mut->slideAlongMm = 12.5;
+        mut->slidePerpMm = -3.25;
+    }
 
     QJsonObject json = DocumentSerializer::serialize(src);
     ParamDocument dst;
@@ -593,6 +741,12 @@ void TestSerializer::attachmentsRoundTrip()
     QCOMPARE(da.toSegmentId, sa.toSegmentId);
     QVERIFY(!da.toSegmentId.isNull());
     QVERIFY(qFuzzyCompare(da.followerAngle, sa.followerAngle));
+    QVERIFY2(da.angleOnly, "拆开保留角度 flag must survive serialization");
+    QVERIFY(!da.isLocked);
+    QVERIFY2(da.slideMode == cad::param::SlideMode::PerpLeader,
+             "slideMode must survive serialization");
+    QVERIFY(qFuzzyCompare(da.slideAlongMm, 12.5));
+    QVERIFY(qFuzzyCompare(da.slidePerpMm, -3.25));
 }
 
 void TestSerializer::bridgeRoundTrip()

@@ -23,6 +23,7 @@
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasStyle.h"
 #include "document/commands/AttachmentCommands.h"
+#include "document/commands/GroupCommands.h"
 #include "document/commands/BlockCommands.h"
 
 namespace cad::tools {
@@ -31,8 +32,6 @@ namespace {
 
 /// Connection snap reach (user units, same for source grab and target drop).
 constexpr double kConnectSnapRadius = 7.5;
-/// Two candidate targets closer than this are "the same spot" (overlap).
-constexpr double kOverlapEps = 0.5;
 
 /// Format an angle in degrees for display: integers render without a trailing
 /// ".0" (e.g. 22 -> "22", 22.5 -> "22.5").
@@ -115,22 +114,60 @@ void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPoi
 
     m_connectFromBlock = fromBlockId;
     m_connectFromPoint = fromPointId;
+    m_connectGroupId   = m_paramDoc->groupOfBlock(fromBlockId);
     m_connectTarget.reset();
     m_connectOldAtt.reset();
+    m_connectIsComponentHinge = false;
+    m_editingComponentGroupId = QUuid();
+    m_connectGroupOrigOrigins.clear();
+
+    if (!m_connectGroupId.isNull()) {
+        for (const auto& bid : m_paramDoc->blocksInGroup(m_connectGroupId)) {
+            if (const auto* b = m_paramDoc->findBlock(bid)) {
+                m_connectGroupOrigOrigins[bid] = b->transform.origin;
+            }
+        }
+    }
+
+    // 滑轨模式 (抽屉式滑动): reset the slide-drag snapshot. If this block's
+    // attachment is in a slide mode it stays ACTIVE (never quick-detached);
+    // snapshot its pre-drag rail coordinates so the commit macro can undo the
+    // slide back to the pre-drag rail position.
+    m_connectSlideAttId = QUuid();
+    m_connectOldSlideAlong = 0.0;
+    m_connectOldSlidePerp = 0.0;
 
     // Grab geometry: the block translates so its from-point tracks the cursor.
     m_connectOrigOrigin   = blk->transform.origin;
     m_connectOrigRotation = blk->transform.rotation;
     m_connectGrabOffset   = blk->transform.origin - blk->worldPos(fromPointId);
 
-    // 快拆 (quick-detach): if this block currently follows a leader, release it
-    // immediately so it can move freely. 组内连接同样可拆 (组零限制). The
-    // removal is re-wrapped into the final undo macro at commit time
-    // (restore-then-replay pattern).
+    // 快拆 (quick-detach): if this block currently follows a leader OUTSIDE its group, release it
+    // immediately so it can move freely.
+    // 滑轨模式 (slideMode != None) 的连接**不**快拆: 拖动只沿滑轨动
+    // (抽屉式滑动, 用户拍板 2026-08), 附件保持激活, 由 Resolver 锁轴.
     for (const auto& att : m_paramDoc->attachments()) {
-        if (att.fromBlockId == fromBlockId && !att.isPin && !att.isLocked) {
-            m_connectOldAtt = att;
-            m_paramDoc->removeAttachment(att.id);
+        if (att.fromBlockId == fromBlockId && !att.isPin && !att.isLocked
+            && att.slideMode == cad::param::SlideMode::None) {
+            // If the attachment is to an EXTERNAL block (not within the same group), quick-detach it:
+            const bool internalAtt = !m_connectGroupId.isNull()
+                && m_paramDoc->groupOfBlock(att.toBlockId) == m_connectGroupId;
+            if (!internalAtt) {
+                m_connectOldAtt = att;
+                m_paramDoc->removeAttachment(att.id);
+                break;
+            }
+        }
+    }
+
+    // 滑轨模式连接不快拆 (上面的循环已跳过): 记录其拖前锁/自由轴坐标,
+    // 拖动期间由 move() 每帧回写自由轴 (updateSlideOffsetsFromCurrent)。
+    for (const auto& att : m_paramDoc->attachments()) {
+        if (att.fromBlockId == fromBlockId && !att.isPin
+            && att.slideMode != cad::param::SlideMode::None) {
+            m_connectSlideAttId = att.id;
+            m_connectOldSlideAlong = att.slideAlongMm;
+            m_connectOldSlidePerp = att.slidePerpMm;
             break;
         }
     }
@@ -155,14 +192,17 @@ void ConnectGesture::move(const Vec2& pos)
         zoom = m_scene->views().first()->transform().m11();
 
     // Generous radius while connecting: dropping onto a target must feel easy.
-    // Exclude the dragged block's OWN points — otherwise a nearby point of
-    // the dragged line (e.g. its other endpoint) would shadow the real
-    // target: findSnap returns the NEAREST point, and the old code reset the
-    // snap AFTER the search, silently dropping the actual target.
+    // Exclude the dragged block's OWN points (and entire group if grouped)
     auto snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom, kConnectSnapRadius,
                                       {}, &m_connectFromBlock);
-    if (snap.has_value() && snap->blockId == m_connectFromBlock)
-        snap.reset();                       // never snap to self
+    if (snap.has_value()) {
+        if (snap->blockId == m_connectFromBlock) {
+            snap.reset();
+        } else if (!m_connectGroupId.isNull()
+                   && m_paramDoc->groupOfBlock(snap->blockId) == m_connectGroupId) {
+            snap.reset();  // never snap to own group members
+        }
+    }
 
     // Only promise a connection (magnet + ring) when releasing would actually
     // attach — e.g. a descendant's point would close a cycle and is refused.
@@ -183,11 +223,31 @@ void ConnectGesture::move(const Vec2& pos)
     // only the dragged block's subgraph moves (the old attachment, if any, is
     // already out of the document during the gesture).
     const Vec2 anchor = m_connectTarget.has_value() ? m_connectTarget->worldPos : pos;
-    blk->transform.origin = anchor + m_connectGrabOffset;
-    m_paramDoc->invalidateLayer(blk->layer);  // per-frame: freeze the other group
-    m_paramDoc->resolveForDrag({m_connectFromBlock});
-    // resolveForDrag() emits resolved → scene syncs positions automatically;
-    // no explicit full refresh needed here (was the main per-frame cost).
+    const Vec2 newOrigin = anchor + m_connectGrabOffset;
+    const Vec2 delta = newOrigin - m_connectOrigOrigin;
+    blk->transform.origin = newOrigin;
+
+    // Rigid group translation: all group members translate by delta
+    if (!m_connectGroupId.isNull()) {
+        for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
+            if (it.key() == m_connectFromBlock) continue;
+            if (auto* mb = m_paramDoc->findBlock(it.key())) {
+                mb->transform.origin = it.value() + delta;
+            }
+        }
+    }
+
+    // 滑轨模式 (抽屉式滑动): 拖动沿滑轨走 — 从当前 (拖拽) 位置回写自由轴
+    // 坐标, 锁轴坐标保持快照; 随后 resolveForDrag 按新坐标落位 (锁轴弹回).
+    if (!m_connectSlideAttId.isNull())
+        m_paramDoc->updateSlideOffsetsFromCurrent(m_connectSlideAttId);
+    m_paramDoc->invalidateLayer(blk->layer);
+
+    QList<QUuid> dragRoots = !m_connectGroupId.isNull()
+        ? m_paramDoc->blocksInGroup(m_connectGroupId)
+        : QList<QUuid>{m_connectFromBlock};
+    m_paramDoc->resolveForDrag(dragRoots);
+
     updateConnectMarker();
     updateConnectHalo();
 }
@@ -229,7 +289,7 @@ void ConnectGesture::release(const Vec2& pos)
             // Overlap set = candidates at the same spot as the nearest one.
             std::vector<SnapResult> overlap;
             for (const auto& c : pool)
-                if (c.worldPos.distanceTo(refPos) < kOverlapEps)
+                if (c.worldPos.distanceTo(refPos) < kSnapOverlapEps)
                     overlap.push_back(c);
 
             if (overlap.size() > 1) {
@@ -296,8 +356,23 @@ void ConnectGesture::cancel()
             blk->transform.origin   = m_connectOrigOrigin;
             blk->transform.rotation = m_connectOrigRotation;
         }
+        if (!m_connectGroupId.isNull()) {
+            for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
+                if (it.key() == m_connectFromBlock) continue;
+                if (auto* mb = m_paramDoc->findBlock(it.key())) {
+                    mb->transform.origin = it.value();
+                }
+            }
+        }
         if (m_connectOldAtt)
             m_paramDoc->addAttachmentRaw(*m_connectOldAtt);  // verbatim (keep snapshot isLocked)
+        // 滑轨模式: 拖动中回写的自由轴坐标也要还原 (cancel = 撤销整个手势).
+        if (!m_connectSlideAttId.isNull()) {
+            if (auto* a = m_paramDoc->findAttachment(m_connectSlideAttId)) {
+                a->slideAlongMm = m_connectOldSlideAlong;
+                a->slidePerpMm = m_connectOldSlidePerp;
+            }
+        }
         m_paramDoc->resolveAll();
     }
     if (m_scene) m_scene->refreshAllBlockItems();
@@ -308,8 +383,12 @@ void ConnectGesture::cancel()
     m_confirmCandidates.clear();
     m_connectFromBlock = QUuid();
     m_connectFromPoint = QUuid();
+    m_connectGroupId = QUuid();
+    m_connectGroupOrigOrigins.clear();
     m_connectTarget.reset();
     m_connectOldAtt.reset();
+    m_connectIsComponentHinge = false;
+    m_editingComponentGroupId = QUuid();
     if (m_angleHud) hideAngleHud();
     setState(SelectState::Confirmed);
 }
@@ -366,10 +445,25 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
             != cad::param::AttachmentIssue::Ok)
         return false;
 
-    // NOTE: 组对连接零限制 —— 无主连接预算, 组员自由建立连接.
+    // 路线B 组件化组: 从组员端点建立外部连接 = 创建组件主连接铰链.
+    // 连接手势仍先用普通 Attachment 做实时角度预览, finalizeConnection()
+    // 再将其替换为 SetComponentHingeCommand (单一主连接铰链).
+    m_connectIsComponentHinge = false;
+    if (!m_connectGroupId.isNull()) {
+        if (m_paramDoc->hasComponentHinge(m_connectGroupId)) {
+            if (m_showToast)
+                m_showToast(QStringLiteral("组件已有主连接铰链, 请先清除"));
+            return false;
+        }
+        m_connectIsComponentHinge = true;
+        m_editingComponentGroupId = m_connectGroupId;
+        m_editingComponentHinge = cad::param::ComponentHinge{
+            m_connectFromBlock, m_connectFromPoint, toBlockId, toPointId,
+            att.toSegmentId, angleDeg, QString()
+        };
+    }
+
     if (!m_paramDoc->addAttachment(att)) return false;
-    // Added directly for live angle preview; finalizeConnection()
-    // re-wraps everything into a single undoable macro.
     m_editingAttachmentId = att.id;
     m_initialAngle = angleDeg;
     m_paramDoc->resolveAll();
@@ -400,10 +494,10 @@ std::vector<ConfirmCandidate> ConnectGesture::collectConfirmCandidates(
             const auto* ep = block.findPoint(seg.endPointId);
             const Vec2 local = block.transform.toLocal(connWorldPos);
             if (sp && sp->resolved
-                && sp->resolvedPos.distanceTo(local) < kOverlapEps)
+                && sp->resolvedPos.distanceTo(local) < kSnapOverlapEps)
                 out.push_back({block.id, seg.id, sp->id});
             if (ep && ep->resolved
-                && ep->resolvedPos.distanceTo(local) < kOverlapEps)
+                && ep->resolvedPos.distanceTo(local) < kSnapOverlapEps)
                 out.push_back({block.id, seg.id, ep->id});
         }
     }
@@ -475,22 +569,59 @@ void ConnectGesture::commitConnectMove()
 
     const Vec2 delta = blk->transform.origin - m_connectOrigOrigin;
 
+    // 滑轨模式 (抽屉式滑动): 拖动期间已每帧回写自由轴坐标 — 记录拖后值,
+    // 提交宏里用 SetSlideOffsetsCommand 把 old→new 与 MoveBlockCommand 一起
+    // 入栈 (undo 整体回到拖前滑轨位置)。
+    double curSlideAlong = 0.0, curSlidePerp = 0.0;
+    bool slideAlive = false;
+    if (!m_connectSlideAttId.isNull()) {
+        if (const auto* a = m_paramDoc->findAttachment(m_connectSlideAttId)) {
+            curSlideAlong = a->slideAlongMm;
+            curSlidePerp = a->slidePerpMm;
+            slideAlive = true;
+        }
+    }
+    const bool offsetsChanged = slideAlive &&
+        (std::abs(curSlideAlong - m_connectOldSlideAlong) > 1e-9 ||
+         std::abs(curSlidePerp - m_connectOldSlidePerp) > 1e-9);
+
     // Restore the pre-drag state, then replay through the undo stack so the
     // whole gesture (quick-detach + move) is one undo step.
     blk->transform.origin   = m_connectOrigOrigin;
     blk->transform.rotation = m_connectOrigRotation;
+    if (!m_connectGroupId.isNull()) {
+        for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
+            if (it.key() == m_connectFromBlock) continue;
+            if (auto* mb = m_paramDoc->findBlock(it.key())) {
+                mb->transform.origin = it.value();
+            }
+        }
+    }
     if (m_connectOldAtt)
         m_paramDoc->addAttachmentRaw(*m_connectOldAtt);  // verbatim (keep snapshot isLocked)
 
-    if (m_undoStack && (m_connectOldAtt || delta.lengthSquared() > 1e-10)) {
-        m_undoStack->beginMacro(QStringLiteral(
-            "\xe6\x8b\x86\xe5\xbc\x80\xe5\xb9\xb6\xe7\xa7\xbb\xe5\x8a\xa8"));  // 拆开并移动
+    if (m_undoStack && (m_connectOldAtt || offsetsChanged
+                        || delta.lengthSquared() > 1e-10)) {
+        m_undoStack->beginMacro(m_connectSlideAttId.isNull()
+            ? QStringLiteral("\xe6\x8b\x86\xe5\xbc\x80\xe5\xb9\xb6\xe7\xa7\xbb\xe5\x8a\xa8")  // 拆开并移动
+            : QStringLiteral("\xe6\xbb\x91\xe5\x8a\xa8\xe5\xb9\xb6\xe7\xa7\xbb\xe5\x8a\xa8"));  // 滑动并移动
         if (m_connectOldAtt)
-            m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(
-                m_paramDoc, m_connectOldAtt->id));
-        if (delta.lengthSquared() > 1e-10)
+            // 拆开保留角度 (用户拍板 2026-08): 只解除位置吸附, 角度跟随保留
+            // (跟随线仍由基准线方向 + 跟随角驱动; 彻底断开是单独操作).
+            m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                m_paramDoc, m_connectOldAtt->id, /*angleOnly=*/true));
+        if (offsetsChanged)
+            m_undoStack->push(new cad::cmd::SetSlideOffsetsCommand(
+                m_paramDoc, m_connectSlideAttId,
+                m_connectOldSlideAlong, m_connectOldSlidePerp,
+                curSlideAlong, curSlidePerp));
+        if (delta.lengthSquared() > 1e-10) {
+            const QList<QUuid> moveBlocks = !m_connectGroupId.isNull()
+                ? m_paramDoc->blocksInGroup(m_connectGroupId)
+                : QList<QUuid>{m_connectFromBlock};
             m_undoStack->push(new cad::cmd::MoveBlockCommand(
-                m_paramDoc, {m_connectFromBlock}, delta));
+                m_paramDoc, moveBlocks, delta));
+        }
         m_undoStack->endMacro();
     }
 
@@ -724,10 +855,24 @@ void ConnectGesture::finalizeConnection()
             if (a.id == m_editingAttachmentId) { snapshot = a; found = true; break; }
         }
         if (found) {
+            // For a component hinge the temp attachment only serves the live
+            // angle HUD; copy the tuned angle back into the hinge snapshot.
+            if (m_connectIsComponentHinge) {
+                m_editingComponentHinge.followerAngle = snapshot.followerAngle;
+                m_editingComponentHinge.followerAngleFormula = snapshot.followerAngleFormula;
+            }
             m_paramDoc->removeAttachment(m_editingAttachmentId);
             if (auto* blk = m_paramDoc->findBlock(snapshot.fromBlockId)) {
                 blk->transform.origin   = m_connectOrigOrigin;
                 blk->transform.rotation = m_connectOrigRotation;
+            }
+            if (!m_connectGroupId.isNull()) {
+                for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
+                    if (it.key() == snapshot.fromBlockId) continue;
+                    if (auto* mb = m_paramDoc->findBlock(it.key())) {
+                        mb->transform.origin = it.value();
+                    }
+                }
             }
             if (m_connectOldAtt)
                 m_paramDoc->addAttachmentRaw(*m_connectOldAtt);  // verbatim (keep snapshot isLocked)
@@ -737,7 +882,11 @@ void ConnectGesture::finalizeConnection()
             if (m_connectOldAtt)
                 m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(
                     m_paramDoc, m_connectOldAtt->id));
-            m_undoStack->push(new cad::cmd::AddAttachmentCommand(m_paramDoc, snapshot));
+            if (m_connectIsComponentHinge)
+                m_undoStack->push(new cad::cmd::SetComponentHingeCommand(
+                    m_paramDoc, m_editingComponentGroupId, m_editingComponentHinge));
+            else
+                m_undoStack->push(new cad::cmd::AddAttachmentCommand(m_paramDoc, snapshot));
             m_undoStack->endMacro();
         }
     }
@@ -745,8 +894,12 @@ void ConnectGesture::finalizeConnection()
     m_editingAttachmentId = QUuid();
     m_connectFromBlock = QUuid();
     m_connectFromPoint = QUuid();
+    m_connectGroupId = QUuid();
+    m_connectGroupOrigOrigins.clear();
     m_connectTarget.reset();
     m_connectOldAtt.reset();
+    m_connectIsComponentHinge = false;
+    m_editingComponentGroupId = QUuid();
     if (m_scene) m_scene->refreshAllBlockItems();
     m_clearSelectionAndIdle();
     // The owner tool is now Idle — sync the gesture's own state too, or
@@ -852,6 +1005,15 @@ std::optional<SnapResult> ConnectGesture::hitPoint(const Vec2& worldPos) const
     // Same generous radius as the connect snap: grabbing a point to start
     // a connection must feel as easy as dropping onto a target.
     return m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, kConnectSnapRadius);
+}
+
+std::vector<SnapResult> ConnectGesture::hitPointCandidates(const Vec2& worldPos) const
+{
+    if (!m_paramDoc) return {};
+    double zoom = 1.0;
+    if (m_scene && !m_scene->views().isEmpty())
+        zoom = m_scene->views().first()->transform().m11();
+    return m_snapEngine.findSnapCandidates(worldPos, m_paramDoc, zoom, kConnectSnapRadius);
 }
 
 } // namespace cad::tools

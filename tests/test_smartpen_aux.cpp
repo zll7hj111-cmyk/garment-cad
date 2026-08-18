@@ -1,4 +1,4 @@
-﻿/// @file test_smartpen_aux.cpp
+/// @file test_smartpen_aux.cpp
 /// Verifies the smart-pen line-body quick-aux-point interaction:
 ///   Idle hover on a segment body → green X marker appears;
 ///   click with the X live → QuickAuxDialog opens (aux point creation).
@@ -10,12 +10,15 @@
 #include <QGraphicsView>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsPathItem>
+#include <QKeyEvent>
 
 #include "canvas/CanvasScene.h"
 #include "tools/ToolSmartPen.h"
 #include "tools/ToolSelect.h"
 #include "tools/ToolManager.h"
 #include "tools/QuickAuxDialog.h"
+#include "app/SmartPenPreInputBar.h"
+#include "ElaLineEdit.h"
 #include "parametric/ParamDocument.h"
 #include "geometry/Vec2.h"
 
@@ -127,6 +130,20 @@ private slots:
     void preInputAttachedAngleUsesFollowerConvention();
     void preInputInvalidLengthIsIgnored();
     void preInputSurvivesCancelledStroke();
+    void preInputBarShortcutContainment();
+    void preInputBarKeyNavigation();
+    void preInputBarEscClearsAndReturnsFocus();
+    void preInputBarFullTypingWithShortcutLetters();
+
+    // ── 落点确认 (stacked-point disambiguation, 2026-08) ──
+    // Aux layer ACTIVE: an exact stack of aux + working start points.
+    void stackedStartPicksActiveLayerPoint();
+    void stackedStartSwitchByClickingLine();
+    void stackedEndConfirmClickLinePicksWorkingPoint();
+    void stackedEndConfirmBlankAcceptsActiveLayerDefault();
+    void stackedEndConfirmEscCancelsStroke();
+    // Working layer ACTIVE: the grayed aux point must stay out of the pool.
+    void workingActiveStackedStartPicksWorkingPoint();
 };
 
 void TestSmartPenAux::idleHoverShowsXMarker()
@@ -487,6 +504,45 @@ void makePress(QGraphicsSceneMouseEvent& press, const QPointF& userPos)
     press.setButtons(Qt::LeftButton);
 }
 
+/// Handle set for a plain two-point line block.
+struct LineEx { QUuid blockId; QUuid startId; QUuid endId; QUuid segId; };
+
+/// Line block on @p layerIndex: Free start at @p origin + Polar end
+/// (@p lengthMm along @p angleDeg, degrees CCW), one segment.
+LineEx makeLineBlockEx(ParamDocument& doc, int layerIndex, Vec2 origin,
+                       double lengthMm, double angleDeg)
+{
+    Block block;
+    block.layer = layerIdAt(doc, layerIndex);
+    block.transform.origin = origin;
+    block.transform.rotation = 0.0;
+
+    ParamPoint p1;
+    p1.constraint = PointConstraint::Free;
+    p1.freePos = Vec2::zero();
+    const QUuid startId = p1.id;
+
+    ParamPoint p2;
+    p2.constraint = PointConstraint::Polar;
+    p2.refPointId = startId;
+    p2.distance = lengthMm;
+    p2.angle = angleDeg;
+    const QUuid endId = p2.id;
+
+    block.addPoint(std::move(p1));
+    block.addPoint(std::move(p2));
+
+    Segment seg;
+    seg.startPointId = startId;
+    seg.endPointId = endId;
+    const QUuid segId = seg.id;
+    block.addSegment(std::move(seg));
+
+    const QUuid blockId = block.id;
+    doc.addBlock(std::move(block));
+    return {blockId, startId, endId, segId};
+}
+
 } // namespace
 
 void TestSmartPenAux::preInputLengthAngleCreatesLineInOneClick()
@@ -758,6 +814,373 @@ void TestSmartPenAux::preInputSurvivesCancelledStroke()
 
     QCOMPARE(doc.blocks().size(), size_t(0));
     QCOMPARE(pen.preInput().lengthCm, QStringLiteral("10"));
+    pen.deactivate();
+}
+
+void TestSmartPenAux::preInputBarShortcutContainment()
+{
+    cad::app::SmartPenPreInputBar bar;
+    bar.focusFirstNameField();
+
+    // Verify all tool shortcut keys ('V', 'L', 'C', 'R', 'B', 'I', 'A', 'H', 'W', 'N', 'M')
+    // are accepted by ShortcutOverride inside SmartPenPreInputBar so they never leak to window actions.
+    const QVector<int> shortcutKeys = {
+        Qt::Key_V, Qt::Key_L, Qt::Key_C, Qt::Key_R, Qt::Key_B,
+        Qt::Key_I, Qt::Key_A, Qt::Key_H, Qt::Key_W, Qt::Key_N, Qt::Key_M
+    };
+
+    for (int key : shortcutKeys) {
+        QKeyEvent scEvent(QEvent::ShortcutOverride, key, Qt::NoModifier);
+        scEvent.ignore();
+        QCoreApplication::sendEvent(bar.nameEdit(), &scEvent);
+        QVERIFY2(scEvent.isAccepted(), QString("ShortcutOverride for key %1 must be accepted").arg(key).toUtf8().constData());
+    }
+
+    // Also with Ctrl modifier (Ctrl+Z, Ctrl+Y, Ctrl+D, Ctrl+S, etc.):
+    const QVector<int> ctrlKeys = { Qt::Key_Z, Qt::Key_Y, Qt::Key_D, Qt::Key_S, Qt::Key_1, Qt::Key_2 };
+    for (int key : ctrlKeys) {
+        QKeyEvent scEvent(QEvent::ShortcutOverride, key, Qt::ControlModifier);
+        scEvent.ignore();
+        QCoreApplication::sendEvent(bar.lengthEdit(), &scEvent);
+        QVERIFY2(scEvent.isAccepted(), QString("ShortcutOverride for Ctrl+%1 must be accepted").arg(key).toUtf8().constData());
+    }
+}
+
+void TestSmartPenAux::preInputBarKeyNavigation()
+{
+    QWidget dummyCanvas;
+    cad::app::SmartPenPreInputBar bar;
+    bar.setCanvasView(&dummyCanvas);
+
+    // Focus first field:
+    bar.focusFirstNameField();
+    QCOMPARE(bar.focusWidget(), bar.nameEdit());
+
+    // Tab -> lengthEdit
+    QKeyEvent tab1(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.nameEdit(), &tab1);
+    QCOMPARE(bar.focusWidget(), bar.lengthEdit());
+
+    // Tab -> angleEdit
+    QKeyEvent tab2(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.lengthEdit(), &tab2);
+    QCOMPARE(bar.focusWidget(), bar.angleEdit());
+
+    // Tab -> nameEdit (cycle)
+    QKeyEvent tab3(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.angleEdit(), &tab3);
+    QCOMPARE(bar.focusWidget(), bar.nameEdit());
+
+    // Backtab -> angleEdit
+    QKeyEvent btab1(QEvent::KeyPress, Qt::Key_Backtab, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(bar.nameEdit(), &btab1);
+    QCOMPARE(bar.focusWidget(), bar.angleEdit());
+
+    // Return in nameEdit -> lengthEdit
+    bar.focusFirstNameField();
+    QKeyEvent ret1(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.nameEdit(), &ret1);
+    QCOMPARE(bar.focusWidget(), bar.lengthEdit());
+
+    // Return in lengthEdit -> angleEdit
+    QKeyEvent ret2(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.lengthEdit(), &ret2);
+    QCOMPARE(bar.focusWidget(), bar.angleEdit());
+
+    // Return in angleEdit -> canvasView
+    QKeyEvent ret3(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.angleEdit(), &ret3);
+}
+
+void TestSmartPenAux::preInputBarEscClearsAndReturnsFocus()
+{
+    QWidget dummyCanvas;
+    cad::app::SmartPenPreInputBar bar;
+    bar.setCanvasView(&dummyCanvas);
+
+    bar.nameEdit()->setText("test_line");
+    bar.lengthEdit()->setText("10");
+    bar.focusFirstNameField();
+    QCOMPARE(bar.focusWidget(), bar.nameEdit());
+
+    // First Esc clears nameEdit text
+    QKeyEvent esc1(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.nameEdit(), &esc1);
+    QCOMPARE(bar.nameText().isEmpty(), true);
+
+    // Esc on empty field clears all fields
+    bar.focusFirstNameField();
+    QKeyEvent esc2(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QCoreApplication::sendEvent(bar.nameEdit(), &esc2);
+    QCOMPARE(bar.lengthText().isEmpty(), true);
+}
+
+void TestSmartPenAux::preInputBarFullTypingWithShortcutLetters()
+{
+    cad::app::SmartPenPreInputBar bar;
+    bar.show();
+
+    bar.focusFirstNameField();
+    // Simulate typing "V_collar_L1" which has V and L (tool shortcuts)
+    QTest::keyClicks(bar.nameEdit(), "V_collar_L1");
+    QCOMPARE(bar.nameText(), QStringLiteral("V_collar_L1"));
+
+    bar.focusLengthField();
+    // Simulate typing formula "C+R/2" which has C and R
+    QTest::keyClicks(bar.lengthEdit(), "C+R/2");
+    QCOMPARE(bar.lengthText(), QStringLiteral("C+R/2"));
+
+    bar.focusAngleField();
+    // Simulate typing formula "A_angle-90" which has A
+    QTest::keyClicks(bar.angleEdit(), "A_angle-90");
+    QCOMPARE(bar.angleText(), QStringLiteral("A_angle-90"));
+}
+
+// ---------------------------------------------------------------------------
+// 落点确认 (stacked-point disambiguation, 2026-08): 辅助层激活时工作层点
+// 仍是合法捕捉目标（单向参照契约），但同点堆叠时默认取活动层点；不满意
+// 可点选候选线段切换落点。终点的多候选堆叠进入 ConfirmEnd 确认态。
+// ---------------------------------------------------------------------------
+
+/// Two blocks starting at the SAME origin: a working-layer horizontal line
+/// and an aux-layer vertical line — an exact cross-layer stack at (0,0).
+void TestSmartPenAux::stackedStartPicksActiveLayerPoint()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));   // aux layer ACTIVE
+    CanvasScene scene(&doc);
+    const LineEx w = makeLineBlockEx(doc, 1, Vec2::zero(), 100.0, 0.0);  // working (0,0)→(100,0)
+    const LineEx a = makeLineBlockEx(doc, 0, Vec2::zero(), 60.0, 90.0);  // aux    (0,0)→(0,60)
+    doc.resolveAll();
+
+    QGraphicsView view(&scene);
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+
+    // Click the stacked spot: findSnap resolves the exact tie to the ACTIVE
+    // layer and the leader auto-pick agrees (candidate on the snapped
+    // point), so the attachment targets the AUX point — not the working
+    // block created first (the old traversal-order trap).
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(0.0, 0.0));
+    pen.mousePress(&press1);
+
+    // Free end → commit.
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(50.0, 50.0));
+    pen.mousePress(&press2);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));   // working + aux + new line
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment& att = doc.attachments().front();
+    QCOMPARE(att.toBlockId, a.blockId);
+    QCOMPARE(att.toPointId, a.startId);
+    QCOMPARE(doc.blocks().back().layer, layerIdAt(doc, 0));  // 新线归活动层
+    pen.deactivate();
+}
+
+void TestSmartPenAux::stackedStartSwitchByClickingLine()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));   // aux layer ACTIVE
+    CanvasScene scene(&doc);
+    const LineEx w = makeLineBlockEx(doc, 1, Vec2::zero(), 100.0, 0.0);  // working
+    makeLineBlockEx(doc, 0, Vec2::zero(), 60.0, 90.0);                   // aux
+    doc.resolveAll();
+
+    QGraphicsView view(&scene);
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+
+    // Start on the stacked spot → active-layer (aux) point.
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(0.0, 0.0));
+    pen.mousePress(&press1);
+
+    // 先选活动层，不满意再点线: clicking the WORKING line's body switches
+    // the START POINT to the working point (a legal, stacked candidate) —
+    // the click is NOT a placement.
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(50.0, 0.0));
+    pen.mousePress(&press2);
+    QCOMPARE(doc.blocks().size(), size_t(2));   // still no line committed
+
+    // Free end → the attachment now targets the WORKING point.
+    QGraphicsSceneMouseEvent press3(QEvent::GraphicsSceneMousePress);
+    makePress(press3, QPointF(50.0, 50.0));
+    pen.mousePress(&press3);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment& att = doc.attachments().front();
+    QCOMPARE(att.toBlockId, w.blockId);
+    QCOMPARE(att.toPointId, w.startId);
+    pen.deactivate();
+}
+
+void TestSmartPenAux::stackedEndConfirmClickLinePicksWorkingPoint()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));   // aux layer ACTIVE
+    CanvasScene scene(&doc);
+    const LineEx w = makeLineBlockEx(doc, 1, Vec2::zero(), 100.0, 0.0);  // working
+    makeLineBlockEx(doc, 0, Vec2::zero(), 60.0, 90.0);                   // aux
+    doc.resolveAll();
+
+    QGraphicsView view(&scene);
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+
+    // Free start at blank space.
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(200.0, 200.0));
+    pen.mousePress(&press1);
+
+    // End click on the stacked spot: TWO candidates → ConfirmEnd state.
+    // Nothing is committed by this click.
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(0.0, 0.0));
+    pen.mousePress(&press2);
+    QCOMPARE(doc.blocks().size(), size_t(2));
+    QCOMPARE(doc.attachments().size(), size_t(0));
+
+    // Click the WORKING line's body → confirm THAT point; the free start
+    // flips: new line starts on the working point, ends at the old start.
+    QGraphicsSceneMouseEvent press3(QEvent::GraphicsSceneMousePress);
+    makePress(press3, QPointF(50.0, 0.0));
+    pen.mousePress(&press3);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment& att = doc.attachments().front();
+    QCOMPARE(att.toBlockId, w.blockId);
+    QCOMPARE(att.toPointId, w.startId);
+
+    const Block& nb = doc.blocks().back();
+    const Segment& ns = nb.segments.front();
+    const ParamPoint* sp = nb.findPoint(ns.startPointId);
+    QVERIFY(sp && sp->resolved);
+    QVERIFY(nb.transform.toWorld(sp->resolvedPos).distanceTo(Vec2::zero()) < 1e-6);
+    const ParamPoint* ep = nb.findPoint(ns.endPointId);
+    QVERIFY(ep && ep->resolved);
+    QVERIFY(nb.transform.toWorld(ep->resolvedPos).distanceTo(Vec2(200.0, 200.0)) < 1e-6);
+    pen.deactivate();
+}
+
+void TestSmartPenAux::stackedEndConfirmBlankAcceptsActiveLayerDefault()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));   // aux layer ACTIVE
+    CanvasScene scene(&doc);
+    const LineEx a = makeLineBlockEx(doc, 0, Vec2::zero(), 60.0, 90.0);  // aux
+    makeLineBlockEx(doc, 1, Vec2::zero(), 100.0, 0.0);                   // working
+    doc.resolveAll();
+
+    QGraphicsView view(&scene);
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(200.0, 200.0));
+    pen.mousePress(&press1);
+
+    // End click on the stacked spot → ConfirmEnd.
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(0.0, 0.0));
+    pen.mousePress(&press2);
+    QCOMPARE(doc.blocks().size(), size_t(2));
+
+    // Blank click accepts the DEFAULT = the active (aux) layer's point.
+    QGraphicsSceneMouseEvent press3(QEvent::GraphicsSceneMousePress);
+    makePress(press3, QPointF(300.0, 300.0));
+    pen.mousePress(&press3);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment& att = doc.attachments().front();
+    QCOMPARE(att.toBlockId, a.blockId);
+    QCOMPARE(att.toPointId, a.startId);
+    pen.deactivate();
+}
+
+void TestSmartPenAux::stackedEndConfirmEscCancelsStroke()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));   // aux layer ACTIVE
+    CanvasScene scene(&doc);
+    makeLineBlockEx(doc, 1, Vec2::zero(), 100.0, 0.0);  // working
+    makeLineBlockEx(doc, 0, Vec2::zero(), 60.0, 90.0);  // aux
+    doc.resolveAll();
+
+    QGraphicsView view(&scene);
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(200.0, 200.0));
+    pen.mousePress(&press1);
+
+    // End click on the stacked spot → ConfirmEnd.
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(0.0, 0.0));
+    pen.mousePress(&press2);
+    QCOMPARE(doc.blocks().size(), size_t(2));
+
+    // Esc cancels the whole stroke — nothing is created.
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    pen.keyPress(&esc);
+    QCOMPARE(doc.blocks().size(), size_t(2));
+    QCOMPARE(doc.attachments().size(), size_t(0));
+
+    // The pen is back in Idle: a fresh blank press starts a new stroke
+    // instead of being swallowed by a stale confirm state.
+    QGraphicsSceneMouseEvent press3(QEvent::GraphicsSceneMousePress);
+    makePress(press3, QPointF(300.0, 300.0));
+    pen.mousePress(&press3);
+    QGraphicsSceneMouseEvent press4(QEvent::GraphicsSceneMousePress);
+    makePress(press4, QPointF(350.0, 300.0));
+    pen.mousePress(&press4);
+    QCOMPARE(doc.blocks().size(), size_t(3));   // the fresh stroke committed
+    pen.deactivate();
+}
+
+void TestSmartPenAux::workingActiveStackedStartPicksWorkingPoint()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));   // working layer ACTIVE (aux grayed)
+    CanvasScene scene(&doc);
+    const LineEx w = makeLineBlockEx(doc, 1, Vec2::zero(), 100.0, 0.0);  // working
+    makeLineBlockEx(doc, 0, Vec2::zero(), 60.0, 90.0);                   // aux
+    doc.resolveAll();
+
+    QGraphicsView view(&scene);
+    cad::tools::ToolSmartPen pen;
+    pen.activate(scene, &doc);
+
+    // The stacked spot: the grayed aux point is NOT a snap target (one-way
+    // rule); the working point is the only candidate.
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    makePress(press1, QPointF(0.0, 0.0));
+    pen.mousePress(&press1);
+
+    // Clicking the GRAYED aux line during the rubber band must NOT switch
+    // the start (its point is not a legal attachment target) — the click is
+    // ignored, no line is placed.
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    makePress(press2, QPointF(0.0, 30.0));
+    pen.mousePress(&press2);
+    QCOMPARE(doc.blocks().size(), size_t(2));
+
+    // Free end → attachment targets the working point.
+    QGraphicsSceneMouseEvent press3(QEvent::GraphicsSceneMousePress);
+    makePress(press3, QPointF(50.0, 50.0));
+    pen.mousePress(&press3);
+
+    QCOMPARE(doc.blocks().size(), size_t(3));
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment& att = doc.attachments().front();
+    QCOMPARE(att.toBlockId, w.blockId);
+    QCOMPARE(att.toPointId, w.startId);
     pen.deactivate();
 }
 

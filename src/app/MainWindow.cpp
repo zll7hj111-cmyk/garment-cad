@@ -1,4 +1,4 @@
-﻿#include "SegmentEditBar.h"
+#include "SegmentEditBar.h"
 #include "SmartPenPreInputBar.h"
 
 #include "MainWindow.h"
@@ -534,6 +534,7 @@ void MainWindow::setupStatusBar()
     // 智能笔预输入条: 切到智能笔时显示, 名称为/长度/角度供下一条线使用,
     // 内容被使用后清空 (onLineCreated). 默认隐藏 (默认工具是选择).
     m_preInputBar = new cad::app::SmartPenPreInputBar(this);
+    m_preInputBar->setCanvasView(m_canvasView);
     m_preInputBar->hide();
     sb->addWidget(m_preInputBar, 1);
 
@@ -966,8 +967,19 @@ void MainWindow::setupPages()
                 m_toolManager->activeTool()))
             ts->selectBlocksExternally(blockIds);
     });
+    // Group card + / context-menu 添加选中到组: use the current selection tool
+    // selection if it is the select tool; otherwise there is no selection to add.
+    connect(m_groupPanel, &GroupPanel::addMembersRequested, this,
+            [this](const QUuid& groupId) {
+        if (auto* ts = dynamic_cast<cad::tools::ToolSelect*>(
+                m_toolManager->activeTool()))
+            m_groupPanel->addMembersToGroup(groupId, ts->selection().values());
+    });
 
-    // Click a group BADGE on canvas → select the whole group (same path).
+    // Group badge click wire — currently not hit-testable because
+    // GroupBadgeItem::shape() is empty; kept for the future interactive
+    // badge path. Whole-group selection today goes through the Group panel,
+    // the canvas right-click menu, and the selection tool's group expansion.
     connect(m_canvasScene, &CanvasScene::groupBadgeClicked,
             this, [this](const QUuid& groupId) {
         m_toolManager->switchTool(cad::tools::ToolType::Select);

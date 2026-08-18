@@ -14,9 +14,9 @@ namespace cad::param { class ParamDocument; }
 namespace cad::cmd {
 
 /// Turn a confirmed selection into a user group (成组).
-/// 组只是选择快捷方式 (2026-08-04 设计定稿): 成组/解散纯粹是成员关系
-/// 标签, 绝不改动任何几何/连接状态 —— 不切断跨边界 attachment, 不清除
-/// endTarget. Redo: create the group record. Undo: dissolve it.
+/// 组件化组（路线B）: 成组/解散只维护成员关系与组件元数据, 不直接改动普通
+/// attachment; 组件铰链由 SetComponentHingeCommand 单独管理. Redo: create the
+/// group record. Undo: dissolve it.
 class MakeGroupCommand : public QUndoCommand
 {
 public:
@@ -90,4 +90,106 @@ private:
     int m_to = -1;
 };
 
+/// Toggle / set bounding box visibility on canvas.
+class SetGroupBoundingBoxCommand : public QUndoCommand
+{
+public:
+    SetGroupBoundingBoxCommand(cad::param::ParamDocument* doc,
+                               const QUuid& groupId,
+                               bool visible,
+                               QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_groupId;
+    bool m_newVisible;
+    bool m_oldVisible = true;
+    bool m_valid = false;
+};
+
+/// Set the component's single main hinge (路线B).
+/// Redo: store the new hinge. Undo: restore the previous hinge state.
+class SetComponentHingeCommand : public QUndoCommand
+{
+public:
+    SetComponentHingeCommand(cad::param::ParamDocument* doc,
+                             const QUuid& groupId,
+                             const cad::param::ComponentHinge& hinge,
+                             QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_groupId;
+    bool m_valid = false;
+    cad::param::ComponentHinge m_newHinge;
+    bool m_oldHasHinge = false;
+    cad::param::ComponentHinge m_oldHinge;
+};
+
+/// Clear the component's main hinge; component returns to ordinary group.
+class ClearComponentHingeCommand : public QUndoCommand
+{
+public:
+    ClearComponentHingeCommand(cad::param::ParamDocument* doc,
+                               const QUuid& groupId,
+                               QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_groupId;
+    bool m_valid = false;
+    bool m_oldHasHinge = false;
+    cad::param::ComponentHinge m_oldHinge;
+};
+
+/// Add one or more existing ungrouped blocks to a group (加人, panel entry).
+/// Redo adds each block via addGroupMember; undo restores the original group
+/// record and member list wholesale (so member order, root and hinge state
+/// are exactly preserved).
+class AddGroupMembersCommand : public QUndoCommand
+{
+public:
+    AddGroupMembersCommand(cad::param::ParamDocument* doc,
+                           const QUuid& groupId,
+                           const QList<QUuid>& memberIds,
+                           QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_groupId;
+    QList<QUuid> m_memberIds;
+    bool m_valid = false;
+    cad::param::Group m_group;         ///< Original record (undo snapshot).
+    QList<QUuid> m_originalMembers;    ///< Original membership (undo snapshot).
+};
+
+/// Remove one or more members from a group (减人, panel entry). Removal may
+/// auto-dissolve the group below two members; undo restores the original
+/// group record and member list exactly.
+class RemoveGroupMembersCommand : public QUndoCommand
+{
+public:
+    RemoveGroupMembersCommand(cad::param::ParamDocument* doc,
+                              const QUuid& groupId,
+                              const QList<QUuid>& memberIds,
+                              QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_groupId;
+    QList<QUuid> m_memberIds;
+    bool m_valid = false;
+    cad::param::Group m_group;         ///< Original record (undo snapshot).
+    QList<QUuid> m_originalMembers;    ///< Original membership (undo snapshot).
+};
 } // namespace cad::cmd

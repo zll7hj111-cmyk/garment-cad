@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QObject>
 #include <QUuid>
@@ -94,6 +94,7 @@ public:
         int measureVarsRemoved   = 0;  ///< 删除的测量变量（不可恢复）。
         int angleVarsRemoved     = 0;  ///< 删除的角度测量变量（不可恢复）。
         int formulasBroken       = 0;  ///< 引用被删测量名的公式（将失效报错）。
+        int dartLinesDegraded    = 0;  ///< 失去起点/偏移点而降级为普通线的省道线。
 
         [[nodiscard]] bool hasImpact() const
         {
@@ -101,7 +102,8 @@ public:
                    intersectionsFrozen > 0 || intersectionsAimCleared > 0 ||
                    linkedFrozen > 0 ||
                    linkedVarsRemoved > 0 || measureVarsRemoved > 0 ||
-                   angleVarsRemoved > 0 || formulasBroken > 0;
+                   angleVarsRemoved > 0 || formulasBroken > 0 ||
+                   dartLinesDegraded > 0;
         }
         DeleteImpact& operator+=(const DeleteImpact& o)
         {
@@ -114,6 +116,7 @@ public:
             measureVarsRemoved  += o.measureVarsRemoved;
             angleVarsRemoved    += o.angleVarsRemoved;
             formulasBroken      += o.formulasBroken;
+            dartLinesDegraded   += o.dartLinesDegraded;
             return *this;
         }
     };
@@ -145,6 +148,28 @@ public:
     /// connections are welded: dragging cannot tear them apart, and dragging
     /// either side moves the whole pair. Resolves once.
     void setAttachmentLocked(const QUuid& id, bool locked);
+    /// 拆开保留角度 (用户拍板 2026-08): convert an existing attachment to
+    /// angle-only mode — the follower keeps following the leader's ANGLE
+    /// (rotation driven by leader direction + followerAngle) while its
+    /// position constraint is released (the line moves freely). Converting
+    /// TO angle-only clears 拖动保护 (isLocked) — welded dragging is
+    /// incompatible with a free position; converting BACK re-welds (只要
+    /// 建立跟随就保护). Resolves once.
+    void setAttachmentAngleOnly(const QUuid& id, bool angleOnly);
+    /// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): 切换 Attachment 的 slideMode。
+    /// 进入滑轨 (AlongLeader / PerpLeader): 先按当前几何快照锁轴坐标
+    /// (slideAlongMm/slidePerpMm = 跟随点相对基准线局部系的当前投影), 再清
+    /// angleOnly 并解除拖动保护 (位置必须可滑动)。切回 None: 恢复完整连接
+    /// (angleOnly=false, 重新焊接 isLocked=true)。Resolves once.
+    void setAttachmentSlideMode(const QUuid& id, cad::param::SlideMode mode);
+    /// 重快照滑轨锁轴坐标 (重定向基准线指向点后调用): 按当前几何把
+    /// slideAlongMm/slidePerpMm 重新投影到新基准线局部系。Resolves once.
+    void refreshSlideOffsets(const QUuid& id);
+    /// 拖动回写 (拖拽工具每帧调用): 把跟随线当前 from-point 的世界位置投影
+    /// 到基准线局部系, 只回写**自由轴**坐标 —— AlongLeader 写 slideAlongMm,
+    /// PerpLeader 写 slidePerpMm —— 锁轴坐标保持激活时快照。不触发 resolve
+    /// (随后的 resolveForDrag / resolveAll 会按新坐标落位)。滑轨未激活时 no-op。
+    void updateSlideOffsetsFromCurrent(const QUuid& id);
     /// Expand a seed set of block ids to include every block welded by LOCKED
     /// attachments (递归焊接闭包): dragging any member moves the whole closure
     /// (A锁B、B锁C → 拖A时B、C一起走). Also the basis of the drag-time
@@ -366,11 +391,14 @@ public:
     /// RemoveBlockCommand to snapshot the consumers for undo.
     [[nodiscard]] QList<QUuid> linkedConsumerBlocks(const QUuid& sourceBlockId) const;
 
-    // --- User groups (成组: authored protection locks) ---
-    /// Groups are USER-authored protection units — NOT derived from the
-    /// attachment graph. Members are locked against structural operations
-    /// (single-line delete / break / internal detach) until dissolved; the
-    /// guard itself lives at the tool layer, the model only keeps membership.
+    // --- User groups / components (成组/组件) ---
+    /// User-authored membership — NOT derived from the attachment graph.
+    /// A group is a first-class component (路线B): its root block owns the
+    /// component pose, and when a main hinge is set (hasHinge) the Resolver
+    /// drives the whole component from that single hinge. Structural-operation
+    /// guards live in the tool layer (break / intersection / curve point /
+    /// aux point / end-aim), while delete remains allowed and shrinks /
+    /// auto-dissolves groups.
     /// Create a group over the given blocks. Members must exist (>= 2), share
     /// one layer and not already belong to a group (nesting forbidden).
     /// Returns the new group's id, or a null QUuid when rejected.
@@ -393,8 +421,34 @@ public:
     [[nodiscard]] QUuid groupOfBlock(const QUuid& blockId) const;
     /// All block ids belonging to a group.
     [[nodiscard]] QList<QUuid> blocksInGroup(const QUuid& groupId) const;
+/// Add a block to an existing group (same validation as createGroup's
+    /// no-nesting/same-layer rules; the group must already exist). Returns
+    /// false when rejected. Emits groupsChanged().
+    bool addGroupMember(const QUuid& groupId, const QUuid& blockId);
+    /// Remove a block from its group. The group auto-dissolves below two
+    /// members; otherwise its root/hinge are re-synced. Returns false when
+    /// the block is not a current member. Emits groupsChanged().
+    bool removeGroupMember(const QUuid& groupId, const QUuid& blockId);
     /// Rename a group (emits groupsChanged()).
     void setGroupName(const QUuid& groupId, const QString& name);
+    /// Toggle or set bounding box visibility on canvas (emits groupsChanged()).
+    void setGroupBoundingBoxVisible(const QUuid& groupId, bool visible);
+    [[nodiscard]] bool isGroupBoundingBoxVisible(const QUuid& groupId) const;
+    /// Ensure the component root block exists for a group (first surviving member).
+    void ensureGroupComponentRoot(const QUuid& groupId);
+    /// Component root block id (null when the group has no valid root).
+    [[nodiscard]] QUuid groupComponentRootBlockId(const QUuid& groupId) const;
+    /// True when the group is a component with a main hinge.
+    [[nodiscard]] bool hasComponentHinge(const QUuid& groupId) const;
+    /// Set or replace nothing: only ONE main hinge is supported; returns false
+    /// when a hinge already exists or the references are invalid.
+    bool setComponentHinge(const QUuid& groupId, const ComponentHinge& hinge);
+    /// Update the existing single main hinge (live rotate preview/commit).
+    bool updateComponentHinge(const QUuid& groupId, const ComponentHinge& hinge);
+    /// Remove the main hinge (component returns to ordinary group).
+    void clearComponentHinge(const QUuid& groupId);
+    /// Read-only access to the current component hinge (nullptr when absent).
+    [[nodiscard]] const ComponentHinge* componentHinge(const QUuid& groupId) const;
 
     // --- Resolve ---
     /// Re-resolve all blocks and attachments. Call after any parameter change.

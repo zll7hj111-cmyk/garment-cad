@@ -90,6 +90,38 @@ public:
     double endTargetOffset = 0; ///< Angular offset from exact aim direction (deg, CCW+).
     QString endTargetOffsetFormula;  ///< Optional formula overriding endTargetOffset.
 
+    /// Dart line (省道线, 用户拍板 2026-08): the block's START point is pinned
+    /// to point A on another block, and its END point E is computed from a
+    /// reference point B on another block's segment:
+    ///     θ_B = refBlock.rotation + refBlock.exitDirectionAtPoint(B, dartRefSegmentId)
+    ///     E   = B_world + d · (cos(θ_B + β), sin(θ_B + β))
+    /// where d = dartOffsetMm (signed, mm; the sign picks the side — no
+    /// horizontal/vertical mode needed) and β = dartAngleDeg (deg relative to
+    /// the REFERENCE segment, default 90° — the angle reference is ALWAYS the
+    /// offset point B's segment, so it rotates together with that segment).
+    /// The Resolver drives origin = A_world, rotation = A→E and writes back
+    /// the end point's Polar distance = |A−E| — length/direction are fully
+    /// COMPUTED (线是算出来的), never freely editable. The relationship is
+    /// one-way: the reference block neither displays nor modifies this
+    /// connection (省道线主动挂上去的). Start A must be an attached point
+    /// (自由起点禁止进入). All ids null = a plain line.
+    QUuid  dartStartBlockId;      ///< Block containing the start pin point A.
+    QUuid  dartStartPointId;      ///< Start point A (block origin pins here).
+    QUuid  dartRefBlockId;        ///< Block containing the offset reference point B.
+    QUuid  dartRefPointId;        ///< Offset reference point B.
+    QUuid  dartRefSegmentId;      ///< Segment of B used as the direction basis.
+    double dartOffsetMm   = 0.0;  ///< Offset distance d (signed mm; sign = side).
+    QString dartOffsetFormula;    ///< Optional formula overriding dartOffsetMm (cm domain).
+    double dartAngleDeg   = 90.0; ///< Angle β relative to the ref segment (deg, default 90).
+    QString dartAngleFormula;     ///< Optional formula overriding dartAngleDeg.
+
+    /// True when this block carries an active dart constraint (both the start
+    /// pin and the reference point are set).
+    [[nodiscard]] bool isDart() const
+    {
+        return !dartStartBlockId.isNull() && !dartRefBlockId.isNull();
+    }
+
     /// Bridge line (桥接线): BOTH endpoints are pinned to points on other
     /// blocks via two attachments (pure position pins — no follower angle,
     /// no leader segment). Length/direction are fully passive (derived from

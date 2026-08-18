@@ -29,6 +29,18 @@ std::optional<SnapResult> SnapEngine::findSnap(
     double bestDistSq = worldRadius * worldRadius;
     std::optional<SnapResult> best;
 
+    // Active-layer preference at exact coincidence: when points of DIFFERENT
+    // layers stack on the same spot (typical: an aux-layer follower point
+    // sitting exactly on a working-layer point), the active layer's point
+    // wins — the user is working in that layer and sees its point, and the
+    // HUD/ring must agree with the eventual attachment. Everything else
+    // stays pure nearest-distance (a meaningfully closer point of another
+    // layer still wins). kTieDistSq is (1e-6 mm)² — float noise at
+    // SCENE_BOUND scale, far below any visually meaningful difference.
+    const QUuid activeLayer = paramDoc->activeLayer();
+    constexpr double kTieDistSq = 1e-12;
+    bool bestIsActive = false;
+
     for (const auto& block : paramDoc->blocks()) {
         // Snap-target filter (layerSnappable): manually hidden layers are
         // never snappable; the auxiliary layer only while ACTIVE (its grayed
@@ -79,6 +91,20 @@ std::optional<SnapResult> SnapEngine::findSnap(
                     .pointId   = pt.id,
                     .pointName = pt.name
                 };
+                bestIsActive = (block.layer == activeLayer);
+            } else if (distSq - bestDistSq <= kTieDistSq
+                       && !bestIsActive
+                       && block.layer == activeLayer) {
+                // Exact tie (within float noise): prefer the active layer's
+                // point over the traversal-order first-comer.
+                bestDistSq = distSq;
+                best = SnapResult{
+                    .worldPos  = {wx, wy},
+                    .blockId   = block.id,
+                    .pointId   = pt.id,
+                    .pointName = pt.name
+                };
+                bestIsActive = true;
             }
         }
     }
