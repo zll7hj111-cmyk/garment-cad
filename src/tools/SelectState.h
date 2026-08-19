@@ -14,6 +14,9 @@ enum class SelectState {
     ConfirmTarget,  ///< Multiple overlapping target points: click a candidate
                     ///< segment (whose endpoint lies on the connection spot) to
                     ///< confirm the leader; Esc/blank cancels.
+    ConfirmSource,  ///< Multiple overlapping SOURCE points: click a candidate
+                    ///< member segment to choose which member endpoint starts
+                    ///< the connection; Esc/blank cancels.
     AngleInput,     ///< Connection made; HUD active for construction-angle entry.
 };
 

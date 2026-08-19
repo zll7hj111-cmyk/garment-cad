@@ -1,6 +1,7 @@
-﻿#include "ConnectGesture.h"
+#include "ConnectGesture.h"
 
 #include <cmath>
+#include <utility>
 
 #include <QKeyEvent>
 #include "ElaLineEdit.h"
@@ -182,6 +183,11 @@ void ConnectGesture::move(const Vec2& pos)
         updateConfirmHighlight(pos);
         return;
     }
+    if (m_state == SelectState::ConfirmSource) {
+        // No yellow line for source selection: the selected line already uses
+        // the normal selection highlight, and the source-endpoint marker stays.
+        return;
+    }
     if (m_state != SelectState::Connecting) return;
     if (!m_paramDoc) return;
     auto* blk = m_paramDoc->findBlock(m_connectFromBlock);
@@ -347,6 +353,96 @@ void ConnectGesture::pressConfirmTarget(const Vec2& pos)
     cancel();
 }
 
+void ConnectGesture::beginSourceConfirm(std::vector<ConfirmCandidate> candidates,
+                                        const Vec2& pos)
+{
+    if (candidates.empty() || !m_paramDoc || !m_scene) { cancel(); return; }
+
+    // No block is being dragged yet — this state only disambiguates WHICH
+    // member endpoint starts the connection.
+    m_connectFromBlock = QUuid();
+    m_connectFromPoint = QUuid();
+    m_connectGroupId = QUuid();
+    m_connectGroupOrigOrigins.clear();
+    m_connectTarget.reset();
+    m_connectOldAtt.reset();
+    m_connectIsComponentHinge = false;
+    m_editingComponentGroupId = QUuid();
+
+    removeConfirmHighlight();
+    removeSourcePortMarker();
+    m_confirmCandidates = std::move(candidates);
+    m_selectedSourceCandidate.reset();
+    (void)pos;
+    setState(SelectState::ConfirmSource);
+    // 源端不再画黄线：候选线本身就带有选中效果，选定后再显示源端点小标记。
+}
+
+void ConnectGesture::pressConfirmSource(const Vec2& pos)
+{
+    if (!m_paramDoc || !m_scene) { cancel(); return; }
+    double zoom = 1.0;
+    if (!m_scene->views().isEmpty())
+        zoom = m_scene->views().first()->transform().m11();
+
+    const auto segSnap = m_snapEngine.findSegmentSnap(
+        pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
+
+    // If a source line is already selected:
+    //  - pressing the source POINT starts the connection;
+    //  - pressing anywhere on the selected LINE also starts the connection;
+    //  - pressing another candidate line switches the source.
+    if (m_selectedSourceCandidate.has_value()) {
+        const auto& sel = *m_selectedSourceCandidate;
+        if (const auto* blk = m_paramDoc->findBlock(sel.blockId)) {
+            const Vec2 wp = blk->worldPos(sel.pointId);
+            const double worldRadius = kConnectSnapRadius / (zoom > 1e-9 ? zoom : 1.0);
+            if (pos.distanceTo(wp) <= worldRadius) {
+                beginConnect(sel.blockId, sel.pointId, pos);
+                return;
+            }
+        }
+        if (segSnap) {
+            for (const auto& cand : m_confirmCandidates) {
+                if (cand.blockId == segSnap->blockId && cand.segId == segSnap->segmentId) {
+                    if (cand.blockId == sel.blockId && cand.segId == sel.segId
+                        && cand.pointId == sel.pointId) {
+                        beginConnect(sel.blockId, sel.pointId, pos);
+                        return;
+                    }
+                    m_selectedSourceCandidate = cand;
+                    updateSourcePortMarker();
+                    return;
+                }
+            }
+        }
+        // Press neither on the selected line nor on another candidate: cancel.
+        removeConfirmHighlight();
+        removeSourcePortMarker();
+        m_confirmCandidates.clear();
+        m_selectedSourceCandidate.reset();
+        cancel();
+        return;
+    }
+
+    // No source selected yet: click a candidate line to choose it.
+    if (segSnap) {
+        for (const auto& cand : m_confirmCandidates) {
+            if (cand.blockId == segSnap->blockId && cand.segId == segSnap->segmentId) {
+                m_selectedSourceCandidate = cand;
+                updateSourcePortMarker();
+                return;
+            }
+        }
+    }
+    // Blank or non-candidate click: abort the whole gesture.
+    removeConfirmHighlight();
+    removeSourcePortMarker();
+    m_confirmCandidates.clear();
+    m_selectedSourceCandidate.reset();
+    cancel();
+}
+
 void ConnectGesture::cancel()
 {
     // Abort the in-progress connect drag: restore the exact pre-drag state
@@ -380,7 +476,9 @@ void ConnectGesture::cancel()
     removeConnectMarker();
     removeConnectHalo();
     removeConfirmHighlight();
+    removeSourcePortMarker();
     m_confirmCandidates.clear();
+    m_selectedSourceCandidate.reset();
     m_connectFromBlock = QUuid();
     m_connectFromPoint = QUuid();
     m_connectGroupId = QUuid();
@@ -559,8 +657,49 @@ void ConnectGesture::removeConfirmHighlight()
     }
 }
 
+void ConnectGesture::updateSourcePortMarker()
+{
+    if (!m_scene || !m_paramDoc || !m_selectedSourceCandidate.has_value()) {
+        removeSourcePortMarker();
+        return;
+    }
+    const auto& sel = *m_selectedSourceCandidate;
+    const auto* blk = m_paramDoc->findBlock(sel.blockId);
+    if (!blk) { removeSourcePortMarker(); return; }
+
+    const QPointF c = cad::geo::Coord::toScene(
+        blk->worldPos(sel.pointId).x, blk->worldPos(sel.pointId).y);
+    constexpr double kRadius = 5.0;
+    if (!m_sourcePortMarker) {
+        m_sourcePortMarker = new QGraphicsEllipseItem();
+        m_sourcePortMarker->setPen(QPen(QColor(0x2F6FED), 2.0));
+        m_sourcePortMarker->setBrush(QColor(47, 111, 237, 120));
+        m_sourcePortMarker->setZValue(100.0);
+        m_scene->addItem(m_sourcePortMarker);
+    }
+    m_sourcePortMarker->setRect(c.x() - kRadius, c.y() - kRadius,
+                                2.0 * kRadius, 2.0 * kRadius);
+    m_sourcePortMarker->show();
+}
+
+void ConnectGesture::removeSourcePortMarker()
+{
+    if (m_sourcePortMarker) {
+        if (m_scene) m_scene->removeItem(m_sourcePortMarker);
+        delete m_sourcePortMarker;
+        m_sourcePortMarker = nullptr;
+    }
+}
+
 void ConnectGesture::commitConnectMove()
 {
+    // A failed/plain-move end of the gesture also clears any source selection
+    // highlight (the connection did not complete).
+    removeConfirmHighlight();
+    removeSourcePortMarker();
+    m_confirmCandidates.clear();
+    m_selectedSourceCandidate.reset();
+
     auto* blk = m_paramDoc ? m_paramDoc->findBlock(m_connectFromBlock) : nullptr;
     if (!blk) {
         setState(m_selectionEmpty() ? SelectState::Idle : SelectState::Confirmed);
@@ -844,6 +983,11 @@ void ConnectGesture::cancelAngle()
 void ConnectGesture::finalizeConnection()
 {
     hideAngleHud();
+    // Connection committed: remove the persistent source-selection highlight.
+    removeConfirmHighlight();
+    removeSourcePortMarker();
+    m_confirmCandidates.clear();
+    m_selectedSourceCandidate.reset();
 
     // Snapshot the tuned attachment, then restore the COMPLETE pre-drag state
     // (transform + old attachment) and replay the whole gesture through the

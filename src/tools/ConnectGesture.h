@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QSet>
@@ -70,6 +70,7 @@ public:
     [[nodiscard]] bool active() const {
         return m_state == SelectState::Connecting
             || m_state == SelectState::ConfirmTarget
+            || m_state == SelectState::ConfirmSource
             || m_state == SelectState::AngleInput;
     }
 
@@ -85,6 +86,16 @@ public:
     /// Press while ConfirmTarget: click a candidate segment to confirm the
     /// leader; blank / non-candidate click cancels the gesture.
     void pressConfirmTarget(const Vec2& pos);
+    /// Enter ConfirmSource when several source endpoints overlap at the same
+    /// spot (e.g. component members sharing a corner). The user clicks one of
+    /// the candidate member segments to choose which member endpoint starts
+    /// the connection.
+    void beginSourceConfirm(std::vector<ConfirmCandidate> candidates,
+                            const Vec2& pos);
+    /// Press while ConfirmSource: click a candidate member segment; the chosen
+    /// member endpoint then begins a normal connection drag. Blank /
+    /// non-candidate click cancels.
+    void pressConfirmSource(const Vec2& pos);
     /// Esc / right-click: abort the gesture and restore the pre-drag state.
     void cancel();
     /// Key events while AngleInput (Esc / Enter; the HUD owns all others).
@@ -116,6 +127,10 @@ private:
     /// Mouse move during ConfirmTarget: highlight the hovered candidate line.
     void updateConfirmHighlight(const Vec2& pos);
     void removeConfirmHighlight();
+    /// Show/move the small source-port marker at the selected source line's
+    /// overlapping endpoint (replaces the old yellow line in ConfirmSource).
+    void updateSourcePortMarker();
+    void removeSourcePortMarker();
     /// Collect leader segments whose endpoint lies on the connection spot
     /// (overlapping-target disambiguation candidates).
     std::vector<ConfirmCandidate> collectConfirmCandidates(
@@ -172,7 +187,12 @@ private:
     // Overlapping-target disambiguation (ConfirmTarget state): candidate
     // leader SEGMENTS whose endpoint lies on the connection spot.
     std::vector<ConfirmCandidate> m_confirmCandidates;
-    QGraphicsPathItem* m_confirmHighlight = nullptr;  ///< Hovered candidate line.
+    /// Source-side disambiguation (ConfirmSource state): after the user picks
+    /// a member segment, this remembers the chosen endpoint so the source-port
+    /// marker persists until the connection is committed or cancelled.
+    std::optional<ConfirmCandidate> m_selectedSourceCandidate;
+    QGraphicsPathItem* m_confirmHighlight = nullptr;  ///< Hovered candidate line (ConfirmTarget only).
+    QGraphicsEllipseItem* m_sourcePortMarker = nullptr;  ///< Selected source endpoint marker.
 
     // Angle HUD state
     QPointer<AngleHud> m_angleHud;   ///< Viewport-overlay angle input (owned).

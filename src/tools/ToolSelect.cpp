@@ -272,6 +272,9 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         if (event->button() == Qt::LeftButton
             && m_state == SelectState::ConfirmTarget)
             m_connectGesture->pressConfirmTarget(pos);
+        else if (event->button() == Qt::LeftButton
+                 && m_state == SelectState::ConfirmSource)
+            m_connectGesture->pressConfirmSource(pos);
         return;
     }
 
@@ -950,19 +953,17 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
     // Collect eligible blocks: explicitly selected blocks + all members of any
     // selected group (组内任意端点均可发起组件对外挂接).
     QSet<QUuid> eligibleBlocks = m_selection;
-    QUuid activeGroupId;
     for (const auto& selId : m_selection) {
         const QUuid gid = m_paramDoc->groupOfBlock(selId);
         if (!gid.isNull()) {
-            activeGroupId = gid;
             for (const auto& bid : m_paramDoc->blocksInGroup(gid))
                 eligibleBlocks.insert(bid);
         }
     }
 
-    // Find the best matching candidate: prefer directly selected block, fallback to group member,
-    // and if nothing is selected, any snappable active-layer endpoint can initiate a connection.
-    const SnapResult* pickedCand = nullptr;
+    // Filter to valid source candidates (same rules as before: eligible,
+    // non-bridge, active layer, no external welded attachment).
+    std::vector<SnapResult> validCands;
     for (const auto& c : cands) {
         if (!eligibleBlocks.isEmpty() && !eligibleBlocks.contains(c.blockId))
             continue;
@@ -990,13 +991,55 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
         }
         if (externalWelded) continue;
 
-        if (!m_selection.isEmpty() && m_selection.contains(c.blockId)) {
+        // 方案A 排除规则（用户拍板）：已经是 follower 的块不能作为组件对外
+        // 连接端口。引擎森林不变式保证每个块最多只能是一个 attachment 的
+        // follower，因此整个块都不能再作为新连接的 fromBlock。
+        bool isFollower = false;
+        for (const auto& att : m_paramDoc->attachments())
+            if (att.fromBlockId == c.blockId) { isFollower = true; break; }
+        if (isFollower) continue;
+
+        validCands.push_back(c);
+    }
+
+    // 方案A: 源端重叠确认. When several valid source endpoints share the same
+    // spot, do NOT silently pick the first one — enter ConfirmSource so the
+    // user clicks the member segment whose endpoint should be the hinge point.
+    if (validCands.size() >= 2) {
+        const cad::geo::Vec2 refPos = validCands.front().worldPos;
+        std::vector<SnapResult> overlap;
+        for (const auto& c : validCands)
+            if (c.worldPos.distanceTo(refPos) < kSnapOverlapEps)
+                overlap.push_back(c);
+
+        if (overlap.size() > 1) {
+            std::vector<ConfirmCandidate> sourceCandidates;
+            for (const auto& c : overlap) {
+                const auto* blk = m_paramDoc->findBlock(c.blockId);
+                if (!blk) continue;
+                for (const auto& seg : blk->segments) {
+                    if (seg.startPointId == c.pointId || seg.endPointId == c.pointId)
+                        sourceCandidates.push_back({c.blockId, seg.id, c.pointId});
+                }
+            }
+            if (!sourceCandidates.empty()) {
+                m_connectGesture->beginSourceConfirm(
+                    std::move(sourceCandidates), pos);
+                return true;
+            }
+        }
+    }
+
+    // Unambiguous source: prefer a directly selected block, otherwise the first
+    // valid candidate (fallback for grouped members at a non-overlapping spot).
+    const SnapResult* pickedCand = nullptr;
+    for (const auto& c : validCands) {
+        if (m_selection.contains(c.blockId)) {
             pickedCand = &c;
             break;  // Highest priority: directly selected block
         }
-        if (!pickedCand) {
+        if (!pickedCand)
             pickedCand = &c;
-        }
     }
 
     if (pickedCand) {

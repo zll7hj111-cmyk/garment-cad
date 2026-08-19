@@ -52,6 +52,7 @@ private slots:
     void rotateFreeGroupRotatesAllMembersRigidly();
     void toolRotateIdentifiesGroupHinge();
     void groupStackedPointCanActivelyConnectToExternal();
+    void componentSourceConfirmCanChooseEitherMember();
     void toolRotateComponentHingeEditsFollowerAngle();
 };
 
@@ -132,6 +133,8 @@ void TestGroupGuards::internalConnectionCannotBeDetached()
     QCOMPARE(doc.attachments().size(), size_t(1));
     QCOMPARE(doc.attachments().front().fromBlockId, b.blockId);
     QCOMPARE(doc.attachments().front().toBlockId, a.blockId);
+    // 方案A 排除 follower: B 是内部 follower，不能作为对外端口,
+    // 因此重叠角点只剩下 A.end 一个合法源候选，直接进入 Connecting。
     QCOMPARE(select.state(), cad::tools::SelectState::Connecting);
 
     select.deactivate();
@@ -460,7 +463,8 @@ void TestGroupGuards::groupStackedPointCanActivelyConnectToExternal()
     connPress.setButtons(Qt::LeftButton);
     select.mousePress(&connPress);
 
-    // 连接手势应当成功触发 (Connecting 态)!
+    // 方案A 排除 follower: B 是内部 follower（fromBlockId = B），不能作为
+    // 组件对外端口，所以 (100,0) 只剩 A.end 一个合法源候选 → 直接 Connecting。
     QCOMPARE(select.state(), cad::tools::SelectState::Connecting);
 
     // 6. 拖动到外部 leader 的起点 (200, 0) 附近
@@ -499,7 +503,9 @@ void TestGroupGuards::groupStackedPointCanActivelyConnectToExternal()
     const auto* hinge = doc.componentHinge(gid);
     QVERIFY(hinge != nullptr);
     QCOMPARE(hinge->leaderBlockId, leader.blockId);
-    QVERIFY(!hinge->memberBlockId.isNull());
+    // B 被排除后 A.end 是唯一合法源点。
+    QCOMPARE(hinge->memberBlockId, a.blockId);
+    QCOMPARE(hinge->memberPointId, a.endId);
 
     // 连接手势走 ParamDocument 自有的 undoStack（ToolSelect 的 stack 只管
     // 成组/删除等命令; ConnectGesture 内部固定使用 doc.undoStack()）。
@@ -509,6 +515,89 @@ void TestGroupGuards::groupStackedPointCanActivelyConnectToExternal()
     QVERIFY(!doc.hasComponentHinge(gid));
     docStack->redo();
     QVERIFY(doc.hasComponentHinge(gid));
+
+    select.deactivate();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 方案A 源端确认: 同一重叠位置可以点选不同成员线段，明确不同 memberBlockId。
+// 这里点选 B 的线段，铰链源点必须是 B.start。
+// ─────────────────────────────────────────────────────────────────────────────
+void TestGroupGuards::componentSourceConfirmCanChooseEitherMember()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+
+    auto leader = makeLine(doc, 100.0, Vec2{300.0, 0.0});  // (300,0)->(400,0)
+    auto a = makeLine(doc, 100.0);                    // (0,0)->(100,0)
+    auto b = makeLine(doc, 100.0, Vec2{100.0, 0.0});  // (100,0)->(200,0)
+
+    // 不加内部连接：让 A.end 与 B.start 都作为合法空闲源点，验证用户可任选其一。
+    const QUuid gid = doc.createGroup({a.blockId, b.blockId});
+    QVERIFY(!gid.isNull());
+    doc.resolveAll();
+    scene.refreshAllBlockItems();
+
+    cad::tools::ToolSelect select;
+    select.activate(scene, &doc);
+    select.selectBlocksExternally({a.blockId, b.blockId});
+    QCOMPARE(select.state(), cad::tools::SelectState::Confirmed);
+
+    // 在重叠角点按下 → 源端确认态。
+    QGraphicsSceneMouseEvent connPress(QEvent::GraphicsSceneMousePress);
+    connPress.setScenePos(QPointF(100.0, 0.0));
+    connPress.setButton(Qt::LeftButton);
+    connPress.setButtons(Qt::LeftButton);
+    select.mousePress(&connPress);
+    QCOMPARE(select.state(), cad::tools::SelectState::ConfirmSource);
+
+    // 点选 B 的线段（水平边中点），明确用 B.start 作为组件主连接源点；高亮保留。
+    QGraphicsSceneMouseEvent sourcePress(QEvent::GraphicsSceneMousePress);
+    sourcePress.setScenePos(QPointF(150.0, 0.0));
+    sourcePress.setButton(Qt::LeftButton);
+    sourcePress.setButtons(Qt::LeftButton);
+    select.mousePress(&sourcePress);
+    QCOMPARE(select.state(), cad::tools::SelectState::ConfirmSource);
+
+    // 按住已选线段的任意位置（这里选 B 线中段 150,0）也应开始连接拖动。
+    QGraphicsSceneMouseEvent pointPress(QEvent::GraphicsSceneMousePress);
+    pointPress.setScenePos(QPointF(150.0, 0.0));
+    pointPress.setButton(Qt::LeftButton);
+    pointPress.setButtons(Qt::LeftButton);
+    select.mousePress(&pointPress);
+    QCOMPARE(select.state(), cad::tools::SelectState::Connecting);
+
+    // 拖到外部 leader 并提交角度。
+    QGraphicsSceneMouseEvent connMove(QEvent::GraphicsSceneMouseMove);
+    connMove.setScenePos(QPointF(300.0, 0.0));
+    connMove.setButton(Qt::NoButton);
+    connMove.setButtons(Qt::LeftButton);
+    select.mouseMove(&connMove);
+
+    QGraphicsSceneMouseEvent connRelease(QEvent::GraphicsSceneMouseRelease);
+    connRelease.setScenePos(QPointF(300.0, 0.0));
+    connRelease.setButton(Qt::LeftButton);
+    connRelease.setButtons(Qt::NoButton);
+    select.mouseRelease(&connRelease);
+    // 目标端也有重叠（A.end 随刚体移到同一位置 + leader.start）→ 先确认目标线段。
+    QCOMPARE(select.state(), cad::tools::SelectState::ConfirmTarget);
+
+    QGraphicsSceneMouseEvent targetPress(QEvent::GraphicsSceneMousePress);
+    targetPress.setScenePos(QPointF(350.0, 0.0));
+    targetPress.setButton(Qt::LeftButton);
+    targetPress.setButtons(Qt::LeftButton);
+    select.mousePress(&targetPress);
+    QCOMPARE(select.state(), cad::tools::SelectState::AngleInput);
+
+    QKeyEvent enterKey(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    select.keyPress(&enterKey);
+
+    QVERIFY(doc.hasComponentHinge(gid));
+    const auto* hinge = doc.componentHinge(gid);
+    QVERIFY(hinge != nullptr);
+    QCOMPARE(hinge->memberBlockId, b.blockId);
+    QCOMPARE(hinge->memberPointId, b.startId);
 
     select.deactivate();
 }
