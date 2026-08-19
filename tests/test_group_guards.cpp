@@ -48,7 +48,7 @@ private slots:
     void internalConnectionCannotBeDetached();
     void badgeCreatedAndPositioned();
     void badgeClickAndHoverWired();
-    void singleSelectHighlightsWholeGroupWhileDragMovesGroup();
+    void singleSelectPicksMemberWhileDragMovesGroup();
     void rotateFreeGroupRotatesAllMembersRigidly();
     void toolRotateIdentifiesGroupHinge();
     void groupStackedPointCanActivelyConnectToExternal();
@@ -57,8 +57,8 @@ private slots:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 整组删除: 点成员=选整组，删除前工具层再把选中集展开为整组，因此 Del 删除
-// 的是整组记录（跨边界线正常善后，不设结构保护）。undo 完整还原。
+// 整组删除: 点成员=单选线段，但删除前工具层仍把选中集展开为整组，因此 Del
+// 删除的是整组记录（跨边界线正常善后，不设结构保护）。undo 完整还原。
 // ─────────────────────────────────────────────────────────────────────────────
 void TestGroupGuards::delOnMemberDeletesWholeGroup()
 {
@@ -237,9 +237,9 @@ void TestGroupGuards::badgeClickAndHoverWired()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 单选点成员=选整组（整组高亮），拖动时带动整组平移
+// 单选点成员=只选该线段（不展开整组），拖动时带动整组平移
 // ─────────────────────────────────────────────────────────────────────────────
-void TestGroupGuards::singleSelectHighlightsWholeGroupWhileDragMovesGroup()
+void TestGroupGuards::singleSelectPicksMemberWhileDragMovesGroup()
 {
     ParamDocument doc;
     doc.setActiveLayer(layerIdAt(doc, 1));
@@ -253,17 +253,17 @@ void TestGroupGuards::singleSelectHighlightsWholeGroupWhileDragMovesGroup()
     cad::tools::ToolSelect select;
     select.activate(scene, &doc);
 
-    // 1. Click on member A (user coords: (50, 0)) -> WHOLE group selected
+    // 1. Click on member A (user coords: (50, 0)) -> ONLY A is selected
     QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
     press1.setScenePos(QPointF(50.0, 0.0));
     press1.setButton(Qt::LeftButton);
     press1.setButtons(Qt::LeftButton);
     select.mousePress(&press1);
 
-    // 统一点成员=选整组: selection contains BOTH members.
-    QCOMPARE(select.selection().size(), 2);
+    // 点成员=单选线段: selection contains ONLY the clicked member A.
+    QCOMPARE(select.selection().size(), 1);
     QVERIFY(select.selection().contains(a.blockId));
-    QVERIFY(select.selection().contains(b.blockId));
+    QVERIFY(!select.selection().contains(b.blockId));
     QCOMPARE(select.state(), cad::tools::SelectState::Selecting);
 
     // 2. Right-click confirms the selection
@@ -443,7 +443,7 @@ void TestGroupGuards::groupStackedPointCanActivelyConnectToExternal()
     select.activate(scene, &doc);
     select.setUndoStack(&stack);
 
-    // 4. 单选模式点 member A = 选整组，再右键确认
+    // 4. 单选模式点 member A = 只选 A，再右键确认
     QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
     press1.setScenePos(QPointF(50.0, 0.0));
     press1.setButton(Qt::LeftButton);

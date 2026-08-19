@@ -202,18 +202,12 @@ void ToolSelect::showToast(const QString& text)
 
 void ToolSelect::toggleBlock(const QUuid& blockId)
 {
-    // Group = minimal selection unit: toggling a member toggles the WHOLE
-    // group (整组进整组出). Single mode also selects the whole group (统一点
-    // 成员=选整组); point-level editing still works through endpoint/curve
-    // gestures before the selection replacement.
-    const QSet<QUuid> ids = wholeGroupSet(blockId);
-    bool anySelected = false;
-    for (const QUuid& id : ids)
-        if (m_selection.contains(id)) { anySelected = true; break; }
-    for (const QUuid& id : ids) {
-        if (anySelected) m_selection.remove(id);
-        else             m_selection.insert(id);
-    }
+    // 点成员=单选线段: canvas 上的点击只切换被点击的这一条线段, 不展开成整组.
+    // 整组操作只发生在真正需要“组”的语境 (拖动/旋转/删除/面板/包围框) —
+    // 那些入口仍会按组展开; 这里保留单条线段的点击编辑/查看语义.
+    const bool anySelected = m_selection.contains(blockId);
+    if (anySelected) m_selection.remove(blockId);
+    else             m_selection.insert(blockId);
 
     m_confirmed = false;  // any toggle invalidates confirmation
     syncSelectionVisual();
@@ -231,13 +225,17 @@ void ToolSelect::syncSelectionVisual()
             bi->setToolLocked(inSel && m_confirmed);  // confirmed = bold
         }
     }
-    // Accent the badges of groups inside the selection (selection always
-    // expands to whole groups, so any touched group is complete).
+    // Accent a group badge only when the WHOLE group is selected (外部选中/
+    // 框选/包围框/整组删除入口仍会展开); 点成员现在只选单条线段, 不点亮整组徽标.
     QSet<QUuid> selGroups;
     for (const QUuid& id : m_selection) {
         const QUuid gid = m_paramDoc->groupOfBlock(id);
-        if (!gid.isNull())
-            selGroups.insert(gid);
+        if (gid.isNull()) continue;
+        const QList<QUuid> members = m_paramDoc->blocksInGroup(gid);
+        bool whole = true;
+        for (const QUuid& member : members)
+            if (!m_selection.contains(member)) { whole = false; break; }
+        if (whole) selGroups.insert(gid);
     }
     m_scene->setGroupSelected(selGroups);
 }
@@ -328,7 +326,7 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
             // 点击空白清选; 无框选.
             if (!blockHit.isNull()) {
                 m_lastHitSegmentId = hitSegmentAt(pos);
-                m_selection = wholeGroupSet(blockHit);   // 点成员=选整组
+                m_selection = {blockHit};   // 点成员=单选线段, 拖动/删除仍整组
                 m_confirmed = false;
                 syncSelectionVisual();
                 setState(SelectState::Selecting);
@@ -361,7 +359,7 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
             if (!blockHit.isNull()) {
                 if (!m_selection.contains(blockHit)) {
                     m_lastHitSegmentId = hitSegmentAt(pos);
-                    m_selection = wholeGroupSet(blockHit);   // 点成员=选整组
+                    m_selection = {blockHit};   // 点成员=单选线段, 拖动/删除仍整组
                     m_confirmed = true;
                     syncSelectionVisual();
                     setState(SelectState::Confirmed);
@@ -378,7 +376,7 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
             // selection to it (also confirmed). 确认后不再减选.
             if (!blockHit.isNull()) {
                 if (!m_selection.contains(blockHit)) {
-                    m_selection = wholeGroupSet(blockHit);   // 点成员=选整组
+                    m_selection = {blockHit};   // 点成员=单选线段, 拖动/删除仍整组
                     m_confirmed = true;
                     syncSelectionVisual();
                     setState(SelectState::Confirmed);
@@ -1106,9 +1104,9 @@ void ToolSelect::deleteSelectedBlocks()
 {
     if (!m_scene || !m_paramDoc || m_selection.isEmpty()) return;
 
-    // 统一点成员=选整组: 删除前把选中集再展开为整组, 因此 Del 删除的是整组
-    // 而不是单个成员 (组内连接与跨边界线随块删除正常善后, 组不设结构保护;
-    // 剩余成员不足 2 时组自动解散).
+    // 点成员=单选线段, 但 Del 仍按整组删除: 删除前把选中集展开为整组, 因此
+    // Del 删除的是整组而不是单个成员 (组内连接与跨边界线随块删除正常善后,
+    // 组不设结构保护; 剩余成员不足 2 时组自动解散).
     QSet<QUuid> expanded;
     for (const QUuid& id : m_selection)
         expanded.unite(wholeGroupSet(id));

@@ -28,15 +28,17 @@ class MarqueeGesture;
 /// Selection tool with ETCAD-style interaction:
 ///   - Left-drag on empty space → marquee (intersect = select; toggle add/remove)
 ///   - Click an object → toggle it in/out of the selection (red highlight);
-///     a GROUP member toggles the WHOLE group (group = minimal selection unit;
-///     点成员=选整组, both modes)
-///   - SINGLE mode: clicking replaces the selection (whole group when the
-///     clicked block is a member); no marquee
+///     a GROUP member toggles only THAT member (点成员=单选线段); the group is
+///     NOT auto-expanded on click — whole-group works happen at 拖动/旋转/删除/
+///     面板/包围框 (those entries expand via group membership as needed)
+///   - SINGLE mode: clicking replaces the selection with the clicked block
+///     only (member or not); no marquee
 ///   - Both modes share ONE 选中→确认→操作 flow: right-click confirms the
 ///     selection (stays red, becomes drag/connect-ready); right-click AGAIN on
 ///     the confirmed set opens the context menu (做成组 / 解散组 / 取消选择)
 ///   - After confirm, press on blank space → drag anchor; move whole selection
-///     (internal group attachments are NEVER detached by a drag)
+///     (a member drag expands to its whole group, so the entire group moves;
+///     internal group attachments are NEVER detached by a drag)
 ///   - Drag release → move committed, selection cleared, back to Idle
 ///   - Ctrl+press on a segment → quick copy (快捷复制): clones follow the
 ///     cursor, release drops them (one undo step), Esc aborts; copying a
@@ -45,10 +47,11 @@ class MarqueeGesture;
 ///   - After confirm, drag from an endpoint → connection preview → release on
 ///     target → attach, then angle HUD (live preview, formula-aware) —
 ///     handled by ConnectGesture
-///   - Double-click segment → property dialog; Del → delete; Esc → clear
-///   - 组模型层零限制: 成组/解散不动几何/连接; 工具层提供整组进整组出
-///     (多选/框选/外部选中)、整组拖动/旋转、结构编辑守卫 (打断/交点/曲线点/
-///     辅助点/终点指向), 删除不设保护且不足 2 成员自动解散.
+///   - Double-click segment → property dialog; Del → delete (expands to the
+///     whole group); Esc → clear
+///   - 组模型层零限制: 成组/解散不动几何/连接; 工具层提供整组拖动/旋转/删除、
+///    结构编辑守卫 (打断/交点/曲线点/辅助点/终点指向), 删除不设保护且不足 2
+///    成员自动解散.
 class ToolSelect : public Tool
 {
 public:
