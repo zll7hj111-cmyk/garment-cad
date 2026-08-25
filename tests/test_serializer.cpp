@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QUuid>
@@ -838,7 +838,6 @@ void TestSerializer::serialCountersRoundTrip()
     (void)src.newPointSerial();
     (void)src.newLineSerial();
     (void)src.newLineSerial();
-    (void)src.newGroupSerial();
 
     QJsonObject json = DocumentSerializer::serialize(src);
     ParamDocument dst;
@@ -846,7 +845,7 @@ void TestSerializer::serialCountersRoundTrip()
 
     QCOMPARE(dst.pointSeq(), src.pointSeq());
     QCOMPARE(dst.lineSeq(), src.lineSeq());
-    QCOMPARE(dst.groupSeq(), src.groupSeq());
+    // groupSeq removed
 }
 
 void TestSerializer::fullDocumentRoundTrip()
@@ -871,7 +870,7 @@ void TestSerializer::fullDocumentRoundTrip()
     QCOMPARE((int)dst.freePoints().size(), (int)src.freePoints().size());
     QCOMPARE(dst.pointSeq(), src.pointSeq());
     QCOMPARE(dst.lineSeq(), src.lineSeq());
-    QCOMPARE(dst.groupSeq(), src.groupSeq());
+    // groupSeq removed
 
     // Re-serialize the restored document and compare JSON
     QJsonObject json3 = DocumentSerializer::serialize(dst);

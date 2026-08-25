@@ -44,6 +44,7 @@ private slots:
     void connPointRetargetReplacesAttachment();
     void endTargetRotationDoesNotOffsetFollowers();
     void curveAnchorResolvesOnChord();
+    void rigidDragKeepsCurveCacheFrozen();
     void curveAnchorFollowsEndpoints();
     void curveAnchorKeepsFullOffsetNearEndpoint();
     void arcLengthZeroMeansFoldBack0();
@@ -1221,6 +1222,67 @@ void TestResolver::curveAnchorResolvesOnChord()
     Vec2 pos = b.worldPos(anchorId);
     QCOMPARE(std::abs(pos.x - 50.0) < 1e-6, true);
     QCOMPARE(std::abs(pos.y - 20.0) < 1e-6, true);
+}
+
+// 曲线缓存惰性重建回归 (用户报告 2026-09: 跟随对象拖动时曲线抖来抖去 +
+// 无谓开销): 纯刚体拖动 (transform 变化) 不得重建曲线缓存 (无 C2/flatten
+// 重算, epoch/span 冻结); 只有局部几何真正变化时才重建.
+void TestResolver::rigidDragKeepsCurveCacheFrozen()
+{
+    Block block;
+    ParamPoint sp;
+    sp.constraint = PointConstraint::Free;
+    sp.freePos = {0.0, 0.0};
+    QUuid spId = block.addPoint(sp);
+    ParamPoint ep;
+    ep.constraint = PointConstraint::Free;
+    ep.freePos = {100.0, 0.0};
+    QUuid epId = block.addPoint(ep);
+
+    Segment seg;
+    seg.startPointId = spId;
+    seg.endPointId = epId;
+    seg.type = cad::param::SegmentType::Bezier;  // 曲线段 → 帧级 span 缓存
+    QUuid segId = block.addSegment(seg);
+
+    ParamPoint anchor;
+    anchor.constraint = PointConstraint::CurveAnchor;
+    anchor.hostSegmentId = segId;
+    anchor.interpPercent = 0.5;
+    anchor.interpOffsetDist = 20.0;
+    QUuid anchorId = block.addPoint(anchor);
+    // isCurve() = type==Bezier && passPointIds 非空 — 必须写进块内的 segment.
+    block.findSegment(segId)->passPointIds.push_back(anchorId);
+
+    std::vector<Block> blocks;
+    blocks.push_back(std::move(block));
+    std::vector<Attachment> attachments;
+    Resolver::resolveAll(blocks, attachments);
+    Block& b = blocks[0];
+
+    const quint64 epoch0 = b.geometryEpoch;
+    const quint64 builds0 = b.curveCacheBuilds;
+    const auto* entry0 = b.curveSpanEntry(segId);
+    QVERIFY(entry0 && !entry0->spans.empty());
+    const auto flat0 = entry0->flatLocal;
+
+    // 纯刚体拖动 (平移 + 旋转 — 与 ConnectGesture::move 每帧同路径):
+    // 局部几何零变化 → epoch 不变、曲线缓存零重建、span 逐字节相同.
+    b.transform.origin = {55.0, -30.0};
+    b.transform.rotation = 0.7;
+    Resolver::resolveAll(blocks, attachments);
+    QCOMPARE(b.geometryEpoch, epoch0);      // 无局部点移动
+    QCOMPARE(b.curveCacheBuilds, builds0);  // 没有 C2 重解 / 重 flatten
+    const auto* entryA = b.curveSpanEntry(segId);
+    QVERIFY(entryA && entryA->flatLocal == flat0);
+
+    // 局部变化 (锚点 percent 移动) → epoch 变化 + 缓存重建 + span 更新.
+    if (auto* pa = b.findPoint(anchorId)) pa->interpPercent = 0.8;
+    Resolver::resolveAll(blocks, attachments);
+    QVERIFY(b.geometryEpoch != epoch0);
+    QCOMPARE(b.curveCacheBuilds, builds0 + 1);
+    const auto* entryB = b.curveSpanEntry(segId);
+    QVERIFY(entryB && entryB->flatLocal != flat0);
 }
 
 void TestResolver::curveAnchorFollowsEndpoints()

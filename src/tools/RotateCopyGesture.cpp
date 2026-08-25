@@ -1,4 +1,4 @@
-#include "RotateCopyGesture.h"
+﻿#include "RotateCopyGesture.h"
 
 #include <cmath>
 
@@ -223,8 +223,12 @@ void RotateCopyGesture::applyAngle(double deg)
         a->followerAngle = 180.0 - (m_baseOffsetDeg + deg);
         a->followerAngleFormula.clear();
     }
-    o.m_paramDoc->resolveAll();
-    if (o.m_scene) o.m_scene->refreshAllBlockItems();
+    // Per-frame hot path (旋转复制拖动每帧): resolve ONLY the clone's dirty
+    // subgraph; the original stays at its base pose (frozen, out of affected).
+    // Old resolveAll() + refreshAllBlockItems() re-resolved the whole document
+    // and rebuilt every block item per frame.
+    o.m_paramDoc->resolveForDrag(QList<QUuid>{m_cloneBlockId});
+    if (o.m_scene) o.m_scene->syncBlockPositions();
 }
 
 void RotateCopyGesture::applyFormulaValue(double value)
@@ -238,8 +242,8 @@ void RotateCopyGesture::applyFormulaValue(double value)
         a->followerAngle = 180.0 - (m_baseOffsetDeg + value);
         a->followerAngleFormula.clear();
     }
-    o.m_paramDoc->resolveAll();
-    if (o.m_scene) o.m_scene->refreshAllBlockItems();
+    o.m_paramDoc->resolveForDrag(QList<QUuid>{m_cloneBlockId});
+    if (o.m_scene) o.m_scene->syncBlockPositions();
 }
 
 double RotateCopyGesture::currentRelativeAngle() const

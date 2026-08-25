@@ -44,10 +44,6 @@ void CopyDragController::begin(const QSet<QUuid>& selection,
         m_paramDoc->addBlock(b);
     // Verbatim: cloned connections keep the ORIGINAL's isLocked (复制语义).
     m_paramDoc->addAttachmentsRaw(m_copyResult.attachments);
-    // Group clone preview (副本成新组): register the clone group so guards
-    // see it during the gesture; the command re-registers it on replay.
-    if (m_copyResult.newGroup)
-        m_paramDoc->restoreGroup(*m_copyResult.newGroup, m_copyResult.newGroupMembers);
 
     // Anchor the drag on the LIVE origins (followers were just resolver-placed).
     m_copyStartPos = pos;
@@ -111,9 +107,6 @@ void CopyDragController::cancel()
 void CopyDragController::removeCopyPreview()
 {
     if (!m_paramDoc) return;
-    // Clone group first (its members vanish right after).
-    if (m_copyResult.newGroup)
-        m_paramDoc->dissolveGroup(m_copyResult.newGroup->id);
     // Attachments first (removeBlock would drop them anyway); new linked
     // variables last — they reference ORIGINAL blocks and survive removeBlock.
     for (const auto& att : m_copyResult.attachments)

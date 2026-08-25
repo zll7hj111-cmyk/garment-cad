@@ -19,11 +19,25 @@ constexpr double radToDeg(double rad) { return rad * 180.0 / kPi; }
 
 /// Normalize an angle in degrees to the range (-180, 180].
 /// Correctly maps +180 → +180 (not -180).
+///
+/// This is the 带符号折角 display convention (v3 定稿): 折叠 0° / 垂直 ±90° /
+/// 开平 ±180°, 符号 = 折向 (alpha > 180° → alpha − 360°). Formerly duplicated
+/// as signedFoldDeg in ToolRotate/ConnectGesture/SegmentConnectionCard.
 inline double normalizeDeg180(double deg)
 {
     while (deg >  180.0) deg -= 360.0;
     while (deg <= -180.0) deg += 360.0;
     return deg;
+}
+
+/// Normalize an angle in degrees to the storage domain [0, 360) (存储域 α —
+/// followerAngle / dart angles / serialization). Formerly duplicated as
+/// alphaFromSignedFold in ToolRotate/ConnectGesture/SegmentConnectionCard.
+inline double normalizeDeg360(double deg)
+{
+    double a = std::fmod(deg, 360.0);
+    if (a < 0.0) a += 360.0;
+    return a;
 }
 
 /// Normalize an angle in radians to the range (-π, π].

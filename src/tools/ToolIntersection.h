@@ -91,8 +91,6 @@ private:
 
     /// Reset to initial state (SelectLine).
     void resetState();
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::SelectLine;
 
     // --- Selection state ---
@@ -128,7 +126,6 @@ private:
     QGraphicsEllipseItem* m_originMarker = nullptr;  ///< Circle at origin A.
     QGraphicsEllipseItem* m_aimMarker    = nullptr;  ///< Circle at the aim point (指向点).
     QGraphicsLineItem*    m_segHighlight = nullptr;  ///< Highlighted target segment overlay.
-    HudItem*              m_hud          = nullptr;  ///< Angle/distance HUD label.
 };
 
 } // namespace cad::tools

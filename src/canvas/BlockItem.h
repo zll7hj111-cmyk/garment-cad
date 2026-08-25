@@ -92,10 +92,6 @@ public:
     void setToolLocked(bool locked);
     [[nodiscard]] bool toolLocked() const { return m_toolLocked; }
 
-    /// Group-hover flag (成组悬停): a SIBLING member of this block's user
-    /// group is under the cursor — every segment lights up in Hover state so
-    /// the whole group reads as one unit. Lower priority than selection.
-    void setGroupHovered(bool hovered);
 
 protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override;
@@ -134,8 +130,6 @@ private:
     QUuid m_leaderEntity;   ///< Segment highlighted as leader candidate (null = none).
     bool  m_toolSelected = false;  ///< Tool-managed selection (red highlight).
     bool  m_toolLocked   = false;  ///< Confirmed selection (red + bold).
-    bool  m_groupHovered = false;  ///< A sibling group member is hovered.
-    bool  m_hoverNotified = false; ///< Scene knows this item is the hover source.
     QSet<CurveItem*> m_curvesUnderCursor;  ///< Curve children currently hovered.
 
     /// True when @p entityId belongs to one of this block's curve children.

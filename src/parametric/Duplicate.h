@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QList>
 #include <QUuid>
@@ -7,7 +7,6 @@
 
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
-#include "parametric/Group.h"
 #include "parametric/LinkedVariable.h"
 
 namespace cad::param {
@@ -21,10 +20,6 @@ struct DuplicateResult {
     std::vector<LinkedVariable> newLinked;  ///< Bridge-length linked variables
                                             ///< auto-published for released
                                             ///< bridge copies (may be empty).
-    std::optional<Group> newGroup;          ///< Set when the source set IS exactly
-                                            ///< one complete user group: the clone
-                                            ///< group record (fresh id + serial).
-    QList<QUuid> newGroupMembers;           ///< Clone block ids of newGroup.
     [[nodiscard]] bool isEmpty() const { return blocks.empty(); }
 };
 
@@ -55,9 +50,6 @@ struct DuplicateResult {
 /// The document is NOT modified (serial counters advance only); the caller
 /// adds the result via DuplicateBlocksCommand or directly for live preview.
 ///
-/// Group clone (副本成新组): when the source set equals ONE complete user
-/// group, result.newGroup carries a fresh group record whose members are the
-/// clones — the copy is a group again (用户拍板).
 [[nodiscard]] DuplicateResult duplicateBlocks(ParamDocument& doc,
                                               const QList<QUuid>& blockIds);
 

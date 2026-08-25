@@ -69,8 +69,6 @@ private:
     /// Create the MeasureVariable from the two snapped points.
     void commitMeasure();
 
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::SelectA;
     cad::param::MeasureKind m_kind = cad::param::MeasureKind::Distance;
     cad::geo::Vec2 m_lastCursor;  ///< Last mouse position (W-refresh of preview).
@@ -82,7 +80,6 @@ private:
     // Preview graphics
     QGraphicsLineItem*    m_previewLine = nullptr;  ///< Dashed A→cursor line.
     QGraphicsEllipseItem* m_markerA     = nullptr;  ///< Circle at point A.
-    HudItem*              m_hud         = nullptr;  ///< Live measurement readout.
 };
 
 } // namespace cad::tools

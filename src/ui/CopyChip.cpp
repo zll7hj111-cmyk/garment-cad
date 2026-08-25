@@ -1,4 +1,4 @@
-#include "CopyChip.h"
+﻿#include "CopyChip.h"
 
 #include "ElaText.h"
 #include "ElaLineEdit.h"
@@ -254,8 +254,7 @@ void CopyChip::copyText()
 
     m_label->setText(QString::fromUtf8("✓ 已复制"));
     m_label->setStyleSheet(
-        "QLabel { font-size: 11px; font-weight: bold; color: #16A34A;"
-        "  background: #E9F7EF; border-radius: 2px; padding: 0 2px; }");
+        Theme::badgeStyle(Theme::tokens().success, "QLabel"));
     QTimer::singleShot(800, this, [this]() {
         m_label->setStyleSheet(QString());  // clear the flash, back to global QSS
         m_placeholderStyled = false;

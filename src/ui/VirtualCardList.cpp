@@ -69,7 +69,12 @@ QWidget* VirtualCardList::widgetFor(const QUuid& key) const
 void VirtualCardList::setRows(const QVector<QUuid>& keys)
 {
     if (keys == m_keys) {
-        rebindAll();
+        // 2026-09 性能: 结构未变时不再全量 rebindAll —— resolved 每帧触发
+        // (拖拽帧), 值级刷新即可; 未装 value binder 的宿主回退旧行为.
+        if (m_valueBinder)
+            refreshValues();
+        else
+            rebindAll();
         return;
     }
 
@@ -129,6 +134,21 @@ void VirtualCardList::rebindAll()
         const int row = m_keyIndex.value(key, -1);
         if (row >= 0)
             m_binder(row, w);
+    }
+}
+
+void VirtualCardList::refreshValues()
+{
+    if (!m_valueBinder) {
+        rebindAll();
+        return;
+    }
+    // Snapshot: value binders may commit edits / re-enter.
+    const auto snapshot = m_widgets;
+    for (auto it = snapshot.cbegin(); it != snapshot.cend(); ++it) {
+        const int row = m_keyIndex.value(it.key(), -1);
+        if (row >= 0)
+            m_valueBinder(row, it.value());
     }
 }
 

@@ -7,6 +7,7 @@
 
 #include "CanvasStyle.h"
 #include "CanvasAnimator.h"
+#include "parametric/MeasureVariable.h"
 
 class QGraphicsRectItem;
 class QTimer;
@@ -14,7 +15,6 @@ class QTimer;
 namespace cad::param { class ParamDocument; }
 
 class BlockItem;
-class GroupBadgeItem;
 
 /// The scene that holds all entity items and the origin crosshair.
 /// Owns the CanvasStyle (design tokens) and CanvasAnimator (transition engine).
@@ -60,15 +60,10 @@ public:
     void syncBlockPositions(const QList<QUuid>& blockIds);
 
     /// Select exactly the given block on canvas (clears previous selection).
-    /// Drives group highlighting via selectionChanged.
     void selectBlock(const QUuid& blockId);
 
     /// Find the BlockItem for a block (nullptr if none).
     [[nodiscard]] BlockItem* findBlockItem(const QUuid& blockId) const;
-
-    /// Notify listeners (e.g. group panel) that group display info (names or
-    /// follower angles) changed without a structural topology change.
-    void notifyGroupInfoChanged();
 
     /// Transient hold-to-show overrides (N/L keys held on canvas). Purely
     /// visual — the model is untouched, no cache rebuild, no epoch bump.
@@ -89,30 +84,14 @@ public:
     /// either block/point is missing or unresolved (caller falls back to a
     /// whole-block highlight).
     bool flashMeasure(const QUuid& blockA, const QUuid& pointA,
-                      const QUuid& blockB, const QUuid& pointB);
+                       const QUuid& blockB, const QUuid& pointB,
+                       cad::param::MeasureKind kind = cad::param::MeasureKind::Distance);
 
-    /// Group-hover coordination (成组悬停): nominate the block under the
-    /// cursor as the hover source — every SIBLING member of its user group
-    /// lights up (null id clears the broadcast).
-    void setGroupHoverSource(const QUuid& blockId);
-
-    /// Reconcile the group visual markers (组包围框): create/drop dashed
-    /// bounding boxes for groups that appeared/vanished, refresh visibility
-    /// (members all on manually hidden layers → marker hidden) and reposition.
-    /// Runs on group registry / layer changes (LOW frequency) — marker
-    /// geometry during live drags is handled by updateGroupBadgePositions()
-    /// alone.
-    void reconcileGroupBadges();
-    /// Reposition every marker at its member union bounds. Cheap — the
-    /// per-frame path after resolves; never creates/drops boxes or rewrites
-    /// labels (membership/visibility changes land via reconcile).
-    void updateGroupBadgePositions();
-    /// The visual marker item of a group (null when the group has none).
-    [[nodiscard]] GroupBadgeItem* groupBadge(const QUuid& groupId) const;
-    /// Accent the badges of the given groups (selection state, driven by
-    /// ToolSelect's confirmed selection).
-    void setGroupSelected(const QSet<QUuid>& groupIds);
-
+    /// Flash an angle measurement: its two source segments plus a half arc at
+    /// the line intersection. The transient graphics self-destruct after
+    /// ~1.5 s. Returns false when either segment is missing/unresolved.
+    bool flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
+                           const QUuid& blockB, const QUuid& segmentB);
     /// Notify listeners (MainWindow) that a segment was just created by the
     /// smart pen. The host shows the status-bar edit strip (SegmentEditBar)
     /// for immediate naming/length/angle edits — no creation dialog.
@@ -123,9 +102,6 @@ public:
 
 signals:
     void sceneMouseMoved(qreal x, qreal y);
-    void groupInfoChanged();
-    /// Badge clicked — the host window selects the whole group on canvas.
-    void groupBadgeClicked(const QUuid& groupId);
     /// A segment was just created (smart pen commit). blockId/segmentId
     /// identify the NEW line; the host shows the status-bar edit strip.
     void lineCreated(const QUuid& blockId, const QUuid& segmentId);
@@ -139,8 +115,17 @@ protected:
     void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
 
 private:
+    /// Rebuild the component bounding-box overlays (add/remove/reposition).
+    void refreshComponentBoxes();
+
     cad::param::ParamDocument* m_paramDoc = nullptr;
     QHash<QUuid, BlockItem*> m_blockItems;
+    QHash<QUuid, QGraphicsRectItem*> m_componentBoxes;  ///< componentId -> bbox overlay.
+    /// Component bounding-box geometry caching (2026-09 perf): resolved triggers
+    /// refreshComponentBoxes; the old implementation recomputed every visible
+    /// component's boundingBoxOf(O(member points)). This signature (member epoch +
+    /// origin + rotation + zoom) hashes unchanged results and skips rebuild.
+    QHash<QUuid, quint64> m_componentBoxSig;
 
     CanvasStyle m_style = CanvasStyle::lightTheme();
     CanvasAnimator m_animator;
@@ -148,18 +133,6 @@ private:
     // Toast overlay (owned by the scene, lazily created).
     QGraphicsRectItem* m_toastItem = nullptr;
     QTimer* m_toastTimer = nullptr;
-
-    // Group-hover source (block currently hovered, null = none).
-    QUuid m_groupHoverSource;
-    /// All members of the block's user group (empty when ungrouped).
-    [[nodiscard]] QSet<QUuid> groupMemberSet(const QUuid& blockId) const;
-
-    // Group visual markers (组包围框) — one item per group, reconciled by
-    // reconcileGroupBadges.
-    QHash<QUuid, GroupBadgeItem*> m_groupBadges;
-    QSet<QUuid> m_selectedGroups;   ///< Groups whose markers are accented.
-    void onBadgeHover(const QUuid& groupId, bool hovered);
-    void updateBadgeAccents();
 
     // Hold-to-show overrides (N/L keys): transient view state, never written
     // to the model.

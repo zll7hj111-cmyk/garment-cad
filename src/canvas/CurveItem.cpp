@@ -1,4 +1,4 @@
-#include "CurveItem.h"
+﻿#include "CurveItem.h"
 
 #include <QPainter>
 #include <QPen>
@@ -82,7 +82,16 @@ void CurveItem::setHoveredByParent(bool hovered)
 
 QRectF CurveItem::boundingRect() const
 {
-    return m_data.path.boundingRect().adjusted(-10, -10, 10, 10);
+    // The margin must cover the pick band (shape() strokes the drawn path with
+    // tol = hoverRadiusPx ÷ zoom). QGraphicsSceneIndex (BSP) rejects items
+    // whose boundingRect does not contain the query point, so a margin smaller
+    // than the band makes the item unpickable at low zoom (e.g. zoom 0.2 →
+    // tol ≈ 40 local units; the old ±10 margin silently dropped hits in the
+    // band outside the path bbox — 选择工具对曲线判定不准的另一半成因).
+    // Worst case: hoverRadiusPx(8) / ZOOM_MIN(0.2) = 40 + cap safety.
+    constexpr double kPickMargin = 42.0;
+    return m_data.path.boundingRect().adjusted(-kPickMargin, -kPickMargin,
+                                               kPickMargin, kPickMargin);
 }
 
 QPainterPath CurveItem::shape() const
@@ -101,8 +110,12 @@ QPainterPath CurveItem::shape() const
     tol *= pxToLocal;
 
     // Cached stroked shape: rebuild only when the tolerance changed enough
-    // to matter (sub-pixel). Stroking the coarse control-polygon polyline on
-    // every hit query was the dominant per-frame cost (Seamly2D technique).
+    // to matter (sub-pixel). Stroking the DENSE flattened path (the actual
+    // drawn geometry) on every hit query was the historical per-frame cost —
+    // the old "coarse control-polygon" hit region deviates from the drawn
+    // curve by many millimetres on strong curves, so clicks ON the curve
+    // missed (选择工具对曲线判定失灵, 用户报告 2026-10). The stroke is cached
+    // the same way; only zoom sweeps / geometry changes pay the rebuild.
     if (m_strokedTol > 0.0 &&
         std::abs(tol - m_strokedTol) < m_strokedTol * 0.02)
         return m_strokedShape;
@@ -110,7 +123,7 @@ QPainterPath CurveItem::shape() const
     QPainterPathStroker stroker;
     stroker.setWidth(tol * 2.0);
     stroker.setCapStyle(Qt::RoundCap);
-    m_strokedShape = stroker.createStroke(m_data.shapePath);
+    m_strokedShape = stroker.createStroke(m_data.path);
     m_strokedTol = tol;
     return m_strokedShape;
 }

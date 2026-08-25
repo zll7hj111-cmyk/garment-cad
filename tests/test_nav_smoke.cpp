@@ -131,20 +131,31 @@ int main(int argc, char* argv[])
     // ---- THEME PIXEL PROBE: sample panel backgrounds in Dark, toggle Light,
     //      sample again. Ground truth for "变量/图层/组 没适配白色模式". ----
     QTimer::singleShot(2500, [&]() {
-        // 主窗口标签条: 画布/变量/图层/组 (count==4)。面板窗内还有一条
-        // 大标签条 (count==3), 按 count 区分。
+        // 主窗口标签条: 画布/变量/图层 (count==3)。面板窗内还有一条
+        // 大标签条 (count==2), 按 count 区分。注意: 2026-08 浮窗重构后
+        // 组 标签已移除 (组件 = 变量页第 5 子标签)。
         ElaTabBar* tabs = nullptr;
         for (auto* tb : window.findChildren<ElaTabBar*>())
-            if (tb->count() == 4) { tabs = tb; break; }
+            if (tb->count() == 3) { tabs = tb; break; }  // 画布/变量/图层
         if (tabs) {
             tabs->setCurrentIndex(1);  // 变量 → 打开面板悬浮窗
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         }
+        // 悬浮窗内部堆栈 (2026-08 浮窗重构): 大标签 变量/图层 = 2 页,
+        // 已不是旧的内嵌 3 页堆栈 —— 从 panelFloatingWindow 子树里按 count==2
+        // 找 (旧搜索在主窗口子树 + count==3 曾返回 null → sample 空解引用崩溃)。
         QStackedWidget* pageStack = nullptr;
-        for (auto* s : window.findChildren<QStackedWidget*>())
-            if (s->count() == 3) { pageStack = s; break; }  // 面板窗三页堆栈
+        if (auto* varWin = window.findChild<QWidget*>(
+                QStringLiteral("panelFloatingWindow")))
+            for (auto* s : varWin->findChildren<QStackedWidget*>())
+                if (s->count() == 2) { pageStack = s; break; }
         auto sample = [](QStackedWidget* st, int idx, QWidget* win) {
+            if (!st || !st->widget(idx)) {   // 越界页 (旧 3 页架构残留) — 防御.
+                std::cout << "  sample(" << idx << ") skipped (page null)"
+                          << std::endl;
+                return;
+            }
             st->setCurrentIndex(idx);
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
@@ -163,9 +174,13 @@ int main(int argc, char* argv[])
                       << ")" << std::endl;
         };
         std::cout << "theme probe: DARK" << std::endl;
-        sample(pageStack, 0, &window);  // 变量页
-        sample(pageStack, 1, &window);  // 图层页
-        sample(pageStack, 2, &window);  // 组页
+        if (!pageStack) {
+            std::cout << "  WARN: panel stack not found — skip (arch mismatch?)"
+                      << std::endl;
+        } else {
+            sample(pageStack, 0, &window);  // 变量页
+            sample(pageStack, 1, &window);  // 图层页
+        }
         // 面板悬浮窗: 抓取内容像素作为白色模式证据.
         {
             if (auto* varWin = window.findChild<QWidget*>(
@@ -181,13 +196,13 @@ int main(int argc, char* argv[])
                           << " mid=" << im.pixelColor(im.width() / 2,
                                                       im.height() / 2).name().toStdString()
                           << std::endl;
-                // 窄窗子标签探针: 变量页的四个子标签必须整行可见, 不允许
-                // 滚动裁剪 (第一条 ElaTabBar 是 变量/图层/组 大标签, 按
-                // count==4 找变量页的子标签条)。
+                // 窄窗子标签探针: 变量页的五个子标签 (变量/公式/关联/测量/
+                // 组件) 必须整行可见, 不允许滚动裁剪 (大标签条 count==2, 按
+                // count==5 找变量页的子标签条; 2026-08 浮窗重构前是 4 个)。
                 for (auto* subTabs : varWin->findChildren<ElaTabBar*>()) {
-                    if (subTabs->count() != 4)
+                    if (subTabs->count() != 5)
                         continue;
-                    const QRect r3 = subTabs->tabRect(3);
+                    const QRect r3 = subTabs->tabRect(4);   // 最后一枚 (组件)
                     std::cout << "  subTabs count=" << subTabs->count()
                               << " w=" << subTabs->width()
                               << " expanding=" << subTabs->expanding()
@@ -200,14 +215,15 @@ int main(int argc, char* argv[])
                                   ? 1 : 0)
                               << std::endl;
                 }
-                // 大标签切换探针: 点击 图层/组 大标签必须切换面板内容页
+                // 大标签切换探针: 点击 图层 大标签必须切换面板内容页
                 // (曾漏接 currentChanged→stack 导致内容永远停在变量页)。
+                // 组件不再是独立大标签 (已并入变量页第 5 子标签)。
                 for (auto* bigBar : varWin->findChildren<ElaTabBar*>()) {
-                    if (bigBar->count() != 3)
+                    if (bigBar->count() != 2)
                         continue;
                     QStackedWidget* pstack = nullptr;
                     for (auto* s : varWin->findChildren<QStackedWidget*>())
-                        if (s->count() == 3) { pstack = s; break; }
+                        if (s->count() == 2) { pstack = s; break; }
                     auto switchBig = [&](int idx) {
                         bigBar->setCurrentIndex(idx);
                         for (int i = 0; i < 10; ++i)
@@ -218,7 +234,6 @@ int main(int argc, char* argv[])
                                   << " expect=" << idx << std::endl;
                     };
                     switchBig(1);  // 图层
-                    switchBig(2);  // 组
                     switchBig(0);  // 回变量页
                 }
             }
@@ -388,7 +403,7 @@ int main(int argc, char* argv[])
         auto realPanelScan = [&](const QString& expectHex, const char* label) {
             auto* tabs2 = window.findChild<ElaTabBar*>();
             for (auto* tb : window.findChildren<ElaTabBar*>())
-                if (tb->count() == 4) { tabs2 = tb; break; }
+                if (tb->count() == 3) { tabs2 = tb; break; }  // 画布/变量/图层
             auto* varWin = window.findChild<QWidget*>(
                 QStringLiteral("panelFloatingWindow"));
             if (!varWin || !tabs2) {
@@ -401,10 +416,11 @@ int main(int argc, char* argv[])
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             // 先钉回「变量」页再创建变量 (隐藏列表页上插入卡片几何失效).
+            // 浮窗重构后: 面板堆栈 2 页 / 大标签条 2 枚, 旧 count==3 永不命中.
             for (auto* s : varWin->findChildren<QStackedWidget*>())
-                if (s->count() == 3) s->setCurrentIndex(0);
+                if (s->count() == 2) s->setCurrentIndex(0);
             for (auto* tb : varWin->findChildren<ElaTabBar*>())
-                if (tb->count() == 3) tb->setCurrentIndex(0);
+                if (tb->count() == 2) tb->setCurrentIndex(0);
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             auto* btn = varWin->findChild<QPushButton*>(
@@ -431,9 +447,11 @@ int main(int argc, char* argv[])
                 for (int i = 0; i < 20; ++i)
                     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             }
-            // 抓图前钉回变量页 (双保险).
+            // 抓图前钉回变量页 (双保险) — 浮窗重构后面板堆栈 = 2 页
+            // (0=变量 1=图层), 旧 count==3 永远不命中, 导致亮/暗两次扫描
+            // 落在不同页上 (图层页几乎无描边像素 → 假 MISSING)。
             for (auto* s : varWin->findChildren<QStackedWidget*>())
-                if (s->count() == 3) s->setCurrentIndex(0);
+                if (s->count() == 2) s->setCurrentIndex(0);
             const QImage img = varWin->grab().toImage();
             const QColor bc(expectHex);
             const QColor otherBorder =
@@ -522,12 +540,10 @@ int main(int argc, char* argv[])
             std::cout << "  anc " << a->metaObject()->className()
                       << " ownPal=" << a->testAttribute(Qt::WA_SetPalette)
                       << " win=" << a->palette().window().color().name().toStdString() << std::endl;
-        sample(pageStack, 2, &window);
         QImage wim = window.grab().toImage();
         std::cout << "  windowMid=" << wim.pixelColor(wim.width() / 2, wim.height() / 2).name().toStdString()
                   << " topLeft=" << wim.pixelColor(8, 60).name().toStdString() << std::endl;
         sample(pageStack, 1, &window);
-        sample(pageStack, 2, &window);
         std::cout << "theme probe done" << std::endl;
         // ---- LIGHT 主题下卡片描边扫描 (用户默认亮色, 必须同样可见) ----
         {
@@ -714,13 +730,14 @@ int main(int argc, char* argv[])
 
     // Crash probe: switch DIRECTLY to each page of the panel stack in
     // construction order (no settle phase) to bisect which page crashes.
-    // The stack is the QStackedWidget with 3 pages 变量/图层/组 inside the
-    // panelFloatingWindow (the main page stack now holds only the canvas).
+    // 2026-08 浮窗重构后: 面板堆栈 = panelFloatingWindow 内的 count==2
+    // (变量/图层), 主页面堆栈只剩画布页 —— 旧 count==3 搜索永远 NO.
     QStackedWidget* pageStack = nullptr;
     const auto stacks = window.findChildren<QStackedWidget*>();
-    for (auto* s : stacks) {
-        if (s->count() == 3) { pageStack = s; break; }
-    }
+    if (auto* varWin = window.findChild<QWidget*>(
+            QStringLiteral("panelFloatingWindow")))
+        for (auto* s : varWin->findChildren<QStackedWidget*>())
+            if (s->count() == 2) { pageStack = s; break; }
     std::cout << "pageStack found: " << (pageStack ? "yes" : "NO")
               << " (stacks=" << stacks.size() << ")" << std::endl;
 

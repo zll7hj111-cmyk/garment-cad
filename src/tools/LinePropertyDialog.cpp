@@ -40,12 +40,14 @@
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
 #include "geometry/Angle.h"
+#include "ui/Theme.h"
 #include "parametric/FollowerAngle.h"
 #include "document/commands/VariableCommands.h"
 #include "PointRefEdit.h"
 #include "SegmentAnchorTab.h"
 #include "SegmentAimCard.h"
 #include "SegmentConnectionCard.h"
+#include "SegmentExtendCard.h"
 #include "SegmentAuxTab.h"
 
 namespace cad::tools {
@@ -56,17 +58,6 @@ namespace {
 constexpr double kWeightThin   = 0.8;
 constexpr double kWeightMedium = 1.2;
 constexpr double kWeightThick  = 2.0;
-
-/// Format an angle in degrees for display: integers render without a trailing
-/// ".0" (e.g. 22 -> "22", 22.5 -> "22.5").
-QString formatAngleDeg(double deg)
-{
-    QString s = QString::number(deg, 'f', 1);
-    if (s.endsWith(QLatin1String(".0")))
-        s.chop(2);
-    return s;
-}
-
 
 /// Shared stylesheet for card group boxes. Now empty: the global theme QSS
 /// already provides the section-card look (mode-aware), and an empty widget
@@ -244,9 +235,10 @@ void LinePropertyDialog::connectLiveSignals()
     connect(m_connCard, &SegmentConnectionCard::angleEdited,
             this, [this] { if (m_debounce) m_debounce->start(); });
 
-    // ── 终点指向 card (extracted): scene/angle/follower re-sync on mutation ──
-    connect(m_aimCard, &SegmentAimCard::changed,
-            this, &LinePropertyDialog::onAimCardChanged);
+    // 终点指向已并入跟随角度·连接卡片（SegmentConnectionCard）。
+    // ── 延长 card (端点延长线): 变更即刷新画布 (模型已 resolveAll) ──
+    connect(m_extendCard, &SegmentExtendCard::changed,
+            this, [this] { refreshScene(); });
 }
 
 void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
@@ -310,7 +302,10 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
 
     // Row 0 — 长度: [fx] [input stretches] [填入]
     geomGrid->addWidget(new ElaText(QString::fromUtf8("\u957f\u5ea6(cm):"), 13, grpGeom), 0, 0);  // 长度(cm):
-    m_lblFx = new ElaText(QStringLiteral("<i style='color:#2F6FED;'>fx</i>"), 13, grpGeom);
+    m_lblFx = new ElaText(
+        QStringLiteral("<i style='color:%1;'>fx</i>")
+            .arg(cad::ui::Theme::tokens().text2.name()),
+        13, grpGeom);
     m_lblFx->setVisible(false);
     m_lblFx->setFixedWidth(18);
     geomGrid->addWidget(m_lblFx, 0, 1);
@@ -339,8 +334,7 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     // Read-only resolved length: when the length field holds a formula /
     // reference name (e.g. M_xxx) the actual value is not visible at a glance.
     m_lblActualLength = new ElaText(QString(), 13, grpGeom);
-    m_lblActualLength->setStyleSheet(
-        "color:#9CA3AF; font-size:11px; background:transparent;");
+    m_lblActualLength->setStyleSheet(cad::ui::Theme::dimValueStyle());
     m_lblActualLength->setToolTip(QString::fromUtf8("当前实际长度（只读）"));
     geomActionRow->addWidget(m_lblActualLength);
     geomActionRow->addStretch();
@@ -415,13 +409,21 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     m_connCard->setTarget(m_blockId, m_segmentId);
     layout->addWidget(m_connCard);
 
-    // ─── Card: 终点指向 (extracted: SegmentAimCard) ───
-    m_aimCard = new SegmentAimCard(m_paramDoc, page);
-    m_aimCard->setTarget(m_blockId);
-    layout->addWidget(m_aimCard);
+    // ─── Card: 终点指向已并入连接卡片（不再单独显示） ───
 
-    // ─── Card: 外观 ───
+    // ─── Row: 延长 | 外观 side by side (双气泡并排, 同下方起点/终点) ───
+    auto* extAppearRow = new QHBoxLayout();
+    extAppearRow->setSpacing(6);
+
+    // Card: 延长 (端点延长线, EXTEND_LINE_DESIGN.md)
+    m_extendCard = new SegmentExtendCard(m_paramDoc, m_scene, page);
+    m_extendCard->setObjectName(QStringLiteral("extendCard"));
+    m_extendCard->setTarget(m_blockId, m_segmentId);
+    extAppearRow->addWidget(m_extendCard, 1);
+
+    // Card: 外观
     auto* grpAppear = makeCard(page);
+    grpAppear->setObjectName(QStringLiteral("appearCard"));
     auto* appearVbox = new QVBoxLayout(grpAppear);
     appearVbox->setContentsMargins(10, 8, 10, 10);
     appearVbox->setSpacing(6);
@@ -468,10 +470,12 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     m_chkShowName = new ElaCheckBox(QString::fromUtf8("\u5728\u753b\u5e03\u4e0a\u663e\u793a\u540d\u79f0"), grpAppear);  // 在画布上显示名称
     appearLayout->addRow(QString(), m_chkShowName);
 
-    layout->addWidget(grpAppear);
+    extAppearRow->addWidget(grpAppear, 1);
+    layout->addLayout(extAppearRow);
 
     // ─── 端点 section: 起点 | 终点 side by side ───
     auto* ptRow = new QHBoxLayout();
+    ptRow->setSpacing(6);
 
     // Start point card
     auto* grpStart = makeCard(page);
@@ -593,7 +597,6 @@ void LinePropertyDialog::populateFromModel()
 
     // 跟随角度·连接 card + 终点指向 card (extracted): sync targets.
     if (m_connCard) m_connCard->setTarget(m_blockId, m_segmentId);
-    if (m_aimCard)  m_aimCard->setTarget(m_blockId);
 
     // 外观
     m_cmbStyle->setCurrentIndex(static_cast<int>(seg->lineStyle));
@@ -601,8 +604,8 @@ void LinePropertyDialog::populateFromModel()
     m_chkShowName->setChecked(seg->showName);
     m_currentColor = seg->color;
     m_btnColor->setStyleSheet(QStringLiteral(
-        "background-color: %1; border:1px solid #9CA3AF; border-radius:3px;")
-        .arg(m_currentColor.name()));
+        "background-color: %1; border:1px solid %2; border-radius:3px;")
+        .arg(m_currentColor.name(), cad::ui::Theme::tokens().text3.name()));
 
     // Weight: match to preset or show custom
     updateWeightCombo();
@@ -642,9 +645,6 @@ void LinePropertyDialog::populateFromModel()
         m_auxTab->refreshList();
     }
 
-    // Endpoint-aim card.
-    if (m_aimCard)
-        m_aimCard->setTarget(m_blockId);
 
     // Save snapshot for cancel-revert
     m_snapshot.segName       = seg->name;
@@ -829,14 +829,13 @@ void LinePropertyDialog::refreshActualLengthLabel()
     const auto* block = m_paramDoc->findBlock(m_blockId);
     const auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
     if (!block || !seg) return;
-    const auto* sp = block->findPoint(seg->startPointId);
-    const auto* ep = block->findPoint(seg->endPointId);
-    if (sp && ep && sp->resolved && ep->resolved) {
-        const double lenMm = sp->resolvedPos.distanceTo(ep->resolvedPos);
-        m_lblActualLength->setText(cad::geo::Units::formatLength(lenMm));
-    } else {
-        m_lblActualLength->setText(QStringLiteral("—"));
-    }
+    // D6: 显示 = 实际长（本体 + 端点延长尾巴）。曲线不支持延长 → 直接本体弧长。
+    const double lenMm = seg->isCurve()
+        ? block->segmentBaseLength(seg->id)
+        : block->segmentEffectiveLength(seg->id);
+    m_lblActualLength->setText(lenMm > 0.0
+        ? cad::geo::Units::formatLength(lenMm)
+        : QStringLiteral("—"));
 }
 
 void LinePropertyDialog::onLiveUpdate()
@@ -878,8 +877,8 @@ void LinePropertyDialog::onColorPick()
 
     m_currentColor = chosen;
     m_btnColor->setStyleSheet(QStringLiteral(
-        "background-color: %1; border:1px solid #9CA3AF; border-radius:3px;")
-        .arg(chosen.name()));
+        "background-color: %1; border:1px solid %2; border-radius:3px;")
+        .arg(chosen.name(), cad::ui::Theme::tokens().text3.name()));
 
     onLiveUpdate();
 }
@@ -939,7 +938,6 @@ void LinePropertyDialog::onAccepted()
 {
     applyToModel();
     refreshScene();
-    if (m_scene) m_scene->notifyGroupInfoChanged();
     m_confirmed = true;
     accept();
     deleteLater();
@@ -952,7 +950,6 @@ void LinePropertyDialog::onRejected()
     // stack, so the symmetric removal is a plain removeBlock).
     if (m_isCreation && m_paramDoc && m_paramDoc->findBlock(m_blockId)) {
         m_paramDoc->removeBlock(m_blockId);
-        if (m_scene) m_scene->notifyGroupInfoChanged();
         m_confirmed = false;
         QDialog::reject();
         deleteLater();
@@ -1013,7 +1010,6 @@ void LinePropertyDialog::onRejected()
         refreshScene();
     }
 
-    if (m_scene) m_scene->notifyGroupInfoChanged();
     m_confirmed = false;
     QDialog::reject();
     deleteLater();
@@ -1025,6 +1021,7 @@ void LinePropertyDialog::setTarget(const QUuid& blockId, const QUuid& segmentId)
     m_segmentId = segmentId;
     if (m_anchorTab) m_anchorTab->setTarget(blockId, segmentId);
     if (m_auxTab)    m_auxTab->setTarget(blockId, segmentId);
+    if (m_extendCard) m_extendCard->setTarget(blockId, segmentId);
     populateFromModel();
     applyCanvasHighlight();
 

@@ -1,4 +1,4 @@
-﻿#include "VariablePanel.h"
+#include "VariablePanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -27,6 +27,7 @@
 #include "FormulaGroupHeader.h"
 #include "LinkedCard.h"
 #include "MeasureTab.h"
+#include "ComponentTab.h"
 #include "ConditionDialog.h"
 #include "FormulaTabModel.h"
 #include "FormulaTabModel.h"
@@ -111,6 +112,8 @@ void VariablePanel::applyTheme()
         c->setStyleSheet(containerQss);
     if (m_measureTab)
         m_measureTab->sync();
+    if (m_componentTab)
+        m_componentTab->applyTheme();
 }
 
 void VariablePanel::setUndoStack(QUndoStack* stack)
@@ -118,6 +121,7 @@ void VariablePanel::setUndoStack(QUndoStack* stack)
     m_undoStack = stack;
     m_formulaModel->setUndoStack(stack);
     if (m_measureTab) m_measureTab->setUndoStack(stack);
+    if (m_componentTab) m_componentTab->setUndoStack(stack);
 }
 
 void VariablePanel::setupUi()
@@ -142,7 +146,8 @@ void VariablePanel::setupUi()
     m_tabBar->addTab(QStringLiteral("\u516c\u5f0f"));    // 公式
     m_tabBar->addTab(QStringLiteral("\u5173\u8054"));    // 关联
     m_tabBar->addTab(QStringLiteral("\u6d4b\u91cf"));    // 测量
-    m_tabBar->setTabSize(QSize(80, 30)); // Ela 默认标签 sizeHint ~220px, 4 个必裁剪; 显式紧凑.
+    m_tabBar->addTab(QStringLiteral("\u7ec4\u4ef6"));    // 组件
+    m_tabBar->setTabSize(QSize(64, 30)); // Ela 默认标签 sizeHint ~220px, 5 个必裁剪; 显式紧凑.
     m_tabBar->setExpanding(true);          // 四个标签平均铺满整行.
     m_tabBar->setUsesScrollButtons(false); // 禁用滚动箭头, 不允许裁剪标签.
     m_tabBar->setElideMode(Qt::ElideNone); // 窄窗下也不省略标签文字.
@@ -170,7 +175,7 @@ void VariablePanel::setupUi()
 
     m_addGroupBtn = new ElaToolButton(metaRow);
     m_addGroupBtn->setIcon(cad::ui::IconHelper::iconByName(
-        QStringLiteral("tree-structure"), QColor(0x2F, 0x6F, 0xED)));
+        QStringLiteral("tree-structure"), cad::ui::Theme::tokens().text1));
     m_addGroupBtn->setIconSize(QSize(14, 14));
     m_addGroupBtn->setToolTip(QStringLiteral("新建分组"));
     m_addGroupBtn->setFixedSize(26, 26);
@@ -225,22 +230,30 @@ void VariablePanel::setupUi()
     // in QStackedWidget::addWidget (access violation at startup).
     m_measureTab = new MeasureTab(m_doc, this);
     m_stack->addWidget(m_measureTab);
+
+    // Tab 4: components (组件 rigid work groups).
+    m_componentTab = new ComponentTab(m_doc, this);
+    m_stack->addWidget(m_componentTab);
     connect(m_measureTab, &MeasureTab::highlightBlockRequested,
             this, &VariablePanel::highlightBlockRequested);
     connect(m_measureTab, &MeasureTab::highlightMeasureRequested,
             this, &VariablePanel::highlightMeasureRequested);
+    connect(m_measureTab, &MeasureTab::highlightAngleMeasureRequested,
+            this, &VariablePanel::highlightAngleMeasureRequested);
     // Measure data flow: must be wired AFTER the tab exists — connecting to
     // a null receiver would silently never fire (the tab would stay empty).
     connect(m_doc, &cad::param::ParamDocument::measureVarsChanged,
-            m_measureTab, &MeasureTab::sync);
+            m_measureTab, &MeasureTab::notifyMeasureDataChanged);
     connect(m_doc, &cad::param::ParamDocument::angleMeasureVarsChanged,
-            m_measureTab, &MeasureTab::sync);
+            m_measureTab, &MeasureTab::notifyMeasureDataChanged);
     connect(m_doc, &cad::param::ParamDocument::resolved,
             m_measureTab, &MeasureTab::sync);
     // Measure card source labels show layer names — refresh on layer
     // add/remove/rename/visibility so the labels never go stale.
     connect(m_doc, &cad::param::ParamDocument::layersChanged,
-            m_measureTab, &MeasureTab::sync);
+            m_measureTab, &MeasureTab::notifyMeasureDataChanged);
+    // Component list rebuilds on componentsChanged (wired inside ComponentTab,
+    // queued) — undo/redo also re-emits it through updateComponent/remove/….
 
     setupCardProviders();
 
@@ -249,8 +262,9 @@ void VariablePanel::setupUi()
     // ===== Connections =====
     connect(m_tabBar, &QTabBar::currentChanged, this, [this](int index) {
         m_stack->setCurrentIndex(index);
-        // Hide the add button on the linked/measure tabs (auto-generated).
-        m_addBtn->setVisible(index != 2 && index != 3);
+        // Hide the add button on the linked/measure/component tabs (they are
+        // auto-generated / created from the canvas, not via the ＋ button).
+        m_addBtn->setVisible(index != 2 && index != 3 && index != 4);
         m_addGroupBtn->setVisible(index == 1);
         updateCountLabel();
     });
@@ -415,6 +429,15 @@ void VariablePanel::setupCardProviders()
             card->setIndex(row + 1);
             card->setAlternate(row % 2 == 1);  // 缓存复用: 奇偶随新行号重设
         });
+    // 2026-09 性能: resolved 每帧触发 syncLinkedCards → setRows(同 keys) →
+    // 值级刷新路径 (只有 value label), 不再整卡 rebind。
+    m_linkedHost->setValueBinder([this](int row, QWidget* w) {
+        const auto& linked = m_doc->linkedVars();
+        if (row < 0 || row >= static_cast<int>(linked.size()))
+            return;
+        auto* card = static_cast<LinkedCard*>(w);
+        card->refreshValue(linked[row].value, linked[row].dangling);
+    });
 
 }
 // ============================================================
@@ -853,8 +876,9 @@ void VariablePanel::updateCountLabel()
     if (tab == 0)      count = static_cast<int>(m_doc->variables().size());
     else if (tab == 1) count = static_cast<int>(m_doc->formulas().size());
     else if (tab == 2) count = static_cast<int>(m_doc->linkedVars().size());
-    else               count = static_cast<int>(m_doc->measureVars().size()
+    else if (tab == 3) count = static_cast<int>(m_doc->measureVars().size()
                                               + m_doc->angleMeasures().size());
+    else               count = static_cast<int>(m_doc->components().size());
     m_countLabel->setText(QString::number(count));
     m_varEmptyHint->setVisible(m_doc->variables().empty());
     m_formulaEmptyHint->setVisible(m_doc->formulas().empty()

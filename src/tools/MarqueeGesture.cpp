@@ -1,4 +1,4 @@
-﻿#include "MarqueeGesture.h"
+#include "MarqueeGesture.h"
 
 #include <cmath>
 
@@ -51,19 +51,9 @@ MarqueeGesture::~MarqueeGesture()
     cancel();
 }
 
-QSet<QUuid> MarqueeGesture::expandWithGroups(cad::param::ParamDocument* doc,
-                                             const QSet<QUuid>& ids)
+QSet<QUuid> MarqueeGesture::expandWithGroups(cad::param::ParamDocument*, const QSet<QUuid>& ids)
 {
-    QSet<QUuid> result = ids;
-    if (!doc) return result;
-    for (const QUuid& id : ids) {
-        const QUuid gid = doc->groupOfBlock(id);
-        if (gid.isNull()) continue;
-        const QList<QUuid> members = doc->blocksInGroup(gid);
-        for (const QUuid& memberId : members)
-            result.insert(memberId);
-    }
-    return result;
+    return ids;
 }
 
 void MarqueeGesture::begin(const cad::geo::Vec2& pos, const QSet<QUuid>& baseSelection)
@@ -142,7 +132,6 @@ QSet<QUuid> MarqueeGesture::hitsIn(const QRectF& rectUser) const
 QSet<QUuid> MarqueeGesture::toggleOf(const QRectF& rectUser) const
 {
     // Live preview of the prospective toggle result (base XOR intersecting),
-    // expanded to whole groups (group = minimal selection unit).
     QSet<QUuid> prospective = m_base;
     for (const QUuid& id : hitsIn(rectUser)) {
         if (prospective.contains(id)) prospective.remove(id);

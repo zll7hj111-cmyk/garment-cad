@@ -1,8 +1,9 @@
-﻿#include "AttachmentCommands.h"
+#include "AttachmentCommands.h"
 
 #include <algorithm>
 
 #include "parametric/ParamDocument.h"
+#include "parametric/FollowerAngle.h"
 
 namespace cad::cmd {
 
@@ -20,7 +21,11 @@ AddAttachmentCommand::AddAttachmentCommand(cad::param::ParamDocument* doc,
 
 void AddAttachmentCommand::redo()
 {
-    m_doc->addAttachment(m_att);
+    // 快照完整性 (用户拍板 2026-09): verbatim 插入, 不经过 addAttachment 的
+    // 强制 isLocked=true — undo/redo 必须原样还原用户状态 (与
+    // RemoveAttachmentCommand::undo 的 addAttachmentRaw 对称)。
+    m_doc->addAttachmentRaw(m_att);
+    m_doc->resolveAll();
 }
 
 void AddAttachmentCommand::undo()
@@ -113,7 +118,10 @@ void SetAttachmentAngleOnlyCommand::redo()
             a->isLocked = false;      // 拆开 = 位置自由: 与焊接互斥
             a->slideMode = cad::param::SlideMode::None;  // 与滑轨互斥
         } else {
-            a->isLocked = m_oldLocked;
+            // 恢复完整连接 = 位置重新吸附回宿主点 + 重新焊接 (与 doc API
+            // setAttachmentAngleOnly(false) 一致; 不得沿用 m_oldLocked —
+            // 仅角度态 isLocked 恒为 false, 沿用会画出"✓ 拖动保护但可拖拆").
+            a->isLocked = true;
         }
     }
     m_doc->resolveAll();
@@ -125,6 +133,360 @@ void SetAttachmentAngleOnlyCommand::undo()
         a->angleOnly = m_oldAngleOnly;
         a->isLocked = m_oldLocked;
         a->slideMode = m_oldSlideMode;
+    }
+    m_doc->resolveAll();
+}
+
+// ─── SetAttachmentAngleIndependentCommand ───
+
+SetAttachmentAngleIndependentCommand::SetAttachmentAngleIndependentCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId, bool angleIndependent,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newIndependent(angleIndependent)
+    , m_oldIndependent(false)
+{
+    setText(QStringLiteral("角度独立"));
+
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldIndependent = a.angleIndependent;
+            m_oldAngleOnly = a.angleOnly;
+            m_oldSlideMode = a.slideMode;
+            m_oldLocked = a.isLocked;
+            m_oldFollowerAngle = a.followerAngle;
+            m_oldFollowerFormula = a.followerAngleFormula;
+            m_oldRotationMode = a.rotationMode;
+            m_oldArcLength = a.arcLength;
+            m_oldArcFormula = a.arcLengthFormula;
+            break;
+        }
+    }
+}
+
+void SetAttachmentAngleIndependentCommand::redo()
+{
+    auto* a = m_doc->findAttachment(m_attId);
+    if (!a) return;
+
+    a->angleIndependent = m_newIndependent;
+    if (m_newIndependent) {
+        // 角度独立与仅角度/滑轨互斥: 进入时保持“位置钉住 + 角度自由”。
+        a->angleOnly = false;
+        a->slideMode = cad::param::SlideMode::None;
+    } else {
+        // 退出独立角度: 反算当前世界方向对应的 followerAngle, 恢复角度跟随
+        // 时不会跳线。若原来有公式/弧长模式则清掉, 以反算值为准。
+        const auto* from = m_doc->findBlock(a->fromBlockId);
+        const auto* to = m_doc->findBlock(a->toBlockId);
+        if (from && to) {
+            // 若设置了独立角度基准, 退出角度独立后仍应回到那条基准。
+            const auto* refBlock = to;
+            double refWorld = to->transform.rotation
+                + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
+            if (!a->angleRefBlockId.isNull()) {
+                if (const auto* rb = m_doc->findBlock(a->angleRefBlockId))
+                    refBlock = rb;
+            }
+            if (!a->angleRefBlockId.isNull() && !a->angleRefSegmentId.isNull()) {
+                if (const auto* seg = refBlock->findSegment(a->angleRefSegmentId)) {
+                    if (!a->angleRefPointId.isNull()) {
+                        if (const auto* rp = refBlock->findPoint(a->angleRefPointId);
+                            rp && rp->resolved) {
+                            refWorld = refBlock->transform.rotation
+                                     + refBlock->exitDirectionAtPoint(
+                                           a->angleRefPointId, a->angleRefSegmentId);
+                        }
+                    } else if (const auto* sp = refBlock->findPoint(seg->startPointId);
+                               sp && sp->resolved) {
+                        refWorld = refBlock->transform.rotation
+                                 + refBlock->directionAtPoint(seg->startPointId);
+                    }
+                }
+            }
+            const double localDir = from->directionAtPoint(a->fromPointId);
+            a->followerAngle = cad::param::backSolveFollowerAngle(
+                from->transform.rotation, localDir, refWorld);
+            a->followerAngleFormula.clear();
+            a->rotationMode = cad::param::RotationMode::Angle;
+            a->arcLength = 0.0;
+            a->arcLengthFormula.clear();
+        }
+        a->angleOnly = false;
+        a->slideMode = cad::param::SlideMode::None;
+    }
+    m_doc->resolveAll();
+}
+
+void SetAttachmentAngleIndependentCommand::undo()
+{
+    auto* a = m_doc->findAttachment(m_attId);
+    if (!a) return;
+    a->angleIndependent = m_oldIndependent;
+    a->angleOnly = m_oldAngleOnly;
+    a->slideMode = m_oldSlideMode;
+    a->isLocked = m_oldLocked;
+    a->followerAngle = m_oldFollowerAngle;
+    a->followerAngleFormula = m_oldFollowerFormula;
+    a->rotationMode = m_oldRotationMode;
+    a->arcLength = m_oldArcLength;
+    a->arcLengthFormula = m_oldArcFormula;
+    m_doc->resolveAll();
+}
+
+
+// ─── SetAttachmentAngleRefCommand ───
+
+SetAttachmentAngleRefCommand::SetAttachmentAngleRefCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId,
+    const QUuid& newRefBlockId, const QUuid& newRefSegmentId,
+    const QUuid& newRefPointId,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newRefBlockId(newRefBlockId)
+    , m_newRefSegmentId(newRefSegmentId)
+    , m_newRefPointId(newRefPointId)
+{
+    setText(QStringLiteral("修改角度基准"));
+
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldRefBlockId = a.angleRefBlockId;
+            m_oldRefSegmentId = a.angleRefSegmentId;
+            m_oldRefPointId = a.angleRefPointId;
+            m_oldAngleIndependent = a.angleIndependent;
+            m_oldAngleOnly = a.angleOnly;
+            m_oldSlideMode = a.slideMode;
+            m_oldLocked = a.isLocked;
+            m_oldFollowerAngle = a.followerAngle;
+            m_oldFollowerFormula = a.followerAngleFormula;
+            m_oldRotationMode = a.rotationMode;
+            m_oldArcLength = a.arcLength;
+            m_oldArcFormula = a.arcLengthFormula;
+            break;
+        }
+    }
+}
+
+void SetAttachmentAngleRefCommand::redo()
+{
+    auto* a = m_doc->findAttachment(m_attId);
+    if (!a) return;
+
+    a->angleRefBlockId = m_newRefBlockId;
+    a->angleRefSegmentId = m_newRefSegmentId;
+    a->angleRefPointId = m_newRefPointId;
+    // 设置了独立角度基准时取消“角度独立”，因为角度现在受另一条线段约束。
+    a->angleIndependent = false;
+
+    // 反算当前世界方向对应的 followerAngle，避免切换角度基准时跳线。
+    const auto* from = m_doc->findBlock(a->fromBlockId);
+    const auto* to = m_doc->findBlock(a->toBlockId);
+    if (from && to) {
+        double refWorld;
+        const auto* refBlock = to;
+        if (!m_newRefBlockId.isNull()) {
+            const auto* rb = m_doc->findBlock(m_newRefBlockId);
+            if (rb) refBlock = rb;
+        }
+        if (!a->angleRefBlockId.isNull() && !a->angleRefSegmentId.isNull()) {
+            if (const auto* seg = refBlock->findSegment(a->angleRefSegmentId)) {
+                if (!a->angleRefPointId.isNull()) {
+                    const auto* rp = refBlock->findPoint(a->angleRefPointId);
+                    if (rp && rp->resolved)
+                        refWorld = refBlock->transform.rotation
+                                 + refBlock->exitDirectionAtPoint(
+                                       a->angleRefPointId, a->angleRefSegmentId);
+                    else
+                        refWorld = to->transform.rotation
+                                 + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
+                } else {
+                    const auto* sp = refBlock->findPoint(seg->startPointId);
+                    if (sp && sp->resolved)
+                        refWorld = refBlock->transform.rotation
+                                 + refBlock->directionAtPoint(seg->startPointId);
+                    else
+                        refWorld = to->transform.rotation
+                                 + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
+                }
+            } else {
+                refWorld = to->transform.rotation
+                         + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
+            }
+        } else {
+            refWorld = to->transform.rotation
+                     + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
+        }
+        const double localDir = from->directionAtPoint(a->fromPointId);
+        a->followerAngle = cad::param::backSolveFollowerAngle(
+            from->transform.rotation, localDir, refWorld);
+    }
+    a->followerAngleFormula.clear();
+    a->rotationMode = cad::param::RotationMode::Angle;
+    a->arcLength = 0.0;
+    a->arcLengthFormula.clear();
+    m_doc->resolveAll();
+}
+
+void SetAttachmentAngleRefCommand::undo()
+{
+    auto* a = m_doc->findAttachment(m_attId);
+    if (!a) return;
+    a->angleRefBlockId = m_oldRefBlockId;
+    a->angleRefSegmentId = m_oldRefSegmentId;
+    a->angleRefPointId = m_oldRefPointId;
+    a->angleIndependent = m_oldAngleIndependent;
+    a->angleOnly = m_oldAngleOnly;
+    a->slideMode = m_oldSlideMode;
+    a->isLocked = m_oldLocked;
+    a->followerAngle = m_oldFollowerAngle;
+    a->followerAngleFormula = m_oldFollowerFormula;
+    a->rotationMode = m_oldRotationMode;
+    a->arcLength = m_oldArcLength;
+    a->arcLengthFormula = m_oldArcFormula;
+    m_doc->resolveAll();
+}
+
+
+// ─── ReattachAttachmentCommand ───
+
+ReattachAttachmentCommand::ReattachAttachmentCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId,
+    const QUuid& newToBlockId, const QUuid& newToPointId,
+    const QUuid& newToSegmentId, QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newToBlockId(newToBlockId)
+    , m_newToPointId(newToPointId)
+    , m_newToSegmentId(newToSegmentId)
+{
+    setText(QStringLiteral("重新挂接"));
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldAtt = a;
+            m_hasOldAtt = true;
+            if (const auto* b = doc->findBlock(a.fromBlockId)) {
+                m_oldOrigin = b->transform.origin;
+                m_oldRotation = b->transform.rotation;
+            }
+            break;
+        }
+    }
+}
+
+void ReattachAttachmentCommand::redo()
+{
+    if (!m_hasOldAtt) return;
+    auto* a = m_doc->findAttachment(m_attId);
+    if (!a) return;
+
+    cad::param::Attachment newAtt = *a;
+    newAtt.toBlockId   = m_newToBlockId;
+    newAtt.toPointId   = m_newToPointId;
+    newAtt.toSegmentId = m_newToSegmentId;
+
+    // 位置换到新宿主 A, 角度基准保留：已有独立 B 则用 B；
+    // 没有独立 B 时把旧位置宿主作为角度基准 (B = 旧 A)。
+    if (!newAtt.angleIndependent) {
+        if (newAtt.angleRefBlockId.isNull()) {
+            newAtt.angleRefBlockId = m_oldAtt.toBlockId;
+            newAtt.angleRefSegmentId = m_oldAtt.toSegmentId;
+        }
+    }
+    // 重新挂接 = 位置重新吸附, 退出仅角度/滑轨。
+    newAtt.angleOnly = false;
+    newAtt.slideMode = cad::param::SlideMode::None;
+    // 仅角度 (拆开保留角度) 线拖回重挂 = 恢复完整连接 + 重新焊接 (与面板
+    // 「拖动保护」恢复语义一致: 恢复完整连接必须重新焊接; 普通解焊连接
+    // 重挂保持原焊接态不变)。
+    if (m_oldAtt.angleOnly)
+        newAtt.isLocked = true;
+
+    // 按保留的角度基准反算 followerAngle, 保持当前世界方向 (无跳变)。
+    const auto* from = m_doc->findBlock(newAtt.fromBlockId);
+    const auto* to = m_doc->findBlock(m_newToBlockId);
+    if (from && to) {
+        const auto* refBlock = to;
+        double refWorld = to->transform.rotation
+            + to->exitDirectionAtPoint(m_newToPointId, newAtt.toSegmentId);
+        if (!newAtt.angleRefBlockId.isNull()) {
+            if (const auto* rb = m_doc->findBlock(newAtt.angleRefBlockId))
+                refBlock = rb;
+        }
+        if (!newAtt.angleRefBlockId.isNull() && !newAtt.angleRefSegmentId.isNull()) {
+            if (const auto* seg = refBlock->findSegment(newAtt.angleRefSegmentId)) {
+                if (const auto* sp = refBlock->findPoint(seg->startPointId);
+                    sp && sp->resolved) {
+                    refWorld = refBlock->transform.rotation
+                             + refBlock->directionAtPoint(seg->startPointId);
+                }
+            }
+        }
+        const double localDir = from->directionAtPoint(newAtt.fromPointId);
+        newAtt.followerAngle = cad::param::backSolveFollowerAngle(
+            from->transform.rotation, localDir, refWorld);
+    }
+    newAtt.followerAngleFormula.clear();
+    newAtt.rotationMode = cad::param::RotationMode::Angle;
+    newAtt.arcLength = 0.0;
+    newAtt.arcLengthFormula.clear();
+
+    // 先删旧连接, 再以同一 id 原样插入新连接 (保持 isLocked 等快照字面量)。
+    m_doc->removeAttachment(m_attId);
+    m_doc->addAttachmentRaw(newAtt);
+    m_doc->resolveAll();
+}
+
+void ReattachAttachmentCommand::undo()
+{
+    if (!m_hasOldAtt) return;
+    if (auto* a = m_doc->findAttachment(m_attId))
+        m_doc->removeAttachment(m_attId);
+    m_doc->addAttachmentRaw(m_oldAtt);
+    if (auto* b = m_doc->findBlock(m_oldAtt.fromBlockId)) {
+        b->transform.origin = m_oldOrigin;
+        b->transform.rotation = m_oldRotation;
+    }
+    m_doc->resolveAll();
+}
+
+// ─── ReconnectAttachmentCommand (仅角度线拖端点重挂, 2026-12) ───
+
+ReconnectAttachmentCommand::ReconnectAttachmentCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId,
+    const cad::param::Attachment& newAtt,
+    const cad::param::Attachment& oldAtt,
+    const cad::geo::Vec2& oldOrigin, double oldRotation, QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newAtt(newAtt)
+    , m_oldAtt(oldAtt)
+    , m_oldOrigin(oldOrigin)
+    , m_oldRotation(oldRotation)
+{
+    setText(QStringLiteral("\xe9\x87\x8d\xe6\x96\xb0\xe6\x8c\x82\xe6\x8e\xa5"));  // 重新挂接
+}
+
+void ReconnectAttachmentCommand::redo()
+{
+    m_doc->removeAttachment(m_attId);
+    m_doc->addAttachmentRaw(m_newAtt);
+    m_doc->resolveAll();
+}
+
+void ReconnectAttachmentCommand::undo()
+{
+    m_doc->removeAttachment(m_attId);
+    m_doc->addAttachmentRaw(m_oldAtt);
+    if (auto* b = m_doc->findBlock(m_oldAtt.fromBlockId)) {
+        b->transform.origin = m_oldOrigin;
+        b->transform.rotation = m_oldRotation;
     }
     m_doc->resolveAll();
 }
@@ -171,6 +533,33 @@ void SetAttachmentSlideModeCommand::undo()
         a->isLocked = m_oldLocked;
     }
     m_doc->resolveAll();
+}
+
+// ─── SetAttachmentLockedCommand ───
+
+SetAttachmentLockedCommand::SetAttachmentLockedCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId, bool locked,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newLocked(locked)
+    , m_oldLocked(false)
+{
+    setText(QStringLiteral("\xe6\x8b\x96\xe5\x8a\xa8\xe4\xbf\x9d\xe6\x8a\xa4"));  // 拖动保护
+
+    for (const auto& a : doc->attachments())
+        if (a.id == attId) { m_oldLocked = a.isLocked; break; }
+}
+
+void SetAttachmentLockedCommand::redo()
+{
+    m_doc->setAttachmentLocked(m_attId, m_newLocked);
+}
+
+void SetAttachmentLockedCommand::undo()
+{
+    m_doc->setAttachmentLocked(m_attId, m_oldLocked);
 }
 
 // ─── SetSlideOffsetsCommand ───

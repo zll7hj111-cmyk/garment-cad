@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CanvasStyle.h"
 
@@ -25,22 +25,24 @@ public:
     void setState(QGraphicsItem* owner, const QUuid& entityId, EntityState target);
 
     /// Query the current-frame line paint params (interpolated during animation).
-    [[nodiscard]] EntityPaintParams lineParams(QGraphicsItem* owner, const QUuid& entityId,
+    /// owner is an opaque identity key only — never dereferenced, hence const.
+    [[nodiscard]] EntityPaintParams lineParams(const QGraphicsItem* owner, const QUuid& entityId,
                                                const QColor& baseColor, double baseWidth) const;
 
     /// Query the current-frame point paint params (interpolated during animation).
-    [[nodiscard]] EntityPaintParams pointParams(QGraphicsItem* owner, const QUuid& entityId,
+    [[nodiscard]] EntityPaintParams pointParams(const QGraphicsItem* owner, const QUuid& entityId,
                                                 bool auxiliary) const;
 
     /// Whether an entity is currently mid-animation.
-    [[nodiscard]] bool isAnimating(QGraphicsItem* owner, const QUuid& entityId) const;
+    [[nodiscard]] bool isAnimating(const QGraphicsItem* owner, const QUuid& entityId) const;
 
     /// Remove all animation state for an owner (call when BlockItem is destroyed).
     void removeOwner(QGraphicsItem* owner);
 
 signals:
-    /// Emitted each tick for owners that need a repaint.
-    void invalidationRequested(QGraphicsItem* owner);
+    /// Emitted each tick for owners that need a repaint. The payload is a
+    /// const identity handle — repaint goes through QGraphicsScene::update(rect).
+    void invalidationRequested(const QGraphicsItem* owner);
 
 private:
     void tick();
@@ -53,8 +55,8 @@ private:
         double      progress = 1.0;  // 1.0 = at rest (reached target)
     };
 
-    // owner → (entityId → Entry)
-    QHash<QGraphicsItem*, QHash<QUuid, Entry>> m_entries;
+    // owner (opaque identity key, never dereferenced) → (entityId → Entry)
+    QHash<const QGraphicsItem*, QHash<QUuid, Entry>> m_entries;
     const CanvasStyle* m_style = nullptr;
     QTimer* m_timer = nullptr;
 };

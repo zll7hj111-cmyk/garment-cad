@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <QColor>
 #include <QWidget>
 #include <functional>
 
@@ -47,6 +48,8 @@ protected:
 
 private:
     void applyModeVisuals();
+    /// 12% alpha wash of a CanvasStyle hue (danger-family error background).
+    [[nodiscard]] static QString errorWash(const QColor& fg);
 
     ElaLineEdit* m_edit = nullptr;
     ElaText* m_lblCaption = nullptr;

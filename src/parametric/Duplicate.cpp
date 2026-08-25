@@ -1,4 +1,4 @@
-﻿#include "Duplicate.h"
+#include "Duplicate.h"
 
 #include <QHash>
 #include <QSet>
@@ -237,27 +237,6 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
             copy.arcLength = 0.0;
             copy.arcLengthFormula.clear();
             result.attachments.push_back(std::move(copy));
-        }
-    }
-
-    // ── Pass 5: user group clone (副本成新组) ──
-    // When the source set IS exactly one complete user group, the clones
-    // form a fresh group (fresh id + serial; internal connections were
-    // already remapped in Pass 3/4).
-    if (!blockIds.isEmpty()) {
-        const QUuid srcGroupId = doc.groupOfBlock(blockIds.first());
-        bool exactGroup = !srcGroupId.isNull();
-        if (exactGroup) {
-            const QList<QUuid> members = doc.blocksInGroup(srcGroupId);
-            const QSet<QUuid> memberSet(members.begin(), members.end());
-            exactGroup = (memberSet == inSet);   // 整组复制才成组
-        }
-        if (exactGroup) {
-            Group g;
-            g.serial = doc.newGroupSerial();
-            result.newGroup = std::move(g);
-            for (const QUuid& origId : inSet)
-                result.newGroupMembers.push_back(idMap.value(origId));
         }
     }
 

@@ -1,4 +1,4 @@
-#include <QtTest>
+﻿#include <QtTest>
 #include <QHash>
 #include <QString>
 
@@ -32,6 +32,14 @@ private slots:
     void degreeSymbol();
     void garmentFormula();
     void parseDepthGuard();
+    void powerOperator();
+    void sqrtAbsFunctions();
+    void inverseTrigFunctions();
+    void twoArgFunctions();
+    void roundingFunctions();
+    void functionNamingFallback();
+    void functionDomainErrors();
+    void backShoulderCorrection();
 };
 
 void TestExpression::basicArithmetic()
@@ -351,6 +359,406 @@ void TestExpression::parseDepthGuard()
     r = ExpressionEvaluator::evaluate(ok, vars);
     QVERIFY(r.ok);
     QCOMPARE(r.value, 5.0);
+}
+
+void TestExpression::powerOperator()
+{
+    QHash<QString, double> vars;
+    auto r = ExpressionEvaluator::evaluate("2^3", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 8.0);
+
+    // Higher precedence than *: 2*3^2 = 2*9
+    r = ExpressionEvaluator::evaluate("2*3^2", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 18.0);
+
+    // Parens override: (2+3)^2 = 25
+    r = ExpressionEvaluator::evaluate("(2+3)^2", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 25.0);
+
+    // Right-associative: 2^3^2 = 2^9 = 512
+    r = ExpressionEvaluator::evaluate("2^3^2", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 512.0);
+
+    // Binds tighter than unary minus: -2^2 = -(2^2) = -4
+    r = ExpressionEvaluator::evaluate("-2^2", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, -4.0);
+
+    // Negative exponent works: 2^-1 = 0.5
+    r = ExpressionEvaluator::evaluate("2^-1", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 0.5) < 1e-9);
+
+    // Fractional exponent: 3^0.5 = sqrt(3)
+    r = ExpressionEvaluator::evaluate("3^0.5", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - std::sqrt(3.0)) < 1e-9);
+
+    // pow function form + chaining with variables.
+    vars["B"] = 84.0;
+    r = ExpressionEvaluator::evaluate("(B/12+13.7)^2", vars);
+    QVERIFY(r.ok);
+    const double expected = std::pow(84.0 / 12 + 13.7, 2.0);
+    QVERIFY(qAbs(r.value - expected) < 1e-9);
+}
+
+void TestExpression::sqrtAbsFunctions()
+{
+    QHash<QString, double> vars;
+    auto r = ExpressionEvaluator::evaluate("sqrt(16)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 4.0);
+
+    // Bare argument form: sqrt2 == sqrt(2)
+    r = ExpressionEvaluator::evaluate("sqrt2", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - std::sqrt(2.0)) < 1e-9);
+
+    // Sub-expression argument.
+    r = ExpressionEvaluator::evaluate("sqrt(2+14)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 4.0);
+
+    // The canonical pattern-geometry usage: 勾股定理.
+    vars["前"] = 3.0;
+    vars["垂"] = 4.0;
+    r = ExpressionEvaluator::evaluate("sqrt(前^2+垂^2)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 5.0);
+
+    r = ExpressionEvaluator::evaluate("abs(-5)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 5.0);
+
+    r = ExpressionEvaluator::evaluate("abs3", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 3.0);
+
+    r = ExpressionEvaluator::evaluate("abs(2-7)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 5.0);
+
+    r = ExpressionEvaluator::evaluate("abs(-前*垂)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 12.0);
+
+    // sqrt of a negative number is a domain error.
+    r = ExpressionEvaluator::evaluate("sqrt(-1)", vars);
+    QVERIFY(!r.ok);
+    QVERIFY(!r.error.isEmpty());
+}
+
+void TestExpression::inverseTrigFunctions()
+{
+    QHash<QString, double> vars;
+    // Results in DEGREES (garment convention).
+    auto r = ExpressionEvaluator::evaluate("atan2(1,1)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 45.0) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate("atan2(0,7)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 0.0) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate("atan2(1,0)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 90.0) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate("atan2(-1,-1)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - (-135.0)) < 1e-9);
+
+    // 3-4-5 triangle: atan2(y,x) angle, then round-trip through cos/sin.
+    r = ExpressionEvaluator::evaluate("cos(atan2(3,4))", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 0.8) < 1e-9);
+    r = ExpressionEvaluator::evaluate("sin(atan2(3,4))", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 0.6) < 1e-9);
+
+    // atan / asin / acos also produce degrees.
+    r = ExpressionEvaluator::evaluate("atan(1)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 45.0) < 1e-9);
+    r = ExpressionEvaluator::evaluate("atan1", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 45.0) < 1e-9);
+    r = ExpressionEvaluator::evaluate("asin(0.5)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 30.0) < 1e-9);
+    r = ExpressionEvaluator::evaluate("acos(0.5)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 60.0) < 1e-9);
+
+    // CJK variables inside atan2.
+    vars[QString::fromUtf8("肩褶宽")] = 1.825;
+    vars[QString::fromUtf8("后肩长")] = 14.336;
+    r = ExpressionEvaluator::evaluate(QString::fromUtf8("atan2(肩褶宽, 后肩长-肩褶宽)"), vars);
+    QVERIFY(r.ok);
+    const double expected = std::atan2(1.825, 14.336 - 1.825) * 180.0 / M_PI;
+    QVERIFY(qAbs(r.value - expected) < 1e-9);
+}
+
+void TestExpression::twoArgFunctions()
+{
+    QHash<QString, double> vars;
+    auto r = ExpressionEvaluator::evaluate("pow(2,10)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 1024.0);
+
+    r = ExpressionEvaluator::evaluate("pow(2,0.5)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - std::sqrt(2.0)) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate("min(3,7)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 3.0);
+    r = ExpressionEvaluator::evaluate("min(7,3)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 3.0);
+    r = ExpressionEvaluator::evaluate("max(3,7)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 7.0);
+    r = ExpressionEvaluator::evaluate("max(7,3)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 7.0);
+
+    // Nested / arithmetic in args.
+    r = ExpressionEvaluator::evaluate("min(3,7)+max(3,7)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 10.0);
+    r = ExpressionEvaluator::evaluate("max(sqrt(16), abs(-9))", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 9.0);
+
+    // CJK variable arguments.
+    vars[QString::fromUtf8("肩褶宽")] = 1.825;
+    vars["B32"] = 2.0;
+    r = ExpressionEvaluator::evaluate(QString::fromUtf8("min(肩褶宽, B32)"), vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 1.825) < 1e-9);
+
+    // Uppercase parse of the classic garment formula still works.
+    vars["B"] = 84.0;
+    vars["W"] = 65.0;
+    r = ExpressionEvaluator::evaluate("[(B/2+6)-(W/2+3)]*0.35", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 4.375) < 1e-9);
+}
+
+void TestExpression::roundingFunctions()
+{
+    QHash<QString, double> vars;
+    // std::round: half away from zero.
+    auto r = ExpressionEvaluator::evaluate("round(2.5)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 3.0);
+    r = ExpressionEvaluator::evaluate("round(-2.5)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, -3.0);
+    r = ExpressionEvaluator::evaluate("floor(2.9)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 2.0);
+    r = ExpressionEvaluator::evaluate("ceil(2.1)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 3.0);
+    r = ExpressionEvaluator::evaluate("floor(-2.1)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, -3.0);
+    r = ExpressionEvaluator::evaluate("ceil(-2.9)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, -2.0);
+
+    // In a garment context: round a computed cm value to 0.5 mm.
+    vars["B"] = 84.0;
+    r = ExpressionEvaluator::evaluate("round((B/2+6)*10)/10", vars);
+    QVERIFY(r.ok);
+    const double expected = std::round((84.0 / 2 + 6.0) * 10.0) / 10.0;
+    QVERIFY(qAbs(r.value - expected) < 1e-9);
+}
+
+void TestExpression::functionNamingFallback()
+{
+    QHash<QString, double> vars;
+    // Lowercase identifiers that merely START with a function name stay
+    // variables (old semantics): cosine / cos_a / absx / minx / min2.
+    vars["cosine"] = 7.0;
+    vars["cos_a"] = 9.0;
+    vars["absx"] = 11.0;
+    vars["minx"] = 13.0;
+    vars["min2"] = 15.0;
+    vars["atan2x"] = 17.0;
+
+    auto r = ExpressionEvaluator::evaluate("cosine", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 7.0);
+    r = ExpressionEvaluator::evaluate("cos_a", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 9.0);
+    r = ExpressionEvaluator::evaluate("absx", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 11.0);
+    r = ExpressionEvaluator::evaluate("minx", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 13.0);
+    r = ExpressionEvaluator::evaluate("min2", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 15.0);
+    r = ExpressionEvaluator::evaluate("atan2x", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 17.0);
+
+    // The real functions still win when called.
+    r = ExpressionEvaluator::evaluate("abs(-3)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 3.0);
+    r = ExpressionEvaluator::evaluate("min(2,4)", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 2.0);
+    r = ExpressionEvaluator::evaluate("atan2(1,1)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 45.0) < 1e-9);
+
+    // Uppercase function-like names remain variables (naming convention).
+    vars["SQRTA"] = 21.0;
+    r = ExpressionEvaluator::evaluate("SQRTA", vars);
+    QVERIFY(r.ok);
+    QCOMPARE(r.value, 21.0);
+}
+
+void TestExpression::functionDomainErrors()
+{
+    QHash<QString, double> vars;
+    // asin/acos outside [-1,1].
+    auto r = ExpressionEvaluator::evaluate("asin(2)", vars);
+    QVERIFY(!r.ok);
+    QVERIFY(!r.error.isEmpty());
+    r = ExpressionEvaluator::evaluate("acos(-1.5)", vars);
+    QVERIFY(!r.ok);
+    QVERIFY(!r.error.isEmpty());
+
+    // sqrt(-4).
+    r = ExpressionEvaluator::evaluate("sqrt(-4)", vars);
+    QVERIFY(!r.ok);
+
+    // Missing comma / parens for two-arg functions.
+    r = ExpressionEvaluator::evaluate("min(3 7)", vars);
+    QVERIFY(!r.ok);
+    r = ExpressionEvaluator::evaluate("atan2(3)", vars);
+    QVERIFY(!r.ok);
+    r = ExpressionEvaluator::evaluate("atan2 3,4", vars);
+    QVERIFY(!r.ok);  // bare two-arg form is rejected (variable "atan2" unknown)
+
+    // pow domain: (-1)^0.5 is NaN -> non-finite guard.
+    r = ExpressionEvaluator::evaluate("(-1)^0.5", vars);
+    QVERIFY(!r.ok);
+
+    // Division by zero still rejected.
+    r = ExpressionEvaluator::evaluate("sqrt(4)/0", vars);
+    QVERIFY(!r.ok);
+}
+
+// 用户 2.gcad「后肩线修正」组的公式原样回归（B=84, 全部度制/厘米）：
+// 独立几何核验（向量旋转法）与公式链在 1e-12 内一致。
+void TestExpression::backShoulderCorrection()
+{
+    QHash<QString, double> vars;
+    vars["肩褶E"] = 9.95;
+    vars["后领宽"] = 7.1;
+    vars["后肩角度"] = 18.0;
+    vars["肩胛尖点"] = 8.0;
+    vars["后领高"] = 7.1 / 3.0;
+    vars["肩褶宽"] = 1.825;
+    vars["后肩长"] = 14.336;
+
+    const QString nearMouth = QString::fromUtf8("(肩褶E-后领宽)/cos(后肩角度°)+1.5");
+    const QString proj = QString::fromUtf8("(肩褶E-后领宽)*cos(后肩角度°)+(肩胛尖点+后领高)*sin(后肩角度°)");
+    const QString perp = QString::fromUtf8("(肩胛尖点+后领高)*cos(后肩角度°)-(肩褶E-后领宽)*sin(后肩角度°)");
+    const QString apexF = QString::fromUtf8("atan2(肩褶宽*垂距, (近口距-投影距)*(近口距+肩褶宽-投影距)+垂距^2)");
+    const QString xF = QString::fromUtf8("投影距+(后肩长-投影距)*cos(省道角)-垂距*sin(省道角)");
+    const QString yF = QString::fromUtf8("(后肩长-投影距)*sin(省道角)+垂距*cos(省道角)-垂距");
+    const QString lenF = QString::fromUtf8("sqrt(修正X^2+修正Y^2)");
+    const QString angF = QString::fromUtf8("atan2(修正Y, 修正X)");
+
+    auto r = ExpressionEvaluator::evaluate(nearMouth, vars);
+    QVERIFY(r.ok);
+    vars["近口距"] = r.value;
+    QVERIFY(qAbs(r.value - 4.49666733907906) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate(proj, vars);
+    QVERIFY(r.ok);
+    vars["投影距"] = r.value;
+    QVERIFY(qAbs(r.value - 5.91398724646148) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate(perp, vars);
+    QVERIFY(r.ok);
+    vars["垂距"] = r.value;
+    QVERIFY(qAbs(r.value - 8.97858745162449) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate(apexF, vars);
+    QVERIFY(r.ok);
+    vars["省道角"] = r.value;
+    QVERIFY(qAbs(r.value - 11.570212) < 1e-6);
+
+    r = ExpressionEvaluator::evaluate(xF, vars);
+    QVERIFY(r.ok);
+    vars["修正X"] = r.value;   // 2.gcad 里的公式名是小写"修正x"，引用方写"修正X"（大小写不敏感）
+    vars["修正x"] = r.value;
+    QVERIFY(qAbs(r.value - 12.3640389280444) < 1e-9);
+
+    r = ExpressionEvaluator::evaluate(yF, vars);
+    QVERIFY(r.ok);
+    vars["修正Y"] = r.value;
+    QVERIFY(qAbs(r.value - 1.50674348030817) < 1e-9);
+
+    // 引用"修正X"但只有"修正x"在变量表里：大小写不敏感回退必须命中。
+    vars.remove("修正X");
+    vars.remove("修正x");
+    vars["修正x"] = 12.3640389280444;
+    vars["修正Y"] = 1.50674348030817;
+    r = ExpressionEvaluator::evaluate(lenF, vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 12.4555102075) < 1e-9);
+    r = ExpressionEvaluator::evaluate(angF, vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 6.94808923) < 1e-6);
+
+    // B=88 冒烟：所有量保持有意义（u0>0、省道角在 (0,30)°、长度减少但为正）。
+    QHash<QString, double> v2;
+    v2["肩褶E"] = 10.2;
+    v2["后领宽"] = 7.266666666666666;
+    v2["后肩角度"] = 18.0;
+    v2["肩胛尖点"] = 8.0;
+    v2["后领高"] = 7.266666666666666 / 3.0;
+    v2["肩褶宽"] = 1.95;
+    v2["后肩长"] = 14.82;
+    r = ExpressionEvaluator::evaluate(nearMouth, v2);
+    QVERIFY(r.ok);
+    v2["近口距"] = r.value;
+    r = ExpressionEvaluator::evaluate(proj, v2);
+    QVERIFY(r.ok);
+    v2["投影距"] = r.value;
+    r = ExpressionEvaluator::evaluate(perp, v2);
+    QVERIFY(r.ok);
+    v2["垂距"] = r.value;
+    r = ExpressionEvaluator::evaluate(apexF, v2);
+    QVERIFY(r.ok);
+    v2["省道角"] = r.value;
+    r = ExpressionEvaluator::evaluate(xF, v2);
+    QVERIFY(r.ok);
+    v2["修正X"] = r.value;
+    v2["修正x"] = r.value;
+    r = ExpressionEvaluator::evaluate(yF, v2);
+    QVERIFY(r.ok);
+    v2["修正Y"] = r.value;
+    r = ExpressionEvaluator::evaluate(lenF, v2);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 12.8039) < 0.005);
+    QVERIFY(v2["省道角"] > 0.0 && v2["省道角"] < 30.0);
 }
 
 QTEST_GUILESS_MAIN(TestExpression)

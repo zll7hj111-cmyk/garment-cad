@@ -3,6 +3,7 @@
 #include "CopyChip.h"
 #include "IconHelper.h"
 #include "geometry/Units.h"
+#include "Theme.h"
 
 #include "ElaLineEdit.h"
 #include "ElaText.h"
@@ -10,37 +11,21 @@
 #include "ElaCheckBox.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
-#include <QStyleOption>
-#include <QPainter>
 #include <QMouseEvent>
 #include <QLocale>
 #include <QApplication>
 #include <QDrag>
 #include <QMimeData>
 
-namespace {
-
-QString compactNumber(double v)
-{
-    QString s = QString::number(v, 'f', 2);
-    while (s.endsWith(QLatin1Char('0'))) s.chop(1);
-    if (s.endsWith(QLatin1Char('.'))) s.chop(1);
-    return s;
-}
-
-} // namespace
-
 FormulaCard::FormulaCard(const cad::param::FormulaVariable& formula,
                          bool alternate, QWidget* parent)
-    : QWidget(parent)
+    : CardBase(alternate, parent)
     , m_id(formula.id)
     , m_groupId(formula.groupId)
     , m_conditions(formula.conditions)
     , m_conditionsEnabled(formula.conditionsEnabled)
-    , m_alternate(alternate)
 {
-    setAttribute(Qt::WA_StyledBackground, true);
-    setupUi(formula, alternate);
+    setupUi(formula);
     setResult(formula.valid, cad::geo::Units::mmToCm(formula.value), formula.error);
 }
 
@@ -71,18 +56,15 @@ void FormulaCard::focusName()
 
 void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
 {
+    m_valueLabel->setStyleSheet(QStringLiteral("%1 background: transparent;")
+                                    .arg(cad::ui::ThemeTokens::kMonospaceMd));
     if (ok) {
-        m_valueLabel->setText(QStringLiteral("= %1").arg(compactNumber(valueCm)));
+        m_valueLabel->setText(
+            QStringLiteral("= %1").arg(cad::geo::Units::formatNumberTrimmed(valueCm)));
         m_valueLabel->setToolTip(QStringLiteral("计算结果（只读）"));
-        m_valueLabel->setStyleSheet(
-            "font-family: 'Consolas','Courier New',monospace;"
-            "font-size: 12px; font-weight: bold; background: transparent;");
     } else {
         m_valueLabel->setText(QStringLiteral("\u2717"));  // ✗
         m_valueLabel->setToolTip(error);
-        m_valueLabel->setStyleSheet(
-            "font-family: 'Consolas','Courier New',monospace;"
-            "font-size: 12px; font-weight: bold; background: transparent;");
     }
 }
 
@@ -93,11 +75,6 @@ void FormulaCard::setConditions(const QList<cad::param::Condition>& conds, bool 
     updateCondRow();
 }
 
-void FormulaCard::setIndex(int index)
-{
-    m_indexLabel->setText(QString::number(index));
-}
-
 void FormulaCard::setGrouped(bool grouped)
 {
     if (m_grouped == grouped)
@@ -105,14 +82,6 @@ void FormulaCard::setGrouped(bool grouped)
     m_grouped = grouped;
     // 组内成员: 内容整体右移 kGroupIndent (左侧竖线同步右移, paintEvent).
     m_mainLayout->setContentsMargins((m_grouped ? kGroupIndent : 0) + 12, 7, 8, 7);
-    update();
-}
-
-void FormulaCard::setAlternate(bool alternate)
-{
-    if (m_alternate == alternate)
-        return;
-    m_alternate = alternate;
     update();
 }
 
@@ -180,33 +149,9 @@ void FormulaCard::updateExprEnabled()
     m_exprEdit->setEnabled(!hasActual);
 }
 
-void FormulaCard::paintEvent(QPaintEvent*)
+int FormulaCard::accentBarX() const
 {
-    QStyleOption opt;
-    opt.initFrom(this);
-    QPainter p(this);
-    style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
-
-    // Left accent bar — 行交替竖线: 偶数行蓝 / 奇数行橙 (2026-08 用户拍板
-    // 统一蓝橙交替, 替代原类型色条与背景斑马纹). 组内成员整条右移
-    // kGroupIndent, 与未分组公式形成缩进层级.
-    p.setPen(Qt::NoPen);
-    p.setBrush(m_alternate ? QColor(0xF5, 0x9E, 0x0B)   // 橙
-                           : QColor(0x2F, 0x6F, 0xED)); // 蓝
-    const int barX = m_grouped ? kGroupIndent : 0;
-    p.drawRoundedRect(barX, 2, 3, height() - 4, 1.5, 1.5);
-}
-
-void FormulaCard::enterEvent(QEnterEvent*)
-{
-    m_deleteBtn->setVisible(true);
-    m_deleteBtnSlot->setVisible(false);
-}
-
-void FormulaCard::leaveEvent(QEvent*)
-{
-    m_deleteBtn->setVisible(false);
-    m_deleteBtnSlot->setVisible(true);
+    return m_grouped ? kGroupIndent : 0;
 }
 
 bool FormulaCard::eventFilter(QObject* obj, QEvent* event)
@@ -246,10 +191,9 @@ bool FormulaCard::eventFilter(QObject* obj, QEvent* event)
     return QWidget::eventFilter(obj, event);
 }
 
-void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alternate)
+void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
 {
     setObjectName(QStringLiteral("FormulaCard"));
-    (void)alternate;  // 竖线颜色已按 alternate 存为 m_alternate (构造时).
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
@@ -260,12 +204,12 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     auto* header = new QHBoxLayout();
     header->setSpacing(6);
 
-    m_indexLabel = new ElaText(QString(), 13, this);
-    m_indexLabel->setObjectName(QStringLiteral("cardIndex"));
+    // 序号兼拖拽把手 (组内序号, 每次 (re)bind 重设 — 见 setIndex).
+    m_indexLabel = createIndexLabel(QStringLiteral("cardIndex"),
+                                    QStringLiteral("拖动排序"));
     m_indexLabel->setAlignment(Qt::AlignCenter);
     m_indexLabel->setFixedWidth(18);
     m_indexLabel->setCursor(Qt::OpenHandCursor);
-    m_indexLabel->setToolTip(QStringLiteral("拖动排序"));
     m_indexLabel->setStyleSheet(
         "QLabel { font-size: 10px; font-weight: bold;"
         "  background: transparent; border-radius: 3px; }"
@@ -273,37 +217,17 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     m_indexLabel->installEventFilter(this);
     header->addWidget(m_indexLabel, 0);
 
-    m_nameChip = new cad::ui::CopyChip(cad::ui::CopyChip::Variant::Formula, this);
-    m_nameChip->setPlaceholderText(QStringLiteral("变量名"));
-    m_nameChip->setText(formula.name);
-    header->addWidget(m_nameChip, 1);
+    header->addWidget(createNameChip(cad::ui::CopyChip::Variant::Formula,
+                                     QStringLiteral("变量名"), formula.name), 1);
 
-    m_valueLabel = new ElaText(QString(), 13, this);
-    m_valueLabel->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace;"
-        "font-size: 12px; background: transparent;");
-    header->addWidget(m_valueLabel, 0);
+    header->addWidget(createValueLabel(/*bold=*/false), 0);
 
     m_condDot = new ElaText(QStringLiteral("\u25CF"), 13, this);  // ●
     m_condDot->setStyleSheet("font-size: 8px; background: transparent;");
     m_condDot->setVisible(false);
     header->addWidget(m_condDot, 0);
 
-    // 悬停占位: 与删除按钮同尺寸, 二者互斥显隐 → 布局空间恒定,
-    // 按钮出现/消失不引起行宽挤压或行高变化 (VirtualCardList 不重测).
-    m_deleteBtnSlot = new QWidget(this);
-    m_deleteBtnSlot->setFixedSize(20, 20);
-    header->addWidget(m_deleteBtnSlot, 0);
-
-    m_deleteBtn = new ElaToolButton(this);
-    m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
-        QStringLiteral("trash"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
-    m_deleteBtn->setIconSize(QSize(12, 12));
-    m_deleteBtn->setToolTip(QStringLiteral("删除公式变量"));
-    m_deleteBtn->setFixedSize(20, 20);
-    m_deleteBtn->setCursor(Qt::PointingHandCursor);
-    m_deleteBtn->setVisible(false);
-    header->addWidget(m_deleteBtn, 0);
+    appendDeleteButton(header, QStringLiteral("删除公式变量"));
 
     mainLayout->addLayout(header);
 
@@ -318,8 +242,7 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     m_exprEdit = new ElaLineEdit(m_detail);     m_exprEdit->setText(formula.expression);
     m_exprEdit->setPlaceholderText(QStringLiteral("表达式，如: 胸围/2+6"));
     m_exprEdit->setFixedHeight(22);
-    m_exprEdit->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace; font-size: 12px;");
+    m_exprEdit->setStyleSheet(cad::ui::ThemeTokens::kMonospaceMd);
     detailLayout->addWidget(m_exprEdit);
 
     // Actual value + condition row (compact).
@@ -366,9 +289,8 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula, bool alter
     detailLayout->addLayout(optRow);
 
     // Comment.
-    m_commentEdit = new ElaLineEdit(m_detail);     m_commentEdit->setText(formula.comment);
-    m_commentEdit->setPlaceholderText(QStringLiteral("注释…"));
-    m_commentEdit->setFixedHeight(22);
+    m_commentEdit = createCommentEdit(m_detail);
+    m_commentEdit->setText(formula.comment);
     detailLayout->addWidget(m_commentEdit);
 
     mainLayout->addWidget(m_detail);

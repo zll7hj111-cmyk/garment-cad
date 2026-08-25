@@ -33,6 +33,7 @@
 #include "parametric/Block.h"
 #include "parametric/Segment.h"
 #include "parametric/ParamPoint.h"
+#include "parametric/MeasurementStore.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
 
@@ -71,6 +72,7 @@ private slots:
     void initTestCase();
     void teardownSmoke();
     void fullWindowDrag();
+    void curveFollowerDragStable();
 };
 
 namespace {
@@ -242,6 +244,135 @@ void TestRealdocFull::fullWindowDrag()
     // Guard: a tiny document must drag smoothly even in Debug builds.
     QVERIFY2(med < 16000.0,
              "median drag frame exceeds 16 ms on a tiny document — real lag");
+}
+
+/// Regression (用户报告 2026-09 "曲线跟随拖动的时候晃动"):
+/// 曲线块 (Bezier + CurveAnchor) 作为线级 follower 焊在外部 leader 线段上;
+/// 拖动 leader 时曲线块整体跟随附件求解重解. 若附件求解/曲线缓存/组件沉降
+/// 的顺序不对, 曲线锚点世界位置会在逐帧拖动中抖动 (帧间位移跳变).
+/// 不变式: 逐帧拖动 leader 时, 曲线锚点世界位置的变化应平滑 — 每帧位移
+/// 方向一致、大小与 leader 位移同量级; 且停顿帧位移为 0 (无漂移).
+void TestRealdocFull::curveFollowerDragStable()
+{
+    const QString path = qEnvironmentVariable("GCAD_DOC");
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        QSKIP("set GCAD_DOC to a .gcad file");
+
+    ParamDocument doc;
+    QString err;
+    QStringList warnings;
+    QVERIFY(cad::doc::DocumentFile::load(path, doc, &err, &warnings));
+    doc.resolveAll();
+
+    // 收集曲线块: Bezier 段 + CurveAnchor 锚点.
+    struct CurveInfo { QUuid block; QUuid anchor; };
+    QVector<CurveInfo> curves;
+    for (const auto& b : doc.blocks()) {
+        bool hasBezier = false;
+        for (const auto& seg : b.segments)
+            if (seg.type == SegmentType::Bezier) { hasBezier = true; break; }
+        if (!hasBezier) continue;
+        for (const auto& pt : b.points)
+            if (pt.constraint == PointConstraint::CurveAnchor)
+                curves.push_back({b.id, pt.id});
+    }
+    if (curves.isEmpty())
+        QSKIP("document has no curve block with a CurveAnchor");
+
+    // 曲线块的 leader: 附件 fromBlockId == 曲线块 → toBlockId (曲线块是 follower).
+    QSet<QUuid> leaders;
+    for (const auto& c : curves)
+        for (const auto& a : doc.attachments())
+            if (a.fromBlockId == c.block)
+                leaders.insert(a.toBlockId);
+    if (leaders.isEmpty())
+        QSKIP("curve blocks have no line-level leader attachment");
+
+    // 取工作层上的第一个"自由根" leader 作拖动目标: 排除自身也是 follower
+    // 的中间块 (拖中间块会被它的 incoming 附件拉回 leader 位, 无法观测链尾),
+    // 排除辅助层块 (拖辅助层不触发工作层后处理).
+    QUuid leader;
+    for (const QUuid& id : leaders) {
+        const Block* b = doc.findBlock(id);
+        if (!b || b->layer == doc.auxLayerId()) continue;
+        bool hasIncoming = false;
+        for (const auto& a : doc.attachments())
+            if (a.fromBlockId == id) { hasIncoming = true; break; }
+        if (hasIncoming) continue;
+        leader = id;
+        break;
+    }
+    if (leader.isNull()) leader = *leaders.constBegin();
+    qInfo() << "drag leader" << leader.toString() << "curves:" << curves.size();
+
+    // 基线: 逐帧拖动 leader, 采样所有曲线锚点世界位置.
+    constexpr int kFrames = 20;
+    const Vec2 step(0.5, 0.3);
+    QVector<QVector<Vec2>> samples(curves.size());
+    const QUuid leaderLayer = doc.findBlock(leader)->layer;  // 真实所在层
+    for (int f = 0; f <= kFrames; ++f) {
+        if (f > 0) {
+            Block* l = doc.findBlock(leader);
+            QVERIFY(l);
+            l->transform.origin += step;
+            doc.invalidateLayer(leaderLayer);
+            doc.resolveForDrag({leader});
+        }
+        for (int i = 0; i < curves.size(); ++i) {
+            const Block* b = doc.findBlock(curves[i].block);
+            samples[i].push_back(b ? b->worldPos(curves[i].anchor) : Vec2());
+        }
+    }
+
+    // 晃动检测: 帧间位移的平滑度. 逐帧 leader 位移恒定 (step),
+    // 锚点位移应近似同方向 (点积 > 0) 且大小在合理范围; 停顿帧位移 ≈ 0.
+    double maxJitter = 0.0;
+    for (int i = 0; i < curves.size(); ++i) {
+        double lastMag = -1.0;
+        for (int f = 1; f <= kFrames; ++f) {
+            const Vec2 d = samples[i][f] - samples[i][f - 1];
+            const double mag = std::sqrt(d.x * d.x + d.y * d.y);
+            // 位移量: 应约为 |step| 的同量级 (附件焊接 → 曲线块刚性跟随).
+            if (mag > 10.0 * step.length()) {
+                qWarning() << "curve" << curves[i].block
+                           << "frame" << f << "jump magnitude" << mag;
+                maxJitter = (std::max)(maxJitter, mag);
+            }
+            // 帧间位移方差: 恒定拖动下锚点位移应稳定 (|d_{f+1}-d_f| 小).
+            if (lastMag > 0.0 && std::abs(mag - lastMag) > 0.05) {
+                qWarning() << "curve" << curves[i].block
+                           << "frame" << f << "mag swing" << mag << "prev" << lastMag;
+                maxJitter = (std::max)(maxJitter, mag);
+            }
+            lastMag = mag;
+        }
+        // 停顿帧: 第 kFrames 后再 resolve 一次, 锚点应原地不动.
+        doc.invalidateLayer(leaderLayer);
+        doc.resolveForDrag({leader});
+        const Vec2 paused = doc.findBlock(curves[i].block)
+            ? doc.findBlock(curves[i].block)->worldPos(curves[i].anchor) : Vec2();
+        const Vec2 drift = paused - samples[i][kFrames];
+        const double dd = std::sqrt(drift.x * drift.x + drift.y * drift.y);
+        if (dd > 1e-3) {
+            qWarning() << "curve" << curves[i].block << "pause drift" << dd;
+            maxJitter = (std::max)(maxJitter, dd);
+        }
+        // 连续停顿多帧: 若每帧仍在移动 → 慢漂移/晃动 (非单次跳变).
+        for (int pk = 1; pk <= 4; ++pk) {
+            doc.invalidateLayer(leaderLayer);
+            doc.resolveForDrag({leader});
+            const Vec2 pp = doc.findBlock(curves[i].block)
+                ? doc.findBlock(curves[i].block)->worldPos(curves[i].anchor) : Vec2();
+            const Vec2 pd = pp - samples[i][kFrames];
+            const double pdd = std::sqrt(pd.x * pd.x + pd.y * pd.y);
+            if (pdd > 1e-3) {
+                qWarning() << "  curve" << curves[i].block << "pause" << pk << "drift" << pdd;
+                maxJitter = (std::max)(maxJitter, pdd);
+            }
+        }
+    }
+
+    QVERIFY2(maxJitter < 1.0, "curve anchor jitters during leader drag");
 }
 
 QTEST_MAIN(TestRealdocFull)

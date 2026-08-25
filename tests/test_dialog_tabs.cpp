@@ -15,9 +15,16 @@
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasView.h"
 #include "tools/LinePropertyDialog.h"
+#include "tools/PointRefEdit.h"
 #include "tools/SegmentAuxTab.h"
+#include "tools/SegmentExtendCard.h"
+#include "tools/SegmentConnectionCard.h"
+#include "ElaComboBox.h"
+#include "ElaPushButton.h"
+#include "ElaLineEdit.h"
 #include "tools/AuxPointForm.h"
 #include "ElaScrollPageArea.h"
+#include "ElaText.h"
 #include "TestHelpers.h"
 
 using namespace cad::param;
@@ -38,6 +45,9 @@ private slots:
     void switchBackWithoutEditing();   ///< control: no editing, no focus
     void switchBackLargeDoc();         ///< heavy document: freeze magnitude
     void probeTabHitArea();            ///< which widget owns the tab-bar pixels
+    void probeCardTitleColor();        ///< why card titles look washed out (像素探针)
+    void extendAppearSideBySide();     ///< 延长|外观 双气泡并排 (用户 2026-12 要求)
+    void connectCardUniformHeights();  ///< 连接卡行内控件统一高度/宽度 (用户 2026-12 反馈)
 };
 
 namespace {
@@ -440,6 +450,185 @@ void TestDialogTabs::switchBackWithoutEditing()
 
     qInfo() << "[dialog-tabs] control (no editing): 0->2:" << msToAux
             << "ms; 2->0:" << msBack << "ms";
+    delete dlg;
+}
+
+/// 像素探针: 卡片标题为什么"掉色" (用户报告 2026-?)。对比 基本信息 标题
+/// 与 名称: 标签的真实渲染 (grab 最暗像素) + QSS 解析后的调色板。
+void TestDialogTabs::probeCardTitleColor()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::tools::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QTest::qWait(150);   // 等待 polish + 首次 paint (ElaText::paintEvent 重置 palette)
+
+    auto dump = [](const QString& tag, ElaText* t) {
+        if (!t) { qInfo().noquote() << tag << "= null"; return; }
+        const QImage img = t->grab().toImage();
+        const double dpr = img.devicePixelRatio();
+        QColor darkest(255, 255, 255);
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x) {
+                const QColor c = img.pixelColor(x, y);
+                if (c.lightness() < darkest.lightness()) darkest = c;
+            }
+        qInfo().noquote()
+            << tag
+            << "| text=" << t->text()
+            << "| obj=" << t->objectName()
+            << "| sheet=" << t->styleSheet().replace('\n', ' ')
+            << "| palWin=" << t->palette().color(QPalette::WindowText).name()
+            << "| palTxt=" << t->palette().color(QPalette::Text).name()
+            << QStringLiteral("| grab(%1x%2 dpr=%3) darkest=%4")
+                   .arg(img.width()).arg(img.height()).arg(dpr).arg(darkest.name());
+    };
+
+    for (auto* t : dlg->findChildren<ElaText*>()) {
+        if (t->text() == QString::fromUtf8("基本信息"))
+            dump(QStringLiteral("TITLE-基本信息"), t);
+        if (t->text() == QString::fromUtf8("名称:"))
+            dump(QStringLiteral("LABEL-名称"), t);
+    }
+    delete dlg;
+}
+
+/// 回归：延长|外观 双气泡并排 (用户 2026-12: "外观和延长能不能像下面那个
+/// 起点和终点一样，左右各一个气泡")。两卡必须在同一行、等高、左右相邻
+/// (延长在左、外观在右)。
+void TestDialogTabs::extendAppearSideBySide()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::tools::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QTest::qWait(120);   // 等布局/滚动区几何落定
+
+    auto* extCard = dlg->findChild<cad::tools::SegmentExtendCard*>(
+        QStringLiteral("extendCard"));
+    auto* appearCard = dlg->findChild<ElaScrollPageArea*>(
+        QStringLiteral("appearCard"));
+    QVERIFY(extCard);
+    QVERIFY(appearCard);
+    QVERIFY(extCard->isVisibleTo(dlg));
+    QVERIFY(appearCard->isVisibleTo(dlg));
+
+    const QRect gE(extCard->mapTo(dlg, QPoint(0, 0)), extCard->size());
+    const QRect gA(appearCard->mapTo(dlg, QPoint(0, 0)), appearCard->size());
+
+    // 同一行、等高 (QHBoxLayout 垂直拉伸), 1px 舍入容差。
+    QVERIFY2(std::abs(gE.top() - gA.top()) <= 1,
+             qPrintable(QStringLiteral(
+                 "extend/appear cards must share the same row "
+                 "(ext top %1, appear top %2)").arg(gE.top()).arg(gA.top())));
+    QVERIFY2(std::abs(gE.height() - gA.height()) <= 1,
+             qPrintable(QStringLiteral(
+                 "extend/appear cards must have equal heights "
+                 "(ext %1, appear %2)").arg(gE.height()).arg(gA.height())));
+    // 左右相邻: 延长在左、外观在右, 不重叠。
+    QVERIFY2(gE.right() < gA.left(),
+             qPrintable(QStringLiteral(
+                 "extend card must sit left of appear card "
+                 "(ext right %1, appear left %2)")
+                 .arg(gE.right()).arg(gA.left())));
+
+    qInfo().noquote() << QStringLiteral(
+        "[ext-appear] ext geo (dlg) %1x%2 @%3,%4; appear %5x%6 @%7,%8")
+        .arg(gE.width()).arg(gE.height()).arg(gE.x()).arg(gE.y())
+        .arg(gA.width()).arg(gA.height()).arg(gA.x()).arg(gA.y());
+
+    delete dlg;
+}
+
+/// 回归：连接卡「输入框大小不一」 (用户 2026-12 反馈) —— 行内控件统一高
+/// 35px (ElaLineEdit/ElaComboBox 原生值, ElaPushButton/PointRefEdit 已对齐),
+/// 点引用输入统一宽 150px (列对齐)。
+void TestDialogTabs::connectCardUniformHeights()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);
+    doc.resolveAll();
+
+    // 建一条跟随连接, 面板以「跟随 · 连接」态展示 (行最多)。
+    cad::param::Attachment att;
+    att.fromBlockId = line.blockId;
+    att.fromPointId = line.startId;
+    att.toBlockId   = line.blockId == doc.blocks().front().id
+        ? doc.blocks().at(1).id : doc.blocks().front().id;
+    // 用真实 leader (第一条线 = setup 的 100mm 线)。
+    const auto* leaderBlk = doc.findBlock(
+        line.blockId == doc.blocks().at(0).id
+            ? doc.blocks().at(1).id : doc.blocks().at(0).id);
+    if (leaderBlk && !leaderBlk->segments.empty()) {
+        att.toPointId = leaderBlk->segments.front().startPointId;
+        att.toSegmentId = leaderBlk->segments.front().id;
+        QVERIFY(doc.addAttachment(att));
+    }
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::tools::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QTest::qWait(120);
+
+    auto* card = dlg->findChild<cad::tools::SegmentConnectionCard*>();
+    QVERIFY(card);
+
+    // ① 行内控件统一高度 35px。
+    int badH = 0;
+    for (auto* w : card->findChildren<QWidget*>()) {
+        const bool isInput =
+            qobject_cast<ElaLineEdit*>(w) || qobject_cast<cad::tools::PointRefEdit*>(w)
+            || qobject_cast<ElaPushButton*>(w) || qobject_cast<ElaComboBox*>(w);
+        if (!isInput) continue;
+        if (w->height() != 35 && w->y() >= 0) {   // 布局后高度应为 35
+            ++badH;
+            qInfo() << "[uniform] bad height:" << w->metaObject()->className()
+                    << w->height() << w->geometry();
+        }
+    }
+    QVERIFY2(badH == 0, qPrintable(QStringLiteral("连接卡行内控件高度不统一: %1 个")
+                                       .arg(badH)));
+
+    // ② 点引用输入 (PointRefEdit) 统一 150px 宽。
+    {
+        int refBad = 0;
+        for (auto* p : card->findChildren<cad::tools::PointRefEdit*>()) {
+            if (p->width() != 150) ++refBad;
+        }
+        QVERIFY2(refBad == 0,
+                 qPrintable(QStringLiteral("点引用输入宽度不统一: %1 个")
+                                .arg(refBad)));
+    }
+
+    qInfo() << "[uniform] conn card controls all 35px high; ref inputs 150px";
     delete dlg;
 }
 

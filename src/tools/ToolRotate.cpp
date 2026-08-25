@@ -25,23 +25,19 @@
 #include "RotateGizmo.h"
 #include "LinePropertyDialog.h"
 #include "document/commands/AttachmentCommands.h"
-#include "document/commands/GroupCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/ComponentCommands.h"
 
 namespace cad::tools {
 
-namespace {
-
-/// Format degrees for the HUD/label: integers without a trailing ".0".
-QString formatDeg(double deg)
-{
-    QString s = QString::number(deg, 'f', 1);
-    if (s.endsWith(QLatin1String(".0")))
-        s.chop(2);
-    return s;
-}
-
-} // namespace
+// ── 角度显示约定（2026-08 v3 定稿，用户拍板）────────────────────────────
+// 存储域 α ∈ [0, 360°)（Resolver/序列化零改动）；显示域分两种：
+//  • 连接线（跟随角度/弧长）= 带符号折角 [−180°, +180°]：折叠 0°、
+//    垂直 ±90°、开平 ±180°，符号 = 折向（α ≤ 180° → +α，否则 α−360°）。
+//  • 自由线绝对角度 / 复制相对角度 = 0~360° 逆时针为正（行业默认，
+//    AutoCAD 同）。
+// 统一实现收口在 geometry/Angle.h（normalizeDeg360 / normalizeDeg180）与
+// geometry/Units.h（formatDegValue），此处不再本地复制。
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Lifecycle
@@ -87,16 +83,29 @@ void ToolRotate::deactivate()
         m_releaseAttId = QUuid();
         m_releaseAttHeld = false;
     }
+    // 组件整组旋转: 未提交的整组释放同样恢复 (工具切换放弃手势).
+    if (m_groupReleasedHeld && m_paramDoc)
+        restoreComponentExternal();
     removeGizmo();
+    removeGroupHighlightBox();
     if (m_hud) { m_hud->hide(); delete m_hud; m_hud = nullptr; }
     if (m_aimRing && m_scene) { m_scene->removeItem(m_aimRing); delete m_aimRing; m_aimRing = nullptr; }
     m_blockId = QUuid();
     m_attId = QUuid();
-    m_componentHinge = false;
-    m_componentHingeGroupId = QUuid();
     m_connected = false;
     m_anchorPointId = QUuid();
     m_state = RotateState::Idle;
+    // 组件整组旋转会话重置 (无释放残留: deactivate 前 rotate 未提交即 restore).
+    m_compId = QUuid();
+    m_groupMode = false;
+    m_groupPivotSet = false;
+    m_groupPivotPointId = QUuid();
+    m_groupDelta = 0.0;
+    m_groupBaseTf.clear();
+    m_groupReleasedAtts.clear();
+    m_groupReleasedTargets.clear();
+    m_groupReleasedDarts.clear();
+    m_groupReleasedHeld = false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -130,6 +139,15 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
         break;
     }
     case RotateState::Ready: {
+        // ── W 键组件整组旋转 (2026-12): 整组模式下一切按压 = 锚点/旋转,
+        // 不切换目标 (点别的线只是锚点所在地, 主流 CAD 语义).
+        if (m_groupMode) {
+            if (!m_groupPivotSet)
+                beginGroupPivot(pos);
+            else
+                beginGroupRotation(pos);
+            break;
+        }
         const QUuid id = hitBlock(pos);
         const bool ctrl = (event->modifiers() & Qt::ControlModifier);
         if (ctrl) {
@@ -160,8 +178,7 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
                     blk && !blk->segments.empty()) {
                     anchorLocked =
                         attachmentAtPoint(blk->segments.front().startPointId)
-                        || attachmentAtPoint(blk->segments.front().endPointId)
-                        || m_componentHinge;
+                        || attachmentAtPoint(blk->segments.front().endPointId);
                 }
                 if (!anchorLocked) {
                     commitCurrent();
@@ -198,6 +215,14 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
 
 void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
 {
+    // 整组旋转: 拖动帧直通 group 分支 (单线的 Ctrl 转换/吸附逻辑不适用).
+    if (m_groupMode) {
+        if (m_state == RotateState::Rotating) {
+            const cad::geo::Vec2 gp(event->scenePos().x(), event->scenePos().y());
+            updateGroupRotation(gp, event->modifiers() & Qt::ShiftModifier);
+        }
+        return;
+    }
     if (m_state != RotateState::Rotating) return;
     const cad::geo::Vec2 pos(event->scenePos().x(), event->scenePos().y());
     // 普通旋转拖动中途按下 Ctrl：转为旋转复制（原块回弹 + 副本接手当前角度）。
@@ -216,7 +241,8 @@ void ToolRotate::mouseRelease(QGraphicsSceneMouseEvent* event)
     if (event->button() != Qt::LeftButton) return;
     if (m_state != RotateState::Rotating) return;
     if (m_copyGesture->active()) m_copyGesture->commit();
-    else                         commitRotation();
+    else if (m_groupMode)          commitGroupRotation();
+    else                           commitRotation();
 }
 
 void ToolRotate::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
@@ -227,7 +253,10 @@ void ToolRotate::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     // A double-click is preceded by two press/release pairs; the second press
     // may have started a rotation — cancel it and drop the target before
     // opening the property dialog.
-    if (m_state == RotateState::Rotating) cancelRotation();
+    if (m_state == RotateState::Rotating) {
+        if (m_groupMode) cancelGroupRotation();
+        else             cancelRotation();
+    }
     clearTarget();
 
     const cad::geo::Vec2 clickPos(event->scenePos().x(), event->scenePos().y());
@@ -268,7 +297,18 @@ void ToolRotate::keyPress(QKeyEvent* event)
         event->accept();
     } else if (event->key() == Qt::Key_X) {
         // X: toggle the anchor between the start and end points (锚心切换).
-        toggleAnchor();
+        // 整组旋转模式下锚心概念不适用 — 禁用 (W 键专属整组语义).
+        if (!m_groupMode) toggleAnchor();
+        event->accept();
+    } else if (event->key() == Qt::Key_W) {
+        // W 键组件整组旋转 (2026-12 用户拍板, ROTATE_COMPONENT_DESIGN.md):
+        // 默认单线; 目标线属于某组件时可切换整组旋转模式; 再按 W 回单线.
+        if (!m_groupMode && m_compId.isNull()) {
+            if (m_scene)
+                m_scene->showToast(QString::fromUtf8("整组旋转仅适用于组件（请先选中组件中的线）"));
+        } else {
+            toggleGroupMode();
+        }
         event->accept();
     }
 }
@@ -287,23 +327,12 @@ cad::param::Attachment* ToolRotate::followerAttachment()
 
 cad::param::Attachment* ToolRotate::editableAttachment()
 {
-    if (m_componentHinge) return &m_componentHingeEditAtt;
     return m_paramDoc ? m_paramDoc->findAttachment(m_attId) : nullptr;
 }
 
 const cad::param::Attachment* ToolRotate::editableAttachment() const
 {
-    if (m_componentHinge) return &m_componentHingeEditAtt;
     return m_paramDoc ? m_paramDoc->findAttachment(m_attId) : nullptr;
-}
-
-void ToolRotate::syncComponentHingeFromEdit()
-{
-    if (!m_componentHinge || !m_paramDoc) return;
-    cad::param::ComponentHinge h = m_componentHingeBase;
-    h.followerAngle = m_componentHingeEditAtt.followerAngle;
-    h.followerAngleFormula = m_componentHingeEditAtt.followerAngleFormula;
-    m_paramDoc->updateComponentHinge(m_componentHingeGroupId, h);
 }
 
 cad::param::Attachment* ToolRotate::attachmentAtPoint(const QUuid& pointId)
@@ -312,22 +341,6 @@ cad::param::Attachment* ToolRotate::attachmentAtPoint(const QUuid& pointId)
     for (const auto& a : m_paramDoc->attachments())
         if (a.fromBlockId == m_blockId && a.fromPointId == pointId && !a.isPin)
             return m_paramDoc->findAttachment(a.id);
-    return nullptr;
-}
-
-cad::param::Attachment* ToolRotate::findGroupHingeAttachment(const QUuid& blockId)
-{
-    if (!m_paramDoc || blockId.isNull()) return nullptr;
-    const QUuid gid = m_paramDoc->groupOfBlock(blockId);
-    if (gid.isNull()) return nullptr;
-    const QList<QUuid> members = m_paramDoc->blocksInGroup(gid);
-    const QSet<QUuid> memberSet(members.begin(), members.end());
-    for (const auto& a : m_paramDoc->attachments()) {
-        if (a.isPin) continue;
-        if (memberSet.contains(a.fromBlockId) && !memberSet.contains(a.toBlockId)) {
-            return m_paramDoc->findAttachment(a.id);
-        }
-    }
     return nullptr;
 }
 
@@ -344,8 +357,7 @@ void ToolRotate::toggleAnchor()
     // 已连接线段禁止切换锚心（用户拍板 2026-08）: 切换会改变跟随附着点，
     // 连接语义复杂化甚至断开——只在属性面板显式断开跟随后可切。
     if (attachmentAtPoint(blk->segments.front().startPointId)
-        || attachmentAtPoint(blk->segments.front().endPointId)
-        || findGroupHingeAttachment(m_blockId))
+        || attachmentAtPoint(blk->segments.front().endPointId))
         return;
 
     commitCurrent();                 // commit any uncommitted HUD edit first
@@ -370,40 +382,7 @@ void ToolRotate::rebuildAnchorState()
     const cad::param::ParamPoint* ap = blk->findPoint(m_anchorPointId);
     if (!ap || !ap->resolved) { clearTarget(); return; }
 
-    m_componentHinge = false;
-    m_componentHingeGroupId = QUuid();
     cad::param::Attachment* att = attachmentAtPoint(m_anchorPointId);
-    if (!att) {
-        // 路线B 组件: 组件铰链在模型层不再表现为普通 Attachment; 为复用旋转
-        // 工具的 connected 流程, 用合成 Attachment 镜像铰链. 实时编辑会
-        // 同步写回真实 Group::hinge, 最终 commit 走 SetComponentHingeCommand.
-        const QUuid gid = m_paramDoc->groupOfBlock(m_blockId);
-        if (!gid.isNull()) {
-            if (const auto* hinge = m_paramDoc->componentHinge(gid)) {
-                cad::param::Attachment syn;
-                syn.id = gid;   // sentinel: never a real attachment id
-                syn.fromBlockId = hinge->memberBlockId;
-                syn.fromPointId = hinge->memberPointId;
-                syn.toBlockId = hinge->leaderBlockId;
-                syn.toPointId = hinge->leaderPointId;
-                syn.toSegmentId = hinge->leaderSegmentId;
-                syn.followerAngle = hinge->followerAngle;
-                syn.followerAngleFormula = hinge->followerAngleFormula;
-                syn.rotationMode = cad::param::RotationMode::Angle;
-                syn.arcLength = 0.0;
-                syn.arcLengthFormula.clear();
-                syn.slideMode = cad::param::SlideMode::None;
-                m_componentHinge = true;
-                m_componentHingeGroupId = gid;
-                m_componentHingeBase = *hinge;
-                m_componentHingeEditAtt = syn;
-                att = &m_componentHingeEditAtt;
-            }
-        }
-        if (!att)
-            att = findGroupHingeAttachment(m_blockId);
-    }
-
     if (att) {
         // ── Connected mode: the anchor IS the attachment point, so the
         // rotation edits the follower angle. ──
@@ -432,14 +411,6 @@ void ToolRotate::rebuildAnchorState()
         m_baseTf = blk->transform;
         m_baseEndTargetBlock = blk->endTargetBlockId;
         m_baseEndTargetPoint = blk->endTargetPointId;
-
-        m_groupBaseTransforms.clear();
-        if (const QUuid gid = m_paramDoc->groupOfBlock(m_blockId); !gid.isNull()) {
-            for (const QUuid& memberId : m_paramDoc->blocksInGroup(gid)) {
-                if (const auto* mb = m_paramDoc->findBlock(memberId))
-                    m_groupBaseTransforms.insert(memberId, mb->transform);
-            }
-        }
     }
 
     // The pivot moved OFF the follower link (anchor != attachment point): the
@@ -502,6 +473,22 @@ void ToolRotate::selectTarget(const QUuid& blockId)
     m_anchorIsEnd = false;        // default anchor: the START point
     m_releaseAttId = QUuid();
     m_releaseAttHeld = false;
+    // 组件整组旋转 (W 键) 会话重置: 目标所属组件 / 模式 / 锚点 / 快照.
+    m_compId = QUuid();
+    m_groupMode = false;
+    m_groupReleasedHeld = false;
+    m_groupReleasedAtts.clear();
+    m_groupReleasedTargets.clear();
+    m_groupReleasedDarts.clear();
+    m_groupPivotSet = false;
+    m_groupPivotPointId = QUuid();
+    m_groupDelta = 0.0;
+    m_groupBaseTf.clear();
+    removeGroupHighlightBox();
+    if (m_paramDoc) {
+        if (const auto* comp = m_paramDoc->componentOfBlock(blockId))
+            m_compId = comp->id;
+    }
     rebuildAnchorState();
     if (m_blockId.isNull()) return;   // rebuild cleared an invalid target
 
@@ -517,16 +504,420 @@ void ToolRotate::clearTarget()
     removeGizmo();
     hideHud();
     clearAimCandidate();
+    removeGroupHighlightBox();
     m_blockId = QUuid();
     m_attId = QUuid();
-    m_componentHinge = false;
-    m_componentHingeGroupId = QUuid();
     m_connected = false;
     m_anchorPointId = QUuid();
     m_releaseAttId = QUuid();
     m_releaseAttHeld = false;
+    // 组件整组旋转会话重置.
+    m_compId = QUuid();
+    m_groupMode = false;
+    m_groupReleasedHeld = false;
+    m_groupReleasedAtts.clear();
+    m_groupReleasedTargets.clear();
+    m_groupReleasedDarts.clear();
+    m_groupPivotSet = false;
+    m_groupPivotPointId = QUuid();
+    m_groupDelta = 0.0;
+    m_groupBaseTf.clear();
     m_state = RotateState::Idle;
     if (m_scene) m_scene->refreshAllBlockItems();
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W 键组件整组旋转 (2026-12 用户拍板, ROTATE_COMPONENT_DESIGN.md)
+// 设计要点: 目标 = 整个组件; 锚点 = 任意点 (第一击设锚, 第二击起手拖动);
+// 全体成员绕锚点刚体变换 (rotation += delta / origin 绕 pivot 旋转);
+// 外部约束 (D7 判定表) 开始前快照 + 释放, commit restore-then-replay /
+// undo 原样恢复; 锚点不存储 (会话态, 不进文档).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void ToolRotate::toggleGroupMode()
+{
+    if (m_groupMode) exitGroupMode();
+    else if (m_state == RotateState::Ready && !m_compId.isNull()) enterGroupMode();
+}
+
+void ToolRotate::enterGroupMode()
+{
+    if (m_state != RotateState::Ready || m_compId.isNull()) return;
+    commitCurrent();                 // 落盘任何未提交 HUD 编辑
+    m_groupMode = true;
+    m_groupPivotSet = false;
+    m_groupPivotPointId = QUuid();
+    m_groupDelta = 0.0;
+    m_groupBaselineRad = 0.0;
+    m_groupReleasedHeld = false;
+    m_groupReleasedAtts.clear();
+    m_groupReleasedTargets.clear();
+    m_groupReleasedDarts.clear();
+    m_groupBaseTf.clear();
+    if (m_paramDoc) {
+        const auto* comp = m_paramDoc->findComponent(m_compId);
+        if (!comp) { m_groupMode = false; return; }
+        for (const QUuid& mid : comp->memberBlockIds) {
+            if (const auto* b = m_paramDoc->findBlock(mid))
+                m_groupBaseTf.insert(mid, b->transform);
+        }
+        if (m_groupBaseTf.isEmpty()) { m_groupMode = false; return; }
+    }
+    removeGizmo();                   // 锚心环不适用 (锚点尚未确定)
+    updateGroupHighlightBox();
+    showHud();                       // refreshHudText → 整组旋转 caption
+    if (m_scene) m_scene->refreshAllBlockItems();
+}
+
+void ToolRotate::exitGroupMode()
+{
+    if (!m_groupMode) return;
+    // 未提交的释放中途退出 = 取消手势: 恢复基准位姿 + 快照约束.
+    if (m_groupReleasedHeld && m_paramDoc) {
+        for (auto it = m_groupBaseTf.cbegin(); it != m_groupBaseTf.cend(); ++it) {
+            if (auto* b = m_paramDoc->findBlock(it.key()))
+                b->transform = it.value();
+        }
+        restoreComponentExternal();  // 内含 resolveAll
+    }
+    m_groupMode = false;
+    m_groupPivotSet = false;
+    m_groupPivotPointId = QUuid();
+    m_groupDelta = 0.0;
+    m_groupBaselineRad = 0.0;
+    m_state = RotateState::Ready;    // 中途 W 退出 = 中止拖动
+    removeGroupHighlightBox();
+    removeGizmo();
+    // 回单线: 以当前几何重建会话 (成员可能已被整组旋转移动).
+    if (m_paramDoc && !m_blockId.isNull()) {
+        rebuildAnchorState();
+        if (!m_blockId.isNull()) {
+            buildGizmo();
+            updateGizmo();
+            showHud();
+            if (m_scene) m_scene->refreshAllBlockItems();
+        }
+    }
+}
+
+void ToolRotate::beginGroupPivot(const cad::geo::Vec2& pos)
+{
+    if (m_state != RotateState::Ready || !m_groupMode || !m_paramDoc) return;
+    m_groupPivotPointId = snapAnyPoint(pos);
+    if (!m_groupPivotPointId.isNull()) {
+        // 吸附: 世界位置 = 命中点当前解析位.
+        bool found = false;
+        for (const auto& blk : m_paramDoc->blocks()) {
+            for (const auto& pt : blk.points) {
+                if (pt.id == m_groupPivotPointId && pt.resolved) {
+                    m_groupPivot = blk.transform.toWorld(pt.resolvedPos);
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (!found) m_groupPivot = pos;   // 命中点在拖动间已消失: 回退自由锚点
+    } else {
+        m_groupPivot = pos;               // 自由锚点 (任意位置)
+    }
+    m_groupPivotSet = true;
+    m_groupDelta = 0.0;
+    // 锚心环就位 (gizmo 复用单线态 pivot/ref 字段 — 整组模式不触碰单线逻辑).
+    m_pivot = m_groupPivot;
+    m_refWorldRad = 0.0;
+    removeGizmo();
+    buildGizmo();
+    updateGizmo();
+    showHud();                           // HUD 移到锚点附近
+}
+
+void ToolRotate::beginGroupRotation(const cad::geo::Vec2& pos)
+{
+    if (m_state != RotateState::Ready || !m_groupMode || !m_groupPivotSet) return;
+    // D7: 收集 + 释放外部约束 (一次性; 幂等).
+    collectAndReleaseComponentExternal();
+    m_state = RotateState::Rotating;
+    const cad::geo::Vec2 d = pos - m_groupPivot;
+    m_groupBaselineRad = (d.lengthSquared() > 1e-12) ? std::atan2(d.y, d.x) : 0.0;
+    m_groupDelta = 0.0;
+    showHud();
+}
+
+void ToolRotate::updateGroupRotation(const cad::geo::Vec2& pos, bool snap)
+{
+    if (m_state != RotateState::Rotating || !m_groupMode) return;
+    const cad::geo::Vec2 d = pos - m_groupPivot;
+    const double theta = std::atan2(d.y, d.x);
+    double delta = cad::geo::normalizeRad(theta - m_groupBaselineRad);
+    double deg = cad::geo::radToDeg(delta);
+    if (snap) deg = std::round(deg / 15.0) * 15.0;
+    applyGroupDelta(deg);
+    updateGizmo();
+    refreshHudText();
+}
+
+void ToolRotate::applyGroupDelta(double deg)
+{
+    if (!m_paramDoc || m_compId.isNull()) return;
+    const double deltaRad = deg * M_PI / 180.0;
+    m_groupDelta = deg;
+    const auto* comp = m_paramDoc->findComponent(m_compId);
+    if (!comp) return;
+    // 每帧热路径铁律 (2026-09 收敛): resolveForDrag + syncBlockPositions,
+    // 禁止 resolveAll/refreshAllBlockItems.
+    QList<QUuid> seeds;
+    for (const QUuid& mid : comp->memberBlockIds) {
+        auto* b = m_paramDoc->findBlock(mid);
+        if (!b) continue;
+        const auto it = m_groupBaseTf.constFind(mid);
+        if (it == m_groupBaseTf.constEnd()) continue;
+        cad::param::Transform2D nf = it.value();
+        nf.rotation += deltaRad;
+        nf.origin = m_groupPivot + (nf.origin - m_groupPivot).rotated(deltaRad);
+        b->transform = nf;
+        seeds << mid;
+        m_paramDoc->invalidateLayer(b->layer);
+    }
+    if (seeds.isEmpty()) return;
+    m_paramDoc->resolveForDrag(seeds);
+    if (m_scene) m_scene->syncBlockPositions();
+    updateGroupHighlightBox();
+}
+
+void ToolRotate::commitGroupRotation()
+{
+    if (!m_paramDoc || !m_undoStack || m_compId.isNull()) {
+        if (m_state == RotateState::Rotating) m_state = RotateState::Ready;
+        return;
+    }
+    const auto* comp = m_paramDoc->findComponent(m_compId);
+    if (!comp) { m_state = RotateState::Ready; return; }
+
+    // 1) 捕获最终位姿 (恢复前!).
+    QHash<QUuid, cad::param::Transform2D> newTf;
+    bool moved = false;
+    for (const QUuid& mid : comp->memberBlockIds) {
+        const auto* b = m_paramDoc->findBlock(mid);
+        const auto it = m_groupBaseTf.constFind(mid);
+        if (!b || it == m_groupBaseTf.constEnd()) continue;
+        newTf.insert(mid, b->transform);
+        const double dRot = std::abs(b->transform.rotation - it.value().rotation);
+        const double dOrg = b->transform.origin.distanceTo(it.value().origin);
+        if (dRot > 1e-9 || dOrg > 1e-6) moved = true;
+    }
+    if (!m_groupReleasedAtts.empty() || !m_groupReleasedTargets.empty()
+        || !m_groupReleasedDarts.empty())
+        moved = true;
+
+    // 2) Restore-then-replay: 恢复基准现场 (位姿 + 快照约束), 再推命令重放.
+    for (auto it = m_groupBaseTf.cbegin(); it != m_groupBaseTf.cend(); ++it) {
+        if (auto* b = m_paramDoc->findBlock(it.key()))
+            b->transform = it.value();
+    }
+    if (m_groupReleasedHeld && !m_groupReleasedAtts.empty())
+        m_paramDoc->addAttachmentsRaw(m_groupReleasedAtts);
+    for (const auto& r : m_groupReleasedTargets) {
+        if (auto* b = m_paramDoc->findBlock(r.blockId)) {
+            b->endTargetBlockId = r.endTargetBlockId;
+            b->endTargetPointId = r.endTargetPointId;
+            b->endTargetOffset = r.endTargetOffset;
+            b->endTargetOffsetFormula = r.endTargetOffsetFormula;
+        }
+    }
+    for (const auto& r : m_groupReleasedDarts) {
+        if (auto* b = m_paramDoc->findBlock(r.blockId)) {
+            b->dartStartBlockId = r.dartStartBlockId;
+            b->dartStartPointId = r.dartStartPointId;
+            b->dartRefBlockId = r.dartRefBlockId;
+            b->dartRefPointId = r.dartRefPointId;
+            b->dartRefSegmentId = r.dartRefSegmentId;
+            b->dartOffsetMm = r.dartOffsetMm;
+            b->dartOffsetFormula = r.dartOffsetFormula;
+            b->dartAngleDeg = r.dartAngleDeg;
+            b->dartAngleFormula = r.dartAngleFormula;
+        }
+    }
+    m_state = RotateState::Ready;
+    if (!moved) {
+        // 无位移也无释放: 现场完全恢复, 无需命令.
+        m_groupReleasedHeld = false;
+        m_groupDelta = 0.0;
+        updateGizmo();
+        refreshHudText();
+        return;
+    }
+    m_undoStack->push(new cad::cmd::RotateComponentCommand(
+        m_paramDoc, m_compId, m_groupBaseTf, newTf,
+        m_groupReleasedAtts, m_groupReleasedTargets, m_groupReleasedDarts));
+    m_groupBaseTf = newTf;
+    m_groupReleasedHeld = false;
+    m_groupDelta = 0.0;
+    updateGizmo();
+    refreshHudText();
+}
+
+void ToolRotate::cancelGroupRotation()
+{
+    if (m_state != RotateState::Rotating || !m_groupMode) return;
+    m_state = RotateState::Ready;
+    for (auto it = m_groupBaseTf.cbegin(); it != m_groupBaseTf.cend(); ++it) {
+        if (auto* b = m_paramDoc->findBlock(it.key()))
+            b->transform = it.value();
+    }
+    restoreComponentExternal();
+    m_groupDelta = 0.0;
+    updateGizmo();
+    refreshHudText();
+    if (m_scene) m_scene->refreshAllBlockItems();
+}
+
+void ToolRotate::collectAndReleaseComponentExternal()
+{
+    if (!m_paramDoc || m_compId.isNull() || m_groupReleasedHeld) return;
+    const auto* comp = m_paramDoc->findComponent(m_compId);
+    if (!comp) return;
+    // D7 判定表: 组件级 attachment / 成员线→组外 leader (含 pin) → 释放;
+    // 组内连接保持 (整组刚体旋转下相对关系自洽).
+    const auto isMember = [comp](const QUuid& id) { return comp->isMember(id); };
+    QList<QUuid> toRemove;
+    for (const auto& a : m_paramDoc->attachments()) {
+        if (a.fromComponentId == m_compId
+            || (isMember(a.fromBlockId) && !isMember(a.toBlockId))) {
+            m_groupReleasedAtts.push_back(a);
+            toRemove << a.id;
+        }
+    }
+    if (!toRemove.isEmpty())
+        m_paramDoc->removeAttachments(toRemove);   // 批处理: 组件级不清 exposedPointId
+
+    // 成员指向组外点 endTarget / 引用组外点的省道线 → 释放 (快照全字段).
+    for (const QUuid& mid : comp->memberBlockIds) {
+        auto* b = m_paramDoc->findBlock(mid);
+        if (!b) continue;
+        if (!b->endTargetBlockId.isNull() && !isMember(b->endTargetBlockId)) {
+            cad::cmd::AimRelease r;
+            r.blockId = mid;
+            r.endTargetBlockId = b->endTargetBlockId;
+            r.endTargetPointId = b->endTargetPointId;
+            r.endTargetOffset = b->endTargetOffset;
+            r.endTargetOffsetFormula = b->endTargetOffsetFormula;
+            m_groupReleasedTargets.push_back(r);
+            b->endTargetBlockId = QUuid();
+            b->endTargetPointId = QUuid();
+            b->endTargetOffset = 0.0;
+            b->endTargetOffsetFormula.clear();
+        }
+        if (b->isDart()
+            && (!isMember(b->dartStartBlockId) || !isMember(b->dartRefBlockId))) {
+            cad::cmd::DartRelease r;
+            r.blockId = mid;
+            r.dartStartBlockId = b->dartStartBlockId;
+            r.dartStartPointId = b->dartStartPointId;
+            r.dartRefBlockId = b->dartRefBlockId;
+            r.dartRefPointId = b->dartRefPointId;
+            r.dartRefSegmentId = b->dartRefSegmentId;
+            r.dartOffsetMm = b->dartOffsetMm;
+            r.dartOffsetFormula = b->dartOffsetFormula;
+            r.dartAngleDeg = b->dartAngleDeg;
+            r.dartAngleFormula = b->dartAngleFormula;
+            m_groupReleasedDarts.push_back(r);
+            b->dartStartBlockId = QUuid();
+            b->dartStartPointId = QUuid();
+            b->dartRefBlockId = QUuid();
+            b->dartRefPointId = QUuid();
+            b->dartRefSegmentId = QUuid();
+        }
+    }
+    m_groupReleasedHeld = true;
+    m_paramDoc->resolveAll();
+    if (m_scene) m_scene->refreshAllBlockItems();
+}
+
+void ToolRotate::restoreComponentExternal()
+{
+    if (!m_paramDoc || !m_groupReleasedHeld) return;
+    if (!m_groupReleasedAtts.empty())
+        m_paramDoc->addAttachmentsRaw(m_groupReleasedAtts);
+    for (const auto& r : m_groupReleasedTargets) {
+        if (auto* b = m_paramDoc->findBlock(r.blockId)) {
+            b->endTargetBlockId = r.endTargetBlockId;
+            b->endTargetPointId = r.endTargetPointId;
+            b->endTargetOffset = r.endTargetOffset;
+            b->endTargetOffsetFormula = r.endTargetOffsetFormula;
+        }
+    }
+    for (const auto& r : m_groupReleasedDarts) {
+        if (auto* b = m_paramDoc->findBlock(r.blockId)) {
+            b->dartStartBlockId = r.dartStartBlockId;
+            b->dartStartPointId = r.dartStartPointId;
+            b->dartRefBlockId = r.dartRefBlockId;
+            b->dartRefPointId = r.dartRefPointId;
+            b->dartRefSegmentId = r.dartRefSegmentId;
+            b->dartOffsetMm = r.dartOffsetMm;
+            b->dartOffsetFormula = r.dartOffsetFormula;
+            b->dartAngleDeg = r.dartAngleDeg;
+            b->dartAngleFormula = r.dartAngleFormula;
+        }
+    }
+    m_groupReleasedHeld = false;
+    m_paramDoc->resolveAll();
+}
+
+QUuid ToolRotate::snapAnyPoint(const cad::geo::Vec2& worldPos) const
+{
+    if (!m_paramDoc) return QUuid();
+    const double tol = 8.0 / currentZoom();
+    QUuid best;
+    double bestDist = tol;
+    for (const auto& blk : m_paramDoc->blocks()) {
+        for (const auto& pt : blk.points) {
+            if (!pt.resolved || !pt.selectable) continue;
+            const cad::geo::Vec2 w = blk.transform.toWorld(pt.resolvedPos);
+            const double d = w.distanceTo(worldPos);
+            if (d <= bestDist) { bestDist = d; best = pt.id; }
+        }
+    }
+    return best;
+}
+
+void ToolRotate::updateGroupHighlightBox()
+{
+    if (!m_groupMode || !m_scene || !m_paramDoc || m_compId.isNull()) return;
+    const cad::param::BBox box = m_paramDoc->boundingBoxOf(m_compId);
+    if (!m_groupHighlightBox) {
+        m_groupHighlightBox = new QGraphicsRectItem();
+        QPen pen(QColor(72, 141, 255, 230));   // 选中色系 (与 CanvasStyle 同 token 来源)
+        pen.setWidthF(1.5);
+        pen.setCosmetic(true);
+        pen.setStyle(Qt::DashLine);
+        m_groupHighlightBox->setPen(pen);
+        m_groupHighlightBox->setBrush(Qt::NoBrush);
+        m_groupHighlightBox->setZValue(90.0);
+        m_groupHighlightBox->setFlag(QGraphicsItem::ItemIsSelectable, false);
+        m_groupHighlightBox->setFlag(QGraphicsItem::ItemIsFocusable, false);
+        m_scene->addItem(m_groupHighlightBox);
+    }
+    if (box.valid) {
+        double zoom = currentZoom();
+        if (zoom < 1e-9) zoom = 1.0;
+        const double pad = 5.0 / zoom;
+        m_groupHighlightBox->setRect(QRectF(
+            QPointF(box.min.x - pad, -box.max.y - pad),
+            QPointF(box.max.x + pad, -box.min.y + pad)));
+        m_groupHighlightBox->show();
+    } else {
+        m_groupHighlightBox->hide();
+    }
+}
+
+void ToolRotate::removeGroupHighlightBox()
+{
+    if (!m_groupHighlightBox) return;
+    if (m_scene) m_scene->removeItem(m_groupHighlightBox);
+    delete m_groupHighlightBox;
+    m_groupHighlightBox = nullptr;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -581,7 +972,6 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
                 a->followerAngleFormula.clear();
             }
         }
-        if (m_componentHinge) syncComponentHingeFromEdit();
         // NOTE: m_baseFormula/m_baseArcFormula stay UNTOUCHED — they are the
         // undo-restore target (撤销恢复公式), and the commit diff needs the
         // formula-vs-empty change to be visible.
@@ -600,18 +990,8 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
 //    垂直 ±90°、开平 ±180°，符号 = 折向（α ≤ 180° → +α，否则 α−360°）。
 //  • 自由线绝对角度 / 复制相对角度 = 0~360° 逆时针为正（行业默认，
 //    AutoCAD 同）。
-static double signedFoldDeg(double alphaDeg)
-{
-    double a = std::fmod(alphaDeg, 360.0);
-    if (a < 0.0) a += 360.0;
-    return a > 180.0 ? a - 360.0 : a;
-}
-static double alphaFromSignedFold(double foldDeg)
-{
-    double a = std::fmod(foldDeg, 360.0);
-    if (a < 0.0) a += 360.0;
-    return a;
-}
+// 统一实现收口在 geometry/Angle.h（normalizeDeg360 / normalizeDeg180）与
+// geometry/Units.h（formatDegValue），此处不再本地复制。
 
 void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
 {
@@ -634,11 +1014,10 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
         target = m_dragAngle0 + cad::geo::radToDeg(delta);
         if (snap) target = std::round(target / 15.0) * 15.0;
     } else if (m_connected) {
-        const double alpha0 = alphaFromSignedFold(m_dragAngle0);
-        double alpha = std::fmod(alpha0 - cad::geo::radToDeg(delta), 360.0);
-        if (alpha < 0.0) alpha += 360.0;
+        const double alpha0 = cad::geo::normalizeDeg360(m_dragAngle0);
+        double alpha = cad::geo::normalizeDeg360(alpha0 - cad::geo::radToDeg(delta));
         if (snap) alpha = std::round(alpha / 15.0) * 15.0;
-        target = signedFoldDeg(alpha);
+        target = cad::geo::normalizeDeg180(alpha);
     } else {
         target = m_dragAngle0 + cad::geo::radToDeg(delta);
         if (snap) target = std::round(target / 15.0) * 15.0;
@@ -670,7 +1049,7 @@ void ToolRotate::applyAngleDeg(double deg)
     if (m_connected) {
         if (auto* a = editableAttachment()) {
             // 输入 = 带符号折角（−180~+180，含折向）→ 存储 α ∈ [0, 360°)。
-            const double alpha = alphaFromSignedFold(deg);
+            const double alpha = cad::geo::normalizeDeg360(deg);
             if (m_rotationMode == cad::param::RotationMode::ArcLength) {
                 // 弧长 = 线夹角恒等映射（2026-08 定稿）：弧长 0 = 0° 折叠、
                 // πr = 180° 开平，与 Resolver 一致，不再反转。
@@ -683,7 +1062,6 @@ void ToolRotate::applyAngleDeg(double deg)
                 a->followerAngleFormula.clear();   // direct manipulation overrides formula
             }
         }
-        if (m_componentHinge) syncComponentHingeFromEdit();
     } else {
         cad::param::Block* blk = m_paramDoc->findBlock(m_blockId);
         if (!blk) return;
@@ -694,23 +1072,16 @@ void ToolRotate::applyAngleDeg(double deg)
         const double newRot = deg * M_PI / 180.0
                               - anchorOffsetRad - m_localDir;
         const double deltaRot = newRot - m_baseTf.rotation;
-
-        const QUuid gid = m_paramDoc->groupOfBlock(m_blockId);
-        if (!gid.isNull() && !m_groupBaseTransforms.isEmpty()) {
-            for (auto it = m_groupBaseTransforms.cbegin(); it != m_groupBaseTransforms.cend(); ++it) {
-                if (auto* mb = m_paramDoc->findBlock(it.key())) {
-                    const cad::param::Transform2D& baseTf = it.value();
-                    mb->transform.rotation = baseTf.rotation + deltaRot;
-                    mb->transform.origin = m_pivot + (baseTf.origin - m_pivot).rotated(deltaRot);
-                }
-            }
-        } else {
-            blk->transform.rotation = newRot;
-            blk->transform.origin = m_pivot - m_anchorLocal.rotated(newRot);
-        }
+        blk->transform.rotation = newRot;
+        blk->transform.origin = m_pivot - m_anchorLocal.rotated(newRot);
     }
-    m_paramDoc->resolveAll();
-    if (m_scene) m_scene->refreshAllBlockItems();
+    // Per-frame hot path (旋转拖动每帧): resolve ONLY the rotated block's dirty
+    // subgraph (followers/referencers via collectAffected) and sync the scene
+    // cheaply — syncFromBlock rebuilds just the blocks whose rotation/epoch
+    // changed. The old resolveAll() + refreshAllBlockItems() re-resolved the
+    // WHOLE document and rebuilt EVERY block item on every frame.
+    m_paramDoc->resolveForDrag(QList<QUuid>{m_blockId});
+    if (m_scene) m_scene->syncBlockPositions();
 }
 
 void ToolRotate::applyModeValue(double value)
@@ -723,7 +1094,6 @@ void ToolRotate::applyModeValue(double value)
             a->arcLength = geo::Units::cmToMm(value);
             a->arcLengthFormula.clear();
         }
-        if (m_componentHinge) syncComponentHingeFromEdit();
         m_paramDoc->resolveAll();
         if (m_scene) m_scene->refreshAllBlockItems();
     } else {
@@ -758,7 +1128,7 @@ double ToolRotate::currentModeValue() const
         const double radius = segmentRadius();
         const double alphaDeg = (radius > 1e-9)
             ? (arcMm / radius) * 180.0 / M_PI : 0.0;
-        const double foldDeg = signedFoldDeg(alphaDeg);
+        const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
         return foldDeg * M_PI / 180.0 * radius * 0.1;   // mm → cm
     }
     return currentAngleDeg();
@@ -816,21 +1186,9 @@ void ToolRotate::commitCurrent()
         att->rotationMode = m_rotationMode;
         att->arcLength = m_baseArcLength;
         att->arcLengthFormula = m_baseArcFormula;
-        if (m_componentHinge) {
-            cad::param::ComponentHinge curHinge = m_componentHingeBase;
-            curHinge.followerAngle = curAngle;
-            curHinge.followerAngleFormula = curFormula;
-            // Put the REAL component back to its base state so the command
-            // constructor snapshots the exact pre-edit hinge for undo.
-            m_paramDoc->updateComponentHinge(m_componentHingeGroupId, m_componentHingeBase);
-            m_undoStack->push(new cad::cmd::SetComponentHingeCommand(
-                m_paramDoc, m_componentHingeGroupId, curHinge));
-            m_componentHingeBase = curHinge;
-        } else {
-            m_undoStack->push(new cad::cmd::SetFollowerAngleCommand(
+        m_undoStack->push(new cad::cmd::SetFollowerAngleCommand(
                 m_paramDoc, m_attId, curAngle, curFormula,
                 curMode, curArc, curArcFormula));
-        }
         m_baseAngle = curAngle;
         m_baseFormula = curFormula;
         m_rotationMode = curMode;
@@ -850,24 +1208,7 @@ void ToolRotate::commitCurrent()
                           || m_releaseAttHeld;
         if (!changed) { updateGizmo(); refreshHudText(); return; }
 
-        const QUuid gid = m_paramDoc->groupOfBlock(m_blockId);
-        if (!gid.isNull() && !m_groupBaseTransforms.isEmpty()) {
-            auto* macro = new QUndoCommand(QString::fromUtf8("\xe6\x97\x8b\xe8\xbd\xac\xe7\xbb\x84\xe4\xbb\xb6"));  // 旋转组件
-            for (auto it = m_groupBaseTransforms.cbegin(); it != m_groupBaseTransforms.cend(); ++it) {
-                if (auto* mb = m_paramDoc->findBlock(it.key())) {
-                    const auto curMemberTf = mb->transform;
-                    mb->transform = it.value();
-                    new cad::cmd::RotateBlockCommand(
-                        m_paramDoc, it.key(), it.value(), curMemberTf,
-                        QUuid(), QUuid(), QUuid(), QUuid(),
-                        QUuid(), cad::param::Attachment(), macro);
-                    m_groupBaseTransforms[it.key()] = curMemberTf;
-                }
-            }
-            m_undoStack->push(macro);
-            m_baseTf = curTf;
-        } else {
-            blk->transform = m_baseTf;
+        blk->transform = m_baseTf;
             blk->endTargetBlockId = m_baseEndTargetBlock;
             blk->endTargetPointId = m_baseEndTargetPoint;
             // A released follower link is restored here so the command's redo()
@@ -885,7 +1226,6 @@ void ToolRotate::commitCurrent()
             m_baseEndTargetPoint = curEndPoint;
             m_releaseAttId = QUuid();
             m_releaseAttHeld = false;
-        }
     }
 
     updateGizmo();
@@ -902,16 +1242,8 @@ void ToolRotate::restoreBase()
             a->rotationMode = m_rotationMode;
             a->arcLength = m_baseArcLength;
             a->arcLengthFormula = m_baseArcFormula;
-        if (m_componentHinge) m_paramDoc->updateComponentHinge(m_componentHingeGroupId, m_componentHingeBase);
         }
     } else {
-        const QUuid gid = m_paramDoc->groupOfBlock(m_blockId);
-        if (!gid.isNull() && !m_groupBaseTransforms.isEmpty()) {
-            for (auto it = m_groupBaseTransforms.cbegin(); it != m_groupBaseTransforms.cend(); ++it) {
-                if (auto* mb = m_paramDoc->findBlock(it.key()))
-                    mb->transform = it.value();
-            }
-        } else {
             if (auto* blk = m_paramDoc->findBlock(m_blockId)) {
                 blk->transform = m_baseTf;
                 // The aim constraint cleared by beginRotation is restored too.
@@ -919,7 +1251,6 @@ void ToolRotate::restoreBase()
                 blk->endTargetPointId = m_baseEndTargetPoint;
             }
         }
-    }
     // 旋转 = 放弃跟随: undo the release on Esc / empty HUD (nothing was
     // committed, so the follower link comes back).
     if (m_releaseAttHeld && !m_releaseAttId.isNull()) {
@@ -955,15 +1286,15 @@ double ToolRotate::currentAngleDeg() const
             const double radius = segmentRadius();
             double deg = (radius > 1e-9)
                 ? (arcMm / radius) * 180.0 / M_PI : 0.0;
-            return signedFoldDeg(deg);
+            return cad::geo::normalizeDeg180(deg);
         }
         if (!a->followerAngleFormula.isEmpty()) {
             auto r = cad::param::ConditionEngine::evaluate(
                 a->followerAngleFormula, m_paramDoc->parameters(), {});
-            if (r.ok) return signedFoldDeg(r.value);
+            if (r.ok) return cad::geo::normalizeDeg180(r.value);
         }
         // 存储 α ∈ [0, 360°) → 显示带符号折角（2026-08 v3 定稿）。
-        return signedFoldDeg(a->followerAngle);
+        return cad::geo::normalizeDeg180(a->followerAngle);
     }
 
     // Free: 绝对角度 = 世界角，逆时针为正（0° = 水平向右，行业默认，
@@ -1001,6 +1332,11 @@ bool ToolRotate::isAngleLocked() const
 
 void ToolRotate::onHudModeChanged(cad::param::RotationMode newMode)
 {
+    // 整组旋转恒为角度语义 (增量角) — 模式切换忽略并弹回 Angle.
+    if (m_groupMode) {
+        if (m_hud) m_hud->setMode(cad::param::RotationMode::Angle);
+        return;
+    }
     if (m_copyGesture && m_copyGesture->active()) {
         // Rotate-copy is always angle semantics (relative angle) — a mode
         // switch mid-gesture is ignored and the HUD snaps back to Angle.
@@ -1024,7 +1360,7 @@ void ToolRotate::onHudModeChanged(cad::param::RotationMode newMode)
     // Geometry-preserving switch: convert current angle ↔ arc length.
     // 换算必须走存储域 α（显示 = 带符号折角，2026-08 v3 定稿）——否则
     // α > 180° 时会把负数折角烘焙进存储，几何静默翻转。
-    const double deg = alphaFromSignedFold(currentAngleDeg());
+    const double deg = cad::geo::normalizeDeg360(currentAngleDeg());
     const double radius = segmentRadius();
 
     if (auto* a = editableAttachment()) {
@@ -1041,7 +1377,6 @@ void ToolRotate::onHudModeChanged(cad::param::RotationMode newMode)
             a->followerAngleFormula.clear();
         }
     }
-    if (m_componentHinge) syncComponentHingeFromEdit();
     m_rotationMode = newMode;
     m_paramDoc->resolveAll();
     if (m_scene) m_scene->refreshAllBlockItems();
@@ -1100,6 +1435,13 @@ void ToolRotate::refreshHudText()
 {
     if (!m_hud) return;
     m_hud->edit()->blockSignals(true);
+    // ── 组件整组旋转: caption「整组旋转」, 值 = 绕锚点增量角 (0 = 原始位姿) ──
+    if (m_groupMode) {
+        m_hud->setCaption(QString::fromUtf8("整组旋转"));
+        m_hud->edit()->setText(cad::geo::Units::formatDegValue(m_groupDelta));
+        m_hud->edit()->blockSignals(false);
+        return;
+    }
     // Caption follows the ACTIVE angle semantics (术语统一: 跟随角度 /
     // 绝对角度 / 相对角度): 跟随线 = 跟随角度/弧长(默认); 自由线 = 绝对角度;
     // 旋转复制 = 相对角度。setMode 只在模式切换时刷新标签，锚心切换
@@ -1113,14 +1455,15 @@ void ToolRotate::refreshHudText()
     if (m_copyGesture && m_copyGesture->active()) {
         // Rotate-copy: pivot-relative angle (方案 B, 用户拍板 2026-08) —
         // 0° = 副本与父线重叠, 拖多少度 = 转多少度, 起点/终点锚心一致。
-        m_hud->edit()->setText(formatDeg(m_copyGesture->currentRelativeAngle()));
+        m_hud->edit()->setText(cad::geo::Units::formatDegValue(
+            m_copyGesture->currentRelativeAngle()));
     } else if (m_rotationMode == cad::param::RotationMode::ArcLength && m_connected) {
         // Arc-length mode: show the value in cm (formula-driven values are
         // evaluated live — the HUD always shows a plain editable number).
-        m_hud->edit()->setText(formatDeg(currentModeValue()));
+        m_hud->edit()->setText(cad::geo::Units::formatDegValue(currentModeValue()));
     } else {
         // Angle mode: degrees (formula evaluated live, same idea).
-        m_hud->edit()->setText(formatDeg(currentAngleDeg()));
+        m_hud->edit()->setText(cad::geo::Units::formatDegValue(currentAngleDeg()));
     }
     m_hud->edit()->blockSignals(false);
 }
@@ -1132,6 +1475,42 @@ void ToolRotate::onHudTextChanged(const QString& text)
     // 任何输入——防止输入框目标悄然切回原线角度造成“幽灵编辑”。
     if (!m_hud || !m_hud->isVisible()) return;
     const QString t = text.trimmed();
+
+    // ── 组件整组旋转 HUD: 数值 = 绕锚点增量角 (键入即预览, Enter 提交) ──
+    if (m_groupMode) {
+        if (t.isEmpty()) {
+            // 空 = 回到基准位姿 (释放约束一并恢复).
+            for (auto it = m_groupBaseTf.cbegin(); it != m_groupBaseTf.cend(); ++it) {
+                if (auto* b = m_paramDoc->findBlock(it.key()))
+                    b->transform = it.value();
+            }
+            restoreComponentExternal();
+            m_groupDelta = 0.0;
+            m_hudValid = true;
+            if (m_scene) m_scene->refreshAllBlockItems();
+        } else {
+            bool isNumber = false;
+            const double v = t.toDouble(&isNumber);
+            if (isNumber) {
+                m_hudValid = true;
+                if (!m_groupReleasedHeld) collectAndReleaseComponentExternal();
+                applyGroupDelta(v);
+            } else {
+                auto r = cad::param::ConditionEngine::evaluate(
+                    t, m_paramDoc->parameters(), m_paramDoc->conditions());
+                if (r.ok) {
+                    m_hudValid = true;
+                    if (!m_groupReleasedHeld) collectAndReleaseComponentExternal();
+                    applyGroupDelta(r.value);
+                } else {
+                    m_hudValid = false;   // 保留最后一次有效几何
+                }
+            }
+        }
+        if (m_hud) m_hud->setValid(m_hudValid);
+        if (m_hudValid) updateGizmo();
+        return;
+    }
 
     if (t.isEmpty()) {
         if (m_copyGesture && m_copyGesture->active()) {
@@ -1171,7 +1550,6 @@ void ToolRotate::onHudTextChanged(const QString& text)
                             a->followerAngleFormula = t;
                         }
                     }
-                    if (m_componentHinge) syncComponentHingeFromEdit();
                     m_paramDoc->resolveAll();
                     if (m_scene) m_scene->refreshAllBlockItems();
                 } else {
@@ -1191,14 +1569,38 @@ void ToolRotate::onHudTextChanged(const QString& text)
 void ToolRotate::onHudCommit()
 {
     if (!m_hudValid) return;   // ignore Enter on an invalid formula
-    if (m_copyGesture && m_copyGesture->active()) m_copyGesture->commit();
-    else                                          commitCurrent();
+    if (m_copyGesture && m_copyGesture->active()) {
+        m_copyGesture->commit();
+    } else if (m_groupMode) {
+        if (!m_groupPivotSet) {
+            if (m_scene)
+                m_scene->showToast(QString::fromUtf8("请先在画布上点一下设定锚点"));
+            return;
+        }
+        commitGroupRotation();
+    } else {
+        commitCurrent();
+    }
 }
 
 void ToolRotate::onHudCancel()
 {
     if (m_copyGesture && m_copyGesture->active()) {
         m_copyGesture->cancel();    // drop the preview clone, keep the target
+    } else if (m_groupMode && m_state == RotateState::Rotating) {
+        cancelGroupRotation();      // 中止整组拖动, 恢复基准位姿 + 约束
+    } else if (m_groupMode && m_state == RotateState::Ready) {
+        // 第一击设锚点"点错了"：Esc 先清锚点重选 (仍留整组模式);
+        // 无锚点按下 Esc 才退出整组模式回单线 (保留目标).
+        if (m_groupPivotSet) {
+            m_groupPivotSet = false;
+            m_groupDelta = 0.0;
+            m_groupPivotPointId = QUuid();
+            removeGizmo();
+            refreshHudText();
+        } else {
+            exitGroupMode();
+        }
     } else if (m_state == RotateState::Rotating) {
         cancelRotation();       // abort the drag, keep the target
     } else {
@@ -1237,7 +1639,7 @@ cad::geo::Vec2 ToolRotate::endpointAtAngle(double angleDeg) const
         // 修正：旧代码 refWorld + α 只在 90° 时正确）。输入 = 带符号
         // 折角，先回存储域 α（v3）。
         worldDirRad = m_refWorldRad + M_PI
-                      - alphaFromSignedFold(angleDeg) * M_PI / 180.0;
+                      - cad::geo::normalizeDeg360(angleDeg) * M_PI / 180.0;
     else
         // Free: 显示角 = 远端方向（起点锚心 = 线方向，终点锚心 = 终点→
         // 起点方向）；绝对角度逆时针为正（v3），无镜像。
@@ -1309,7 +1711,7 @@ void ToolRotate::checkEndpointAimSnap(double& angleDeg)
             else if (m_connected)
                 // 闭合基准（2026-08 定稿）：世界角 = refWorld + π − α。
                 worldDirRad = m_refWorldRad + M_PI
-                              - alphaFromSignedFold(angleDeg) * M_PI / 180.0;
+                              - cad::geo::normalizeDeg360(angleDeg) * M_PI / 180.0;
             else
                 worldDirRad = angleDeg * M_PI / 180.0;
 
@@ -1335,14 +1737,13 @@ void ToolRotate::checkEndpointAimSnap(double& angleDeg)
     const cad::geo::Vec2 aim = bestPos - m_pivot;
     const double dirToP = std::atan2(aim.y, aim.x);
     if (m_copyGesture && m_copyGesture->active()) {
-        double rel = m_copyGesture->worldRadToRel(dirToP);
-        rel = std::fmod(rel, 360.0);
-        if (rel < 0.0) rel += 360.0;
+        double rel = cad::geo::normalizeDeg360(m_copyGesture->worldRadToRel(dirToP));
         angleDeg = rel;
     } else if (m_connected) {
         // 闭合基准镜像（2026-08 定稿）：α = (refWorld + π − dirToP) 转角度，
         // 显示 = 带符号折角（v3）。
-        angleDeg = signedFoldDeg((m_refWorldRad + M_PI - dirToP) * 180.0 / M_PI);
+        angleDeg = cad::geo::normalizeDeg180(
+            (m_refWorldRad + M_PI - dirToP) * 180.0 / M_PI);
     } else {
         // Free: 显示 = 远端方向（绝对角度，逆时针为正，v3）。
         angleDeg = std::fmod(dirToP * 180.0 / M_PI, 360.0);
@@ -1416,6 +1817,18 @@ double ToolRotate::originalWorldRotDeg() const
 void ToolRotate::updateGizmo()
 {
     if (!m_gizmo) return;
+    // ── 组件整组旋转: 基准 = 拖起始方向 (pivot→按下点), 弧 = 0 → delta ──
+    if (m_groupMode) {
+        if (!m_groupPivotSet) return;   // 锚点未定: 不画弧
+        const double dashRad = m_groupBaselineRad;
+        double arcEnd = dashRad + m_groupDelta * M_PI / 180.0;
+        double span = arcEnd - dashRad;
+        while (span >  M_PI) span -= 2.0 * M_PI;
+        while (span < -M_PI) span += 2.0 * M_PI;
+        arcEnd = dashRad + span;
+        m_gizmo->update(currentZoom(), dashRad, dashRad, arcEnd);
+        return;
+    }
     const double deg = currentAngleDeg();
     // 黄弧永远画“真实夹角”（2026-08 用户拍板，可去掉黄弧上的角度文字）：
     // 连接线 = 折线 → 直行延续方向（跨度 = 折角 α，含 α > 180° 的 CW 侧）；
@@ -1434,7 +1847,7 @@ void ToolRotate::updateGizmo()
         while (span < -M_PI) span += 2.0 * M_PI;
         arcEnd = arcStart + span;                // 内弧
     } else if (m_connected) {
-        const double aRad = alphaFromSignedFold(deg) * M_PI / 180.0;
+        const double aRad = cad::geo::normalizeDeg360(deg) * M_PI / 180.0;
         arcStart = m_refWorldRad + M_PI - aRad;  // 折线方向
         arcEnd = m_refWorldRad + M_PI;           // 直行延续方向
         double span = arcEnd - arcStart;         // = ±α

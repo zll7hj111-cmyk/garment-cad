@@ -114,7 +114,8 @@ void ConditionDialog::setupUi(const QString& formulaName, const QString& express
         hint->setText(QString::fromUtf8(
             "当被监视的变量落在区间内时，对结果做修正。多条条件叠加。\n"
             "可选变量：%1").arg(m_vars.join(QStringLiteral("、"))));
-        hint->setStyleSheet("font-size: 11px; background: transparent; padding: 2px 0;");
+        hint->setStyleSheet(QStringLiteral("%1 padding: 2px 0;")
+                                .arg(cad::ui::ThemeTokens::kCaptionSm));
         hint->setWordWrap(true);
     }
     root->addWidget(hint);

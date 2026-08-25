@@ -5,10 +5,14 @@ namespace cad::tools {
 /// Interaction state machine for the selection tool (ETCAD-inspired).
 enum class SelectState {
     Idle,           ///< No selection, no active interaction.
-    Selecting,      ///< Selection set non-empty but NOT yet confirmed.
-    Confirmed,      ///< Selection confirmed via right-click; drag/connect-ready.
+    Selecting,      ///< Selection set non-empty; selected = operation-ready.
+                    ///< (2026-09 取消确认基准: 原 Confirmed 状态由
+                    ///< ToolSelect::setState 归一化为本态 — 选中即就绪,
+                    ///< 按住线身移动 = 拖动, 无需右键确认.)
+    Confirmed,      ///< 保留枚举 (ConnectGesture/CopyDragController 仍会发
+                    ///< 该值), ToolSelect::setState 统一归一化为 Selecting.
     Marquee,        ///< Left-drag on empty space: drawing selection rectangle.
-    Dragging,       ///< Moving confirmed selection (anchored at blank-space press).
+    Dragging,       ///< Moving selection (anchored at the press point).
     CopyDragging,   ///< Ctrl+drag on a segment: dragging freshly cloned copies.
     Connecting,     ///< Dragging from an endpoint to establish a new connection.
     ConfirmTarget,  ///< Multiple overlapping target points: click a candidate

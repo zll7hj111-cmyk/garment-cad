@@ -1,5 +1,6 @@
 #include "DocumentSerializer.h"
 
+#include <algorithm>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QUuid>
@@ -11,7 +12,6 @@
 #include "parametric/ParamPoint.h"
 #include "parametric/Segment.h"
 #include "parametric/Attachment.h"
-#include "parametric/Group.h"
 #include "parametric/Variable.h"
 #include "parametric/FormulaVariable.h"
 #include "parametric/FormulaGroup.h"
@@ -167,6 +167,7 @@ QJsonObject pointJson(const ParamPoint& p) {
     o["hostSegmentId"] = uuidStr(p.hostSegmentId);
     o["interpRefPointId"] = uuidStr(p.interpRefPointId);
     o["interAngle"] = p.interAngle;
+    o["interUseWorldAngle"] = p.interUseWorldAngle;
     o["interAngleFormula"] = p.interAngleFormula;
     o["interBidirectional"] = p.interBidirectional;
     o["interAimPointId"] = uuidStr(p.interAimPointId);
@@ -218,6 +219,7 @@ ParamPoint pointFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     p.hostSegmentId = uuidFrom(o["hostSegmentId"].toString());
     p.interpRefPointId = uuidFrom(o["interpRefPointId"].toString());
     p.interAngle = o["interAngle"].toDouble(90.0);
+    p.interUseWorldAngle = o["interUseWorldAngle"].toBool(false);
     p.interAngleFormula = o["interAngleFormula"].toString();
     p.interBidirectional = o["interBidirectional"].toBool();
     p.interAimPointId = uuidFrom(o["interAimPointId"].toString());
@@ -264,6 +266,10 @@ QJsonObject segmentJson(const Segment& s) {
         {"constructAngle", s.constructAngle},
         {"isDriven", s.isDriven},
         {"lengthFormula", s.lengthFormula},
+        {"extendStartMm", s.extendStartMm},
+        {"extendStartFormula", s.extendStartFormula},
+        {"extendEndMm", s.extendEndMm},
+        {"extendEndFormula", s.extendEndFormula},
         {"lineStyle", lineStyleStr(s.lineStyle)},
         {"color", s.color.name()},
         {"weight", s.weight},
@@ -292,6 +298,10 @@ Segment segmentFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     s.constructAngle = o["constructAngle"].toDouble();
     s.isDriven = o["isDriven"].toBool();
     s.lengthFormula = o["lengthFormula"].toString();
+    s.extendStartMm = std::max(0.0, o["extendStartMm"].toDouble(0.0));  // 只往外(D2)
+    s.extendStartFormula = o["extendStartFormula"].toString();
+    s.extendEndMm = std::max(0.0, o["extendEndMm"].toDouble(0.0));
+    s.extendEndFormula = o["extendEndFormula"].toString();
     s.lineStyle = lineStyleFrom(o["lineStyle"].toString(), &recStyle);
     s.color = QColor(o["color"].toString("#1e1e1e"));
     s.weight = o["weight"].toDouble(1.2);
@@ -392,10 +402,14 @@ QJsonObject attachmentJson(const Attachment& a) {
     return {
         {"id", uuidStr(a.id)},
         {"fromBlockId", uuidStr(a.fromBlockId)},
+        {"fromComponentId", uuidStr(a.fromComponentId)},  // 组件级连接 (Optional since v9)
         {"fromPointId", uuidStr(a.fromPointId)},
         {"toBlockId", uuidStr(a.toBlockId)},
         {"toPointId", uuidStr(a.toPointId)},
         {"toSegmentId", uuidStr(a.toSegmentId)},
+          {"angleRefBlockId", uuidStr(a.angleRefBlockId)},
+          {"angleRefSegmentId", uuidStr(a.angleRefSegmentId)},
+            {"angleRefPointId", uuidStr(a.angleRefPointId)},
         {"followerAngle", a.followerAngle},
         {"followerAngleFormula", a.followerAngleFormula},
         {"rotationMode", static_cast<int>(a.rotationMode)},
@@ -405,6 +419,7 @@ QJsonObject attachmentJson(const Attachment& a) {
         {"isLocked", a.isLocked},
         {"angleOnly", a.angleOnly},
         {"slideMode", static_cast<int>(a.slideMode)},
+          {"angleIndependent", a.angleIndependent},
         {"slideAlongMm", a.slideAlongMm},
         {"slidePerpMm", a.slidePerpMm},
     };
@@ -413,8 +428,12 @@ Attachment attachmentFrom(const QJsonObject& o) {
     Attachment a;
     a.id = uuidFrom(o["id"].toString());
     a.fromBlockId = uuidFrom(o["fromBlockId"].toString());
+    a.fromComponentId = uuidFrom(o["fromComponentId"].toString());  // Optional since v9
     a.fromPointId = uuidFrom(o["fromPointId"].toString());
     a.toBlockId = uuidFrom(o["toBlockId"].toString());
+    a.angleRefBlockId = uuidFrom(o["angleRefBlockId"].toString());  // Optional
+    a.angleRefSegmentId = uuidFrom(o["angleRefSegmentId"].toString());  // Optional
+    a.angleRefPointId = uuidFrom(o["angleRefPointId"].toString());  // Optional
     a.toPointId = uuidFrom(o["toPointId"].toString());
     // Optional since v2 — legacy documents leave it null (scan fallback).
     a.toSegmentId = uuidFrom(o["toSegmentId"].toString());
@@ -433,6 +452,7 @@ Attachment attachmentFrom(const QJsonObject& o) {
     a.isPin = o["isPin"].toBool();  // Optional since v3 — defaults to false.
     a.isLocked = o["isLocked"].toBool();  // Optional since v4 — defaults to false.
     a.angleOnly = o["angleOnly"].toBool();  // Optional since v5 — defaults to false.
+    a.angleIndependent = o["angleIndependent"].toBool();  // Optional — defaults to false.
     // 滑轨模式 (Optional since v6): raw int with enum-range validation —
     // unknown values degrade to None (same defensive pattern as rotationMode).
     const int sm = o["slideMode"].toInt(0);
@@ -444,48 +464,35 @@ Attachment attachmentFrom(const QJsonObject& o) {
     return a;
 }
 
-// ─── Group ───
-QJsonObject groupJson(const Group& g) {
-    QJsonObject o{
-        {"id", uuidStr(g.id)},
-        {"serial", g.serial},
-        {"name", g.name},
-        {"showBoundingBox", g.showBoundingBox},
-        {"componentRootBlockId", uuidStr(g.componentRootBlockId)},
-        {"hasHinge", g.hasHinge}
+// ─── Component (组件) ───
+QJsonObject componentJson(const Component& c) {
+    QJsonArray members;
+    for (const QUuid& mid : c.memberBlockIds)
+        members.append(uuidStr(mid));
+    return {
+        {"id", uuidStr(c.id)},
+        {"name", c.name},
+        {"members", members},
+        {"exposedPointId", uuidStr(c.exposedPointId)},
+        {"exposedSegmentId", uuidStr(c.exposedSegmentId)},
+        {"showBoundingBox", c.showBoundingBox},
+        {"defaultAngleDeg", c.defaultAngleDeg},
+        {"defaultAngleFormula", c.defaultAngleFormula},  // Optional since v10
     };
-    if (g.hasHinge) {
-        o["hinge"] = QJsonObject{
-            {"memberBlockId", uuidStr(g.hinge.memberBlockId)},
-            {"memberPointId", uuidStr(g.hinge.memberPointId)},
-            {"leaderBlockId", uuidStr(g.hinge.leaderBlockId)},
-            {"leaderPointId", uuidStr(g.hinge.leaderPointId)},
-            {"leaderSegmentId", uuidStr(g.hinge.leaderSegmentId)},
-            {"followerAngle", g.hinge.followerAngle},
-            {"followerAngleFormula", g.hinge.followerAngleFormula}
-        };
-    }
-    return o;
 }
-Group groupFrom(const QJsonObject& o) {
-    Group g;
-    g.id = uuidFrom(o["id"].toString());
-    g.serial = o["serial"].toString();
-    g.name = o["name"].toString();
-    g.showBoundingBox = o.contains("showBoundingBox") ? o["showBoundingBox"].toBool(true) : true;
-    g.componentRootBlockId = uuidFrom(o["componentRootBlockId"].toString());
-    g.hasHinge = o["hasHinge"].toBool(false);
-    if (g.hasHinge) {
-        const QJsonObject h = o["hinge"].toObject();
-        g.hinge.memberBlockId = uuidFrom(h["memberBlockId"].toString());
-        g.hinge.memberPointId = uuidFrom(h["memberPointId"].toString());
-        g.hinge.leaderBlockId = uuidFrom(h["leaderBlockId"].toString());
-        g.hinge.leaderPointId = uuidFrom(h["leaderPointId"].toString());
-        g.hinge.leaderSegmentId = uuidFrom(h["leaderSegmentId"].toString());
-        g.hinge.followerAngle = h["followerAngle"].toDouble(0.0);
-        g.hinge.followerAngleFormula = h["followerAngleFormula"].toString();
-    }
-    return g;
+
+Component componentFrom(const QJsonObject& o) {
+    Component c;
+    c.id = uuidFrom(o["id"].toString());
+    c.name = o["name"].toString();
+    for (const auto& v : o["members"].toArray())
+        c.memberBlockIds.push_back(uuidFrom(v.toString()));
+    c.exposedPointId = uuidFrom(o["exposedPointId"].toString());
+    c.exposedSegmentId = uuidFrom(o["exposedSegmentId"].toString());
+    c.showBoundingBox = o["showBoundingBox"].toBool(true);  // Optional since v8 — defaults true.
+    c.defaultAngleDeg = o["defaultAngleDeg"].toDouble(0.0); // Optional since v8.
+    c.defaultAngleFormula = o["defaultAngleFormula"].toString(); // Optional since v10.
+    return c;
 }
 
 // ─── Variable ───
@@ -728,26 +735,15 @@ QJsonObject DocumentSerializer::serialize(const ParamDocument& doc)
         attArr.append(attachmentJson(a));
     docObj["attachments"] = attArr;
 
-    // Groups
-    QJsonArray grpArr;
-    for (const auto& g : doc.groups())
-        grpArr.append(groupJson(g));
-    docObj["groups"] = grpArr;
-
-    // Block-group mapping
-    QJsonObject bgObj;
-    // Iterate via blocksInGroup for each group
-    for (const auto& g : doc.groups()) {
-        const auto blockIds = doc.blocksInGroup(g.id);
-        for (const auto& bid : blockIds)
-            bgObj[uuidStr(bid)] = uuidStr(g.id);
-    }
-    docObj["blockGroup"] = bgObj;
+    // Components (组件: rigid work groups)
+    QJsonArray compArr;
+    for (const auto& c : doc.components())
+        compArr.append(componentJson(c));
+    docObj["components"] = compArr;
 
     // Serial counters
     docObj["pointSeq"] = doc.pointSeq();
     docObj["lineSeq"] = doc.lineSeq();
-    docObj["groupSeq"] = doc.groupSeq();
 
     // --- variables.json ---
     QJsonObject varObj;
@@ -795,8 +791,7 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
     // Serial counters
     doc.setSerialCounters(
         docObj["pointSeq"].toInt(1),
-        docObj["lineSeq"].toInt(1),
-        docObj["groupSeq"].toInt(1));
+        docObj["lineSeq"].toInt(1));
 
     // Canvas layers (restore before blocks: blocks reference layers by id).
     // Legacy migration: files written before the auxiliary calculation layer
@@ -887,40 +882,9 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
     for (const auto& v : docObj["attachments"].toArray())
         doc.addAttachmentRaw(attachmentFrom(v.toObject()));
 
-    // Groups + block-group mapping (user groups, 成组). Membership entries
-    // whose block no longer exists are dropped one by one (逐条报告, no
-    // silent degradation); groups that end up with < 2 valid members vanish.
-    std::vector<Group> groups;
-    for (const auto& v : docObj["groups"].toArray())
-        groups.push_back(groupFrom(v.toObject()));
-    QHash<QUuid, QUuid> blockGroup;
-    const QJsonObject bgObj = docObj["blockGroup"].toObject();
-    for (auto it = bgObj.constBegin(); it != bgObj.constEnd(); ++it) {
-        const QUuid blockId = uuidFrom(it.key());
-        if (!doc.findBlock(blockId)) {
-            if (warnings)
-                warnings->append(QString::fromUtf8("组成员 %1 不存在，已从组映射中移除")
-                                     .arg(it.key()));
-            continue;
-        }
-        blockGroup.insert(blockId, uuidFrom(it.value().toString()));
-    }
-    std::vector<Group> validGroups;
-    for (auto& g : groups) {
-        int memberCount = 0;
-        for (auto i = blockGroup.cbegin(); i != blockGroup.cend(); ++i)
-            if (i.value() == g.id) ++memberCount;
-        if (memberCount >= 2) {
-            validGroups.push_back(std::move(g));
-        } else {
-            if (warnings)
-                warnings->append(QString::fromUtf8("组 %1 有效成员不足两个，已丢弃")
-                                     .arg(g.serial.isEmpty() ? g.id.toString() : g.serial));
-            for (auto i = blockGroup.begin(); i != blockGroup.end(); )
-                i = (i.value() == g.id) ? blockGroup.erase(i) : std::next(i);
-        }
-    }
-    doc.restoreGroups(std::move(validGroups), std::move(blockGroup));
+    // Components (raw restore — offsets trusted verbatim; blocks already added)
+    for (const auto& v : docObj["components"].toArray())
+        doc.restoreComponentRaw(componentFrom(v.toObject()));
 
     // Variables
     for (const auto& v : varObj["variables"].toArray())

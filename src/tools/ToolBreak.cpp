@@ -1,4 +1,4 @@
-#include "ToolBreak.h"
+﻿#include "ToolBreak.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsEllipseItem>
@@ -17,7 +17,6 @@
 #include "geometry/Units.h"
 #include "document/commands/BreakCommands.h"
 #include "document/commands/BlockCommands.h"
-#include "GroupGuard.h"
 #include "QuickAuxDialog.h"
 
 namespace cad::tools {
@@ -56,8 +55,6 @@ void ToolBreak::mousePress(QGraphicsSceneMouseEvent* event)
     // Priority 1: click on a breakable point → break immediately.
     auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
     if (snap && isBreakable(snap->blockId, snap->pointId)) {
-        if (guardGroupedBlock(m_scene, m_paramDoc, snap->blockId,
-                              QString::fromUtf8("\xe6\x89\x93\xe6\x96\xad"))) return;   // 打断
         const auto* block = m_paramDoc->findBlock(snap->blockId);
         const auto* pt = block ? block->findPoint(snap->pointId) : nullptr;
         if (pt && (pt->constraint == cad::param::PointConstraint::Interpolated
@@ -72,8 +69,6 @@ void ToolBreak::mousePress(QGraphicsSceneMouseEvent* event)
     auto segSnap = m_snapEngine.findSegmentSnap(
         clickPos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
     if (segSnap) {
-        if (guardGroupedBlock(m_scene, m_paramDoc, segSnap->blockId,
-                              QString::fromUtf8("\xe6\x89\x93\xe6\x96\xad"))) return;   // 打断
         openAuxDialogForBreak(*segSnap);
         return;
     }
@@ -270,6 +265,15 @@ void ToolBreak::openAuxDialogForBreak(const SegmentSnapResult& segSnap)
     auto* block = m_paramDoc->findBlock(segSnap.blockId);
     auto* seg = block ? block->findSegment(segSnap.segmentId) : nullptr;
     if (!block || !seg) return;
+
+    // 端点延长线 D8 (EXTEND_LINE_DESIGN.md): 打断只允许在本体范围内 ——
+    // 尾巴上切断会切出"本体近乎为零"的怪段。
+    if (!block->segmentSnapWithinBase(segSnap.segmentId, segSnap.t)) {
+        if (m_scene)
+            m_scene->showToast(QString::fromUtf8(
+                "打断只能在本体范围内进行（延长尾巴上不支持打断）"));
+        return;
+    }
 
     hideMarkers();
 

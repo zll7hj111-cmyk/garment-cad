@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QUuid>
 #include <QUndoStack>
 
@@ -1356,7 +1356,7 @@ void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
     att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
     att.followerAngle = 90.0;   // 闭合基准: 90° = 垂直
     QVERIFY(doc.addAttachment(att));
-    QVERIFY(doc.attachments().front().isLocked);   // 新建连接默认拖动保护
+    QVERIFY(doc.attachments().front().isLocked);   // 新建连接默认勾选拖动保护 (焊接)
 
     // Baseline: B's start sits exactly on A's end; B is perpendicular.
     const Vec2 joint = doc.findBlock(aId)->worldPos(aEnd);
@@ -1398,7 +1398,7 @@ void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
     {
         const Attachment& a = doc.attachments().front();
         QVERIFY(!a.angleOnly);
-        QVERIFY(a.isLocked);
+        QVERIFY(a.isLocked);   // undo 恢复原态 (新建默认焊接, 快照还原不得丢锁)
     }
     const Vec2 joint2 = doc.findBlock(aId)->worldPos(aEnd);
     QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint2).length() < 1e-6);
@@ -1427,7 +1427,12 @@ void TestCommands::setAttachmentAngleOnly_docHelperAndLockedClosure()
     QVERIFY(doc.addAttachment(att));
     const QUuid attId = doc.attachments().front().id;
 
-    // Full connection: locked closure welds the pair.
+    // Full connection (默认焊接): 拖动保护默认勾选 → 闭包焊对; 面板取消
+    // 勾选 (解焊仍完整连接) → 闭包不跨对.
+    QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 2);
+    doc.setAttachmentLocked(attId, false);
+    QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 1);
+    doc.setAttachmentLocked(attId, true);
     QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 2);
 
     // 拆开: angleOnly + unlocked; closure no longer spans the pair.
@@ -1579,7 +1584,7 @@ void TestCommands::slideMode_alongAndPerpConstraints()
     {
         const Attachment& a = doc.attachments().front();
         QVERIFY(a.slideMode == cad::param::SlideMode::None);
-        QVERIFY(a.isLocked);
+        QVERIFY(a.isLocked);   // undo 恢复原态 (新建默认焊接)
     }
     const Vec2 joint2 = doc.findBlock(aId)->worldPos(aEnd);
     QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint2).length() < 1e-6);

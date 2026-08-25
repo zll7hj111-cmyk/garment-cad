@@ -1,12 +1,12 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
 
 #include "parametric/AngleMeasureVariable.h"
+#include "CardBase.h"
 
 class ElaLineEdit;
-class ElaToolButton;
 class ElaText;
 
 namespace cad::ui { class CopyChip; }
@@ -14,7 +14,7 @@ namespace cad::ui { class CopyChip; }
 /// Card widget for an AngleMeasureVariable (two-segment relative angle).
 /// Layout: [Name] [Value (read-only, degrees)] [🔒] [✕]
 ///         [refName chip (copy-only)] [source segments (read-only)] [comment]
-class AngleMeasureCard : public QWidget
+class AngleMeasureCard : public CardBase
 {
     Q_OBJECT
 
@@ -34,49 +34,23 @@ public:
     void syncFromModel(const cad::param::AngleMeasureVariable& am,
                        const QString& sourceLabel);
 
-    /// Set the view-row ordinal shown in the header ("角 N", N >= 1).
-    /// Pure presentation — cards are virtualized and reused, so the panel
-    /// re-applies this on every (re)bind.
-    void setIndex(int n);
-
-    /// Set the alternating row parity (odd = orange bar, even = blue).
-    /// Re-applied on every (re)bind — reused cards must not keep a stale
-    /// parity from their previous row position.
-    void setAlternate(bool alternate);
-
 signals:
     void deleteRequested(const QUuid& id);
     void edited(const cad::param::AngleMeasureVariable& am);
-    /// Emitted when the user clicks the card (to highlight the reference line A).
-    void sourceClicked(const QUuid& blockId);
+    /// Emitted when the user hovers (or clicks) the card (payload: this
+    /// angle measure's id). Hover is the primary trigger; the click path is
+    /// kept as a fallback for input methods without hover.
+    void sourceClicked(const QUuid& angleMeasureId);
 
 protected:
-    void paintEvent(QPaintEvent* event) override;
+    /// "角 N" prefix for the row ordinal.
+    QString indexText(int n) const override;
     void enterEvent(QEnterEvent* event) override;
-    void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
 
 private:
-    void setupUi(const cad::param::AngleMeasureVariable& am,
-                 const QString& sourceLabel, bool alternate);
+    void setupUi(const cad::param::AngleMeasureVariable& am, const QString& sourceLabel);
 
     QUuid m_id;
-    QUuid m_sourceBlockId;   ///< Block to highlight on click (reference line A).
     QString m_refName;
-    bool m_alternate = false;   ///< 行交替: 奇数行橙、偶数行蓝 (左侧竖线).
-    QWidget* m_deleteBtnSlot = nullptr;  ///< 悬停占位: 与删除按钮同尺寸互斥显隐, 防布局跳动.
-    bool m_danglingStyled = false;   ///< current value-label style state (avoids per-frame setStyleSheet)
-    bool m_hasShownValue = false;   ///< value guard armed after the first refresh
-    double m_lastValueDeg = 0.0;    ///< last shown value (no-op guard for per-frame sync)
-
-    cad::ui::CopyChip* m_nameChip = nullptr;
-    ElaText*         m_indexLabel = nullptr;
-    ElaText*         m_valueLabel = nullptr;
-    ElaText*         m_lockIcon = nullptr;
-    ElaToolButton*     m_deleteBtn = nullptr;
-
-    QWidget*         m_detail = nullptr;
-    cad::ui::CopyChip* m_refChip = nullptr;
-    ElaText*         m_sourceInfo = nullptr;
-    ElaLineEdit*       m_commentEdit = nullptr;
 };

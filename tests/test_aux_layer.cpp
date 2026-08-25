@@ -248,9 +248,10 @@ private slots:
     void valueCycleThroughBridgeLeaderRejected();
     void noCrossLayerDocumentUnchanged();
     void snapCandidatesOverlapDetected();
+    void snapCoordCacheInvalidatesOnChange();   // SnapEngine 坐标缓存 (2026-09)
     // ── 锁定连接 (锁定 = 焊接) ──
-    void auxConnectionAutoLocked();
-    void workingConnectionDefaultsLocked();
+    void auxConnectionDefaultWelded();
+    void workingConnectionDefaultsWelded();
     void lockedClosureWeldsChain();
     void lockedDragMovesWholePair();
     void dragLeaderKeepsFollower();
@@ -773,6 +774,54 @@ void TestAuxLayer::snapCandidatesOverlapDetected()
     QVERIFY(hasA && hasB);
 }
 
+// SnapEngine 每块坐标缓存 (2026-09 性能专项): 缓存键 = (geometryEpoch,
+// transform, count)。刚体平移 (transform 键) 与点位变化 (epoch 键) 后必须
+// 立即失效, 缓存对结果完全透明 (多次查询 / 变化前后一致)。
+void TestAuxLayer::snapCoordCacheInvalidatesOnChange()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    const QUuid a = makeAuxLineBlock(doc, 1);   // (0,0)-(100,0) + 50% 辅助点
+    doc.resolveAll();
+
+    Block* b = doc.findBlock(a);
+    QVERIFY(b);
+    const ParamPoint* aux = nullptr;
+    for (const auto& pt : b->points)
+        if (pt.constraint == PointConstraint::Interpolated) aux = &pt;
+    QVERIFY(aux);
+    const QUuid auxId = aux->id;
+
+    SnapEngine eng;
+
+    // 0) 基线: 光标正好在 50% 辅助点上.
+    const auto hit0 = eng.findSnap({50.0, 0.0}, &doc, 1.0, 12.0);
+    QVERIFY(hit0.has_value() && hit0->pointId == auxId);
+    QVERIFY(hit0->worldPos.distanceTo(Vec2(50.0, 0.0)) < 1e-6);
+
+    // 1) 纯刚体平移 (原点不 bump epoch — 缓存必须按 transform 键失效).
+    b->transform.origin = {10.0, 0.0};
+    doc.resolveAll();
+    const auto hit1 = eng.findSnap({60.0, 0.0}, &doc, 1.0, 12.0);
+    QVERIFY(hit1.has_value() && hit1->pointId == auxId);
+    QVERIFY(hit1->worldPos.distanceTo(Vec2(60.0, 0.0)) < 1e-6);
+
+    // 2) 点位变化 (aux 50% → 80%, epoch bump) — 旧位置不再捕捉、新位置捕捉.
+    //    注意: 块已平移 (原点 10,0), 段 = (10,0)-(110,0) → 80% = x=90.
+    if (auto* auxm = b->findPoint(auxId)) auxm->interpPercent = 0.8;
+    doc.resolveAll();
+    const auto hit80 = eng.findSnap({90.0, 0.0}, &doc, 1.0, 12.0);
+    QVERIFY(hit80.has_value() && hit80->pointId == auxId);
+    QVERIFY(hit80->worldPos.distanceTo(Vec2(90.0, 0.0)) < 1e-6);
+    const auto hit50 = eng.findSnap({50.0, 0.0}, &doc, 1.0, 12.0);
+    QVERIFY(!hit50.has_value() || hit50->pointId != auxId);
+
+    // 3) 线段缓存: 平移后线身投影跟随 (世界端点缓存按 transform 键).
+    const auto segHit = eng.findSegmentSnap({50.0, 5.0}, &doc, 1.0, 12.0);
+    QVERIFY(segHit.has_value());
+    QVERIFY(segHit->worldPos.distanceTo(Vec2(50.0, 0.0)) < 1e-6);
+}
+
 // ---------------------------------------------------------------------------
 // 锁定连接 (锁定 = 焊接): aux-layer connections lock automatically; the
 // locked closure welds both sides into one drag set; dragging either side
@@ -780,14 +829,15 @@ void TestAuxLayer::snapCandidatesOverlapDetected()
 // LEADER keeps its follower attached (方向感知拆除).
 // ---------------------------------------------------------------------------
 
-void TestAuxLayer::auxConnectionAutoLocked()
+void TestAuxLayer::auxConnectionDefaultWelded()
 {
     ParamDocument doc;
     doc.setActiveLayer(layerIdAt(doc, 0));
     const LineRef aux = makeLineBlock(doc, 0, Vec2(0.0, 0.0), 80.0);
     const LineRef w   = makeLineBlock(doc, 1, Vec2(200.0, 0.0), 50.0);
 
-    // Cross-layer (aux follower → working leader): auto-locked.
+    // Cross-layer (aux follower → working leader): 新建连接默认勾选「拖动保护」
+    // (用户拍板 2026-08 复旧; 2026-10 曾改为可选后按用户要求回滚).
     Attachment cross;
     cross.fromBlockId = aux.blockId;
     cross.fromPointId = aux.startId;
@@ -796,9 +846,12 @@ void TestAuxLayer::auxConnectionAutoLocked()
     QVERIFY(doc.addAttachment(cross));
     const auto& atts = doc.attachments();
     QVERIFY(atts.size() == 1);
-    QVERIFY2(atts[0].isLocked, "aux-layer connection must auto-lock");
+    QVERIFY2(atts[0].isLocked, "aux-layer connection must default welded");
+    // 面板取消拖动保护 = 解焊 (连接保持完整).
+    doc.setAttachmentLocked(atts[0].id, false);
+    QVERIFY(!doc.attachments()[0].isLocked);
 
-    // Same-layer aux-internal connection: also auto-locked.
+    // Same-layer aux-internal connection: also welded by default.
     const LineRef aux2 = makeLineBlock(doc, 0, Vec2(0.0, 150.0), 40.0);
     Attachment inner;
     inner.fromBlockId = aux2.blockId;
@@ -807,18 +860,19 @@ void TestAuxLayer::auxConnectionAutoLocked()
     inner.toPointId   = aux.endId;
     QVERIFY(doc.addAttachment(inner));
     QVERIFY(doc.attachments().size() == 2);
-    QVERIFY2(doc.attachments()[1].isLocked, "aux-internal connection must auto-lock");
+    QVERIFY2(doc.attachments()[1].isLocked, "aux-internal connection must default welded");
+    doc.setAttachmentLocked(doc.attachments()[1].id, false);
+    QVERIFY(!doc.attachments()[1].isLocked);  // 解焊仍完整连接
 }
 
-void TestAuxLayer::workingConnectionDefaultsLocked()
+void TestAuxLayer::workingConnectionDefaultsWelded()
 {
     ParamDocument doc;
     doc.setActiveLayer(layerIdAt(doc, 1));
     const LineRef w1 = makeLineBlock(doc, 1, Vec2(0.0, 0.0), 100.0);
     const LineRef w2 = makeLineBlock(doc, 1, Vec2(0.0, 0.0), 60.0);
 
-    // Working-layer connection: LOCKED by default (拖动保护默认开启,
-    // 2026-08 用户拍板: 只要建立跟随就保护他).
+    // Working-layer connection: 新建连接默认勾选「拖动保护」(焊接).
     Attachment att;
     att.fromBlockId = w2.blockId;
     att.fromPointId = w2.startId;
@@ -826,14 +880,14 @@ void TestAuxLayer::workingConnectionDefaultsLocked()
     att.toPointId   = w1.endId;
     QVERIFY(doc.addAttachment(att));
     QVERIFY(doc.attachments().size() == 1);
-    QVERIFY2(doc.attachments()[0].isLocked, "working connection must default locked (拖动保护)");
+    QVERIFY2(doc.attachments()[0].isLocked, "working connection must default welded");
 
-    // Manual lock/unlock round-trip (属性面板拖动保护开关).
+    // Manual unlock/lock round-trip (属性面板拖动保护开关): 取消 = 解焊仍完整连接.
     const QUuid attId = doc.attachments()[0].id;
-    doc.setAttachmentLocked(attId, true);
-    QVERIFY(doc.attachments()[0].isLocked);
     doc.setAttachmentLocked(attId, false);
     QVERIFY(!doc.attachments()[0].isLocked);
+    doc.setAttachmentLocked(attId, true);
+    QVERIFY(doc.attachments()[0].isLocked);
     QCOMPARE(doc.attachments().size(), size_t(1));  // toggle never drops the connection
 }
 
@@ -850,6 +904,8 @@ void TestAuxLayer::lockedClosureWeldsChain()
     Attachment ab;
     ab.fromBlockId = b.blockId; ab.fromPointId = b.startId;
     ab.toBlockId   = a.blockId; ab.toPointId   = a.startId;
+    // 新建连接已默认焊接 (isLocked=true, addAttachment 置位); 显式再置位
+    // 保持幂等 — 用例要点是焊接闭包.
     ab.isLocked = true;
     QVERIFY(doc.addAttachment(ab));
     Attachment bc;
@@ -864,8 +920,8 @@ void TestAuxLayer::lockedClosureWeldsChain()
     QVERIFY(closure.contains(b.blockId));
     QVERIFY(closure.contains(c.blockId));
 
-    // An unlocked sibling does NOT get welded in (新建默认锁定, 此处通过
-    // setAttachmentLocked 模拟用户在属性面板取消拖动保护).
+    // An explicitly-UNLOCKED sibling does NOT get welded in (取消拖动保护 =
+    // 解焊仍完整连接; 面板开关是每连接可选的).
     const LineRef d = makeLineBlock(doc, 1, Vec2(0.0, 200.0), 30.0);
     Attachment bd;
     bd.fromBlockId = d.blockId; bd.fromPointId = d.startId;
@@ -891,7 +947,9 @@ void TestAuxLayer::lockedDragMovesWholePair()
     att.toBlockId   = w.blockId;
     att.toPointId   = w.startId;
     att.followerAngle = 180.0;   // 闭合基准: 180° = 沿 leader 起点出口方向朝左展开
-    QVERIFY(doc.addAttachment(att));   // auto-locked (aux)
+    // 本用例主题 = "焊接拖动整对"; 新建连接默认已焊接 (拖动保护默认勾选).
+    att.isLocked = true;
+    QVERIFY(doc.addAttachment(att));
     QVERIFY(doc.attachments()[0].isLocked);
     doc.resolveAll();
 
@@ -924,17 +982,15 @@ void TestAuxLayer::lockedDragMovesWholePair()
         QTest::qWait(20);
     };
 
-    // Click the aux follower body → select, right-click → confirm. The
-    // follower's Polar end points along the leader's exit direction: the
-    // leader extends +X from (50,0), so the follower lies LEFT of the weld
-    // point (follower rotation = leader exit 180°). Click a spot ONLY on the
-    // follower's span ((-50,0)→(50,0)); the leader's span (50,0)→(150,0)
-    // would be excluded by hitBlock anyway (non-active layer).
+    // Click the aux follower body → select. (2026-09 取消确认基准: 无右键
+    // 确认, 选中即就绪。) The follower's Polar end points along the leader's
+    // exit direction: the leader extends +X from (50,0), so the follower lies
+    // LEFT of the weld point (follower rotation = leader exit 180°). Click a
+    // spot ONLY on the follower's span ((-50,0)→(50,0)); the leader's span
+    // (50,0)→(150,0) would be excluded by hitBlock anyway (non-active layer).
     const QPoint hit = vp(0.0, 0.0);   // follower body mid-span
     sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, hit, Qt::LeftButton, Qt::NoModifier);
-    sendMouse(QEvent::MouseButtonPress, hit, Qt::RightButton, Qt::NoModifier);
-    sendMouse(QEvent::MouseButtonRelease, hit, Qt::RightButton, Qt::NoModifier);
 
     // Drag the locked follower +100 mm right: the LEADER must move with it
     // (焊接整体移动), and the connection must survive.
@@ -972,7 +1028,7 @@ void TestAuxLayer::dragLeaderKeepsFollower()
     att.fromPointId = w2.startId;
     att.toBlockId   = w1.blockId;
     att.toPointId   = w1.startId;
-    QVERIFY(doc.addAttachment(att));   // working connection (默认拖动保护)
+    QVERIFY(doc.addAttachment(att));   // working connection (新建默认焊接 — 拖 leader 时 follower 由位置约束自动跟随, 焊接无关紧要)
     doc.resolveAll();
     QVERIFY(doc.findBlock(w2.blockId)->worldPos(w2.startId)
                 .distanceTo(doc.findBlock(w1.blockId)->worldPos(w1.startId)) < 1e-6);
@@ -1002,13 +1058,12 @@ void TestAuxLayer::dragLeaderKeepsFollower()
         QTest::qWait(20);
     };
 
-    // Select + confirm the LEADER (w1), then drag it +120 mm right. Click a
-    // spot on w1 OUTSIDE the follower's span (w2 covers 0→60 only).
+    // Select the LEADER (w1), then drag it +120 mm right (2026-09 取消确认
+    // 基准: 选中即就绪, 无右键确认). Click a spot on w1 OUTSIDE the
+    // follower's span (w2 covers 0→60 only).
     const QPoint hit = vp(75.0, 0.0);   // w1 body (spans 0→100)
     sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, hit, Qt::LeftButton, Qt::NoModifier);
-    sendMouse(QEvent::MouseButtonPress, hit, Qt::RightButton, Qt::NoModifier);
-    sendMouse(QEvent::MouseButtonRelease, hit, Qt::RightButton, Qt::NoModifier);
 
     sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseMove, vp(135.0, 0.0), Qt::NoButton, Qt::NoModifier);

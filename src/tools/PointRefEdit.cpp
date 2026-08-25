@@ -49,12 +49,15 @@ PointRefEdit::PointRefEdit(cad::param::ParamDocument* doc, QWidget* parent)
         "\u540c\u540d\u70b9\u4f1a\u5f39\u7a97\u9009\u62e9\uff0cEsc \u53d6\u6d88"));
     // 输入点编号（如 P12）或完整序列号，回车确认。同名点会弹窗选择，Esc 取消
     setMinimumWidth(90);
+    // 行内统一高度 (线段属性对话框: ElaLineEdit/ElaComboBox 原生 35px,
+    // 未设时此控件缩成 ~24px → "输入框大小不一")。
+    setFixedHeight(35);
     const auto& tk = cad::ui::Theme::tokens();
     setStyleSheet(QStringLiteral(
         "QLineEdit { color: %1; border: 1px solid %2; border-radius: 3px;"
         "  padding: 2px 5px; background: %3; }"
         "QLineEdit:focus { border-color: %1; background: %4; }")
-        .arg(tk.accent.name(), tk.accent.name(), tk.surface2.name(), tk.surface.name()));
+        .arg(tk.text1.name(), tk.borderStrong.name(), tk.surface2.name(), tk.surface.name()));
 }
 
 void PointRefEdit::setPoint(const QUuid& blockId, const QUuid& pointId)

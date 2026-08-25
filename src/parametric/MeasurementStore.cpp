@@ -1,4 +1,4 @@
-#include "parametric/MeasurementStore.h"
+﻿#include "parametric/MeasurementStore.h"
 
 #include <algorithm>
 #include <cmath>
@@ -92,7 +92,9 @@ QList<QUuid> MeasurementStore::linkedConsumerBlocks(const QUuid& sourceBlockId) 
             if (result.contains(b.id)) continue;
             bool consumes = false;
             for (const auto& s : b.segments)
-                if (s.lengthFormula == lv.refName) { consumes = true; break; }
+                if (s.lengthFormula == lv.refName ||
+                    s.extendStartFormula == lv.refName ||
+                    s.extendEndFormula == lv.refName) { consumes = true; break; }
             if (!consumes)
                 for (const auto& p : b.points)
                     if (p.distanceFormula == lv.refName) { consumes = true; break; }

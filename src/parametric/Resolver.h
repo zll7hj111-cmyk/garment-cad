@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QHash>
@@ -9,13 +9,13 @@
 #include <utility>
 
 #include "parametric/Condition.h"
-#include "parametric/Group.h"
 
 namespace cad::param {
 
 class Block;
 struct Attachment;
 struct EvalContext;
+struct ParamPoint;
 
 /// One issue detected while resolving attachments. Produced only when the
 /// caller passes a diagnostics vector to Resolver::resolveAll().
@@ -70,11 +70,6 @@ public:
     ///                    reference (same semantics as out-of-scope blocks).
     ///                    Null = full resolve (default). The set is treated as
     ///                    an intersection with the layer @p scope.
-    /// @param components  Resolver-facing component snapshots (路线B). Active
-    ///                    components (hasHinge) are rigid bodies driven by their
-    ///                    single main hinge; ordinary attachments owned by their
-    ///                    members are skipped so the component pose is the only
-    ///                    authority for those blocks. Empty = legacy behaviour.
     static void resolveAll(std::vector<Block>& blocks,
                            const std::vector<Attachment>& attachments,
                            const QHash<QString, double>& params = {},
@@ -82,8 +77,7 @@ public:
                            std::vector<ResolveDiagnostic>* diagnostics = nullptr,
                            Scope scope = Scope::All,
                            const QUuid& auxLayerId = QUuid(),
-                           const QSet<QUuid>* affectedOnly = nullptr,
-                           const std::vector<Component>& components = {});
+                           const QSet<QUuid>* affectedOnly = nullptr);
 
 private:
     /// Process a single attachment: position and rotate the from-block
@@ -97,11 +91,21 @@ private:
     ///        without fighting the aim-driven rotation.
     static bool applyAttachment(Block& from, const Attachment& att,
                                 const Block& to,
+                                const Block* angleRef,
                                 const QHash<QString, double>& params,
                                 const QHash<QString, QList<Condition>>& conditioned,
                                 std::vector<ResolveDiagnostic>* diagnostics,
                                 EvalContext* ctx,
                                 bool preserveEndTargetRotation = false);
+
+    /// Step 6 per-point worker (2026-08 拆分, 压平 resolveAll 嵌套): resolve
+    /// one cross-block intersection point in world space. Returns true iff
+    /// this call NEWLY resolved the point (drives the fixpoint's progress).
+    static bool resolveCrossBlockIntersection(
+        std::vector<Block>& blocks, Block& block, ParamPoint& pt,
+        const QHash<QString, double>& params,
+        const QHash<QString, QList<Condition>>& conditioned,
+        EvalContext& ctx, int pass, Scope scope);
 };
 
 /// 滑轨投影快照 (用户拍板 2026-08): 把跟随线当前 from-point 的世界位置,

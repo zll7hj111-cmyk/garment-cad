@@ -13,28 +13,11 @@
 #include "canvas/CanvasScene.h"
 #include "document/commands/BlockCommands.h"
 #include "document/commands/DocumentCommands.h"
+#include "tools/LayerFeedback.h"
 
 namespace cad::tools {
 
 namespace {
-
-/// Toast text when a freshly established attachment crosses layers (合法方向:
-/// aux follower → working leader): "已建立跨层连接（测量层→操作层1）" with
-/// the real layer names. Empty for same-layer connections.
-QString crossLayerToast(const cad::param::ParamDocument* doc,
-                        const QUuid& fromLayer, const QUuid& toLayer)
-{
-    if (!doc || fromLayer.isNull() || toLayer.isNull()) return QString();
-    if (doc->isAuxLayer(fromLayer) == doc->isAuxLayer(toLayer)) return QString();
-    auto name = [doc](const QUuid& layerId) {
-        const auto* l = doc->layerById(layerId);
-        return l ? l->name : QStringLiteral("?");
-    };
-    return QString::fromUtf8("\xe5\xb7\xb2\xe5\xbb\xba\xe7\xab\x8b"
-                             "\xe8\xb7\xa8\xe5\xb1\x82\xe8\xbf\x9e\xe6\x8e\xa5"
-                             "\xef\xbc\x88%1\u2192%2\xef\xbc\x89")  // 已建立跨层连接（%1→%2）
-        .arg(name(fromLayer), name(toLayer));
-}
 
 /// True when the attachment with @p attId is actually present in the document
 /// (commands may reject the edge — only toast for genuinely established ones).

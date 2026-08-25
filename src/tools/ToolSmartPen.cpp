@@ -552,7 +552,9 @@ void ToolSmartPen::mouseMove(QGraphicsSceneMouseEvent* event)
 
     updatePreview(effectiveEnd);
     updateSnapIndicator(cursorPos);
-    updateSegMarker(cursorPos);  // non-candidate segments: X = end aux point
+    // Reuse the point-snap result computed above: a repeated findSnap() full
+    // scan here costs one extra pass over every block's points per frame.
+    updateSegMarker(cursorPos, &m_currentSnap);  // non-candidate segments: X = end aux point
 }
 
 void ToolSmartPen::mouseRelease(QGraphicsSceneMouseEvent* event)
@@ -1085,7 +1087,8 @@ void ToolSmartPen::updateSnapIndicator(const cad::geo::Vec2& worldPos)
 // Segment-body snap (线身 X 标记 / 快捷辅助点)
 // ---------------------------------------------------------------------------
 
-void ToolSmartPen::updateSegMarker(const cad::geo::Vec2& worldPos)
+void ToolSmartPen::updateSegMarker(const cad::geo::Vec2& worldPos,
+                                     const std::optional<SnapResult>* knownPointSnap)
 {
     m_segSnap.reset();
     if (!m_scene || !m_paramDoc) { hideSegMarker(); return; }
@@ -1095,7 +1098,12 @@ void ToolSmartPen::updateSegMarker(const cad::geo::Vec2& worldPos)
         zoom = m_scene->views().first()->transform().m11();
 
     // Point snap wins: no X while the cursor would snap to an endpoint.
-    if (m_snapEngine.findSnap(worldPos, m_paramDoc, zoom)) {
+    // When the caller already ran findSnap() this frame (Drawing state runs
+    // updateSnapIndicator first), pass the result instead of re-scanning.
+    const bool pointSnapped = knownPointSnap
+        ? knownPointSnap->has_value()
+        : m_snapEngine.findSnap(worldPos, m_paramDoc, zoom).has_value();
+    if (pointSnapped) {
         hideSegMarker();
         return;
     }
@@ -1149,6 +1157,15 @@ void ToolSmartPen::openAuxDialog(const SegmentSnapResult& segSnap, bool forStart
     auto* block = m_paramDoc->findBlock(segSnap.blockId);
     auto* seg = block ? block->findSegment(segSnap.segmentId) : nullptr;
     if (!block || !seg) return;
+
+    // 端点延长线 D7 (EXTEND_LINE_DESIGN.md): 尾巴上不允许建立辅助点 —— 辅助点
+    // 按本体定义, 落在尾巴上会与"比例点不随延长漂移"冲突。吸附/连接/测量仍可用。
+    if (!block->segmentSnapWithinBase(segSnap.segmentId, segSnap.t)) {
+        if (m_scene)
+            m_scene->showToast(QString::fromUtf8(
+                "请在本体范围内建立辅助点（延长尾巴上不支持建点）"));
+        return;
+    }
 
     hideSegMarker();
 

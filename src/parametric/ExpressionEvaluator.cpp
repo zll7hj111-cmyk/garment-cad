@@ -1,4 +1,4 @@
-#include "ExpressionEvaluator.h"
+﻿#include "ExpressionEvaluator.h"
 
 #include <cmath>
 #include <deque>
@@ -21,6 +21,38 @@ struct DepthGuard {
     explicit DepthGuard(int& d) : depth(d) { ++depth; }
     ~DepthGuard() { --depth; }
 };
+
+/// Function signature: arity + the bytecode op it compiles to.
+struct FuncSig {
+    int arity = 0;
+    ExpressionEvaluator::Op op = ExpressionEvaluator::Op::PushNum;
+};
+
+/// Built-in function registry. Names are lowercase ASCII ONLY (case-sensitive
+/// by design — see the parser's "lowercase reserved for functions" rule).
+const QHash<QString, FuncSig>& functionTable()
+{
+    static const QHash<QString, FuncSig> table = [] {
+        QHash<QString, FuncSig> t;
+        t.insert(QStringLiteral("cos"),   {1, ExpressionEvaluator::Op::Cos});
+        t.insert(QStringLiteral("sin"),   {1, ExpressionEvaluator::Op::Sin});
+        t.insert(QStringLiteral("tan"),   {1, ExpressionEvaluator::Op::Tan});
+        t.insert(QStringLiteral("sqrt"),  {1, ExpressionEvaluator::Op::Sqrt});
+        t.insert(QStringLiteral("abs"),   {1, ExpressionEvaluator::Op::Abs});
+        t.insert(QStringLiteral("atan"),  {1, ExpressionEvaluator::Op::Atan});
+        t.insert(QStringLiteral("asin"),  {1, ExpressionEvaluator::Op::Asin});
+        t.insert(QStringLiteral("acos"),  {1, ExpressionEvaluator::Op::Acos});
+        t.insert(QStringLiteral("floor"), {1, ExpressionEvaluator::Op::Floor});
+        t.insert(QStringLiteral("ceil"),  {1, ExpressionEvaluator::Op::Ceil});
+        t.insert(QStringLiteral("round"), {1, ExpressionEvaluator::Op::Round});
+        t.insert(QStringLiteral("pow"),   {2, ExpressionEvaluator::Op::Pow});
+        t.insert(QStringLiteral("min"),   {2, ExpressionEvaluator::Op::Min});
+        t.insert(QStringLiteral("max"),   {2, ExpressionEvaluator::Op::Max});
+        t.insert(QStringLiteral("atan2"), {2, ExpressionEvaluator::Op::Atan2});
+        return t;
+    }();
+    return table;
+}
 } // namespace
 
 // ============================================================
@@ -214,9 +246,64 @@ ExpressionEvaluator::execute(const Compiled& code,
         case Op::Cos: stack[sp - 1] = std::cos(stack[sp - 1] * kDegToRad); break;
         case Op::Sin: stack[sp - 1] = std::sin(stack[sp - 1] * kDegToRad); break;
         case Op::Tan: stack[sp - 1] = std::tan(stack[sp - 1] * kDegToRad); break;
+
+        case Op::Sqrt: {
+            const double a = stack[sp - 1];
+            if (a < 0.0) { r.error = QStringLiteral("负数不能开平方"); return r; }
+            stack[sp - 1] = std::sqrt(a);
+            break;
+        }
+        case Op::Abs: stack[sp - 1] = std::abs(stack[sp - 1]); break;
+        case Op::Pow: {
+            const double b = stack[--sp];
+            stack[sp - 1] = std::pow(stack[sp - 1], b);
+            break;
+        }
+        case Op::Atan2: {
+            const double x = stack[--sp];   // atan2(y, x): second arg is x.
+            const double y = stack[sp - 1];
+            stack[sp - 1] = std::atan2(y, x) / kDegToRad;   // degrees (garment convention)
+            break;
+        }
+        case Op::Atan: stack[sp - 1] = std::atan(stack[sp - 1]) / kDegToRad; break;
+        case Op::Asin: {
+            const double a = stack[sp - 1];
+            if (a < -1.0 || a > 1.0) {
+                r.error = QStringLiteral("asin 参数超出 [-1, 1]");
+                return r;
+            }
+            stack[sp - 1] = std::asin(a) / kDegToRad;
+            break;
+        }
+        case Op::Acos: {
+            const double a = stack[sp - 1];
+            if (a < -1.0 || a > 1.0) {
+                r.error = QStringLiteral("acos 参数超出 [-1, 1]");
+                return r;
+            }
+            stack[sp - 1] = std::acos(a) / kDegToRad;
+            break;
+        }
+        case Op::Floor: stack[sp - 1] = std::floor(stack[sp - 1]); break;
+        case Op::Ceil: stack[sp - 1] = std::ceil(stack[sp - 1]); break;
+        case Op::Round: stack[sp - 1] = std::round(stack[sp - 1]); break;
+        case Op::Min: {
+            const double b = stack[--sp];
+            if (b < stack[sp - 1]) stack[sp - 1] = b;
+            break;
+        }
+        case Op::Max: {
+            const double b = stack[--sp];
+            if (b > stack[sp - 1]) stack[sp - 1] = b;
+            break;
+        }
         }
     }
 
+    if (!std::isfinite(stack[sp - 1])) {
+        r.error = QStringLiteral("结果无效（非有限数值）");
+        return r;
+    }
     r.ok = true;
     r.value = stack[sp - 1];
     return r;
@@ -350,10 +437,10 @@ void ExpressionEvaluator::parseFactor(Compiled& out)
         return;
     }
     const DepthGuard guard(m_depth);
-    skipSpaces();
-    const QChar c = peek();
 
     // Unary +/-
+    skipSpaces();
+    const QChar c = peek();
     if (c == QLatin1Char('+')) {
         ++m_pos;
         parseFactor(out);
@@ -362,9 +449,38 @@ void ExpressionEvaluator::parseFactor(Compiled& out)
     if (c == QLatin1Char('-')) {
         ++m_pos;
         parseFactor(out);
+        if (!m_ok)
+            return;
         appendOp(out, Op::Neg);
         return;
     }
+
+    parsePrimary(out);
+    if (!m_ok)
+        return;
+
+    // Power operator (right-associative): 2^3^2 == 2^(3^2); binds tighter
+    // than unary minus (-2^2 == -(2^2)) because the unary branch above
+    // recurses through here.
+    skipSpaces();
+    if (peek() == QLatin1Char('^')) {
+        ++m_pos;
+        parseFactor(out);
+        if (!m_ok)
+            return;
+        appendOp(out, Op::Pow);
+    }
+}
+
+void ExpressionEvaluator::parsePrimary(Compiled& out)
+{
+    if (m_depth >= kMaxParseDepth) {
+        fail(out, QStringLiteral("表达式嵌套过深"));
+        return;
+    }
+    const DepthGuard guard(m_depth);
+    skipSpaces();
+    const QChar c = peek();
 
     // Parenthesized sub-expression
     if (c == QLatin1Char('(')) {
@@ -406,47 +522,83 @@ void ExpressionEvaluator::parseFactor(Compiled& out)
 
     // Identifier: letters (incl. CJK), digits, underscore; can't start with digit.
     if (c.isLetter() || c == QLatin1Char('_')) {
-        // Trig functions (cos/sin/tan) with the argument in degrees.
-        // IMPORTANT: function names are matched case-SENSITIVELY in lowercase only.
-        // This reserves lowercase cos/sin/tan for functions so that uppercase
-        // variable reference names (the convention, e.g. B, V1) can never be
+        // Function or variable, decided by a leading lowercase ASCII run.
+        // IMPORTANT: function names are matched case-SENSITIVELY in lowercase
+        // only, which reserves lowercase for functions so that uppercase
+        // reference names (the convention, e.g. B, MA_xxx) can never be
         // mistaken for a function.
         //
-        // Argument forms: cos(22), cos22, cos22°, cos 22, cos前肩角度 (CJK var),
-        // cosA (uppercase var). The call is recognized unless the name continues
-        // as a longer LOWERCASE identifier (a-z or '_'), e.g. "cosine" / "cos_a",
-        // which falls through to normal variable lookup.
-        if (m_text.size() - m_pos >= 3) {
-            const QString head = m_text.mid(m_pos, 3);
-            const bool isTrig = (head == QLatin1String("cos") ||
-                                 head == QLatin1String("sin") ||
-                                 head == QLatin1String("tan"));
-            if (isTrig) {
-                const QChar after = (m_pos + 3 < m_text.size())
-                    ? m_text.at(m_pos + 3) : QChar();
-                // A following lowercase ASCII letter or underscore continues a
-                // longer identifier (cosine, cos_a) -> not a function call.
-                // Anything else (CJK, uppercase, digit, '(', operator, end)
-                // starts the argument.
-                const bool continuesIdentifier =
-                    after == QLatin1Char('_') ||
-                    (after >= QLatin1Char('a') && after <= QLatin1Char('z'));
-                if (!continuesIdentifier) {
-                    m_pos += 3;
-                    parseFactor(out);
-                    if (!m_ok)
-                        return;
-                    if (head == QLatin1String("cos"))
-                        appendOp(out, Op::Cos);
-                    else if (head == QLatin1String("sin"))
-                        appendOp(out, Op::Sin);
-                    else
-                        appendOp(out, Op::Tan);
+        // Argument forms (1-arg): cos(22), cos22, cos22°, cos 22, cos前肩角度
+        // (CJK var), cosA (uppercase var). A lowercase run that keeps going
+        // with a lowercase letter or '_' (cosine, cos_a) is a VARIABLE.
+        if (c.isLower()) {
+            const int runStart = m_pos;
+            int runEnd = m_pos;
+            while (runEnd < m_text.size()) {
+                const QChar d = m_text.at(runEnd);
+                if (d.unicode() >= QLatin1Char('a').unicode()
+                    && d.unicode() <= QLatin1Char('z').unicode())
+                    ++runEnd;
+                else
+                    break;
+            }
+            const QString run = m_text.mid(runStart, runEnd - runStart);
+
+            // atan2 special case: the '2' is a digit, not part of the
+            // lowercase run ("atan2" scans as run "atan" + '2'). Only the
+            // exact call form atan2(y,x) is a function; "atan2x"-style
+            // identifiers stay variables (unchanged semantics).
+            if (run == QLatin1String("atan")
+                && runEnd < m_text.size()
+                && m_text.at(runEnd) == QLatin1Char('2')) {
+                if (runEnd + 1 < m_text.size()
+                    && m_text.at(runEnd + 1) == QLatin1Char('(')) {
+                    m_pos = runEnd + 1;
+                    parseTwoArgCall(out, QStringLiteral("atan2"), Op::Atan2);
                     return;
+                }
+            } else {
+                const auto it = functionTable().constFind(run);
+                if (it != functionTable().constEnd()) {
+                    const FuncSig sig = it.value();
+                    const QChar after = (runEnd < m_text.size())
+                        ? m_text.at(runEnd) : QChar();
+                    // A following lowercase ASCII letter or underscore continues
+                    // a longer identifier (cosine, cos_a) -> variable, not call.
+                    const bool continuesIdentifier =
+                        after == QLatin1Char('_') ||
+                        (after.unicode() >= QLatin1Char('a').unicode()
+                         && after.unicode() <= QLatin1Char('z').unicode());
+                    if (!continuesIdentifier) {
+                        if (sig.arity == 1) {
+                            m_pos = runEnd;
+                            parseFactor(out);       // bare or parenthesized argument
+                            if (!m_ok)
+                                return;
+                            appendOp(out, sig.op);
+                            return;
+                        }
+                        // Two-arg functions need explicit parentheses: pow(a,b).
+                        // Look ahead WITHOUT committing m_pos so the variable
+                        // fallback below still reads the full identifier.
+                        int parenPos = runEnd;
+                        while (parenPos < m_text.size()
+                               && m_text.at(parenPos).isSpace())
+                            ++parenPos;
+                        if (parenPos < m_text.size()
+                            && m_text.at(parenPos) == QLatin1Char('(')) {
+                            m_pos = parenPos;
+                            parseTwoArgCall(out, run, sig.op);
+                            return;
+                        }
+                        // No parenthesis -> keep old semantics: it's a variable
+                        // (e.g. "min2", "powx").
+                    }
                 }
             }
         }
 
+        // Variable: letters (incl. CJK), digits, underscore; can't start with digit.
         const int start = m_pos;
         while (m_pos < m_text.size()) {
             const QChar d = m_text.at(m_pos);
@@ -464,6 +616,36 @@ void ExpressionEvaluator::parseFactor(Compiled& out)
         fail(out, QStringLiteral("表达式不完整"));
     else
         fail(out, QStringLiteral("无法识别的字符: \"%1\"").arg(c));
+}
+
+void ExpressionEvaluator::parseTwoArgCall(Compiled& out, const QString& name, Op op)
+{
+    if (m_depth >= kMaxParseDepth) {
+        fail(out, QStringLiteral("表达式嵌套过深"));
+        return;
+    }
+    const DepthGuard guard(m_depth);
+    // m_pos is positioned at the opening '('.
+    ++m_pos;
+    parseExpression(out);
+    if (!m_ok)
+        return;
+    skipSpaces();
+    if (peek() != QLatin1Char(',')) {
+        fail(out, QStringLiteral("函数 %1 需要两个参数(逗号分隔)").arg(name));
+        return;
+    }
+    ++m_pos;
+    parseExpression(out);
+    if (!m_ok)
+        return;
+    skipSpaces();
+    if (peek() != QLatin1Char(')')) {
+        fail(out, QStringLiteral("缺少右括号 )"));
+        return;
+    }
+    ++m_pos;
+    appendOp(out, op);
 }
 
 } // namespace cad::param

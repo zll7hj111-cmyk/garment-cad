@@ -5,6 +5,7 @@
 
 #include "parametric/ExpressionEvaluator.h"
 #include "parametric/ConditionEngine.h"
+#include "parametric/IntersectDebug.h"
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
 
@@ -54,6 +55,10 @@ void Block::resolve(const QHash<QString, double>& params,
         pt.resolved = false;
     }
 
+    // 端点延长线：本帧延长量先求值（数值 mm / 公式 cm 域）—— 求解 pass 内的
+    // effectiveLocalPos（交叉点宿主段、辅助点宿主等）即读到本帧值。
+    evaluateExtendValues(params, conditioned, ctx);
+
     resolveUnresolved(params, conditioned, ctx);
 
     // Handle closure constraint: if isClosed and there are segments,
@@ -78,14 +83,79 @@ void Block::resolve(const QHash<QString, double>& params,
         }
     }
 
-    // Rebuild the frame-level curve cache from the FINAL resolved positions
-    // (one C2 solve per curve segment per frame). Consumers that run later in
-    // the same frame — Resolver attachment settling (exitDirectionAtPoint),
-    // BlockItem::rebuildCache, SnapEngine projection, tangent handles — all
-    // share this cache instead of re-solving each on their own. Pure
-    // transform changes (origin/rotation) leave the local spans untouched, so
-    // the cache stays valid across drags.
-    rebuildCurveCache();
+    // Rebuild the frame-level curve cache ONLY when the local geometry
+    // actually changed (epoch delta from a point move or an explicit curve-
+    // edit bump) or the cache is cold / the curve-ness changed. A pure rigid
+    // drag (transform-only) leaves the local spans byte-identical — re-solving
+    // the C2 tangents, re-flattening (0.1mm) and re-integrating the arc length
+    // on EVERY frame is pure waste, and any per-frame micro-residual of the
+    // settle would otherwise show up as a wobble of the drawn polyline
+    // (曲线跟随拖动抖动, 用户报告 2026-09). Consumers that run later in the
+    // frame — exitDirectionAtPoint, SnapEngine projection, tangent handles,
+    // BlockItem::rebuildCache — all read the spans in LOCAL coordinates, so
+    // frozen spans + current transform stay exact under rigid motion.
+    bool hasCurveSegments = false;
+    for (const auto& seg : segments)
+        if (seg.isCurve()) { hasCurveSegments = true; break; }
+    const bool staleCache = hasCurveSegments
+        ? (m_curveSpans.empty() || geometryEpoch != m_curveCacheEpoch)
+        : !m_curveSpans.empty();  // curve→straight: drop stale entries
+    if (staleCache)
+        rebuildCurveCache();
+
+    // 端点延长线：本体解算完成后重建有效位置缓存（resolvedPos 保持本体；
+    // 实际位置经 worldPos()/effectiveLocalPos() 读取）。比例类定义读 resolvedPos
+    // 不变（EXTEND_LINE_DESIGN.md）。
+    applyEffectivePositions();
+}
+
+bool Block::polarEndpointCycleSeed(const ParamPoint& ep, const Block& block,
+                                   const Segment& seg, const ParamPoint& sp,
+                                   const QHash<QString, double>& params,
+                                   const QHash<QString, QList<Condition>>& conditioned,
+                                   EvalContext* ctx, geo::Vec2& outLocal)
+{
+    if (ep.constraint != PointConstraint::Polar || ep.refPointId.isNull())
+        return false;
+    // An ordinary start-anchored polar endpoint does not need the seed.
+    if (ep.refPointId == seg.startPointId || ep.refPointId == seg.endPointId)
+        return false;
+    // The ref must be an aux point ON this exact segment (the cycle).
+    const ParamPoint* ref = block.findPoint(ep.refPointId);
+    if (!ref) return false;
+    const bool auxOnThisSeg =
+        ((ref->constraint == PointConstraint::Intersection
+          || ref->constraint == PointConstraint::Interpolated)
+         && ref->hostSegmentId == seg.id);
+    if (!auxOnThisSeg) return false;
+
+    // Evaluate the polar formula anchored at the segment START instead (a
+    // principled bootstrap — the true anchor resolves in a later pass).
+    double dist = ep.distance;
+    if (!ep.distanceFormula.isEmpty()) {
+        auto r = ConditionEngine::evaluate(ep.distanceFormula, params, conditioned, ctx);
+        if (r.ok) dist = geo::Units::cmToMm(r.value);
+    }
+    double ang = ep.angle;
+    if (!ep.angleFormula.isEmpty()) {
+        auto r = ConditionEngine::evaluate(ep.angleFormula, params, conditioned, ctx);
+        if (r.ok) ang = r.value;
+    }
+    double baseAngle = 0.0;
+    if (!ep.refSegmentId.isNull()) {
+        const Segment* rseg = block.findSegment(ep.refSegmentId);
+        if (rseg) {
+            const ParamPoint* rsp = block.findPoint(rseg->startPointId);
+            const ParamPoint* rep = block.findPoint(rseg->endPointId);
+            if (rsp && rep && rsp->resolved && rep->resolved)
+                baseAngle = std::atan2(rep->resolvedPos.y - rsp->resolvedPos.y,
+                                       rep->resolvedPos.x - rsp->resolvedPos.x);
+        }
+    }
+    const double angleRad = baseAngle + ang * M_PI / 180.0;
+    outLocal = sp.resolvedPos + geo::Vec2{dist * std::cos(angleRad),
+                                          dist * std::sin(angleRad)};
+    return true;
 }
 
 void Block::resolveUnresolved(const QHash<QString, double>& params,
@@ -112,44 +182,8 @@ void Block::resolveUnresolved(const QHash<QString, double>& params,
                 break;
 
             case PointConstraint::Polar: {
-                const ParamPoint* ref = findPoint(pt.refPointId);
-                if (!ref || !ref->resolved) break;
-
-                // Evaluate formulas if present, otherwise use numeric values.
-                // Formula domain is cm (user-facing unit); convert result to mm.
-                double dist = pt.distance;
-                if (!pt.distanceFormula.isEmpty()) {
-                    auto r = ConditionEngine::evaluate(pt.distanceFormula, params, conditioned, ctx);
-                    if (r.ok) dist = geo::Units::cmToMm(r.value);
-                }
-
-                double ang = pt.angle;
-                if (!pt.angleFormula.isEmpty()) {
-                    auto r = ConditionEngine::evaluate(pt.angleFormula, params, conditioned, ctx);
-                    if (r.ok) ang = r.value;
-                }
-
-                double baseAngle = 0.0;
-                // If a reference segment is specified, use its direction as baseline
-                if (!pt.refSegmentId.isNull()) {
-                    const Segment* seg = findSegment(pt.refSegmentId);
-                    if (seg) {
-                        const ParamPoint* sp = findPoint(seg->startPointId);
-                        const ParamPoint* ep = findPoint(seg->endPointId);
-                        if (sp && ep && sp->resolved && ep->resolved) {
-                            geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;
-                            baseAngle = std::atan2(dir.y, dir.x);
-                        }
-                    }
-                }
-
-                double angleRad = baseAngle + ang * M_PI / 180.0;
-                pt.resolvedPos = ref->resolvedPos + geo::Vec2{
-                    dist * std::cos(angleRad),
-                    dist * std::sin(angleRad)
-                };
-                pt.resolved = true;
-                progress = true;
+                if (resolvePolarPoint(pt, params, conditioned, ctx))
+                    progress = true;
                 break;
             }
 
@@ -176,104 +210,8 @@ void Block::resolveUnresolved(const QHash<QString, double>& params,
             }
 
             case PointConstraint::Intersection: {
-                // Ray origin (refPointA) must be resolved.
-                const ParamPoint* origin = findPoint(pt.refPointA);
-                if (!origin || !origin->resolved) break;
-
-                // Target segment (hostSegmentId) and its endpoints. The END
-                // point may be mid-cycle in the fixpoint (e.g. a break endpoint
-                // whose position depends on THIS intersection): its cached
-                // position is used now and later iterations converge once the
-                // endpoint resolves. The START point must be resolved — it is
-                // the anchor of the segment geometry.
-                const Segment* seg = findSegment(pt.hostSegmentId);
-                if (!seg) break;
-                const ParamPoint* sp = findPoint(seg->startPointId);
-                const ParamPoint* ep = findPoint(seg->endPointId);
-                if (!sp || !ep || !sp->resolved) break;
-
-                // Base angle = target segment's start→end direction.
-                geo::Vec2 segDir = ep->resolvedPos - sp->resolvedPos;
-                double segLen = segDir.length();
-                if (segLen < 1e-9) break;  // Degenerate segment.
-
-                // Ray direction: aim-point mode (指向点) overrides the
-                // numeric/formula angle — the ray points straight at
-                // interAimPointId. An aim point outside this block defers to
-                // the Resolver's cross-block pass (Step 6).
-                double theta;
-                if (!pt.interAimPointId.isNull()) {
-                    const ParamPoint* aim = findPoint(pt.interAimPointId);
-                    if (!aim || !aim->resolved) break;
-                    geo::Vec2 toAim = aim->resolvedPos - origin->resolvedPos;
-                    if (toAim.lengthSquared() < 1e-12) break;  // Coincident with origin.
-                    theta = std::atan2(toAim.y, toAim.x);
-                } else {
-                    double baseAngle = std::atan2(segDir.y, segDir.x);
-                    // Evaluate ray angle (formula overrides numeric).
-                    double angleDeg = pt.interAngle;
-                    if (!pt.interAngleFormula.isEmpty()) {
-                        auto r = ConditionEngine::evaluate(pt.interAngleFormula, params, conditioned, ctx);
-                        if (r.ok) angleDeg = r.value;
-                    }
-                    theta = baseAngle + angleDeg * M_PI / 180.0;
-                }
-
-                // Ray direction.
-                geo::Vec2 d{std::cos(theta), std::sin(theta)};
-
-                // --- Curve target: rayCurveIntersect ---
-                if (seg->isCurve()) {
-                    std::vector<geo::Vec2> pts;
-                    std::vector<geo::Vec2> tIn, tOut;
-                    std::vector<bool> autoTan;
-                    pts.push_back(sp->resolvedPos);
-                    tIn.push_back(sp->tangentIn); tOut.push_back(sp->tangentOut); autoTan.push_back(sp->autoTangent);
-                    for (const auto& ppId : seg->passPointIds) {
-                        const ParamPoint* pp = findPoint(ppId);
-                        if (!pp || !pp->resolved) continue;
-                        pts.push_back(pp->resolvedPos);
-                        tIn.push_back(pp->tangentIn); tOut.push_back(pp->tangentOut); autoTan.push_back(pp->autoTangent);
-                    }
-                    pts.push_back(ep->resolvedPos);
-                    tIn.push_back(ep->tangentIn); tOut.push_back(ep->tangentOut); autoTan.push_back(ep->autoTangent);
-
-                    auto spans = geo::buildBezierSpans(pts, tIn, tOut, autoTan, seg->tension,
-                                                        geo::AutoCurveMode::Hobby);
-                    if (spans.empty()) break;
-
-                    auto hits = geo::rayCurveIntersect(origin->resolvedPos, d, spans, pt.interBidirectional);
-                    if (hits.empty()) break;
-
-                    pt.resolvedPos = hits[0].point;
-                    pt.resolved = true;
+                if (resolveIntersectionPoint(pt, params, conditioned, ctx))
                     progress = true;
-                    break;
-                }
-
-                // --- Straight-line target: cross-product method ---
-                // Ray-segment intersection via cross products.
-                // Ray: R(s) = origin + s*d,  s >= 0 (or any s if bidirectional)
-                // Segment: L(t) = sp + t*segDir,  t in [0,1]
-                double denom = d.cross(segDir);
-                if (std::abs(denom) < 1e-9) {
-                    // Parallel — no intersection; keep last position if available.
-                    break;
-                }
-
-                geo::Vec2 w = sp->resolvedPos - origin->resolvedPos;
-                double s = w.cross(segDir) / denom;  // Ray parameter.
-                double t = w.cross(d) / denom;       // Segment parameter.
-
-                // Validity check.
-                constexpr double eps = 1e-6;
-                bool validT = (t >= -eps && t <= 1.0 + eps);
-                bool validS = pt.interBidirectional ? true : (s >= -eps);
-                if (!validT || !validS) break;  // No valid intersection.
-
-                pt.resolvedPos = origin->resolvedPos + d * s;
-                pt.resolved = true;
-                progress = true;
                 break;
             }
 
@@ -284,47 +222,232 @@ void Block::resolveUnresolved(const QHash<QString, double>& params,
             }
 
             case PointConstraint::CurveAnchor: {
-                // Curve pass-point (曲线点): positioned on the CHORD of its host
-                // segment (start→end straight line) by a fraction + perpendicular
-                // offset. Resolving against the chord (not the curve) avoids a
-                // circular dependency — the anchor itself shapes the curve.
-                const Segment* hostSeg = findSegment(pt.hostSegmentId);
-                if (!hostSeg) break;
-                const ParamPoint* sp = findPoint(hostSeg->startPointId);
-                const ParamPoint* ep = findPoint(hostSeg->endPointId);
-                if (!sp || !ep || !sp->resolved || !ep->resolved) break;
-
-                geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
-                const double len = chord.length();
-                if (len < 1e-9) {
-                    // Degenerate chord — sit on the start point.
-                    pt.resolvedPos = sp->resolvedPos;
-                    pt.resolved = true;
+                if (resolveCurveAnchorPoint(pt))
                     progress = true;
-                    break;
-                }
-                const geo::Vec2 unitDir = chord / len;
-                const geo::Vec2 normal{-unitDir.y, unitDir.x};  // left of start→end
-
-                const double percent = pt.interpPercent;
-                const double offset  = pt.interpOffsetDist;
-
-                // The anchor's offset is used as-is (no taper): the curve keeps its
-                // full shape even when the anchor is near / past an endpoint. The
-                // smoothness near endpoints is guaranteed by the curve math
-                // (catmullRomTangent keeps a non-collapsing tangent), NOT by
-                // flattening the anchor onto the chord.
-
-                pt.resolvedPos = sp->resolvedPos
-                               + unitDir * (len * percent)
-                               + normal * offset;
-                pt.resolved = true;
-                progress = true;
                 break;
             }
             }
         }
     }
+}
+
+bool Block::resolvePolarPoint(ParamPoint& pt,
+                              const QHash<QString, double>& params,
+                              const QHash<QString, QList<Condition>>& conditioned,
+                              EvalContext* ctx)
+{
+    const ParamPoint* ref = findPoint(pt.refPointId);
+    if (!ref || !ref->resolved) return false;
+
+    // Evaluate formulas if present, otherwise use numeric values.
+    // Formula domain is cm (user-facing unit); convert result to mm.
+    double dist = pt.distance;
+    if (!pt.distanceFormula.isEmpty()) {
+        auto r = ConditionEngine::evaluate(pt.distanceFormula, params, conditioned, ctx);
+        if (r.ok) dist = geo::Units::cmToMm(r.value);
+    }
+
+    double ang = pt.angle;
+    if (!pt.angleFormula.isEmpty()) {
+        auto r = ConditionEngine::evaluate(pt.angleFormula, params, conditioned, ctx);
+        if (r.ok) ang = r.value;
+    }
+
+    double baseAngle = 0.0;
+    // If a reference segment is specified, use its direction as baseline
+    if (!pt.refSegmentId.isNull()) {
+        const Segment* seg = findSegment(pt.refSegmentId);
+        if (seg) {
+            const ParamPoint* sp = findPoint(seg->startPointId);
+            const ParamPoint* ep = findPoint(seg->endPointId);
+            if (sp && ep && sp->resolved && ep->resolved) {
+                geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;
+                baseAngle = std::atan2(dir.y, dir.x);
+            }
+        }
+    }
+
+    double angleRad = baseAngle + ang * M_PI / 180.0;
+    pt.resolvedPos = ref->resolvedPos + geo::Vec2{
+        dist * std::cos(angleRad),
+        dist * std::sin(angleRad)
+    };
+    pt.resolved = true;
+    return true;
+}
+
+bool Block::resolveIntersectionPoint(ParamPoint& pt,
+                                     const QHash<QString, double>& params,
+                                     const QHash<QString, QList<Condition>>& conditioned,
+                                     EvalContext* ctx)
+{
+    // Ray origin (refPointA) must be resolved.
+    const ParamPoint* origin = findPoint(pt.refPointA);
+    if (!origin || !origin->resolved) return false;
+
+    // Target segment (hostSegmentId) and its endpoints. The END
+    // point may be mid-cycle in the fixpoint (e.g. a break endpoint
+    // whose position depends on THIS intersection): its cached
+    // position is used now and later iterations converge once the
+    // endpoint resolves. The START point must be resolved — it is
+    // the anchor of the segment geometry.
+    const Segment* seg = findSegment(pt.hostSegmentId);
+    if (!seg) return false;
+    const ParamPoint* sp = findPoint(seg->startPointId);
+    const ParamPoint* ep = findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved) return false;
+
+    // Degenerate-segment bootstrap: on a cold start an endpoint
+    // anchored to an on-segment aux has NO cached pose (zero
+    // position), so the segment is zero-length and this
+    // intersection (which the endpoint depends on) can never fire.
+    // The cached position (if any — warm/live case) is the designed
+    // bootstrap and is left untouched; only a truly degenerate
+    // cache gets the seeded polar formula (anchored at the segment
+    // START) as a one-pass bootstrap — later fixpoint passes
+    // re-anchor it to the true ref.
+    // 宿主段几何按"有效位置"（含端点延长尾巴，D7b：交叉点跟实际线走）。
+    const geo::Vec2 spEff = effectiveLocalPos(seg->startPointId);
+    const geo::Vec2 epEff = effectiveLocalPos(seg->endPointId);
+    geo::Vec2 segDir = epEff - spEff;
+    double segLen = segDir.length();
+    if (segLen < 1e-9 && !ep->resolved) {
+        geo::Vec2 seed;
+        if (polarEndpointCycleSeed(*ep, *this, *seg, *sp, params,
+                                   conditioned, ctx, seed)) {
+            segDir = seed - spEff;
+            segLen = segDir.length();
+        }
+    }
+    if (segLen < 1e-9) return false;  // Degenerate segment.
+
+    // Ray direction: aim-point mode (指向点) overrides the
+    // numeric/formula angle — the ray points straight at
+    // interAimPointId. An aim point outside this block defers to
+    // the Resolver's cross-block pass (Step 6).
+    double theta;
+    if (!pt.interAimPointId.isNull()) {
+        const ParamPoint* aim = findPoint(pt.interAimPointId);
+        if (!aim || !aim->resolved) return false;
+        geo::Vec2 toAim = aim->resolvedPos - origin->resolvedPos;
+        if (toAim.lengthSquared() < 1e-12) return false;  // Coincident with origin.
+        theta = std::atan2(toAim.y, toAim.x);
+    } else {
+        double baseAngle = std::atan2(segDir.y, segDir.x);
+        // Evaluate ray angle (formula overrides numeric).
+        double angleDeg = pt.interAngle;
+        if (!pt.interAngleFormula.isEmpty()) {
+            auto r = ConditionEngine::evaluate(pt.interAngleFormula, params, conditioned, ctx);
+            if (r.ok) angleDeg = r.value;
+        }
+        if (pt.interUseWorldAngle) {
+            theta = angleDeg * M_PI / 180.0 - transform.rotation;
+        } else {
+            theta = baseAngle + angleDeg * M_PI / 180.0;
+        }
+    }
+
+    // Ray direction.
+    geo::Vec2 d{std::cos(theta), std::sin(theta)};
+
+    // --- Curve target: rayCurveIntersect ---
+    if (seg->isCurve()) {
+        std::vector<geo::Vec2> pts;
+        std::vector<geo::Vec2> tIn, tOut;
+        std::vector<bool> autoTan;
+        pts.push_back(spEff);
+        tIn.push_back(sp->tangentIn); tOut.push_back(sp->tangentOut); autoTan.push_back(sp->autoTangent);
+        for (const auto& ppId : seg->passPointIds) {
+            const ParamPoint* pp = findPoint(ppId);
+            if (!pp || !pp->resolved) continue;
+            pts.push_back(pp->resolvedPos);
+            tIn.push_back(pp->tangentIn); tOut.push_back(pp->tangentOut); autoTan.push_back(pp->autoTangent);
+        }
+        pts.push_back(epEff);
+        tIn.push_back(ep->tangentIn); tOut.push_back(ep->tangentOut); autoTan.push_back(ep->autoTangent);
+
+        auto spans = geo::buildBezierSpans(pts, tIn, tOut, autoTan, seg->tension,
+                                            geo::AutoCurveMode::Hobby);
+        if (spans.empty()) return false;
+
+        auto hits = geo::rayCurveIntersect(origin->resolvedPos, d, spans, pt.interBidirectional);
+        if (hits.empty()) return false;
+
+        pt.resolvedPos = hits[0].point;
+        pt.resolved = true;
+        return true;
+    }
+
+    // --- Straight-line target: cross-product method ---
+    // Ray-segment intersection via cross products.
+    // Ray: R(s) = origin + s*d,  s >= 0 (or any s if bidirectional)
+    // Segment: L(t) = sp + t*segDir,  t in [0,1]
+    double denom = d.cross(segDir);
+    if (std::abs(denom) < 1e-9) {
+        // Parallel — no intersection; keep last position if available.
+        return false;
+    }
+
+    geo::Vec2 w = spEff - origin->resolvedPos;
+    double s = w.cross(segDir) / denom;  // Ray parameter.
+    double t = w.cross(d) / denom;       // Segment parameter.
+
+    // Validity check.
+    constexpr double eps = 1e-6;
+    bool validT = (t >= -eps && t <= 1.0 + eps);
+    bool validS = pt.interBidirectional ? true : (s >= -eps);
+    if (!validT || !validS) {
+        if (idbg::enabled())
+            idbg::log(QStringLiteral("[inter-local] MISS pt=%1 s=%2 t=%3")
+                          .arg(pt.serial).arg(s).arg(t));
+        return false;  // No valid intersection.
+    }
+
+    pt.resolvedPos = origin->resolvedPos + d * s;
+    pt.resolved = true;
+    if (idbg::enabled())
+        idbg::log(QStringLiteral("[inter-local] HIT pt=%1 local=(%2,%3)")
+                      .arg(pt.serial).arg(pt.resolvedPos.x).arg(pt.resolvedPos.y));
+    return true;
+}
+
+bool Block::resolveCurveAnchorPoint(ParamPoint& pt)
+{
+    // Curve pass-point (曲线点): positioned on the CHORD of its host
+    // segment (start→end straight line) by a fraction + perpendicular
+    // offset. Resolving against the chord (not the curve) avoids a
+    // circular dependency — the anchor itself shapes the curve.
+    const Segment* hostSeg = findSegment(pt.hostSegmentId);
+    if (!hostSeg) return false;
+    const ParamPoint* sp = findPoint(hostSeg->startPointId);
+    const ParamPoint* ep = findPoint(hostSeg->endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) return false;
+
+    geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
+    const double len = chord.length();
+    if (len < 1e-9) {
+        // Degenerate chord — sit on the start point.
+        pt.resolvedPos = sp->resolvedPos;
+        pt.resolved = true;
+        return true;
+    }
+    const geo::Vec2 unitDir = chord / len;
+    const geo::Vec2 normal{-unitDir.y, unitDir.x};  // left of start→end
+
+    const double percent = pt.interpPercent;
+    const double offset  = pt.interpOffsetDist;
+
+    // The anchor's offset is used as-is (no taper): the curve keeps its
+    // full shape even when the anchor is near / past an endpoint. The
+    // smoothness near endpoints is guaranteed by the curve math
+    // (catmullRomTangent keeps a non-collapsing tangent), NOT by
+    // flattening the anchor onto the chord.
+
+    pt.resolvedPos = sp->resolvedPos
+                   + unitDir * (len * percent)
+                   + normal * offset;
+    pt.resolved = true;
+    return true;
 }
 
 bool Block::resolveInterpolatedPoint(ParamPoint& pt,
@@ -550,8 +673,12 @@ bool Block::collectCurveAnchors(const Segment& seg,
 
 void Block::rebuildCurveCache()
 {
+    ++curveCacheBuilds;               // telemetry: rigid drags must NOT grow this
+    m_curveCacheEpoch = geometryEpoch;
     m_curveSpans.clear();
     m_curveSpans.reserve(segments.size());
+    m_curveSpanIndex.clear();
+    m_curveSpanIndex.reserve(segments.size());
 
     for (const auto& seg : segments) {
         if (!seg.isCurve()) continue;
@@ -590,22 +717,30 @@ void Block::rebuildCurveCache()
         entry.labelLocal   = geo::evalCurve(entry.spans, 0.5);
         entry.labelLocalDir = geo::evalCurveTangent(entry.spans, 0.5);
         entry.arcLengthMm  = geo::totalArcLength(entry.spans);
+        m_curveSpanIndex.insert(seg.id, static_cast<int>(m_curveSpans.size()));
         m_curveSpans.push_back(std::move(entry));
     }
 }
 
 const CurveSpanEntry* Block::curveSpanEntry(const QUuid& segmentId) const
 {
-    for (const auto& e : m_curveSpans)
-        if (e.segmentId == segmentId) return &e;
-    return nullptr;
+    // Indexed lookup: this accessor runs per curve per snap query / per canvas
+    // cache rebuild — a linear scan is O(k^2) per block with k curves.
+    const auto it = m_curveSpanIndex.constFind(segmentId);
+    if (it == m_curveSpanIndex.constEnd())
+        return nullptr;
+    const int idx = it.value();
+    if (idx < 0 || idx >= static_cast<int>(m_curveSpans.size()))
+        return nullptr;
+    const auto& e = m_curveSpans[static_cast<size_t>(idx)];
+    // idempotency guard: the index and spans are rebuilt together, so a stale
+    // entry can only appear via direct vector mutation — verify before use.
+    return e.segmentId == segmentId ? &e : nullptr;
 }
 
 geo::Vec2 Block::worldPos(const QUuid& pointId) const
 {
-    const ParamPoint* pt = findPoint(pointId);
-    if (!pt) return geo::Vec2::zero();
-    return transform.toWorld(pt->resolvedPos);
+    return transform.toWorld(effectiveLocalPos(pointId));
 }
 
 ParamPoint* Block::findPoint(const QUuid& pointId)
@@ -758,54 +893,58 @@ double Block::exitDirectionAtPoint(const QUuid& pointId) const
 double Block::exitDirectionAtPoint(const QUuid& pointId,
                                    const QUuid& preferredSegmentId) const
 {
-    if (!preferredSegmentId.isNull()) {
-        if (const Segment* seg = findSegment(preferredSegmentId)) {
-            const bool isStart = (seg->startPointId == pointId);
-            const bool isEnd   = (seg->endPointId == pointId);
-            if (isStart || isEnd) {
-                const ParamPoint* sp = findPoint(seg->startPointId);
-                const ParamPoint* ep = findPoint(seg->endPointId);
-                if (sp && ep && sp->resolved && ep->resolved) {
-                    // Curve: use the endpoint tangent (not the chord) so a
-                    // follower with followerAngle==0 continues the curve smoothly.
-                    if (seg->isCurve()) {
-                        if (const CurveSpanEntry* entry = curveSpanEntry(seg->id);
-                            entry && !entry->spans.empty()) {
-                            if (isEnd) {
-                                geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.back(), 1.0);
-                                if (tan.lengthSquared() > 1e-12)
-                                    return std::atan2(tan.y, tan.x);
-                            } else {
-                                geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.front(), 0.0);
-                                if (tan.lengthSquared() > 1e-12)
-                                    return std::atan2(-tan.y, -tan.x);
-                            }
-                        }
-                        // Fallback to chord direction below.
-                    }
-                    geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;  // start -> end
-                    // At the START point, "continue straight" extends backward.
-                    if (isStart) dir = -dir;
-                    return std::atan2(dir.y, dir.x);
-                }
-            } else {
-                // Interpolated aux point hosted on the preferred segment:
-                // use the host's start→end direction (matches legacy overload).
-                const ParamPoint* pt = findPoint(pointId);
-                if (pt && pt->constraint == PointConstraint::Interpolated
-                    && pt->hostSegmentId == preferredSegmentId) {
-                    const ParamPoint* sp = findPoint(seg->startPointId);
-                    const ParamPoint* ep = findPoint(seg->endPointId);
-                    if (sp && ep && sp->resolved && ep->resolved) {
-                        geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;
-                        return std::atan2(dir.y, dir.x);
-                    }
-                }
+    // 快速通道仅当偏好段存在且可用；一切失败路径回落到遗留扫描。
+    if (preferredSegmentId.isNull())
+        return exitDirectionAtPoint(pointId);
+    const Segment* seg = findSegment(preferredSegmentId);
+    if (!seg)
+        return exitDirectionAtPoint(pointId);
+
+    const bool isStart = (seg->startPointId == pointId);
+    const bool isEnd   = (seg->endPointId == pointId);
+
+    if (!isStart && !isEnd) {
+        // Interpolated aux point hosted on the preferred segment:
+        // use the host's start→end direction (matches legacy overload).
+        const ParamPoint* pt = findPoint(pointId);
+        if (pt && pt->constraint == PointConstraint::Interpolated
+            && pt->hostSegmentId == preferredSegmentId) {
+            const ParamPoint* sp = findPoint(seg->startPointId);
+            const ParamPoint* ep = findPoint(seg->endPointId);
+            if (sp && ep && sp->resolved && ep->resolved) {
+                geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;
+                return std::atan2(dir.y, dir.x);
             }
         }
+        return exitDirectionAtPoint(pointId);
     }
-    // Segment missing / not incident / unresolved — legacy scan fallback.
-    return exitDirectionAtPoint(pointId);
+
+    const ParamPoint* sp = findPoint(seg->startPointId);
+    const ParamPoint* ep = findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved)
+        return exitDirectionAtPoint(pointId);
+
+    // Curve: use the endpoint tangent (not the chord) so a
+    // follower with followerAngle==0 continues the curve smoothly.
+    if (seg->isCurve()) {
+        if (const CurveSpanEntry* entry = curveSpanEntry(seg->id);
+            entry && !entry->spans.empty()) {
+            if (isEnd) {
+                geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.back(), 1.0);
+                if (tan.lengthSquared() > 1e-12)
+                    return std::atan2(tan.y, tan.x);
+            } else {
+                geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.front(), 0.0);
+                if (tan.lengthSquared() > 1e-12)
+                    return std::atan2(-tan.y, -tan.x);
+            }
+        }
+        // Fallback to chord direction below.
+    }
+    geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;  // start -> end
+    // At the START point, "continue straight" extends backward.
+    if (isStart) dir = -dir;
+    return std::atan2(dir.y, dir.x);
 }
 
 QUuid Block::exitSegmentAtPoint(const QUuid& pointId) const
@@ -826,21 +965,174 @@ double Block::segmentLengthAtPoint(const QUuid& pointId) const
 {
     for (const auto& seg : segments) {
         if (seg.startPointId != pointId && seg.endPointId != pointId) continue;
-        const ParamPoint* sp = findPoint(seg.startPointId);
-        const ParamPoint* ep = findPoint(seg.endPointId);
-        if (sp && ep && sp->resolved && ep->resolved) {
-            // Curve: return arc length
-            if (seg.isCurve()) {
-                if (const CurveSpanEntry* entry = curveSpanEntry(seg.id);
-                    entry && !entry->spans.empty())
-                    return geo::totalArcLength(entry->spans);
-            }
-            // Line (or curve fallback): chord length
-            return sp->resolvedPos.distanceTo(ep->resolvedPos);
-        }
-        break;
+        return segmentEffectiveLength(seg.id);
     }
     return 0.0;
+}
+
+geo::Vec2 Block::effectiveLocalPos(const QUuid& pointId) const
+{
+    // 按当前位置即时计算（求解 pass 内也不依赖缓存）：有效位置 = 本体 +
+    // 该端点所属段的延长量 × 本体出方向。无延长/非端点 = 本体位。
+    const ParamPoint* pt = findPoint(pointId);
+    if (!pt) return geo::Vec2::zero();
+    for (const auto& seg : segments) {
+        auto it = m_extendEval.constFind(seg.id);
+        if (it == m_extendEval.constEnd()) continue;
+        const bool isStart = (seg.startPointId == pointId);
+        const bool isEnd   = (seg.endPointId == pointId);
+        if (!isStart && !isEnd) continue;
+        const double ext = isStart ? it->startMm : it->endMm;
+        if (ext <= 0.0) continue;
+        const ParamPoint* sp = findPoint(seg.startPointId);
+        const ParamPoint* ep = findPoint(seg.endPointId);
+        if (!sp || !ep || !sp->resolved) return pt->resolvedPos;
+        geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;
+        const double len = dir.length();
+        if (len < 1e-9) return pt->resolvedPos;  // 退化段: 无出方向
+        dir = dir / len;
+        // 出方向与 exitDirectionAtPoint 一致：终点 = start→end；起点 = end→start。
+        if (isEnd)
+            return ep->resolvedPos + dir * ext;
+        return sp->resolvedPos - dir * ext;
+    }
+    return pt->resolvedPos;
+}
+
+double Block::segmentBaseLength(const QUuid& segmentId) const
+{
+    const Segment* seg = findSegment(segmentId);
+    if (!seg) return 0.0;
+    const ParamPoint* sp = findPoint(seg->startPointId);
+    const ParamPoint* ep = findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved) return 0.0;
+    if (seg->isCurve()) {
+        if (const CurveSpanEntry* entry = curveSpanEntry(seg->id);
+            entry && !entry->spans.empty())
+            return geo::totalArcLength(entry->spans);
+    }
+    return ep->resolved ? sp->resolvedPos.distanceTo(ep->resolvedPos) : 0.0;
+}
+
+double Block::segmentEffectiveLength(const QUuid& segmentId) const
+{
+    const Segment* seg = findSegment(segmentId);
+    if (!seg) return 0.0;
+    if (seg->isCurve())
+        return segmentBaseLength(segmentId);  // 曲线不支持延长（D3）
+    const ParamPoint* sp = findPoint(seg->startPointId);
+    const ParamPoint* ep = findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
+    return effectiveLocalPos(sp->id).distanceTo(effectiveLocalPos(ep->id));
+}
+
+double Block::segmentExtendStart(const QUuid& segmentId) const
+{
+    auto it = m_extendEval.constFind(segmentId);
+    return it == m_extendEval.constEnd() ? 0.0 : it->startMm;
+}
+
+double Block::segmentExtendEnd(const QUuid& segmentId) const
+{
+    auto it = m_extendEval.constFind(segmentId);
+    return it == m_extendEval.constEnd() ? 0.0 : it->endMm;
+}
+
+bool Block::segmentSnapWithinBase(const QUuid& segmentId, double t) const
+{
+    const Segment* seg = findSegment(segmentId);
+    if (!seg) return true;
+    const ParamPoint* sp = findPoint(seg->startPointId);
+    const ParamPoint* ep = findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) return true;
+    const double baseLen = segmentBaseLength(segmentId);
+    const double effLen  = segmentEffectiveLength(segmentId);
+    if (effLen < 1e-9) return true;
+    // t 沿有效段（SnapEngine 用有效端点投影）。距本体起点的距离 =
+    // t·effLen − 起点延长量；本体范围 = [0, baseLen]。
+    const double along = t * effLen - segmentExtendStart(segmentId);
+    constexpr double kEps = 1e-6;
+    return along >= -kEps && along <= baseLen + kEps;
+}
+
+void Block::evaluateExtendValues(const QHash<QString, double>& params,
+                                 const QHash<QString, QList<Condition>>& conditioned,
+                                 EvalContext* ctx)
+{
+    // 求值各段延长量（数值 mm / 公式 cm 域；防御性 clamp ≥0 — 只往外，D2）。
+    QHash<QUuid, ExtendEval> extendEval;
+    for (const auto& seg : segments) {
+        ExtendEval e;
+        e.startMm = seg.extendStartMm;
+        if (!seg.extendStartFormula.isEmpty()) {
+            auto r = ConditionEngine::evaluate(seg.extendStartFormula, params, conditioned, ctx);
+            if (r.ok) e.startMm = geo::Units::cmToMm(r.value);
+        }
+        e.endMm = seg.extendEndMm;
+        if (!seg.extendEndFormula.isEmpty()) {
+            auto r = ConditionEngine::evaluate(seg.extendEndFormula, params, conditioned, ctx);
+            if (r.ok) e.endMm = geo::Units::cmToMm(r.value);
+        }
+        if (e.startMm < 0.0) e.startMm = 0.0;
+        if (e.endMm   < 0.0) e.endMm   = 0.0;
+        if (e.startMm > 0.0 || e.endMm > 0.0)
+            extendEval.insert(seg.id, e);
+    }
+    m_extendEval = std::move(extendEval);
+}
+
+void Block::applyEffectivePositions()
+{
+    // 无延长（包括公式求值为 0）：清空缓存；上帧有尾巴（刚被清零）→ 可视几何
+    // 变化，显式 +epoch 触发重绘。
+    if (m_extendEval.isEmpty()) {
+        if (!m_effectiveLocal.isEmpty())
+            ++geometryEpoch;
+        m_effectiveLocal.clear();
+        return;
+    }
+
+    // 本体位置入缓存，再叠加端点延长（出方向 = 本体方向，与 exitDirectionAtPoint
+    // 的"延长方向"语义一致：终点 = start→end，起点 = end→start）。
+    QHash<QUuid, geo::Vec2> eff;
+    eff.reserve(points.size());
+    for (const auto& pt : points)
+        eff.insert(pt.id, pt.resolvedPos);
+
+    for (const auto& seg : segments) {
+        auto it = m_extendEval.constFind(seg.id);
+        if (it == m_extendEval.constEnd()) continue;
+        const ParamPoint* sp = findPoint(seg.startPointId);
+        const ParamPoint* ep = findPoint(seg.endPointId);
+        if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
+        geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;  // start→end (本体)
+        const double len = dir.length();
+        if (len < 1e-9) continue;  // 退化线段：无出方向，跳过
+        const geo::Vec2 u = dir / len;
+        if (it->startMm > 0.0)
+            eff[sp->id] = sp->resolvedPos - u * it->startMm;  // 起点往起点外
+        if (it->endMm > 0.0)
+            eff[ep->id] = ep->resolvedPos + u * it->endMm;    // 终点往终点外
+    }
+
+    // 可视几何变化检测：本体不动但尾巴变了 → 显式 +epoch（画布重绘铁律）。
+    // 与上帧有效缓存比较，稳定后每帧零开销。
+    if (!m_effectiveLocal.isEmpty()) {
+        bool moved = m_effectiveLocal.size() != eff.size();
+        if (!moved) {
+            for (auto cit = eff.constBegin(); cit != eff.constEnd(); ++cit) {
+                auto prev = m_effectiveLocal.constFind(cit.key());
+                if (prev == m_effectiveLocal.constEnd() ||
+                    prev->distanceSquaredTo(cit.value()) > 1e-6) {
+                    moved = true;
+                    break;
+                }
+            }
+        }
+        if (moved)
+            ++geometryEpoch;
+    }
+    m_effectiveLocal = std::move(eff);
 }
 
 bool Block::freezeSegmentGeometry()

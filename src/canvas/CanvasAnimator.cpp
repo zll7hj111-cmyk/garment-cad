@@ -1,4 +1,4 @@
-#include "CanvasAnimator.h"
+﻿#include "CanvasAnimator.h"
 
 #include <QGraphicsItem>
 #include <cmath>
@@ -95,7 +95,7 @@ void CanvasAnimator::setState(QGraphicsItem* owner, const QUuid& entityId, Entit
     ensureTimerRunning();
 }
 
-EntityPaintParams CanvasAnimator::lineParams(QGraphicsItem* owner, const QUuid& entityId,
+EntityPaintParams CanvasAnimator::lineParams(const QGraphicsItem* owner, const QUuid& entityId,
                                              const QColor& baseColor, double baseWidth) const
 {
     EntityPaintParams pp;
@@ -141,7 +141,7 @@ EntityPaintParams CanvasAnimator::lineParams(QGraphicsItem* owner, const QUuid& 
     return pp;
 }
 
-EntityPaintParams CanvasAnimator::pointParams(QGraphicsItem* owner, const QUuid& entityId,
+EntityPaintParams CanvasAnimator::pointParams(const QGraphicsItem* owner, const QUuid& entityId,
                                               bool auxiliary) const
 {
     EntityPaintParams pp;
@@ -175,7 +175,7 @@ EntityPaintParams CanvasAnimator::pointParams(QGraphicsItem* owner, const QUuid&
     return pp;
 }
 
-bool CanvasAnimator::isAnimating(QGraphicsItem* owner, const QUuid& entityId) const
+bool CanvasAnimator::isAnimating(const QGraphicsItem* owner, const QUuid& entityId) const
 {
     const auto ownerIt = m_entries.constFind(owner);
     if (ownerIt == m_entries.constEnd())
@@ -203,7 +203,7 @@ void CanvasAnimator::tick()
 
     bool anyActive = false;
     // Collect owners that need repaint.
-    QList<QGraphicsItem*> dirtyOwners;
+    QList<const QGraphicsItem*> dirtyOwners;
 
     for (auto ownerIt = m_entries.begin(); ownerIt != m_entries.end(); ++ownerIt) {
         bool ownerDirty = false;
@@ -221,7 +221,7 @@ void CanvasAnimator::tick()
             dirtyOwners.append(ownerIt.key());
     }
 
-    for (QGraphicsItem* item : dirtyOwners)
+    for (const QGraphicsItem* item : dirtyOwners)
         emit invalidationRequested(item);
 
     if (!anyActive)

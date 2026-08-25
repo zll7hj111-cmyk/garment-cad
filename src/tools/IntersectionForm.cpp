@@ -1,4 +1,4 @@
-﻿#include "IntersectionForm.h"
+#include "IntersectionForm.h"
 
 #include "ElaCheckBox.h"
 #include <QFormLayout>
@@ -94,10 +94,10 @@ void IntersectionForm::loadFrom(const cad::param::ParamPoint& pt)
 
     m_editName->setText(pt.name);
 
-    // Reset to segment-relative display (default mode).
-    m_chkWorldAngle->setChecked(false);
+    // Show the stored angle frame (relative default, absolute if persisted).
+    m_chkWorldAngle->setChecked(pt.interUseWorldAngle);
 
-    // Angle: show formula if present, else numeric (relative to segment).
+    // Angle: show formula if present, else numeric in the stored angle frame.
     if (!pt.interAngleFormula.isEmpty())
         m_editAngle->setText(pt.interAngleFormula);
     else
@@ -108,18 +108,17 @@ void IntersectionForm::loadFrom(const cad::param::ParamPoint& pt)
 
 void IntersectionForm::applyTo(cad::param::ParamPoint& pt) const
 {
-    // Angle (degrees). When 绝对角度 mode is on, back-calculate the numeric
-    // value to the segment-relative representation before storing.
+    // Angle (degrees). The checkbox selects the stored frame:
+    //   checked = absolute world angle; unchecked = segment-relative.
+    pt.interUseWorldAngle = m_chkWorldAngle->isChecked();
     QString angleText = m_editAngle->text().trimmed();
     bool isNum = false;
     double numVal = angleText.toDouble(&isNum);
     if (isNum) {
-        if (m_chkWorldAngle->isChecked())
-            numVal -= m_segWorldDir;   // world → relative
         pt.interAngle = numVal;
         pt.interAngleFormula.clear();
     } else if (!angleText.isEmpty()) {
-        pt.interAngleFormula = angleText;  // formulas are always relative
+        pt.interAngleFormula = angleText;  // formulas follow the selected frame
     }
 
     pt.showName = m_chkShowName->isChecked();

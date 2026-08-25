@@ -19,7 +19,6 @@
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
 #include "document/commands/BlockCommands.h"
-#include "GroupGuard.h"
 #include "ToolSmartPen.h"  // HudItem
 
 namespace cad::tools {
@@ -30,8 +29,7 @@ namespace cad::tools {
 
 void ToolIntersection::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
 {
-    m_scene = &scene;
-    m_paramDoc = paramDoc;
+    Tool::activate(scene, paramDoc);
     m_state = State::SelectLine;
 }
 
@@ -45,9 +43,7 @@ void ToolIntersection::deactivate()
     if (m_originMarker) { m_scene->removeItem(m_originMarker); delete m_originMarker; m_originMarker = nullptr; }
     if (m_segHighlight) { m_scene->removeItem(m_segHighlight); delete m_segHighlight; m_segHighlight = nullptr; }
     if (m_aimMarker)    { m_scene->removeItem(m_aimMarker);    delete m_aimMarker;    m_aimMarker    = nullptr; }
-    if (m_hud)          { m_scene->removeItem(m_hud);          delete m_hud;          m_hud          = nullptr; }
-    m_scene = nullptr;
-    m_paramDoc = nullptr;
+    Tool::deactivate();
 }
 
 // ---------------------------------------------------------------------------
@@ -172,11 +168,6 @@ void ToolIntersection::handleSelectLinePress(const cad::geo::Vec2& pos, double z
         /*ignoreLayerFilter=*/true);
     if (!segSnap) return;
 
-    // Group guard: creating an intersection point is a structural change —
-    // blocked on group members (组内线不可创建交点).
-    if (guardGroupedBlock(m_scene, m_paramDoc, segSnap->blockId,
-                          QString::fromUtf8("\xe5\x88\x9b\xe5\xbb\xba\xe4\xba\xa4\xe7\x82\xb9")))  // 创建交点
-        return;
 
     m_targetBlockId   = segSnap->blockId;
     m_targetSegmentId = segSnap->segmentId;
@@ -507,8 +498,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
 
     // --- HUD ---
     if (!m_hud) {
-        m_hud = new HudItem();
-        m_scene->addItem(m_hud);
+        m_hud = ensureHud();
     }
     if (m_hud) {
         QString text;
@@ -637,7 +627,8 @@ void ToolIntersection::commitIntersection()
     pt.hostSegmentId = m_targetSegmentId;
 
     // Angle.
-    pt.interAngle = m_currentAngleDeg;
+    pt.interUseWorldAngle = m_worldAngleMode;
+    pt.interAngle = m_worldAngleMode ? m_displayAngleDeg : m_currentAngleDeg;
     pt.interBidirectional = m_bidirectional;
     // Aim point (指向点): the ray direction follows this point parametrically;
     // the stored angle stays as the fallback if the point is deleted.
@@ -675,8 +666,7 @@ void ToolIntersection::updateStepHud(const cad::geo::Vec2& cursorPos, const QStr
 {
     if (!m_scene) return;
     if (!m_hud) {
-        m_hud = new HudItem();
-        m_scene->addItem(m_hud);
+        m_hud = ensureHud();
     }
     m_hud->setText(text);
     QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();

@@ -130,14 +130,33 @@ struct BreakState {
     double localAngleDeg = 0.0;
     double worldAngleRad = 0.0;
     bool isCurve = false;
-    cad::geo::Vec2 curveTanAtBreak;          // 断点处曲线切线（导数）
+    cad::geo::Vec2 curveTanAtBreak;          // 断点处原始曲线切线（方向）
     std::vector<QUuid> frontPassIds;         // 归前段的 pass 点
     std::vector<cad::param::ParamPoint> backPassPoints;  // 归后段的 pass 点
     double backEndLocalAngle = 0.0;          // 后段终点在后段局部系的角度
     double curveFrontDist = 0.0;             // |start → 断点|（曲线真实距离）
     double curveBackDist = 0.0;              // |断点 → end|
     double curveBreakPolarAngleDeg = 0.0;    // start → 断点 的真实极角
-    QHash<QUuid, cad::geo::Vec2> frozenTangents;  // 原曲线 C2 解冻结的切线
+    // 原曲线逐点冻结切线（Hobby 解 — 与画布曲线缓存同一解，逐点 in/out 分开）：
+    // 手动点用存储切线；AUTO 点用 Hobby 解。打断后两半以 manual 模式复用这些
+    // 切线，形状与打断前位一致（de Casteljau 子跨度再参数化的端点除外）。
+    QHash<QUuid, cad::geo::Vec2> frozenTanIn;
+    QHash<QUuid, cad::geo::Vec2> frozenTanOut;
+    // 断点所在跨度的子跨度端点切线重写（t0 缩放，sub-parameterization）：
+    //   前段最后跨度的起点 out 切线 = t0·T_out(P_j)，
+    //   断点 in/out    切线 = t0·B'/(1−t0)·B'（子跨度参数化导数），
+    //   后段第一个跨度终点 in 切线 = (1−t0)·T_in(P_{j+1})。
+    // 为空 = 断点正好落在链点（CurveAnchor 打断）——冻结原切线即精确。
+    bool hasSubSpans = false;
+    QHash<QUuid, cad::geo::Vec2> subTanInOverride;
+    QHash<QUuid, cad::geo::Vec2> subTanOutOverride;
+    // 断点/辅助点的弧长位置（曲线辅助点按弧长分派前后段，而非 interpPercent）。
+    double breakArc = 0.0;
+    bool auxArcValid = false;
+    QHash<QUuid, double> auxArc;
+    // 断点附件参考方向变化量（打断前 interior 参考 → 打断后端点参考），
+    // 用于对保留在断点上的跟随附件做跟随角补偿（零跳变）。
+    double refDeltaRad = 0.0;
 
     // --- 位置求值（阶段 2 输出） ---
     BreakMode mode = BreakMode::Formula;
@@ -159,6 +178,13 @@ struct BreakState {
     cad::geo::Vec2 breakWorld;               // 断点世界坐标（后段原点）
     QUuid bpStartId, bpEndId, backSegId;
     double rotToLocal = 0.0;                 // 切线向量 原块系 → 后段系
+    bool endPtKept = false;                  // 原端点仍被别的段引用（不删除）
+
+    // --- 端点延长线 (EXTEND_LINE_DESIGN.md D8) ---
+    // 原终点延长量归后段；modifyFrontBlock 先把原段 extendEnd 清零，故在
+    // gatherBreakGeometry 阶段快照，buildBackBlock 继承。
+    double  origExtendEndMm = 0.0;
+    QString origExtendEndFormula;
 };
 
 // 阶段函数前置声明（后三个定义在 redo 之后，先声明供 redo 调用）。
@@ -187,6 +213,10 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     auto* auxPt = block ? block->findPoint(auxPtId) : nullptr;
     if (!block || !seg || !auxPt) return false;
 
+    // 快照原终点延长量（modifyFrontBlock 会清零原段 extendEnd，后段需继承）。
+    st.origExtendEndMm = seg->extendEndMm;
+    st.origExtendEndFormula = seg->extendEndFormula;
+
     // --- Gather resolved geometry ---
     const auto* startPt = block->findPoint(seg->startPointId);
     const auto* endPt = block->findPoint(seg->endPointId);
@@ -205,7 +235,15 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
 
     // --- Curve-specific: build Bézier, find break tangent & pass-point split ---
     st.isCurve = seg->isCurve();
-    if (!st.isCurve) return true;
+    if (!st.isCurve) {
+        // 打断点参考方向（打前）：interior 辅助点/交点的出口 = 宿主 start→end
+        // 方向（exitDirectionAtPoint 语义）；打后 = 新端点的出口方向
+        // （曲线 = 断点切线）。两者之差用于对保留在断点的附件做角度补偿。
+        const double refOldRad =
+            block->transform.rotation + block->exitDirectionAtPoint(auxPtId, segId);
+        st.refDeltaRad = st.worldAngleRad - refOldRad;
+        return true;
+    }
 
     // Actual distances / angle of the break point (preserve its offset).
     st.curveFrontDist = startPt->resolvedPos.distanceTo(auxPt->resolvedPos);
@@ -214,6 +252,8 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     st.curveBreakPolarAngleDeg = std::atan2(sb.y, sb.x) * 180.0 / M_PI;
     // Build the full curve (all points: start + passPoints + end), keeping
     // the point IDs in parallel so we can freeze each point's tangent.
+    // NOTE: the aux point itself may BE a pass point (CurveAnchor break) —
+    // then it is part of the chain and its original in/out tangents are used.
     std::vector<QUuid> cIds;
     std::vector<cad::geo::Vec2> cPts;
     std::vector<cad::geo::Vec2> cTanIn, cTanOut;
@@ -237,16 +277,19 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
                                             cad::geo::AutoCurveMode::Hobby);
     if (spans.empty()) return true;
 
-    // Solve the C2 tangents of the ORIGINAL curve and freeze them for
-    // every point. After the break both halves reuse these tangents
-    // (manual mode), so the shape is bit-identical to before the break.
-    const std::vector<cad::geo::Vec2> c2 =
-        cad::geo::solveC2Tangents(cPts, cAuto, cTanIn, cTanOut);
+    // Freeze the tangents of the ORIGINAL curve. The running curve is built
+    // with the HOBBY solve (Block::rebuildCurveCache uses AutoCurveMode::Hobby),
+    // so the freeze must use the SAME solver — a C2 freeze would rebuild both
+    // halves with a different shape (曲线打断不能维持形状, 用户报告 2026-10).
+    // Manual points keep their stored tangents; auto points get the Hobby
+    // solution (in/out are stored SEPARATELY — they differ in magnitude for
+    // interior points; freezing a single value would create a visible kink).
+    std::vector<cad::geo::Vec2> hobbyIn(cIds.size()), hobbyOut(cIds.size());
+    std::tie(hobbyIn, hobbyOut) = cad::geo::solveHobbyTangents(
+        cPts, cAuto, cTanIn, cTanOut, seg->tension);
     for (size_t k = 0; k < cIds.size(); ++k) {
-        // Manual points keep their own stored tangents; auto points get
-        // the solved value.
-        st.frozenTangents[cIds[k]] = cAuto[k] ? c2[k]
-            : cad::geo::Vec2(cTanOut[k]);  // manual: use its out-tangent
+        st.frozenTanIn[cIds[k]] = cAuto[k] ? hobbyIn[k] : cTanIn[k];
+        st.frozenTanOut[cIds[k]] = cAuto[k] ? hobbyOut[k] : cTanOut[k];
     }
 
     // Project the break point onto the curve to get global parameter T.
@@ -257,12 +300,57 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
         if (st.curveTanAtBreak.lengthSquared() > 1e-12)
             st.worldAngleRad = block->transform.rotation
                              + std::atan2(st.curveTanAtBreak.y, st.curveTanAtBreak.x);
+        // 打断点参考方向（打前）：Interpolated 点 = 宿主弦向；打后 = 端点
+        // 切线方向（曲线出口）。差值用于附件角度补偿（零跳变保持）。
+        const double refOldRad =
+            block->transform.rotation + block->exitDirectionAtPoint(auxPtId, segId);
+        st.refDeltaRad = st.worldAngleRad - refOldRad;
+        st.breakArc = proj.s;
+        st.auxArcValid = true;
+
+        // Arc positions of every aux point (used to split them between the
+        // front and back halves — comparing chord-relative fractions of
+        // different parameterizations is wrong on curves).
+        for (const QUuid& aid : seg->auxPointIds) {
+            if (aid == auxPtId) continue;
+            const auto* ap = block->findPoint(aid);
+            if (!ap || !ap->resolved) continue;
+            auto apProj = cad::geo::projectPointOnCurve(ap->resolvedPos, spans);
+            if (apProj.valid)
+                st.auxArc.insert(aid, apProj.s);
+        }
+
+        // Subdivide the span containing the break point (de Casteljau) and
+        // derive the EXACT sub-parameterized tangent handles. The split halves
+        // are reparameterized to [0,1], so their end tangents are scaled by
+        // t0 / (1−t0) — freezing the full-value original tangents would make
+        // the spans adjacent to the break point bulge away from the original
+        // curve (曲面断裂的另一半成因).
+        const int spanIdx = std::clamp(
+            static_cast<int>(std::floor(proj.t)), 0, static_cast<int>(spans.size()) - 1);
+        const double t0 = std::clamp(proj.t - static_cast<double>(spanIdx), 0.0, 1.0);
+        if (t0 > 1e-6 && t0 < 1.0 - 1e-6 && spanIdx + 1 < static_cast<int>(cIds.size())) {
+            const auto [left, right] = cad::geo::subdivideBezier(spans[static_cast<size_t>(spanIdx)], t0);
+            st.hasSubSpans = true;
+            // Break point B: in-tangent (front side) = 3(B − L.ctrl2),
+            // out-tangent (back side) = 3(R.ctrl1 − B).
+            const cad::geo::Vec2 tInB = (left.p3 - left.ctrl2) * 3.0;
+            const cad::geo::Vec2 tOutB = (right.ctrl1 - right.p0) * 3.0;
+            st.subTanInOverride.insert(auxPtId, tInB);
+            st.subTanOutOverride.insert(auxPtId, tOutB);
+            const QUuid subStartId = cIds[static_cast<size_t>(spanIdx)];
+            st.subTanOutOverride.insert(subStartId, (left.ctrl1 - left.p0) * 3.0);
+            const QUuid subEndId = cIds[static_cast<size_t>(spanIdx) + 1];
+            st.subTanInOverride.insert(subEndId, (right.p3 - right.ctrl2) * 3.0);
+        }
     }
 
-    // Distribute pass points: those before the break go to front,
-    // those after go to back. The break point itself is EXCLUDED (it
-    // becomes the shared endpoint of both halves).
-    const double breakPercent = auxPt->interpPercent;
+    // Distribute pass points by ARC-LENGTH position (the break point's and the
+    // pass points' interpPercent live in DIFFERENT frames — pass points are
+    // chord-parameterized CurveAnchors, the break point is an arc fraction —
+    // comparing them directly misclassifies points before/after the break).
+    // The break point itself is EXCLUDED (it becomes the shared endpoint of
+    // both halves; when it is a pass point, its id is skipped below).
     const cad::geo::Vec2 backChord = endPt->resolvedPos - auxPt->resolvedPos;
     const double backChordLen = backChord.length();
 
@@ -270,7 +358,14 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
         if (ppId == auxPtId) continue;  // the break point itself
         const auto* pp = block->findPoint(ppId);
         if (!pp || !pp->resolved) continue;
-        if (pp->interpPercent <= breakPercent) {
+        double ppArc = -1.0;
+        if (proj.valid) {
+            auto ppProj = cad::geo::projectPointOnCurve(pp->resolvedPos, spans);
+            if (ppProj.valid) ppArc = ppProj.s;
+        }
+        const bool before = proj.valid ? (ppArc <= st.breakArc)
+                                       : (pp->interpPercent <= auxPt->interpPercent);
+        if (before) {
             st.frontPassIds.push_back(ppId);
         } else {
             cad::param::ParamPoint moved = *pp;
@@ -481,8 +576,46 @@ void redistributeAuxPoints(cad::param::ParamDocument& doc, const QUuid& blockId,
         const auto* otherAux = block->findPoint(auxId);
         if (!otherAux) continue;
 
-        // Compute this aux point's distance from the original start.
+        // Curve: split by ARC-LENGTH position (the only frame the two kinds of
+        // points share — chord fractions of CurveAnchors and arc fractions of
+        // Interpolated points are not comparable).
         double otherAlong = 0.0;
+        bool haveAlong = false;
+        if (st.isCurve && st.auxArcValid) {
+            const auto it = st.auxArc.constFind(auxId);
+            if (it != st.auxArc.constEnd()) {
+                otherAlong = it.value();
+                haveAlong = true;
+            } else if (otherAux->resolved && startPt->resolved && endPt->resolved) {
+                // Projection failed for this point (rare) — chord fallback.
+                const cad::geo::Vec2 rel = otherAux->resolvedPos - startPt->resolvedPos;
+                const cad::geo::Vec2 unit = localDir / st.segLenMm;
+                otherAlong = rel.x * unit.x + rel.y * unit.y;
+                haveAlong = true;
+            }
+            if (haveAlong && otherAlong <= st.breakArc) {
+                st.frontAuxIds.push_back(auxId);
+            } else {
+                // Move to back block: recalculate percent relative to back
+                // segment (percentage-of-arc is meaningless here — the moved
+                // aux point becomes an interpolated point on the BACK curve;
+                // percent = relative arc share of the back half).
+                cad::param::ParamPoint moved = *otherAux;
+                const double relAlong = haveAlong ? (otherAlong - st.breakArc) : 0.0;
+                const double backLenMm = st.curveBackDist;
+                moved.interpPercent = (backLenMm > 1e-9)
+                    ? std::clamp(relAlong / backLenMm, -100.0, 100.0) : 0.0;
+                moved.interpPercentFormula.clear();  // numeric
+                moved.interpConstant = 0.0;
+                moved.interpConstantFormula.clear();
+                moved.interpFromEnd = false;
+                // hostSegmentId will be set to the new segment's ID below.
+                st.backAuxPoints.push_back(std::move(moved));
+            }
+            continue;
+        }
+
+        // Compute this aux point's distance from the original start.
         if (otherAux->resolved && startPt->resolved && endPt->resolved) {
             // Project resolved position onto the segment direction.
             const cad::geo::Vec2 rel = otherAux->resolvedPos - startPt->resolvedPos;
@@ -617,12 +750,22 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
     }
 
     // Curve: set tangent at the break point (front endpoint's outgoing tangent
-    // = curve derivative at break, so the shape is preserved).
-    if (st.isCurve && st.curveTanAtBreak.lengthSquared() > 1e-12) {
+    // MUST be the exact sub-parameterized in-tangent of the split span — see
+    // gatherBreakGeometry — so the front half reproduces the original curve
+    // right up to the break).
+    if (st.isCurve) {
         auxPt->autoTangent = false;
-        auxPt->tangentIn = st.curveTanAtBreak;   // incoming (from the front span)
-        auxPt->tangentOut = st.curveTanAtBreak;  // outgoing (continues into back)
         auxPt->tangentLocked = true;
+        const auto oi = st.subTanInOverride.constFind(auxPtId);
+        const auto of = st.frozenTanIn.constFind(auxPtId);
+        if (oi != st.subTanInOverride.constEnd()) auxPt->tangentIn = oi.value();
+        else if (of != st.frozenTanIn.constEnd()) auxPt->tangentIn = of.value();
+        const auto oso = st.subTanOutOverride.constFind(auxPtId);
+        const auto osf = st.frozenTanOut.constFind(auxPtId);
+        if (oso != st.subTanOutOverride.constEnd()) auxPt->tangentOut = oso.value();
+        else if (osf != st.frozenTanOut.constEnd()) auxPt->tangentOut = osf.value();
+        else if (auxPt->tangentIn.lengthSquared() > 1e-12) auxPt->tangentOut = auxPt->tangentIn;
+        else if (auxPt->tangentOut.lengthSquared() > 1e-12) auxPt->tangentIn = auxPt->tangentOut;
     }
 
     // Update the original segment: endpoint becomes the break point.
@@ -630,6 +773,11 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
     seg->endPointId = auxPtId;
     seg->lengthFormula = st.frontFormula;
     seg->auxPointIds = st.frontAuxIds;
+    // 端点延长线 (EXTEND_LINE_DESIGN.md D8): 延长量随端点归属 —— 原终点延长量
+    // 归后段（buildBackBlock 继承）；前段新断点（切点）延长量恒 0；原起点
+    // 延长量保留在前段（startPointId 未变）。
+    seg->extendEndMm = 0.0;
+    seg->extendEndFormula.clear();
 
     // RefChain/Freeze: publish the front length as a linked measurement so the
     // back half can compensate exactly — back = orig − M_front (用户拍板:
@@ -671,15 +819,29 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
             }
         }
         // Freeze tangents on all front points (start + pass points + break point)
-        // so the front half keeps the exact pre-break shape.
+        // so the front half keeps the exact pre-break shape. Sub-span endpoints
+        // (the span the break point splits) use the t0-scaled overrides.
+        auto frozenTanFor = [&](const QUuid& pid, bool in) -> cad::geo::Vec2 {
+            const auto& ov = in ? st.subTanInOverride : st.subTanOutOverride;
+            const auto& fr = in ? st.frozenTanIn : st.frozenTanOut;
+            const auto io = ov.constFind(pid);
+            if (io != ov.constEnd()) return io.value();
+            const auto fi = fr.constFind(pid);
+            if (fi != fr.constEnd()) return fi.value();
+            return cad::geo::Vec2();
+        };
         auto freezeTan = [&](const QUuid& pid) {
-            auto it = st.frozenTangents.constFind(pid);
-            if (it == st.frozenTangents.constEnd()) return;
             auto* p = block->findPoint(pid);
             if (!p) return;
             p->autoTangent = false;
-            p->tangentIn = it.value();
-            p->tangentOut = it.value();
+            const cad::geo::Vec2 tI = frozenTanFor(pid, true);
+            const cad::geo::Vec2 tO = frozenTanFor(pid, false);
+            if (tI.lengthSquared() > 1e-12) p->tangentIn = tI;
+            if (tO.lengthSquared() > 1e-12) p->tangentOut = tO;
+            if (p->tangentIn.lengthSquared() < 1e-12 && p->tangentOut.lengthSquared() > 1e-12)
+                p->tangentIn = p->tangentOut;
+            if (p->tangentOut.lengthSquared() < 1e-12 && p->tangentIn.lengthSquared() > 1e-12)
+                p->tangentOut = p->tangentIn;
             p->tangentLocked = true;
         };
         freezeTan(seg->startPointId);
@@ -741,6 +903,12 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
                 pts.end());
         }
         block->rebuildPointIndex();
+
+        // 曲线结构变了（链点重参数化/切线冻结/端点更换）但点位置可能没动 —
+        // Block::resolve 的增量几何检测不会 bump epoch，惰性曲线缓存就会继续
+        // 用打断前的 span 缓存（前段画出旧曲线 = 打断形状不保持的根因）。
+        // 铁律见 AGENTS.md「画布缓存刷新」。
+        ++block->geometryEpoch;
     }
 
     // Remove the original end point if no other segment references it.
@@ -752,6 +920,7 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
             break;
         }
     }
+    st.endPtKept = endPtUsedElsewhere;
     if (!endPtUsedElsewhere) {
         auto& pts = block->points;
         pts.erase(std::remove_if(pts.begin(), pts.end(),
@@ -794,13 +963,32 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
     bpStart.serial = doc.newPointSerial();
     st.bpStartId = bpStart.id;
     // Curve: inherit tangent at break point (rotate into back-local frame).
-    if (st.isCurve && st.curveTanAtBreak.lengthSquared() > 1e-12) {
-        const cad::geo::Vec2 tanLocal = st.curveTanAtBreak.rotated(st.rotToLocal);
-        bpStart.autoTangent = false;
-        bpStart.tangentIn = tanLocal;
-        bpStart.tangentOut = tanLocal;
-        bpStart.tangentLocked = true;
+    // The OUT tangent is the sub-parameterized right-half handle at B
+    // (= 3(R.ctrl1 − B) when the span is split; the original Hobby out-tangent
+    // when the break point is itself a chain point) — either way it makes the
+    // back half's first span reproduce the original curve exactly.
+    {
+        auto ovIt = st.subTanOutOverride.constFind(auxPtId);
+        auto frIt = st.frozenTanOut.constFind(auxPtId);
+        if (ovIt != st.subTanOutOverride.constEnd() || frIt != st.frozenTanOut.constEnd()) {
+            const cad::geo::Vec2 t = (ovIt != st.subTanOutOverride.constEnd())
+                ? ovIt.value() : frIt.value();
+            const cad::geo::Vec2 tanLocal = t.rotated(st.rotToLocal);
+            bpStart.autoTangent = false;
+            bpStart.tangentIn = tanLocal;
+            bpStart.tangentOut = tanLocal;
+            bpStart.tangentLocked = true;
+        }
     }
+    auto backLocalTan = [&](const QUuid& pid, bool in) -> cad::geo::Vec2 {
+        const auto& ov = in ? st.subTanInOverride : st.subTanOutOverride;
+        const auto& fr = in ? st.frozenTanIn : st.frozenTanOut;
+        const auto io = ov.constFind(pid);
+        if (io != ov.constEnd()) return io.value().rotated(st.rotToLocal);
+        const auto fi = fr.constFind(pid);
+        if (fi != fr.constEnd()) return fi.value().rotated(st.rotToLocal);
+        return cad::geo::Vec2();
+    };
 
     // End point: Polar from origin. For curves the angle may differ from 0
     // because the block rotation follows the curve tangent, not the chord.
@@ -824,10 +1012,17 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
     bpEnd.serial = doc.newPointSerial();
     st.bpEndId = bpEnd.id;
     // Curve: freeze the original end point's tangent (rotated to back-local).
+    // The END point uses its IN tangent (the handle before it); the OUT tangent
+    // is unused but stored for consistency.
     if (st.isCurve) {
-        auto it = st.frozenTangents.constFind(origEndId);
-        if (it != st.frozenTangents.constEnd()) {
-            const cad::geo::Vec2 tanLocal = it.value().rotated(st.rotToLocal);
+        if (st.frozenTanIn.contains(origEndId)) {
+            const cad::geo::Vec2 tanLocal = backLocalTan(origEndId, true);
+            bpEnd.autoTangent = false;
+            bpEnd.tangentIn = tanLocal;
+            bpEnd.tangentOut = tanLocal;
+            bpEnd.tangentLocked = true;
+        } else if (st.frozenTanOut.contains(origEndId)) {
+            const cad::geo::Vec2 tanLocal = backLocalTan(origEndId, false);
             bpEnd.autoTangent = false;
             bpEnd.tangentIn = tanLocal;
             bpEnd.tangentOut = tanLocal;
@@ -854,6 +1049,12 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
     backSeg.constructAngle = 0.0;
     backSeg.serial = doc.newLineSerial();
     backSeg.tension = seg->tension;
+    // 端点延长线 (EXTEND_LINE_DESIGN.md D8): 后段继承原终点延长量; 新断点
+    // （后段起点 = 切点）延长量恒 0。
+    backSeg.extendStartMm = 0.0;
+    backSeg.extendStartFormula.clear();
+    backSeg.extendEndMm = st.origExtendEndMm;
+    backSeg.extendEndFormula = st.origExtendEndFormula;
     st.backSegId = backSeg.id;
 
     // Curve: add pass points to the back segment, freezing each one's tangent
@@ -862,12 +1063,12 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
         backSeg.type = cad::param::SegmentType::Bezier;
         for (auto& pp : st.backPassPoints) {
             pp.hostSegmentId = st.backSegId;
-            auto it = st.frozenTangents.constFind(pp.id);
-            if (it != st.frozenTangents.constEnd()) {
-                const cad::geo::Vec2 tanLocal = it.value().rotated(st.rotToLocal);
+            const cad::geo::Vec2 tI = backLocalTan(pp.id, true);
+            const cad::geo::Vec2 tO = backLocalTan(pp.id, false);
+            if (tI.lengthSquared() > 1e-12 || tO.lengthSquared() > 1e-12) {
                 pp.autoTangent = false;
-                pp.tangentIn = tanLocal;
-                pp.tangentOut = tanLocal;
+                pp.tangentIn = tI.lengthSquared() > 1e-12 ? tI : tO;
+                pp.tangentOut = tO.lengthSquared() > 1e-12 ? tO : tI;
                 pp.tangentLocked = true;
             }
             backSeg.passPointIds.push_back(pp.id);
@@ -931,22 +1132,68 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
     return backBlock;
 }
 
-/// 阶段 6：收尾——移除指向断点/原端点的旧附件、加入后段块、建立
-/// 后段→前段连接（followerAngle 补偿曲线切线偏角，保证断点无折角）。
-/// addBlock 与 addAttachment 内部已触发 resolveAll。
+/// 阶段 6：收尾——移除以断点/原端点为目标的附件（快照后统一重建）、加入
+/// 后段块、重新建立幸存连接、建立后段→前段连接（followerAngle 补偿曲线
+/// 切线偏角，保证断点无折角）。addBlock/addAttachment 内部已触发 resolveAll。
+///
+/// 连接保留规则（用户报告 2026-10: 断点上的端点/组件连接被打断会丢失/跳变）：
+///   · 目标 = 断点：断点仍是前段端点（同 id 同段）→ 附件保留；打断后参考
+///     方向由 interior 弦向变为端点切线，对跟随角做补偿，世界朝向零跳变。
+///   · 目标 = 原端点：原端点被删时（无其他段引用）→ 重指到后段终点
+///     （原线尾部），跟随线仍然跟随；原端点幸存时原样保留。
 void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
                    const QUuid& frontBlockId, const QUuid& frontSegId,
                    const QUuid& frontAuxPtId, cad::param::Block backBlock,
                    const std::vector<cad::param::Attachment>& removedAttachments)
 {
-    // --- Remove stale attachments ---
+    // --- Remove stale attachments (snapshot already taken by the caller) ---
+    QList<QUuid> staleIds;
+    staleIds.reserve(static_cast<qsizetype>(removedAttachments.size()));
     for (const auto& att : removedAttachments)
-        doc.removeAttachment(att.id);
+        staleIds.push_back(att.id);
+    doc.removeAttachments(staleIds);
 
     // --- Add the new block ---
     const QUuid newBlockId = backBlock.id;
     const QUuid bpStartId = st.bpStartId;
     doc.addBlock(std::move(backBlock));
+
+    // --- Re-establish the connections that survived the break ---
+    std::vector<cad::param::Attachment> kept;
+    kept.reserve(removedAttachments.size());
+    for (cad::param::Attachment att : removedAttachments) {
+        if (att.toPointId == frontAuxPtId) {
+            // 断点保留：补偿跟随角，使跟随线世界朝向与打断前完全一致
+            // （参考方向从 interior 弦向变为端点切线/段向）。
+            if (std::abs(st.refDeltaRad) > 1e-9) {
+                if (att.rotationMode == cad::param::RotationMode::ArcLength) {
+                    if (att.arcLengthFormula.isEmpty()) {
+                        if (const auto* fb = doc.findBlock(att.fromBlockId)) {
+                            const double radius =
+                                fb->segmentLengthAtPoint(att.fromPointId);
+                            if (radius > 1e-9)
+                                att.arcLength += st.refDeltaRad * radius;
+                        }
+                    }
+                } else if (att.followerAngleFormula.isEmpty()) {
+                    double ang = att.followerAngle + st.refDeltaRad * 180.0 / M_PI;
+                    ang = std::fmod(ang, 360.0);
+                    if (ang < 0.0) ang += 360.0;
+                    att.followerAngle = ang;
+                }
+            }
+            kept.push_back(std::move(att));
+        } else if (st.endPtKept) {
+            kept.push_back(std::move(att));   // 原端点幸存：连接原样保留
+        } else {
+            // 原端点被删：重指到后段终点（原线的尾部），跟随关系不丢失。
+            att.toBlockId = newBlockId;
+            att.toPointId = st.bpEndId;
+            att.toSegmentId = st.backSegId;
+            kept.push_back(std::move(att));
+        }
+    }
+    doc.addAttachmentsRaw(kept);
 
     // --- Create attachment: back block → front block at break point ---
     cad::param::Attachment att;
@@ -969,14 +1216,24 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
 
 void BreakSegmentCommand::undo()
 {
-    // Remove the back block (also removes its attachments).
+    // Remove the back block (also removes its attachments — including the
+    // re-pointed copies that now target the back block's end point).
     m_doc->removeBlock(m_newBlockId);
 
     // Restore the original block from snapshot.
     if (auto* block = m_doc->findBlock(m_blockId))
         *block = m_origBlockSnapshot;
 
-    // Restore removed attachments (verbatim: keep snapshot isLocked).
+    // Restore attachments verbatim: drop the live (compensated / re-pointed)
+    // copies first, then re-add the pre-break originals (keeps isLocked).
+    QList<QUuid> liveIds;
+    for (const auto& att : m_doc->attachments()) {
+        const bool snapped = std::any_of(
+            m_removedAttachments.begin(), m_removedAttachments.end(),
+            [&att](const cad::param::Attachment& o) { return o.id == att.id; });
+        if (snapped) liveIds.push_back(att.id);
+    }
+    m_doc->removeAttachments(liveIds);
     m_doc->addAttachmentsRaw(m_removedAttachments);
 
     // Remove the auto-published front-length variable (a variable the user

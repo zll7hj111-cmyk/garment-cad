@@ -64,8 +64,6 @@ private:
     /// Create the AngleMeasureVariable from the two snapped segments.
     void commitAngleMeasure();
 
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::SelectA;
 
     SnapEngine m_snapEngine;
@@ -75,7 +73,6 @@ private:
     // Preview graphics
     QGraphicsLineItem* m_highlightA = nullptr;  ///< Overlay on line A (amber).
     QGraphicsLineItem* m_highlightB = nullptr;  ///< Overlay on hovered line B (blue).
-    HudItem*           m_hud        = nullptr;  ///< Live angle readout.
 };
 
 } // namespace cad::tools

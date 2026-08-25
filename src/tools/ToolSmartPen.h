@@ -127,7 +127,8 @@ private:
     /// Update m_segSnap + the X marker at the cursor's projection onto the
     /// nearest segment body. Suppressed while a point snap is active and on
     /// leader-candidate segments (their body click switches the reference).
-    void updateSegMarker(const cad::geo::Vec2& worldPos);
+    void updateSegMarker(const cad::geo::Vec2& worldPos,
+                         const std::optional<SnapResult>* knownPointSnap = nullptr);
     void hideSegMarker();
 
     // --- 落点确认 (stacked-point disambiguation, 2026-08) ---

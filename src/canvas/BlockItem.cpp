@@ -1,4 +1,4 @@
-#include "BlockItem.h"
+﻿#include "BlockItem.h"
 #include "CanvasScene.h"
 #include "CanvasAnimator.h"
 #include "CanvasStyle.h"
@@ -15,6 +15,7 @@
 #include <QStyleOptionGraphicsItem>
 
 #include "parametric/ParamDocument.h"
+#include "parametric/Serial.h"
 #include "parametric/Block.h"
 #include "parametric/PerfProbe.h"
 #include "geometry/Units.h"   // cad::geo::Coord
@@ -71,7 +72,14 @@ BlockItem::BlockItem(const QUuid& blockId, cad::param::ParamDocument* doc,
 
 QRectF BlockItem::boundingRect() const
 {
-    return m_cachedBounds.adjusted(-10, -10, 10, 10);
+    // Margin must cover the pick band: shape() strokes lines with
+    // tol = hoverRadiusPx ÷ zoom and points with 2.5px ÷ zoom. The scene's
+    // spatial index (BSP) rejects items whose boundingRect does not contain
+    // the query point, so a margin smaller than the band makes the item
+    // unpickable at low zoom (zoom 0.2 → tol ≈ 40 local units; the old ±10
+    // margin silently dropped band-only hits).
+    constexpr double kPickMargin = 42.0;
+    return m_cachedBounds.adjusted(-kPickMargin, -kPickMargin, kPickMargin, kPickMargin);
 }
 
 QPainterPath BlockItem::shape() const
@@ -166,7 +174,7 @@ void BlockItem::paint(QPainter* painter,
                                         : lc.color;
         EntityPaintParams pp;
         if (animator) {
-            pp = animator->lineParams(const_cast<BlockItem*>(this), lc.id,
+            pp = animator->lineParams(this, lc.id,
                                       paintColor, lc.weight);
         } else {
             // Fallback: resolve state directly without animation.
@@ -249,11 +257,14 @@ void BlockItem::paint(QPainter* painter,
     // each handles its hover/ghost/grayed/leader states itself.
 
     // Draw points
-    QSet<QString> drawnPointLabels;  ///< Labels already painted (dedup key).
+    // Dedup key: 0.1 mm-grid position packed into an int64 (two int32 lands)
+    // instead of QString::number + concat per point per frame — the old key
+    // allocated 2 QStrings + a concat on EVERY labeled point in EVERY paint.
+    QSet<qint64> drawnPointLabels;
     for (const auto& pc : m_points) {
         EntityPaintParams pp;
         if (animator) {
-            pp = animator->pointParams(const_cast<BlockItem*>(this), pc.id,
+            pp = animator->pointParams(this, pc.id,
                                        pc.isAuxiliary);
         } else {
             pp.pointFill   = pc.isAuxiliary ? QColor(67, 160, 71) : QColor(30, 30, 30);
@@ -304,9 +315,9 @@ void BlockItem::paint(QPainter* painter,
         // points sharing the same name render ONE label (deduped by a
         // 0.1 mm-grid position key).
         if ((pc.showLabel || forceName) && !pc.label.isEmpty() && !grayed) {
-            const QString posKey = QString::number(qRound(pc.pos.x() * 10.0))
-                                 + QLatin1Char('|')
-                                 + QString::number(qRound(pc.pos.y() * 10.0));
+            const qint64 kx = static_cast<qint64>(qRound(pc.pos.x() * 10.0));
+            const qint64 ky = static_cast<qint64>(qRound(pc.pos.y() * 10.0));
+            const qint64 posKey = (kx << 32) | (static_cast<quint64>(ky) & 0xFFFFFFFFULL);
             if (drawnPointLabels.contains(posKey))
                 continue;
             drawnPointLabels.insert(posKey);
@@ -548,13 +559,6 @@ void BlockItem::updateHoverState(const QUuid& newHover)
     // Update FIRST so resolveState() sees the new hover target.
     m_hoveredEntity = newHover;
 
-    // Group-hover broadcast (成组悬停): the FIRST hovered entity nominates this
-    // block as the group-hover source; losing the last hover withdraws it.
-    if (oldHover.isNull() && !newHover.isNull())
-        cs->setGroupHoverSource(m_blockId);
-    else if (!oldHover.isNull() && newHover.isNull())
-        cs->setGroupHoverSource(QUuid());
-
     // Lift the whole block above siblings while something in it is hovered,
     // so the recolored entity is never buried under an overlapping block.
     setZValue(newHover.isNull() ? 1.0 : 1.5);
@@ -598,10 +602,6 @@ void BlockItem::onCurveHover(CurveItem* item, const QPointF& localPos)
     const QUuid oldHover = m_hoveredEntity;
     m_hoveredEntity = item->curveId();
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        // First hover on this block → group-hover broadcast (same as
-        // updateHoverState).
-        if (oldHover.isNull())
-            cs->setGroupHoverSource(m_blockId);
         CanvasAnimator* anim = cs->animator();
         if (!oldHover.isNull())
             anim->setState(this, oldHover,
@@ -646,41 +646,18 @@ BlockItem* BlockItem::containingItem(QGraphicsItem* item)
 
 int BlockItem::resolveState(const QUuid& entityId) const
 {
-    // Priority: Locked > Selected > GroupHover > Hover > Normal.
-    // Locked = confirmed selection (bold), driven by m_toolLocked.
+    // Priority: Locked > Selected > Hover > Normal.
+    // Locked = selected (bold), driven by m_toolLocked (2026-09 取消确认
+    // 基准: 选中即加粗, 原 confirmed 语义并入).
     // Selection is driven by the tool-managed flag (m_toolSelected) rather
     // than Qt's isSelected(), giving the selection tool full manual control.
     if (m_toolLocked)
         return static_cast<int>(EntityState::Locked);
     if (m_toolSelected)
         return static_cast<int>(EntityState::Selected);
-    // Group-hover (成组悬停): a sibling member is under the cursor — the whole
-    // group lights up so it reads as one unit.
-    if (m_groupHovered)
-        return static_cast<int>(EntityState::Hover);
     if (entityId == m_hoveredEntity && !m_hoveredEntity.isNull())
         return static_cast<int>(EntityState::Hover);
     return static_cast<int>(EntityState::Normal);
-}
-
-void BlockItem::setGroupHovered(bool hovered)
-{
-    if (m_groupHovered == hovered) return;
-    m_groupHovered = hovered;
-
-    // Push the new target state into the animator for every line entity
-    // (same pattern as updateHoverState) — otherwise the animated paint
-    // params stay stale.
-    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        CanvasAnimator* anim = cs->animator();
-        for (const auto& lc : m_lines)
-            anim->setState(this, lc.id,
-                           static_cast<EntityState>(resolveState(lc.id)));
-    }
-    // Curve children share the hover visual via the parent-driven flag.
-    for (CurveItem* ci : m_curveItems)
-        ci->setHoveredByParent(hovered || !m_hoveredEntity.isNull());
-    update();
 }
 
 // ---------------------------------------------------------------------------
@@ -773,7 +750,6 @@ void BlockItem::rebuildCache()
             // re-solve, no re-flatten, no re-integration.
             const cad::param::CurveSpanEntry* entry = block->curveSpanEntry(seg.id);
             if (!entry || entry->spans.empty()) continue;
-            const auto& anchors = entry->anchors;
 
             // Convert to local scene coords: apply block transform (rotation),
             // subtract world origin, then Y-flip — same as point cache below.
@@ -801,15 +777,6 @@ void BlockItem::rebuildCache()
             for (size_t fi = 1; fi < flat.size(); ++fi)
                 curvePath.lineTo(toLocal(flat[fi]));
 
-            // Hit-test shape: coarse control-polygon polyline through the anchor
-            // points (Seamly2D technique). Stroking a few straight segments is far
-            // cheaper than stroking the full Bézier path, and is ample for
-            // hover/pick accuracy.
-            QPainterPath shapePath;
-            shapePath.moveTo(toLocal(anchors[0]));
-            for (size_t pi = 1; pi < anchors.size(); ++pi)
-                shapePath.lineTo(toLocal(anchors[pi]));
-
             // Label position: parametric midpoint (t = 0.5), cached at resolve
             // time. For smooth garment curves this is visually close to the
             // arc-length midpoint but avoids the expensive arc-length bisection
@@ -831,12 +798,14 @@ void BlockItem::rebuildCache()
             if (seg.lineStyle == cad::param::LineStyle::Dashed) ps = Qt::DashLine;
             else if (seg.lineStyle == cad::param::LineStyle::Dotted) ps = Qt::DotLine;
 
-            // The curve renders as its OWN child item: the framework hit-tests,
-            // hovers and repaints it independently (no per-frame stroker scans
-            // in the parent). The rigid-body transform still comes from the
-            // parent — this child only holds local coordinates.
+            // Hit-test shape: the SAME dense flattened path that is painted
+            // (CurveItem::shape strokes it). The old "coarse control-polygon"
+            // hit region deviates from the drawn curve by many millimetres on
+            // strong curves — clicks ON the curve body missed the pick band
+            // (选择工具对曲线判定失灵, 用户报告 2026-10). The item-level stroke
+            // cache (CurveItem::shape) keeps the per-frame cost the same.
             auto* curveItem = new CurveItem(this, CurveItem::Data{
-                seg.id, curvePath, shapePath, labelPos, labelAngle,
+                seg.id, curvePath, labelPos, labelAngle,
                 seg.color, seg.role, seg.weight, ps, seg.name,
                 seg.showName, seg.showLength, lenText, seg.visible});
             m_curveItems.push_back(curveItem);
@@ -862,12 +831,10 @@ void BlockItem::rebuildCache()
         // when seg.showLength is off.
         QString lenText;
         {
-            const cad::param::ParamPoint* sp = block->findPoint(seg.startPointId);
-            const cad::param::ParamPoint* ep = block->findPoint(seg.endPointId);
-            if (sp && ep && sp->resolved && ep->resolved) {
-                const double lenMm = sp->resolvedPos.distanceTo(ep->resolvedPos);
-                lenText = cad::geo::Units::formatLength(lenMm);
-            }
+            // 端点延长线：长度标注按"实际画出的长度"（本体+尾巴, D6）。
+            const double lenMm = block->worldPos(seg.startPointId)
+                                     .distanceTo(block->worldPos(seg.endPointId));
+            lenText = cad::geo::Units::formatLength(lenMm);
         }
 
         m_lines.push_back({seg.id, p1, p2, seg.color, seg.role, seg.weight, ps,
@@ -905,17 +872,21 @@ void BlockItem::rebuildCache()
     for (const auto& pt : block->points) {
         if (!pt.visible || !pt.resolved) continue;
 
-        cad::geo::Vec2 w = block->transform.toWorld(pt.resolvedPos);
+        cad::geo::Vec2 w = block->transform.toWorld(block->effectiveLocalPos(pt.id));
         QPointF pos = cad::geo::Coord::toScene(w.x - origin.x, w.y - origin.y);  // local scene coords
-        m_points.push_back({pt.id, pos, pt.isAuxiliary, pt.name, pt.showName,
+        // Fall back to serial for unnamed aux/intersection points, otherwise the
+        // "show name" checkbox has no visible effect.
+        const QString pointLabel = pt.name.isEmpty()
+            ? cad::param::Serial::tag(pt.serial) : pt.name;
+        m_points.push_back({pt.id, pos, pt.isAuxiliary, pointLabel, pt.showName,
                             attachmentPoints.contains(pt.id),
                             pt.constraint == cad::param::PointConstraint::CurveAnchor,
                             lockedPoints.contains(pt.id)});
 
         // Include label area in bounds to prevent ghosting during drag
         QRectF ptBounds(pos - QPointF(6, 6), pos + QPointF(6, 6));
-        if (pt.showName && !pt.name.isEmpty()) {
-            ptBounds |= QRectF(pos + QPointF(5, -16), pos + QPointF(5 + pt.name.length() * 8, 4));
+        if (pt.showName && !pointLabel.isEmpty()) {
+            ptBounds |= QRectF(pos + QPointF(5, -16), pos + QPointF(5 + pointLabel.length() * 8, 4));
         }
         m_cachedBounds |= ptBounds;
     }

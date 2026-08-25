@@ -241,16 +241,10 @@ void DuplicateBlocksCommand::redo()
         m_doc->addBlock(b);
     // Verbatim: cloned connections keep the ORIGINAL's isLocked (复制语义).
     m_doc->addAttachmentsRaw(m_result.attachments);
-    // Group clone (副本成新组): the clone set re-forms a user group.
-    if (m_result.newGroup)
-        m_doc->restoreGroup(*m_result.newGroup, m_result.newGroupMembers);
 }
 
 void DuplicateBlocksCommand::undo()
 {
-    // Dissolve the cloned group first (its members vanish right after).
-    if (m_result.newGroup)
-        m_doc->dissolveGroup(m_result.newGroup->id);
     // removeBlock also drops any attachment touching the clone; cloned
     // bridges may get mutated (released) when their first pin goes away,
     // but they are removed right after, so the mutation is irrelevant.
@@ -417,6 +411,65 @@ void SetSegmentPropertyCommand::undo()
     m_doc->resolveAll();
 }
 
+// ─── SetSegmentExtendCommand (端点延长量, EXTEND_LINE_DESIGN.md) ───
+
+bool SetSegmentExtendCommand::apply(cad::param::Segment* s, const Values& v)
+{
+    if (!s) return false;
+    bool changed = false;
+    auto upd = [&changed](auto& dst, const auto& src) {
+        if (dst != src) { dst = src; changed = true; }
+    };
+    upd(s->extendStartMm, v.startMm);
+    upd(s->extendStartFormula, v.startFormula);
+    upd(s->extendEndMm, v.endMm);
+    upd(s->extendEndFormula, v.endFormula);
+    return changed;
+}
+
+SetSegmentExtendCommand::SetSegmentExtendCommand(cad::param::ParamDocument* doc,
+                                                 const QUuid& blockId,
+                                                 const QUuid& segmentId,
+                                                 const Values& newValues,
+                                                 QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_blockId(blockId)
+    , m_segmentId(segmentId)
+    , m_newValues(newValues)
+{
+    setText(QStringLiteral("修改延长量"));
+    if (auto* b = doc->findBlock(blockId)) {
+        if (auto* s = b->findSegment(segmentId)) {
+            m_oldValues.startMm = s->extendStartMm;
+            m_oldValues.startFormula = s->extendStartFormula;
+            m_oldValues.endMm = s->extendEndMm;
+            m_oldValues.endFormula = s->extendEndFormula;
+        }
+    }
+}
+
+void SetSegmentExtendCommand::redo()
+{
+    if (auto* b = m_doc->findBlock(m_blockId)) {
+        auto* s = b->findSegment(m_segmentId);
+        // 本体不动但可视尾巴变 → 显式 +epoch（画布重绘铁律）。
+        if (apply(s, m_newValues))
+            ++b->geometryEpoch;
+    }
+    m_doc->resolveAll();
+}
+
+void SetSegmentExtendCommand::undo()
+{
+    if (auto* b = m_doc->findBlock(m_blockId)) {
+        auto* s = b->findSegment(m_segmentId);
+        if (apply(s, m_oldValues))
+            ++b->geometryEpoch;
+    }
+    m_doc->resolveAll();
+}
+
 // ─── AddAuxPointCommand ───
 
 AddAuxPointCommand::AddAuxPointCommand(cad::param::ParamDocument* doc,
@@ -540,6 +593,10 @@ void AddCurvePointCommand::redo()
     }
     ids.insert(ids.begin() + insertAt, m_pt.id);
     seg->type = cad::param::SegmentType::Bezier;
+    // Curve structure changed WITHOUT any point necessarily moving — bump the
+    // epoch explicitly so Block::resolve's stale-cache gate rebuilds the curve
+    // cache (and the canvas rebuilds) in the resolveAll below.
+    ++block->geometryEpoch;
     m_doc->resolveAll();
 }
 
@@ -558,6 +615,7 @@ void AddCurvePointCommand::undo()
         [this](const cad::param::ParamPoint& p) { return p.id == m_pt.id; }),
         pts.end());
     block->rebuildPointIndex();
+    ++block->geometryEpoch;
     m_doc->resolveAll();
 }
 
@@ -606,6 +664,7 @@ void RemoveCurvePointCommand::redo()
         [this](const cad::param::ParamPoint& p) { return p.id == m_pointId; }),
         pts.end());
     block->rebuildPointIndex();
+    ++block->geometryEpoch;  // passPointIds changed without points moving
     m_doc->resolveAll();
 }
 
@@ -620,6 +679,7 @@ void RemoveCurvePointCommand::undo()
     const int idx = std::clamp(m_index, 0, static_cast<int>(ids.size()));
     ids.insert(ids.begin() + idx, m_pointId);
     seg->type = m_oldType;
+    ++block->geometryEpoch;  // structure changed → curve cache must rebuild
     m_doc->resolveAll();
 }
 

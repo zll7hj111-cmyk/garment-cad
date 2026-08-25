@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -58,6 +58,16 @@ struct Segment {
     // --- Formula-driven length ---
     QString lengthFormula;  ///< e.g. "hip/4+2" → evaluates to length in mm.
                             ///< When non-empty, overrides the geometric distance.
+
+    // --- 端点延长量 (延长线, 用户拍板 2026-?; 设计文档 EXTEND_LINE_DESIGN.md) ---
+    /// 端点沿"出方向"往外延伸的距离。数值 = mm；公式 = cm 域（非空覆盖数值）。
+    /// 只允许 >= 0（往外延长）。默认 0 = 不延长（旧档/旧行为零变化）。
+    /// 实际端点位置 = 本体位置 + 延长量 × 出方向；比例类内部定义（辅助点/
+    /// 曲线锚点）一律按本体计算，不随延长漂移（EXTEND_LINE_DESIGN.md §4.1）。
+    double  extendStartMm      = 0.0;  ///< 起点延长量 (mm 数值).
+    QString extendStartFormula;       ///< 起点延长量公式 (cm 域).
+    double  extendEndMm        = 0.0;  ///< 终点延长量 (mm 数值).
+    QString extendEndFormula;         ///< 终点延长量公式 (cm 域).
 
     // --- Visual properties ---
     LineStyle lineStyle = LineStyle::Solid;

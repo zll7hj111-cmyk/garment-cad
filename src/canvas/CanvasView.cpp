@@ -1,4 +1,4 @@
-﻿#include "CanvasView.h"
+#include "CanvasView.h"
 
 #include <QWheelEvent>
 #include <QMouseEvent>
@@ -34,7 +34,6 @@
 #include "geometry/Units.h"
 #include "document/commands/VariableCommands.h"
 #include "document/commands/BlockCommands.h"
-#include "document/commands/GroupCommands.h"
 #include "document/commands/DocumentCommands.h"
 
 CanvasView::CanvasView(CanvasScene* scene, QWidget* parent)
@@ -430,23 +429,7 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
         return;
     }
 
-    // ── Group section (成组): right-clicking a GROUPED line offers group
-    // operations directly — no need to select the whole group first.
-    QUuid hitGroupId;
-    if (!bestBlockId.isNull())
-        hitGroupId = m_paramDoc->groupOfBlock(bestBlockId);
-
     ElaMenu menu(this);
-    QAction* groupSelectAct = nullptr;
-    QAction* groupDissolveAct = nullptr;
-    QAction* groupRenameAct = nullptr;
-    if (!hitGroupId.isNull()) {
-        groupSelectAct = menu.addAction(QString::fromUtf8("\xe9\x80\x89\xe4\xb8\xad\xe6\x95\xb4\xe7\xbb\x84"));  // 选中整组
-        groupDissolveAct = menu.addAction(QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe7\xbb\x84"));  // 解散组
-        groupRenameAct = menu.addAction(QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d\xe7\xbb\x84"));  // 重命名组
-        menu.addSeparator();
-    }
-
     // Check if already published.
     const bool alreadyPublished =
         m_paramDoc->findLinkedBySource(bestBlockId, bestSegId) != nullptr;
@@ -458,13 +441,6 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
 
     // --- 添加辅助点 ---
     QAction* auxPointAction = menu.addAction(QStringLiteral("添加辅助点"));
-    if (!hitGroupId.isNull()) {
-        // Structural change on a group member — blocked (保护守卫).
-        auxPointAction->setEnabled(false);
-        auxPointAction->setText(
-            QString::fromUtf8("\xe6\xb7\xbb\xe5\x8a\xa0\xe8\xbe\x85\xe5\x8a\xa9\xe7\x82\xb9"
-                              "\xef\xbc\x88\xe7\xbb\x84\xe5\x86\x85\xe7\xba\xbf\xe6\xae\xb5\xe4\xb8\x8d\xe5\x8f\xaf\xef\xbc\x89"));  // 添加辅助点（组内线段不可）
-    }
 
     // --- 烘焙到操作层 (measure line on the aux layer only) ---
     // The hit segment owns a MeasureVariable AND sits on the auxiliary layer
@@ -486,28 +462,7 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
     }
 
     QAction* chosen = menu.exec(event->globalPos());
-    if (chosen == groupSelectAct) {
-        // 选中整组: activate the selection tool with the whole group confirmed.
-        const QList<QUuid> members = m_paramDoc->blocksInGroup(hitGroupId);
-        if (auto* ts = dynamic_cast<cad::tools::ToolSelect*>(
-                m_toolManager->activeTool()))
-            ts->selectBlocksExternally(members);
-    } else if (chosen == groupDissolveAct) {
-        if (auto* stack = m_paramDoc->undoStack())
-            stack->push(new cad::cmd::UngroupCommand(m_paramDoc, hitGroupId));
-    } else if (chosen == groupRenameAct) {
-        QString current;
-        if (const auto* g = m_paramDoc->findGroup(hitGroupId))
-            current = g->name;
-        bool ok = false;
-        const QString name = QInputDialog::getText(
-            this,
-            QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d\xe7\xbb\x84"),   // 重命名组
-            QString::fromUtf8("\xe7\xbb\x84\xe5\x90\x8d\xe7\xa7\xb0"),               // 组名称
-            QLineEdit::Normal, current, &ok);
-        if (ok)
-            m_paramDoc->setGroupName(hitGroupId, name.trimmed());
-    } else if (chosen == publishAction && !alreadyPublished) {
+    if (chosen == publishAction && !alreadyPublished) {
         publishLengthAt(sp);
     } else if (chosen == auxPointAction) {
         // Compute projection parameter t on the segment.

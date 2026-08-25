@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -87,8 +87,9 @@ struct ParamPoint {
     /// The ray is cast from refPointA at interAngle relative to the target
     /// segment's start→end direction; the intersection with the target segment
     /// determines this point's position.
-    double  interAngle = 90.0;         ///< Ray angle in degrees relative to the
-                                       ///< target segment's start→end direction (CCW+).
+    double  interAngle = 90.0;         ///< Ray angle in degrees (relative by default;
+                                       ///< absolute world angle when interUseWorldAngle).
+    bool    interUseWorldAngle = false; ///< true = interAngle is a world/absolute angle.
     QString interAngleFormula;         ///< Formula overriding interAngle (degrees).
     bool    interBidirectional = false; ///< false = ray (one direction only);
                                        ///< true = full line (both directions).

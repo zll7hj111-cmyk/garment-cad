@@ -146,7 +146,17 @@ void AngleHud::setValid(bool ok)
               .arg(validCol.name(), editBg.name(QColor::HexArgb), editFg.name())
         : QStringLiteral("QLineEdit{border:1px solid %1;border-radius:4px;"
                          "padding:3px 6px;background:%2;color:%1;}")
-              .arg(invalidCol.name(), QStringLiteral("#FDECEB")));
+              .arg(invalidCol.name(), errorWash(invalidCol)));
+}
+
+// Danger wash used by the invalid-state edit background. Same 12% alpha
+// tinting rule as Theme::badgeStyle, kept here because the hue itself comes
+// from CanvasStyle (canvas-side tokens), not the UI token table.
+QString AngleHud::errorWash(const QColor& fg)
+{
+    QColor wash = fg;
+    wash.setAlphaF(0.12f);
+    return wash.name(QColor::HexArgb);
 }
 
 bool AngleHud::eventFilter(QObject* o, QEvent* e)

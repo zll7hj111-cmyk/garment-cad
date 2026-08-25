@@ -1,4 +1,4 @@
-﻿#include "SegmentAimCard.h"
+#include "SegmentAimCard.h"
 
 #include "ElaCheckBox.h"
 #include <QHBoxLayout>
@@ -134,24 +134,6 @@ void SegmentAimCard::refresh()
         m_chkHost->setVisible(true);
     }
 
-    // Group protection: endpoint-aim drives the block's ROTATION — it would
-    // break group rigidity, so aim editing is read-only on grouped members
-    // (组成员不可编辑终点指向, 请先解散组).
-    if (block && !m_doc->groupOfBlock(m_blockId).isNull()) {
-        const QString tip = QString::fromUtf8(
-            "\xe7\xbb\x84\xe6\x88\x90\xe5\x91\x98\xe4\xb8\x8d\xe5\x8f\xaf"
-            "\xe7\xbc\x96\xe8\xbe\x91\xe7\xbb\x88\xe7\x82\xb9\xe6\x8c\x87"
-            "\xe5\x90\x91\xef\xbc\x8c\xe8\xaf\xb7\xe5\x85\x88\xe8\xa7\xa3"
-            "\xe6\x95\xa3\xe7\xbb\x84");
-        m_refTarget->setEnabled(false);
-        m_editOffset->setEnabled(false);
-        m_btnClear->setEnabled(false);
-        m_chkHost->setEnabled(false);
-        m_refTarget->setToolTip(tip);
-        m_editOffset->setToolTip(tip);
-        m_btnClear->setToolTip(tip);
-        m_chkHost->setToolTip(tip);
-    }
 }
 
 const cad::param::Attachment* SegmentAimCard::findFollowerAttachment() const

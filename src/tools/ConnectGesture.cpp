@@ -1,4 +1,4 @@
-#include "ConnectGesture.h"
+﻿#include "ConnectGesture.h"
 
 #include <cmath>
 #include <utility>
@@ -20,66 +20,25 @@
 #include "parametric/ConditionEngine.h"
 #include "parametric/FollowerAngle.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
 #include "tools/AngleHud.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasStyle.h"
+#include "tools/LayerFeedback.h"
 #include "document/commands/AttachmentCommands.h"
-#include "document/commands/GroupCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/ComponentCommands.h"
+#include "ui/Theme.h"
 
 namespace cad::tools {
 
-namespace {
-
-/// Connection snap reach (user units, same for source grab and target drop).
-constexpr double kConnectSnapRadius = 7.5;
-
-/// Format an angle in degrees for display: integers render without a trailing
-/// ".0" (e.g. 22 -> "22", 22.5 -> "22.5").
-QString formatDeg(double deg)
-{
-    QString s = QString::number(deg, 'f', 1);
-    if (s.endsWith(QLatin1String(".0")))
-        s.chop(2);
-    return s;
-}
-
 // ── 角度显示约定（2026-08 v3 定稿，用户拍板）────────────────────────────
-// 与 ToolRotate.cpp 同步：存储域 α ∈ [0, 360°)；跟随角度显示 = 带符号折角
-// [−180°, +180°]（折叠 0 / 垂直 ±90 / 开平 ±180，符号 = 折向）。
-double signedFoldDeg(double alphaDeg)
-{
-    double a = std::fmod(alphaDeg, 360.0);
-    if (a < 0.0) a += 360.0;
-    return a > 180.0 ? a - 360.0 : a;
-}
-double alphaFromSignedFold(double foldDeg)
-{
-    double a = std::fmod(foldDeg, 360.0);
-    if (a < 0.0) a += 360.0;
-    return a;
-}
-
-/// Toast text when a freshly established attachment crosses layers:
-/// "已建立跨层连接（测量层→操作层1）" (real layer names). Empty when
-/// same-layer or blocks are gone.
-QString crossLayerToast(cad::param::ParamDocument* doc,
-                        const cad::param::Block& from,
-                        const cad::param::Block& to)
-{
-    if (!doc) return QString();
-    if (doc->isAuxBlock(from) == doc->isAuxBlock(to)) return QString();
-    auto name = [doc](const QUuid& layerId) {
-        const auto* l = doc->layerById(layerId);
-        return l ? l->name : QStringLiteral("?");
-    };
-    return QString::fromUtf8("\xe5\xb7\xb2\xe5\xbb\xba\xe7\xab\x8b"
-                             "\xe8\xb7\xa8\xe5\xb1\x82\xe8\xbf\x9e\xe6\x8e\xa5"
-                             "\xef\xbc\x88%1\u2192%2\xef\xbc\x89")  // 已建立跨层连接（%1→%2）
-        .arg(name(from.layer), name(to.layer));
-}
-
-} // namespace
+// 存储域 α ∈ [0, 360°)，跟随角度显示 = 带符号折角 [−180°, +180°]。
+// 统一实现收口在 geometry/Angle.h（normalizeDeg360 / normalizeDeg180）与
+// geometry/Units.h（formatDegValue），此处不再本地复制。
+// 跨层连接 toast 文案统一在 tools/LayerFeedback.h。
+// 连接半径常量 (kConnectSnapRadius / kConnectGrabRadius) 定义于
+// ConnectGesture.h 顶部 — ToolSelect 悬停端点提示共享同一值 (2026-09)。
 
 ConnectGesture::ConnectGesture(CanvasScene* scene, cad::param::ParamDocument* doc,
                                QUndoStack* undoStack,
@@ -113,22 +72,17 @@ void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPoi
     auto* blk = m_paramDoc->findBlock(fromBlockId);
     if (!blk || blk->isBridge) return;   // bridges are pinned at both ends
 
+    // 组件级连接: 抓组件成员端点 → 组件整体作为 follower (借用端点连接).
+    m_connectComponentId = QUuid();
+    if (const auto* comp = m_paramDoc->componentOfBlock(fromBlockId))
+        m_connectComponentId = comp->id;
+
     m_connectFromBlock = fromBlockId;
     m_connectFromPoint = fromPointId;
-    m_connectGroupId   = m_paramDoc->groupOfBlock(fromBlockId);
     m_connectTarget.reset();
-    m_connectOldAtt.reset();
-    m_connectIsComponentHinge = false;
-    m_editingComponentGroupId = QUuid();
-    m_connectGroupOrigOrigins.clear();
-
-    if (!m_connectGroupId.isNull()) {
-        for (const auto& bid : m_paramDoc->blocksInGroup(m_connectGroupId)) {
-            if (const auto* b = m_paramDoc->findBlock(bid)) {
-                m_connectGroupOrigOrigins[bid] = b->transform.origin;
-            }
-        }
-    }
+    m_componentSwitchCandidates.clear();
+    m_reattachActive = false;   // 仅角度重挂标志: beginConnect 即失效
+    m_reattachOldAtt = cad::param::Attachment();
 
     // 滑轨模式 (抽屉式滑动): reset the slide-drag snapshot. If this block's
     // attachment is in a slide mode it stays ACTIVE (never quick-detached);
@@ -142,26 +96,20 @@ void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPoi
     m_connectOrigOrigin   = blk->transform.origin;
     m_connectOrigRotation = blk->transform.rotation;
     m_connectGrabOffset   = blk->transform.origin - blk->worldPos(fromPointId);
-
-    // 快拆 (quick-detach): if this block currently follows a leader OUTSIDE its group, release it
-    // immediately so it can move freely.
-    // 滑轨模式 (slideMode != None) 的连接**不**快拆: 拖动只沿滑轨动
-    // (抽屉式滑动, 用户拍板 2026-08), 附件保持激活, 由 Resolver 锁轴.
-    for (const auto& att : m_paramDoc->attachments()) {
-        if (att.fromBlockId == fromBlockId && !att.isPin && !att.isLocked
-            && att.slideMode == cad::param::SlideMode::None) {
-            // If the attachment is to an EXTERNAL block (not within the same group), quick-detach it:
-            const bool internalAtt = !m_connectGroupId.isNull()
-                && m_paramDoc->groupOfBlock(att.toBlockId) == m_connectGroupId;
-            if (!internalAtt) {
-                m_connectOldAtt = att;
-                m_paramDoc->removeAttachment(att.id);
-                break;
-            }
-        }
+    // 组件级连接: 记录所有成员拖前 origin (整组跟随光标预览).
+    m_connectOrigOrigins.clear();
+    if (!m_connectComponentId.isNull()) {
+        if (const auto* comp = m_paramDoc->findComponent(m_connectComponentId))
+            for (const QUuid& mid : comp->memberBlockIds)
+                if (const auto* mb = m_paramDoc->findBlock(mid))
+                    m_connectOrigOrigins.insert(mid, mb->transform.origin);
     }
 
-    // 滑轨模式连接不快拆 (上面的循环已跳过): 记录其拖前锁/自由轴坐标,
+    // 快拆 (quick-detach) 已移除 (2026-09): tryPointOperation 的 isFollower
+    // 过滤保证 beginConnect 只对非 follower 块发起, 这里不存在需要释放的
+    // 旧连接 (旧快拆循环是死代码)。拆开统一走: D 键快拆 / 属性面板取消
+    // 位置吸附 / 拖跟随线 (未锁定)。
+    // 滑轨模式连接不快拆: 记录其拖前锁/自由轴坐标,
     // 拖动期间由 move() 每帧回写自由轴 (updateSlideOffsetsFromCurrent)。
     for (const auto& att : m_paramDoc->attachments()) {
         if (att.fromBlockId == fromBlockId && !att.isPin
@@ -180,12 +128,18 @@ void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPoi
 void ConnectGesture::move(const Vec2& pos)
 {
     if (m_state == SelectState::ConfirmTarget) {
-        updateConfirmHighlight(pos);
+        updateCandidateHighlight(pos, m_confirmCandidates);
         return;
     }
     if (m_state == SelectState::ConfirmSource) {
         // No yellow line for source selection: the selected line already uses
         // the normal selection highlight, and the source-endpoint marker stays.
+        return;
+    }
+    if (m_state == SelectState::AngleInput) {
+        // 组件级重叠切换 (用户要求 2026-09): hover 高亮重叠候选线段, 提示
+        // 可点击切换跟随基准 (与 ConfirmTarget 同一视觉语言).
+        updateCandidateHighlight(pos, m_componentSwitchCandidates);
         return;
     }
     if (m_state != SelectState::Connecting) return;
@@ -198,15 +152,11 @@ void ConnectGesture::move(const Vec2& pos)
         zoom = m_scene->views().first()->transform().m11();
 
     // Generous radius while connecting: dropping onto a target must feel easy.
-    // Exclude the dragged block's OWN points (and entire group if grouped)
     auto snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom, kConnectSnapRadius,
                                       {}, &m_connectFromBlock);
     if (snap.has_value()) {
         if (snap->blockId == m_connectFromBlock) {
             snap.reset();
-        } else if (!m_connectGroupId.isNull()
-                   && m_paramDoc->groupOfBlock(snap->blockId) == m_connectGroupId) {
-            snap.reset();  // never snap to own group members
         }
     }
 
@@ -214,13 +164,15 @@ void ConnectGesture::move(const Vec2& pos)
     // attach — e.g. a descendant's point would close a cycle and is refused.
     bool willConnect = false;
     if (snap.has_value()) {
-        cad::param::Attachment cand;
-        cand.fromBlockId = m_connectFromBlock;
-        cand.fromPointId = m_connectFromPoint;
-        cand.toBlockId   = snap->blockId;
-        cand.toPointId   = snap->pointId;
-        willConnect = cad::param::checkAttachment(m_paramDoc->attachments(), cand)
-                      == cad::param::AttachmentIssue::Ok;
+        if (isComponentConnect()) {
+            // 组件级连接: 只要求组件还没有外部跟随线 (森林不变式 组件维度);
+            // 成员线级名额不占用, 内部关系不受影响.
+            willConnect = componentCanConnect();
+        } else {
+            // 线级连接: 常规 checkAttachment; 仅角度 (angleOnly) 跟随线
+            // 的位置是自由的 — 磁铁按其原附件将被重挂的语义判定 (排除自身).
+            willConnect = lineConnectValid(snap->blockId, snap->pointId);
+        }
     }
     m_connectTarget = willConnect ? snap : std::nullopt;
 
@@ -231,16 +183,14 @@ void ConnectGesture::move(const Vec2& pos)
     const Vec2 anchor = m_connectTarget.has_value() ? m_connectTarget->worldPos : pos;
     const Vec2 newOrigin = anchor + m_connectGrabOffset;
     const Vec2 delta = newOrigin - m_connectOrigOrigin;
-    blk->transform.origin = newOrigin;
-
-    // Rigid group translation: all group members translate by delta
-    if (!m_connectGroupId.isNull()) {
-        for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
-            if (it.key() == m_connectFromBlock) continue;
-            if (auto* mb = m_paramDoc->findBlock(it.key())) {
+    if (isComponentConnect()) {
+        // 组件级连接: 整组整体平移跟随光标 (预览), 内部相对几何不变.
+        for (auto it = m_connectOrigOrigins.cbegin(); it != m_connectOrigOrigins.cend(); ++it) {
+            if (auto* mb = m_paramDoc->findBlock(it.key()))
                 mb->transform.origin = it.value() + delta;
-            }
         }
+    } else {
+        blk->transform.origin = newOrigin;
     }
 
     // 滑轨模式 (抽屉式滑动): 拖动沿滑轨走 — 从当前 (拖拽) 位置回写自由轴
@@ -249,9 +199,7 @@ void ConnectGesture::move(const Vec2& pos)
         m_paramDoc->updateSlideOffsetsFromCurrent(m_connectSlideAttId);
     m_paramDoc->invalidateLayer(blk->layer);
 
-    QList<QUuid> dragRoots = !m_connectGroupId.isNull()
-        ? m_paramDoc->blocksInGroup(m_connectGroupId)
-        : QList<QUuid>{m_connectFromBlock};
+    QList<QUuid> dragRoots{m_connectFromBlock};
     m_paramDoc->resolveForDrag(dragRoots);
 
     updateConnectMarker();
@@ -280,13 +228,13 @@ void ConnectGesture::release(const Vec2& pos)
         std::vector<SnapResult> pool;
         for (const auto& c : allCands) {
             if (c.blockId == m_connectFromBlock) continue;
-            cad::param::Attachment cand;
-            cand.fromBlockId = m_connectFromBlock;
-            cand.fromPointId = m_connectFromPoint;
-            cand.toBlockId   = c.blockId;
-            cand.toPointId   = c.pointId;
-            if (cad::param::checkAttachment(m_paramDoc->attachments(), cand)
-                    == cad::param::AttachmentIssue::Ok)
+            if (isComponentConnect()) {
+                // 组件级连接: 只检查组件维度的名额 (一组件一条外部跟随线).
+                if (componentCanConnect())
+                    pool.push_back(c);
+                continue;
+            }
+            if (lineConnectValid(c.blockId, c.pointId))
                 pool.push_back(c);
         }
 
@@ -298,7 +246,7 @@ void ConnectGesture::release(const Vec2& pos)
                 if (c.worldPos.distanceTo(refPos) < kSnapOverlapEps)
                     overlap.push_back(c);
 
-            if (overlap.size() > 1) {
+            if (overlap.size() > 1 && !isComponentConnect()) {
                 // Multiple points stacked here — ask the user to confirm the
                 // leader by clicking one of the candidate segments.
                 m_confirmCandidates = collectConfirmCandidates(refPos);
@@ -310,6 +258,7 @@ void ConnectGesture::release(const Vec2& pos)
                     return;
                 }
             }
+            // 组件级连接: 组件接谁谁就是基准线, 重叠时直接连最近的候选, 无需确认.
             // Single unambiguous target: connect directly.
             const SnapResult& target = overlap.empty() ? pool.front() : overlap.front();
             connected = attachToTarget(target.blockId, target.pointId, QUuid());
@@ -323,7 +272,6 @@ void ConnectGesture::release(const Vec2& pos)
         m_connectFromBlock = QUuid();
         m_connectFromPoint = QUuid();
         m_connectTarget.reset();
-        m_connectOldAtt.reset();
     }
 }
 
@@ -362,12 +310,7 @@ void ConnectGesture::beginSourceConfirm(std::vector<ConfirmCandidate> candidates
     // member endpoint starts the connection.
     m_connectFromBlock = QUuid();
     m_connectFromPoint = QUuid();
-    m_connectGroupId = QUuid();
-    m_connectGroupOrigOrigins.clear();
     m_connectTarget.reset();
-    m_connectOldAtt.reset();
-    m_connectIsComponentHinge = false;
-    m_editingComponentGroupId = QUuid();
 
     removeConfirmHighlight();
     removeSourcePortMarker();
@@ -396,7 +339,7 @@ void ConnectGesture::pressConfirmSource(const Vec2& pos)
         const auto& sel = *m_selectedSourceCandidate;
         if (const auto* blk = m_paramDoc->findBlock(sel.blockId)) {
             const Vec2 wp = blk->worldPos(sel.pointId);
-            const double worldRadius = kConnectSnapRadius / (zoom > 1e-9 ? zoom : 1.0);
+            const double worldRadius = kConnectGrabRadius / (zoom > 1e-9 ? zoom : 1.0);
             if (pos.distanceTo(wp) <= worldRadius) {
                 beginConnect(sel.blockId, sel.pointId, pos);
                 return;
@@ -452,16 +395,6 @@ void ConnectGesture::cancel()
             blk->transform.origin   = m_connectOrigOrigin;
             blk->transform.rotation = m_connectOrigRotation;
         }
-        if (!m_connectGroupId.isNull()) {
-            for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
-                if (it.key() == m_connectFromBlock) continue;
-                if (auto* mb = m_paramDoc->findBlock(it.key())) {
-                    mb->transform.origin = it.value();
-                }
-            }
-        }
-        if (m_connectOldAtt)
-            m_paramDoc->addAttachmentRaw(*m_connectOldAtt);  // verbatim (keep snapshot isLocked)
         // 滑轨模式: 拖动中回写的自由轴坐标也要还原 (cancel = 撤销整个手势).
         if (!m_connectSlideAttId.isNull()) {
             if (auto* a = m_paramDoc->findAttachment(m_connectSlideAttId)) {
@@ -479,14 +412,10 @@ void ConnectGesture::cancel()
     removeSourcePortMarker();
     m_confirmCandidates.clear();
     m_selectedSourceCandidate.reset();
+    m_componentSwitchCandidates.clear();
     m_connectFromBlock = QUuid();
     m_connectFromPoint = QUuid();
-    m_connectGroupId = QUuid();
-    m_connectGroupOrigOrigins.clear();
     m_connectTarget.reset();
-    m_connectOldAtt.reset();
-    m_connectIsComponentHinge = false;
-    m_editingComponentGroupId = QUuid();
     if (m_angleHud) hideAngleHud();
     setState(SelectState::Confirmed);
 }
@@ -516,17 +445,78 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
                                     const QUuid& toSegmentId)
 {
     if (!m_paramDoc) return false;
-    auto* fromBlk = m_paramDoc->findBlock(m_connectFromBlock);
-    auto* toBlk   = m_paramDoc->findBlock(toBlockId);
-    if (!fromBlk || !toBlk) return false;
+    auto* toBlk = m_paramDoc->findBlock(toBlockId);
+    if (!toBlk) return false;
 
     cad::param::Attachment att;
-    att.fromBlockId = m_connectFromBlock;
     att.fromPointId = m_connectFromPoint;
     att.toBlockId   = toBlockId;
     att.toPointId   = toPointId;
     att.toSegmentId = !toSegmentId.isNull()
         ? toSegmentId : toBlk->exitSegmentAtPoint(toPointId);
+
+    if (isComponentConnect()) {
+        // ── 组件级连接: 组件整体作为 follower, 借用暴露端点 + 端点线段方向 ──
+        const cad::param::Component* comp =
+            m_paramDoc->findComponent(m_connectComponentId);
+        cad::param::Block* exposed = comp
+            ? m_paramDoc->findBlock(
+                  m_paramDoc->memberOwningPoint(*comp, m_connectFromPoint))
+            : nullptr;
+        if (!comp || !exposed) return false;
+        att.fromComponentId = m_connectComponentId;
+
+        // Orientation-preserving follower angle (the exposed member is the
+        // component's pose carrier): rotation = refWorld + angle − localDir.
+        const double refWorld = toBlk->transform.rotation
+            + toBlk->exitDirectionAtPoint(toPointId, att.toSegmentId);
+        const double localDir = exposed->directionAtPoint(m_connectFromPoint);
+        const double angleDeg = cad::param::backSolveFollowerAngle(
+            exposed->transform.rotation, localDir, refWorld);
+        att.followerAngle = angleDeg;
+
+        // 森林不变式 (组件维度): 一个组件至多一条外部跟随线.
+        if (!componentCanConnect())
+            return false;
+        if (!m_paramDoc->addAttachment(att)) return false;
+        m_editingAttachmentId = att.id;
+        m_initialAngle = angleDeg;
+        // 组件级重叠切换: 连接点若有其他线段端点重叠, 记住候选线段 — 角度
+        // 窗口内点击重叠线段即可切换跟随对象 (用户要求 2026-09).
+        m_componentSwitchCandidates = collectComponentSwitchCandidates(
+            toBlk->worldPos(toPointId), toBlockId, att.toSegmentId);
+        m_paramDoc->resolveAll();
+        if (m_scene) {
+            m_scene->refreshAllBlockItems();
+            QString toast = crossLayerToast(m_paramDoc, *exposed, *toBlk);
+            if (!m_componentSwitchCandidates.empty()) {
+                const QString hint = QString::fromUtf8(
+                    "连接点有重叠：点击重叠线段可切换跟随基准");
+                toast = toast.isEmpty() ? hint : toast + QStringLiteral("；") + hint;
+            }
+            if (!toast.isEmpty())
+                m_showToast(toast);
+            const Vec2 anchor = m_connectTarget.has_value()
+                ? m_connectTarget->worldPos : toBlk->worldPos(toPointId);
+            showAngleHud(anchor);
+        }
+        setState(SelectState::AngleInput);
+        return true;
+    }
+
+    // ── 线级连接 (原有) ──
+    auto* fromBlk = m_paramDoc->findBlock(m_connectFromBlock);
+    if (!fromBlk) return false;
+
+    // 仅角度 (angleOnly) 跟随线: 位置自由 — 拖动端点 = 重新建立位置连接.
+    // 原附件重挂到新目标 (旧角度基准保留为独立角度基准 → 双基准), 不新建
+    // 附件 (森林不变式: 每块至多一条线级跟随连接).
+    const QUuid angleOnlyAttId = angleOnlyAttachmentId(m_connectFromBlock);
+    if (!angleOnlyAttId.isNull())
+        return reattachAngleOnly(angleOnlyAttId, toBlockId, toPointId,
+                                 toSegmentId);
+
+    att.fromBlockId = m_connectFromBlock;
 
     // Orientation-preserving follower angle: the Resolver drives
     //   rotation = refWorld + angle·π/180 − localDir
@@ -542,33 +532,12 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
     if (cad::param::checkAttachment(m_paramDoc->attachments(), att)
             != cad::param::AttachmentIssue::Ok)
         return false;
-
-    // 路线B 组件化组: 从组员端点建立外部连接 = 创建组件主连接铰链.
-    // 连接手势仍先用普通 Attachment 做实时角度预览, finalizeConnection()
-    // 再将其替换为 SetComponentHingeCommand (单一主连接铰链).
-    m_connectIsComponentHinge = false;
-    if (!m_connectGroupId.isNull()) {
-        if (m_paramDoc->hasComponentHinge(m_connectGroupId)) {
-            if (m_showToast)
-                m_showToast(QStringLiteral("组件已有主连接铰链, 请先清除"));
-            return false;
-        }
-        m_connectIsComponentHinge = true;
-        m_editingComponentGroupId = m_connectGroupId;
-        m_editingComponentHinge = cad::param::ComponentHinge{
-            m_connectFromBlock, m_connectFromPoint, toBlockId, toPointId,
-            att.toSegmentId, angleDeg, QString()
-        };
-    }
-
     if (!m_paramDoc->addAttachment(att)) return false;
     m_editingAttachmentId = att.id;
     m_initialAngle = angleDeg;
     m_paramDoc->resolveAll();
     if (m_scene) {
         m_scene->refreshAllBlockItems();
-        // Cross-layer feedback: toast at the gesture's success point (closest
-        // to the user action; never fires on undo/redo replay).
         if (const QString toast = crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
             !toast.isEmpty())
             m_showToast(toast);
@@ -577,6 +546,159 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
         showAngleHud(anchor);
     }
     setState(SelectState::AngleInput);
+    return true;
+}
+
+// ── 仅角度线拖端点重挂 (用户报告: 使用了引用线段但无连接线段的线段,
+//    拖动端点没有吸附反应, 无法建立连接) ─────────────────────────────────────
+// 快速拆开 (D 键/拖拆) 后连接处于 angleOnly: 位置自由、角度仍跟随旧基准线
+// (= 使用引用线段但没有位置连接)。旧实现 tryPointOperation 的 isFollower
+// 过滤把这类块整体拦下 — 端点拖不动、无磁铁。修复: 放行 angleOnly 源; 释放
+// 到目标时把原附件原地重挂 (不新建, 保持每块至多一条线级跟随连接):
+// 旧角度基准保留为独立角度基准 (双基准), 位置挂到新端点, 恢复完整连接并
+// 重新焊接 (与 SegmentConnectionCard::onTargetResolved 语义一致)。
+
+QUuid ConnectGesture::angleOnlyAttachmentId(const QUuid& fromBlockId) const
+{
+    if (!m_paramDoc) return QUuid();
+    for (const auto& att : m_paramDoc->attachments())
+        if (!att.isPin && att.fromBlockId == fromBlockId && att.angleOnly)
+            return att.id;
+    return QUuid();
+}
+
+bool ConnectGesture::lineConnectValid(const QUuid& toBlockId,
+                                      const QUuid& toPointId) const
+{
+    if (!m_paramDoc) return false;
+    cad::param::Attachment cand;
+    cand.fromBlockId = m_connectFromBlock;
+    cand.fromPointId = m_connectFromPoint;
+    cand.toBlockId   = toBlockId;
+    cand.toPointId   = toPointId;
+
+    const QUuid angleOnlyAttId = angleOnlyAttachmentId(m_connectFromBlock);
+    if (angleOnlyAttId.isNull())
+        return cad::param::checkAttachment(m_paramDoc->attachments(), cand)
+               == cad::param::AttachmentIssue::Ok;
+
+    // 重挂 = 原附件换代: 校验时排除它 (不占新 follower 名额), 其余同规
+    // (环 / 重复跟随照旧被拒)。
+    std::vector<cad::param::Attachment> others;
+    for (const auto& a : m_paramDoc->attachments())
+        if (a.id != angleOnlyAttId) others.push_back(a);
+    if (cad::param::checkAttachment(others, cand)
+            != cad::param::AttachmentIssue::Ok)
+        return false;
+    // 跨层单向契约 (工作层 follower → 辅助层 leader 拒绝, 与 addAttachment
+    // 同规 — 重挂绕过 addAttachment 校验, 这里显式补齐)。
+    const auto* fromBlk = m_paramDoc->findBlock(m_connectFromBlock);
+    const auto* toBlk = m_paramDoc->findBlock(toBlockId);
+    if (!fromBlk || !toBlk) return false;
+    if (!m_paramDoc->isAuxBlock(*fromBlk) && m_paramDoc->isAuxBlock(*toBlk))
+        return false;
+    return true;
+}
+
+bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
+                                       const QUuid& toBlockId,
+                                       const QUuid& toPointId,
+                                       const QUuid& toSegmentId)
+{
+    if (!m_paramDoc) return false;
+    auto* toBlk = m_paramDoc->findBlock(toBlockId);
+    const cad::param::Attachment* att = m_paramDoc->findAttachment(attId);
+    auto* fromBlk = m_paramDoc->findBlock(m_connectFromBlock);
+    if (!toBlk || !att || !fromBlk || toBlockId == fromBlk->id) return false;
+    const cad::param::ParamPoint* toPt = toBlk->findPoint(toPointId);
+    if (!toPt || !toPt->resolved) return false;
+
+    // 目标线段: 未指定时取连接点所在线段 (与 attachToTarget 同规)。
+    const QUuid segId = !toSegmentId.isNull()
+        ? toSegmentId : toBlk->exitSegmentAtPoint(toPointId);
+    if (segId.isNull()) return false;
+
+    // 校验 (排除将被重挂的自身附件) + 跨层单向契约。
+    if (!lineConnectValid(toBlockId, toPointId)) return false;
+
+    // 仅角度重挂 = 原附件换代: undo 需还原旧附件态 (finalizeConnection 的
+    // ReconnectAttachmentCommand); 先快照旧态再原地变换。
+    const cad::param::Attachment oldState = *att;
+    cad::param::Attachment* mut = m_paramDoc->findAttachment(attId);
+    if (!mut) return false;
+    if (!mut->angleIndependent) {
+        if (mut->angleRefBlockId.isNull()) {
+            mut->angleRefBlockId = oldState.toBlockId;
+            mut->angleRefSegmentId = oldState.toSegmentId;
+            mut->angleRefPointId = oldState.toPointId;
+        }
+    }
+    mut->angleOnly = false;
+    mut->slideMode = cad::param::SlideMode::None;
+    mut->isLocked = true;   // 仅角度重挂 = 恢复完整连接并重新焊接
+    mut->toBlockId = toBlockId;
+    mut->toPointId = toPointId;
+    mut->toSegmentId = segId;
+
+    // 按保留的角度基准方向反算 followerAngle (与 Resolver 的 refWorld
+    // 同构): 当前世界方向零跳变。旧角度基准 = 唯一角度引用线段或新宿主。
+    double refWorld = toBlk->transform.rotation
+        + toBlk->exitDirectionAtPoint(toPointId, segId);
+    if (!mut->angleRefBlockId.isNull()) {
+        if (const auto* rb = m_paramDoc->findBlock(mut->angleRefBlockId)) {
+            if (!mut->angleRefPointId.isNull()
+                && rb->findPoint(mut->angleRefPointId)
+                && rb->findPoint(mut->angleRefPointId)->resolved) {
+                refWorld = rb->transform.rotation
+                    + rb->exitDirectionAtPoint(mut->angleRefPointId,
+                                               mut->angleRefSegmentId);
+            } else if (!mut->angleRefSegmentId.isNull()) {
+                if (const auto* rs = rb->findSegment(mut->angleRefSegmentId)) {
+                    if (const auto* sp = rb->findPoint(rs->startPointId);
+                        sp && sp->resolved)
+                        refWorld = rb->transform.rotation
+                                 + rb->directionAtPoint(rs->startPointId);
+                }
+            }
+        }
+    }
+    const double localDir = fromBlk->directionAtPoint(m_connectFromPoint);
+    mut->followerAngle = cad::param::backSolveFollowerAngle(
+        fromBlk->transform.rotation, localDir, refWorld);
+    mut->followerAngleFormula.clear();
+    mut->rotationMode = cad::param::RotationMode::Angle;
+    mut->arcLength = 0.0;
+    mut->arcLengthFormula.clear();
+    m_paramDoc->resolveAll();
+
+    // 有 undo 栈: 记录旧态供 finalizeConnection 单步撤销 (含 HUD 角度调整).
+    if (m_undoStack) {
+        m_reattachActive = true;
+        m_reattachOldAtt = oldState;
+    }
+
+    const cad::param::Attachment* reatt = m_paramDoc->findAttachment(attId);
+    if (!reatt) return false;
+    m_editingAttachmentId = attId;
+    m_initialAngle = reatt->followerAngle;
+    if (m_scene) {
+        m_scene->refreshAllBlockItems();
+        if (const QString toast = crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
+            !toast.isEmpty())
+            m_showToast(toast);
+        showAngleHud(toBlk->worldPos(toPointId));
+    }
+    setState(SelectState::AngleInput);
+    return true;
+}
+
+bool ConnectGesture::componentCanConnect() const
+{
+    if (!m_paramDoc) return false;
+    if (m_connectComponentId.isNull()) return false;
+    for (const auto& a : m_paramDoc->attachments())
+        if (a.fromComponentId == m_connectComponentId)
+            return false;  // 组件已有外部跟随线
     return true;
 }
 
@@ -602,7 +724,117 @@ std::vector<ConfirmCandidate> ConnectGesture::collectConfirmCandidates(
     return out;
 }
 
-void ConnectGesture::updateConfirmHighlight(const Vec2& pos)
+// ── 组件级连接重叠切换 (AngleInput 窗口, 用户要求 2026-09) ──────────────────
+// 组件级连接释放时直接连最近候选 (2026-09 定稿: 组件接谁谁就是基准线); 若连接
+// 点有多个端点重叠, 角度窗口内点击重叠线段的线身即可把跟随对象切换过去 —
+// 先点选线段、再确定基准, 与 ConfirmTarget 的视觉语言一致 (橙线高亮).
+
+std::vector<ConfirmCandidate> ConnectGesture::collectComponentSwitchCandidates(
+    const Vec2& connWorldPos, const QUuid& curBlockId, const QUuid& curSegId) const
+{
+    std::vector<ConfirmCandidate> out;
+    if (!m_paramDoc || m_connectComponentId.isNull()) return out;
+    for (const auto& block : m_paramDoc->blocks()) {
+        // 组件自身成员不能作为基准 (组件跟随自身成员 = 环, addAttachment 会拒).
+        if (block.id == m_connectFromBlock) continue;
+        if (const auto* bcomp = m_paramDoc->componentOfBlock(block.id);
+            bcomp && bcomp->id == m_connectComponentId)
+            continue;
+        const Vec2 local = block.transform.toLocal(connWorldPos);
+        for (const auto& seg : block.segments) {
+            const auto* sp = block.findPoint(seg.startPointId);
+            const auto* ep = block.findPoint(seg.endPointId);
+            const QUuid hit =
+                (sp && sp->resolved
+                 && sp->resolvedPos.distanceTo(local) < kSnapOverlapEps) ? sp->id
+              : (ep && ep->resolved
+                 && ep->resolvedPos.distanceTo(local) < kSnapOverlapEps) ? ep->id
+              : QUuid();
+            if (hit.isNull()) continue;
+            if (block.id == curBlockId && seg.id == curSegId) continue;  // 当前基准不提示
+            out.push_back({block.id, seg.id, hit});
+        }
+    }
+    return out;
+}
+
+void ConnectGesture::pressAngleTarget(const Vec2& pos)
+{
+    if (m_componentSwitchCandidates.empty() || !m_paramDoc || !m_scene) return;
+    double zoom = 1.0;
+    if (!m_scene->views().isEmpty())
+        zoom = m_scene->views().first()->transform().m11();
+
+    const auto segSnap = m_snapEngine.findSegmentSnap(
+        pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
+    if (!segSnap) return;
+    for (const auto& cand : m_componentSwitchCandidates) {
+        if (cand.blockId == segSnap->blockId
+            && cand.segId == segSnap->segmentId) {
+            switchComponentTarget(cand);
+            return;
+        }
+    }
+}
+
+bool ConnectGesture::switchComponentTarget(const ConfirmCandidate& cand)
+{
+    if (!m_paramDoc) return false;
+    cad::param::Attachment* cur = m_paramDoc->findAttachment(m_editingAttachmentId);
+    if (!cur || cur->fromComponentId != m_connectComponentId) return false;
+    if (cur->toBlockId == cand.blockId && cur->toPointId == cand.pointId
+        && cur->toSegmentId == cand.segId)
+        return false;  // 同一目标: no-op
+
+    auto* toBlk = m_paramDoc->findBlock(cand.blockId);
+    const cad::param::Component* comp = m_paramDoc->findComponent(m_connectComponentId);
+    cad::param::Block* exposed = comp
+        ? m_paramDoc->findBlock(
+              m_paramDoc->memberOwningPoint(*comp, m_connectFromPoint))
+        : nullptr;
+    if (!toBlk || !exposed) return false;
+
+    // 新 attachment: 跟随端不动, 只换基准线; 角度反算保向 (零视觉跳变),
+    // 与 attachToTarget 同一公式. 先拷贝旧值 (removeAttachment 会废掉指针).
+    const cad::param::Attachment old = *cur;
+    cad::param::Attachment att = old;
+    att.toBlockId = cand.blockId;
+    att.toPointId = cand.pointId;
+    att.toSegmentId = cand.segId;
+    const double refWorld = toBlk->transform.rotation
+        + toBlk->exitDirectionAtPoint(cand.pointId, cand.segId);
+    const double localDir = exposed->directionAtPoint(m_connectFromPoint);
+    const double angleDeg = cad::param::backSolveFollowerAngle(
+        exposed->transform.rotation, localDir, refWorld);
+    att.followerAngle = angleDeg;
+    att.followerAngleFormula.clear();
+    att.rotationMode = cad::param::RotationMode::Angle;
+    att.arcLength = 0.0;
+    att.arcLengthFormula.clear();
+
+    // 组件维度森林不变式: 先删旧连接 (一组件一条外部跟随线), 再经
+    // addAttachment 全量校验 (环/跨层); 校验失败原样加回 (撤销切换).
+    m_paramDoc->removeAttachment(old.id);
+    m_editingAttachmentId = QUuid();
+    if (!m_paramDoc->addAttachment(att)) {
+        m_paramDoc->addAttachment(old);
+        return false;
+    }
+    m_editingAttachmentId = att.id;
+    m_initialAngle = angleDeg;
+    m_paramDoc->resolveAll();
+    // 基准换了, 候选集随之刷新 (旧基准重新成为可切回的候选).
+    m_componentSwitchCandidates = collectComponentSwitchCandidates(
+        toBlk->worldPos(cand.pointId), cand.blockId, cand.segId);
+    if (m_scene) {
+        m_scene->refreshAllBlockItems();
+        showAngleHud(toBlk->worldPos(cand.pointId));
+    }
+    return true;
+}
+
+void ConnectGesture::updateCandidateHighlight(
+    const Vec2& pos, const std::vector<ConfirmCandidate>& candidates)
 {
     if (!m_paramDoc || !m_scene) return;
     double zoom = 1.0;
@@ -613,7 +845,7 @@ void ConnectGesture::updateConfirmHighlight(const Vec2& pos)
     const auto segSnap = m_snapEngine.findSegmentSnap(
         pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
     if (segSnap) {
-        for (const auto& cand : m_confirmCandidates) {
+        for (const auto& cand : candidates) {
             if (cand.blockId == segSnap->blockId && cand.segId == segSnap->segmentId) {
                 hitBlock = cand.blockId;
                 hitSeg = cand.segId;
@@ -672,7 +904,7 @@ void ConnectGesture::updateSourcePortMarker()
     constexpr double kRadius = 5.0;
     if (!m_sourcePortMarker) {
         m_sourcePortMarker = new QGraphicsEllipseItem();
-        m_sourcePortMarker->setPen(QPen(QColor(0x2F6FED), 2.0));
+        m_sourcePortMarker->setPen(QPen(cad::ui::Theme::tokens().accent, 2.0));
         m_sourcePortMarker->setBrush(QColor(47, 111, 237, 120));
         m_sourcePortMarker->setZValue(100.0);
         m_scene->addItem(m_sourcePortMarker);
@@ -699,6 +931,7 @@ void ConnectGesture::commitConnectMove()
     removeSourcePortMarker();
     m_confirmCandidates.clear();
     m_selectedSourceCandidate.reset();
+    m_componentSwitchCandidates.clear();
 
     auto* blk = m_paramDoc ? m_paramDoc->findBlock(m_connectFromBlock) : nullptr;
     if (!blk) {
@@ -725,39 +958,21 @@ void ConnectGesture::commitConnectMove()
          std::abs(curSlidePerp - m_connectOldSlidePerp) > 1e-9);
 
     // Restore the pre-drag state, then replay through the undo stack so the
-    // whole gesture (quick-detach + move) is one undo step.
+    // whole gesture (move / slide) is one undo step.
     blk->transform.origin   = m_connectOrigOrigin;
     blk->transform.rotation = m_connectOrigRotation;
-    if (!m_connectGroupId.isNull()) {
-        for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
-            if (it.key() == m_connectFromBlock) continue;
-            if (auto* mb = m_paramDoc->findBlock(it.key())) {
-                mb->transform.origin = it.value();
-            }
-        }
-    }
-    if (m_connectOldAtt)
-        m_paramDoc->addAttachmentRaw(*m_connectOldAtt);  // verbatim (keep snapshot isLocked)
 
-    if (m_undoStack && (m_connectOldAtt || offsetsChanged
-                        || delta.lengthSquared() > 1e-10)) {
+    if (m_undoStack && (offsetsChanged || delta.lengthSquared() > 1e-10)) {
         m_undoStack->beginMacro(m_connectSlideAttId.isNull()
-            ? QStringLiteral("\xe6\x8b\x86\xe5\xbc\x80\xe5\xb9\xb6\xe7\xa7\xbb\xe5\x8a\xa8")  // 拆开并移动
+            ? QStringLiteral("\xe7\xa7\xbb\xe5\x8a\xa8")  // 移动
             : QStringLiteral("\xe6\xbb\x91\xe5\x8a\xa8\xe5\xb9\xb6\xe7\xa7\xbb\xe5\x8a\xa8"));  // 滑动并移动
-        if (m_connectOldAtt)
-            // 拆开保留角度 (用户拍板 2026-08): 只解除位置吸附, 角度跟随保留
-            // (跟随线仍由基准线方向 + 跟随角驱动; 彻底断开是单独操作).
-            m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
-                m_paramDoc, m_connectOldAtt->id, /*angleOnly=*/true));
         if (offsetsChanged)
             m_undoStack->push(new cad::cmd::SetSlideOffsetsCommand(
                 m_paramDoc, m_connectSlideAttId,
                 m_connectOldSlideAlong, m_connectOldSlidePerp,
                 curSlideAlong, curSlidePerp));
         if (delta.lengthSquared() > 1e-10) {
-            const QList<QUuid> moveBlocks = !m_connectGroupId.isNull()
-                ? m_paramDoc->blocksInGroup(m_connectGroupId)
-                : QList<QUuid>{m_connectFromBlock};
+            QList<QUuid> moveBlocks{m_connectFromBlock};
             m_undoStack->push(new cad::cmd::MoveBlockCommand(
                 m_paramDoc, moveBlocks, delta));
         }
@@ -800,7 +1015,8 @@ void ConnectGesture::showAngleHud(const Vec2& anchorUser)
     m_angleHud->setValid(true);
     m_angleHud->edit()->blockSignals(true);
     // Pre-fill with the current angle as 带符号折角 (v3 定稿，与旋转 HUD 一致)。
-    m_angleHud->edit()->setText(formatDeg(signedFoldDeg(m_initialAngle)));
+    m_angleHud->edit()->setText(
+        cad::geo::Units::formatDegValue(cad::geo::normalizeDeg180(m_initialAngle)));
     m_angleHud->edit()->blockSignals(false);
     m_angleHud->show();
     m_angleHud->edit()->setFocus();
@@ -842,14 +1058,14 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
                 const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
                 const double foldDeg = (radius > 1e-9)
                     ? numVal / (M_PI / 180.0 * radius * 0.1) : 0.0;
-                const double alphaDeg = alphaFromSignedFold(foldDeg);
+                const double alphaDeg = cad::geo::normalizeDeg360(foldDeg);
                 att->rotationMode = cad::param::RotationMode::ArcLength;
                 att->arcLength = alphaDeg * M_PI / 180.0 * radius;
                 att->arcLengthFormula.clear();
             } else {
                 // 输入 = 带符号折角 → 存储 α（v3 定稿）。
                 att->rotationMode = cad::param::RotationMode::Angle;
-                att->followerAngle = alphaFromSignedFold(numVal);
+                att->followerAngle = cad::geo::normalizeDeg360(numVal);
                 att->followerAngleFormula.clear();
             }
             m_angleValid = true;
@@ -875,11 +1091,27 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
 
     if (m_angleHud) m_angleHud->setValid(m_angleValid);
     if (m_angleValid) {
-        // Per-frame preview: only the connected block's layer group moves.
-        if (const auto* fb = m_paramDoc->findBlock(att->fromBlockId))
-            m_paramDoc->invalidateLayer(fb->layer);
-        m_paramDoc->resolveAll();                 // live rotation preview
-        m_scene->refreshAllBlockItems();
+        // Per-frame preview (角度 HUD 击键): resolve ONLY the connected
+        // subgraph and sync cheaply — the old resolveAll() +
+        // refreshAllBlockItems() re-resolved the whole document and rebuilt
+        // every block item on EVERY keystroke.
+        QList<QUuid> seeds;
+        if (!att->fromComponentId.isNull()) {
+            // 组件级连接: 整个组件是 follower — 借暴露端点成员作种子
+            // (resolveForDrag 的 componentClosure 展开到全组件).
+            if (const auto* comp = m_paramDoc->findComponent(att->fromComponentId)) {
+                const QUuid mb = m_paramDoc->memberOwningPoint(*comp, att->fromPointId);
+                if (!mb.isNull()) seeds.push_back(mb);
+            }
+        } else if (!att->fromBlockId.isNull()) {
+            seeds.push_back(att->fromBlockId);
+        }
+        for (const QUuid& s : seeds)
+            if (const auto* fb = m_paramDoc->findBlock(s))
+                m_paramDoc->invalidateLayer(fb->layer);
+        if (!seeds.isEmpty())
+            m_paramDoc->resolveForDrag(seeds);
+        if (m_scene) m_scene->syncBlockPositions();
     }
 }
 
@@ -948,10 +1180,12 @@ void ConnectGesture::onAngleModeChanged(cad::param::RotationMode mode)
             const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
             const double alphaDeg = (radius > 1e-9)
                 ? (att->arcLength / radius) * 180.0 / M_PI : 0.0;
-            const double foldDeg = signedFoldDeg(alphaDeg);
-            m_angleHud->edit()->setText(formatDeg(foldDeg * M_PI / 180.0 * radius * 0.1));
+            const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
+            m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(
+                foldDeg * M_PI / 180.0 * radius * 0.1));
         } else {
-            m_angleHud->edit()->setText(formatDeg(signedFoldDeg(att->followerAngle)));
+            m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(
+                cad::geo::normalizeDeg180(att->followerAngle)));
         }
         m_angleHud->edit()->blockSignals(false);
     }
@@ -988,10 +1222,14 @@ void ConnectGesture::finalizeConnection()
     removeSourcePortMarker();
     m_confirmCandidates.clear();
     m_selectedSourceCandidate.reset();
+    m_componentSwitchCandidates.clear();
 
     // Snapshot the tuned attachment, then restore the COMPLETE pre-drag state
     // (transform + old attachment) and replay the whole gesture through the
     // undo stack: "quick-detach + connect + angle" becomes one undo step.
+    // 仅角度重挂 (m_reattachActive): 原附件换代 — 新态 (含 HUD 角度调整) 与
+    // 旧仅角度态都固化进 ReconnectAttachmentCommand, 单次 undo 即回到拖前
+    // 仅角度态 (位置/角度原样), 与普通连接的宏撤销体验一致。
     if (m_paramDoc && m_undoStack) {
         cad::param::Attachment snapshot;
         bool found = false;
@@ -999,51 +1237,37 @@ void ConnectGesture::finalizeConnection()
             if (a.id == m_editingAttachmentId) { snapshot = a; found = true; break; }
         }
         if (found) {
-            // For a component hinge the temp attachment only serves the live
-            // angle HUD; copy the tuned angle back into the hinge snapshot.
-            if (m_connectIsComponentHinge) {
-                m_editingComponentHinge.followerAngle = snapshot.followerAngle;
-                m_editingComponentHinge.followerAngleFormula = snapshot.followerAngleFormula;
-            }
-            m_paramDoc->removeAttachment(m_editingAttachmentId);
-            if (auto* blk = m_paramDoc->findBlock(snapshot.fromBlockId)) {
-                blk->transform.origin   = m_connectOrigOrigin;
-                blk->transform.rotation = m_connectOrigRotation;
-            }
-            if (!m_connectGroupId.isNull()) {
-                for (auto it = m_connectGroupOrigOrigins.cbegin(); it != m_connectGroupOrigOrigins.cend(); ++it) {
-                    if (it.key() == snapshot.fromBlockId) continue;
-                    if (auto* mb = m_paramDoc->findBlock(it.key())) {
-                        mb->transform.origin = it.value();
+            if (m_reattachActive) {
+                m_undoStack->push(new cad::cmd::ReconnectAttachmentCommand(
+                    m_paramDoc, m_editingAttachmentId, snapshot,
+                    m_reattachOldAtt, m_connectOrigOrigin, m_connectOrigRotation));
+            } else {
+                m_paramDoc->removeAttachment(m_editingAttachmentId);
+                if (!snapshot.fromComponentId.isNull()) {
+                    // 组件级连接: 恢复所有成员拖前 origin (宏 redo 再整体落位).
+                    for (auto it = m_connectOrigOrigins.cbegin(); it != m_connectOrigOrigins.cend(); ++it) {
+                        if (auto* mb = m_paramDoc->findBlock(it.key()))
+                            mb->transform.origin = it.value();
                     }
+                } else if (auto* blk = m_paramDoc->findBlock(snapshot.fromBlockId)) {
+                    blk->transform.origin   = m_connectOrigOrigin;
+                    blk->transform.rotation = m_connectOrigRotation;
                 }
-            }
-            if (m_connectOldAtt)
-                m_paramDoc->addAttachmentRaw(*m_connectOldAtt);  // verbatim (keep snapshot isLocked)
 
-            m_undoStack->beginMacro(QStringLiteral(
-                "\xe5\xbb\xba\xe7\xab\x8b\xe8\xbf\x9e\xe6\x8e\xa5"));  // 建立连接
-            if (m_connectOldAtt)
-                m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(
-                    m_paramDoc, m_connectOldAtt->id));
-            if (m_connectIsComponentHinge)
-                m_undoStack->push(new cad::cmd::SetComponentHingeCommand(
-                    m_paramDoc, m_editingComponentGroupId, m_editingComponentHinge));
-            else
+                m_undoStack->beginMacro(QStringLiteral(
+                    "\xe5\xbb\xba\xe7\xab\x8b\xe8\xbf\x9e\xe6\x8e\xa5"));  // 建立连接
+                // 暴露端点 (自动暴露) 由引擎在 addAttachment/addAttachmentRaw/
+                // removeAttachment 统一维护 — 连接宏只需 AddAttachmentCommand.
                 m_undoStack->push(new cad::cmd::AddAttachmentCommand(m_paramDoc, snapshot));
-            m_undoStack->endMacro();
+                m_undoStack->endMacro();
+            }
         }
     }
 
     m_editingAttachmentId = QUuid();
     m_connectFromBlock = QUuid();
     m_connectFromPoint = QUuid();
-    m_connectGroupId = QUuid();
-    m_connectGroupOrigOrigins.clear();
     m_connectTarget.reset();
-    m_connectOldAtt.reset();
-    m_connectIsComponentHinge = false;
-    m_editingComponentGroupId = QUuid();
     if (m_scene) m_scene->refreshAllBlockItems();
     m_clearSelectionAndIdle();
     // The owner tool is now Idle — sync the gesture's own state too, or
@@ -1146,9 +1370,9 @@ std::optional<SnapResult> ConnectGesture::hitPoint(const Vec2& worldPos) const
     double zoom = 1.0;
     if (m_scene && !m_scene->views().isEmpty())
         zoom = m_scene->views().first()->transform().m11();
-    // Same generous radius as the connect snap: grabbing a point to start
-    // a connection must feel as easy as dropping onto a target.
-    return m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, kConnectSnapRadius);
+    // Source-grab radius (kConnectGrabRadius) is deliberately more generous
+    // than the drop radius: grabbing must feel easy, dropping stays precise.
+    return m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, kConnectGrabRadius);
 }
 
 std::vector<SnapResult> ConnectGesture::hitPointCandidates(const Vec2& worldPos) const
@@ -1157,7 +1381,7 @@ std::vector<SnapResult> ConnectGesture::hitPointCandidates(const Vec2& worldPos)
     double zoom = 1.0;
     if (m_scene && !m_scene->views().isEmpty())
         zoom = m_scene->views().first()->transform().m11();
-    return m_snapEngine.findSnapCandidates(worldPos, m_paramDoc, zoom, kConnectSnapRadius);
+    return m_snapEngine.findSnapCandidates(worldPos, m_paramDoc, zoom, kConnectGrabRadius);
 }
 
 } // namespace cad::tools

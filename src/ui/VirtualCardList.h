@@ -27,12 +27,19 @@ class VirtualCardList : public QWidget
 public:
     using Factory = std::function<QWidget*(int row)>;        ///< Create row widget.
     using Binder  = std::function<void(int row, QWidget* w)>; ///< Sync widget with model.
+    /// Value-only sync (每帧 resolved 热路径): 与 Binder 同形, 但只刷新数值
+    /// 标签, 不整卡 rebind (2026-09 性能专项)。
+    using ValueBinder = std::function<void(int row, QWidget* w)>;
 
     explicit VirtualCardList(QWidget* parent = nullptr);
 
     /// Hook the owning scroll area: its scrollbar + viewport drive the window.
     void init(ElaScrollArea* area);
     void setProviders(Factory factory, Binder binder);
+    /// Light per-frame value refresh path — called by setRows() when the key
+    /// list is unchanged and a value binder is installed (falls back to a full
+    /// rebindAll() when absent).
+    void setValueBinder(ValueBinder f) { m_valueBinder = std::move(f); }
 
     /// Replace the row structure. Rows whose key survives keep their cached
     /// height. If the key list is unchanged, only materialized rows rebind.
@@ -40,6 +47,10 @@ public:
 
     /// Rebind every materialized row (data changed, structure did not).
     void rebindAll();
+
+    /// 值级刷新所有已物化行 (结构未变 + value binder 已装): 只跑轻量值更新,
+    /// 不重排/不整卡 rebind。无 value binder 时回退 rebindAll()。
+    void refreshValues();
 
     /// Row geometry in host coordinates (valid for non-materialized rows too).
     [[nodiscard]] QRect rowRect(int row) const;
@@ -76,6 +87,7 @@ private:
 
     Factory m_factory;
     Binder  m_binder;
+    ValueBinder m_valueBinder;
 
     QVector<QUuid> m_keys;
     QHash<QUuid, int> m_keyIndex;       ///< key → row position.

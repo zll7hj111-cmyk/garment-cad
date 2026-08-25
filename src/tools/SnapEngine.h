@@ -1,13 +1,15 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QString>
 #include <QSet>
+#include <QHash>
 #include <optional>
+#include <vector>
 
 #include "geometry/Vec2.h"
 
-namespace cad::param { class ParamDocument; }
+namespace cad::param { class ParamDocument; class Block; }
 
 namespace cad::tools {
 
@@ -118,6 +120,55 @@ public:
         double radiusPx = -1.0,
         const QSet<QUuid>* excludeSegments = nullptr,
         bool ignoreLayerFilter = false) const;
+
+private:
+    // ── 鼠标级 snap 坐标缓存 (2026-09 性能专项) ──────────────────────────────
+    // findSnap/findSnapCandidates/findSegmentSnap 在每次鼠标移动时全表扫描:
+    // 每块重算 cos/sin + 每点世界变换。缓存按块键控 (geometryEpoch + origin
+    // + rotation + 点数/段数), 未变的块零重算; 跨块指针只在单块处理期间
+    // 使用 (后续 insert 可能 rehash)。
+    struct SnapPointEntry {
+        QUuid pointId;
+        cad::geo::Vec2 world;
+        QString name;
+        bool selectable = false;
+        bool resolved = false;
+        bool bridgeNonAux = false;  ///< block.isBridge && !pt.isAuxiliary (never a target)
+        bool isCurveAnchor = false; ///< CurveAnchor pass-point (curve-edit snap)
+    };
+    struct SnapBlockEntry {
+        quint64 epoch = 0;
+        double ox = 0.0, oy = 0.0, rot = 0.0;
+        int pointCount = 0;
+        std::vector<SnapPointEntry> points;
+        /// Curve-relevant flags for findCurvePointSnap (parity with points):
+        /// 1 = point id is an endpoint of a curve segment. Computed once per
+        /// block-cache rebuild — the old path rebuilt a QSet<QUuid> and
+        /// re-did cos/sin + per-point world transforms on EVERY mouse move.
+        bool hasCurve = false;
+        std::vector<uint8_t> curveEndFlags;
+    };
+    struct SnapSegmentEntry {
+        QUuid segId;
+        cad::geo::Vec2 a, b;        ///< world endpoints (straight branch).
+        bool isCurve = false;
+        bool valid = false;         ///< false when either endpoint unresolved.
+    };
+    struct SnapSegBlockEntry {
+        quint64 epoch = 0;
+        double ox = 0.0, oy = 0.0, rot = 0.0;
+        int segCount = 0;
+        std::vector<SnapSegmentEntry> segs;
+    };
+    [[nodiscard]] const SnapBlockEntry* cachedSnapBlock(
+        const cad::param::Block& block) const;
+    [[nodiscard]] const SnapSegBlockEntry* cachedSnapSegBlock(
+        const cad::param::Block& block) const;
+    /// Drop stale cache entries when the doc shrank (removed blocks linger).
+    void pruneSnapCaches(const cad::param::ParamDocument* doc) const;
+
+    mutable QHash<QUuid, SnapBlockEntry> m_snapBlockCache;
+    mutable QHash<QUuid, SnapSegBlockEntry> m_snapSegCache;
 };
 
 } // namespace cad::tools

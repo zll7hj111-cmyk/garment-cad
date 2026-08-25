@@ -1,4 +1,4 @@
-﻿#include "MeasureTab.h"
+#include "MeasureTab.h"
 
 #include "ElaScrollArea.h"
 #include <QVBoxLayout>
@@ -99,6 +99,29 @@ QString angleSourceLabel(const cad::param::ParamDocument* doc,
          + endpointWithLayer(lb, sb);
 }
 
+/// A lightweight signature of every non-value field shown on the measure
+/// cards (name/comment/ref/source/kind). Values are intentionally excluded so
+/// the per-frame resolve path can stay value-only.
+QString measureMetaSignature(const cad::param::ParamDocument* doc)
+{
+    QString sig;
+    for (const auto& mv : doc->measureVars()) {
+        sig += mv.id.toString(QUuid::WithoutBraces);
+        sig += QLatin1Char('|') + mv.name + QLatin1Char('\x1f') + mv.refName +
+               QLatin1Char('\x1f') + mv.comment + QLatin1Char('\x1f') +
+               QString::number(static_cast<int>(mv.kind)) + QLatin1Char('\x1f') +
+               measureSourceLabel(doc, mv) + QLatin1Char('\n');
+    }
+    for (const auto& am : doc->angleMeasures()) {
+        sig += am.id.toString(QUuid::WithoutBraces);
+        sig += QLatin1Char('|') + am.name + QLatin1Char('\x1f') + am.refName +
+               QLatin1Char('\x1f') + am.comment + QLatin1Char('\n') +
+               angleSourceLabel(doc, am) + QLatin1Char('\n');
+    }
+    return sig;
+}
+
+
 } // namespace
 
 MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
@@ -177,7 +200,7 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
             connect(card, &AngleMeasureCard::edited,
                     this, &MeasureTab::onAngleMeasureEdited);
             connect(card, &AngleMeasureCard::sourceClicked,
-                    this, &MeasureTab::highlightBlockRequested);
+                    this, &MeasureTab::highlightAngleMeasureRequested);
             return card;
         },
         [this](int row, QWidget* w) {
@@ -201,11 +224,34 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
                 card->setAlternate(ai % 2 == 1);  // 缓存复用: 奇偶随新行号重设
             }
         });
+    // 2026-09 性能: resolved 每帧触发 sync() → setRows(同 keys) → 值级刷新
+    // (只有 measure/angle 值标签), 不再整卡 rebind。
+    m_host->setValueBinder([this](int row, QWidget* w) {
+        const auto& measures = m_doc->measureVars();
+        const auto& angles = m_doc->angleMeasures();
+        const int m = static_cast<int>(measures.size());
+        if (row < 0 || row >= m + static_cast<int>(angles.size()))
+            return;
+        if (row < m) {
+            auto* card = static_cast<MeasureCard*>(w);
+            card->refreshValue(measures[row].value, measures[row].dangling);
+        } else {
+            const int ai = row - m;
+            auto* card = static_cast<AngleMeasureCard*>(w);
+            card->refreshValue(angles[ai].value, angles[ai].dangling);
+        }
+    });
 }
 
 void MeasureTab::setUndoStack(QUndoStack* stack)
 {
     m_undoStack = stack;
+}
+
+void MeasureTab::notifyMeasureDataChanged()
+{
+    m_metaDirty = true;
+    sync();
 }
 
 void MeasureTab::sync()
@@ -220,7 +266,28 @@ void MeasureTab::sync()
         keys.append(mv.id);
     for (const auto& am : angles)
         keys.append(am.id);
-    m_host->setRows(keys);
+
+    if (m_metaDirty) {
+        const bool structuralChanged = (keys != m_lastKeys);
+        const bool metaChanged = (measureMetaSignature(m_doc) != m_lastMetaSignature);
+
+        m_host->setRows(keys);
+
+        // VirtualCardList only runs value-level refresh when the key list is
+        // unchanged. Metadata edits (name/comment/ref/source/kind) therefore
+        // need an explicit full rebind so dialogs outside the card (e.g. the
+        // measure-result dialog) immediately update the visible card.
+        if (metaChanged && !structuralChanged)
+            m_host->rebindAll();
+
+        m_lastKeys = keys;
+        m_lastMetaSignature = measureMetaSignature(m_doc);
+        m_metaDirty = false;
+    } else {
+        // Fast path: structure/metadata unchanged, only values may have moved.
+        m_host->setRows(keys);
+    }
+
     m_emptyHint->setVisible(measures.empty() && angles.empty());
 }
 

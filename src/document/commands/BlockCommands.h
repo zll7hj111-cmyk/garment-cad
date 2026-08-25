@@ -186,6 +186,37 @@ private:
     Props m_newProps;
 };
 
+/// 端点延长量 (延长线, EXTEND_LINE_DESIGN.md): 设置线段起/终点的延长量
+/// (数值 mm / 公式 cm 域, >=0)。原参数化/公式一律保留 —— 延长量是叠加参数。
+/// redo/undo 都显式 +geometryEpoch (本体不变但可视尾巴变 → 画布重绘铁律) +
+/// resolveAll (跟随线/交点/测量联动)。
+class SetSegmentExtendCommand : public QUndoCommand
+{
+public:
+    struct Values {
+        double startMm = 0.0;
+        QString startFormula;
+        double endMm = 0.0;
+        QString endFormula;
+    };
+
+    SetSegmentExtendCommand(cad::param::ParamDocument* doc,
+                            const QUuid& blockId, const QUuid& segmentId,
+                            const Values& newValues,
+                            QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    static bool apply(cad::param::Segment* s, const Values& v);
+
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    QUuid m_segmentId;
+    Values m_oldValues;
+    Values m_newValues;
+};
+
 /// Add an auxiliary (Interpolated) point to a host segment.
 /// Pushed as its OWN undo step, deliberately NOT merged with the line that
 /// borrows the point: the aux point belongs to the host segment (辅助点归

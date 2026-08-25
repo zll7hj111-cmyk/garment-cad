@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QString>
 #include <QStringList>
@@ -8,9 +8,22 @@
 namespace cad::param {
 
 /// Tiny recursive-descent evaluator for arithmetic expressions.
-/// Supports: + - * / ( ), unary +/-, decimal numbers, and identifiers
+/// Supports: + - * / ^ ( ), unary +/-, decimal numbers, and identifiers
 /// (including CJK characters) resolved through a name -> value map.
 /// Full-width characters (×÷（）＋－) are normalized before parsing.
+///
+/// Functions (lowercase-only, case-SENSITIVE; lowercase is reserved for
+/// functions so uppercase reference names like B / MA_xxx never collide):
+///   1-arg: cos / sin / tan / sqrt / abs / atan / asin / acos / floor /
+///          ceil / round        — argument in DEGREES for trig (garment
+///                                convention), result in DEGREES for the
+///                                inverse trig (atan / asin / acos).
+///   2-arg: atan2(y,x) / pow(a,b) / min(a,b) / max(a,b)
+///                                — two args need parentheses + comma:
+///                                atan2(y,x); inverse result in DEGREES.
+/// Bare-argument forms work for 1-arg functions: cos60, sqrt2, cos前肩角度.
+/// Power operator ^ is right-associative: 2^3^2 == 2^(3^2), and binds
+/// tighter than unary minus: -2^2 == -(2^2).
 ///
 /// Performance: each unique expression text is compiled ONCE into compact
 /// stack-machine bytecode and cached process-wide (identical text always
@@ -32,7 +45,12 @@ public:
         PushVar,  ///< Push a variable's value (resolved at execute time).
         Add, Sub, Mul, Div,
         Neg,      ///< Unary minus.
-        Cos, Sin, Tan  ///< Trig on a degree argument.
+        Cos, Sin, Tan,           ///< Trig on a degree argument.
+        Sqrt, Abs, Pow,          ///< sqrt(a), |a|, a^b.
+        Atan2,                   ///< atan2(y,x) -> degrees.
+        Atan, Asin, Acos,        ///< Inverse trig (degree argument -> degree result).
+        Floor, Ceil, Round,      ///< Rounding helpers.
+        Min, Max                 ///< Two-argument min/max.
     };
 
     struct Instr {
@@ -89,6 +107,8 @@ private:
     void parseExpression(Compiled& out);
     void parseTerm(Compiled& out);
     void parseFactor(Compiled& out);
+    void parsePrimary(Compiled& out);
+    void parseTwoArgCall(Compiled& out, const QString& name, Op op);
     int internName(const QString& name, Compiled& out);
     void appendOp(Compiled& out, Op op, double num = 0.0, int nameIdx = -1);
 

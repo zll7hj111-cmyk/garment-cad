@@ -8,6 +8,7 @@ class QUndoStack;
 class CanvasScene;
 
 namespace cad::param { class ParamDocument; }
+namespace cad::tools { class HudItem; }
 
 namespace cad::tools {
 
@@ -21,13 +22,23 @@ class Tool
 public:
     virtual ~Tool() = default;
 
-    /// Called when the tool becomes active.
+    /// Called when the tool becomes active. The default binds the shared
+    /// m_scene / m_paramDoc context; derived tools override to add their own
+    /// state reset, and MUST call the base first (or rebind explicitly).
     virtual void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) {
-        (void)scene; (void)paramDoc;
+        m_scene = &scene;
+        m_paramDoc = paramDoc;
     }
 
-    /// Called when the tool is deactivated.
-    virtual void deactivate() {}
+    /// Called when the tool is deactivated. The default releases the HUD if
+    /// one is held (releaseHud) and clears the context; derived tools override
+    /// to clear their own preview items, calling the base LAST (after their
+    /// items are gone — releaseHud removes the HUD from the scene).
+    virtual void deactivate() {
+        releaseHud();
+        m_scene = nullptr;
+        m_paramDoc = nullptr;
+    }
 
     /// Set the undo stack for command-based tools.
     void setUndoStack(QUndoStack* stack) { m_undoStack = stack; }
@@ -60,7 +71,19 @@ protected:
         if (m_switchRequest) m_switchRequest(type);
     }
 
+    /// Lazily create (and add to the scene) the persistent cursor HUD.
+    /// Safe to call repeatedly — the HUD is created once.
+    HudItem* ensureHud();
+
+    /// Remove and delete the HUD from the scene (idempotent).
+    void releaseHud();
+
     QUndoStack* m_undoStack = nullptr;
+
+    /// Bound scene / document context (set by activate).
+    CanvasScene* m_scene = nullptr;
+    cad::param::ParamDocument* m_paramDoc = nullptr;
+    HudItem* m_hud = nullptr;  ///< Persistent cursor-following HUD label.
 
 private:
     std::function<void(ToolType)> m_switchRequest;

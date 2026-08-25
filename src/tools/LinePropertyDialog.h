@@ -44,13 +44,14 @@ class IntersectionForm;
 class PointRefEdit;
 class SegmentAnchorTab;
 class SegmentAuxTab;
+class SegmentExtendCard;
 
 /// Modeless-style dialog for editing a segment's properties.
 /// Changes apply LIVE as the user edits (no need to press a button for preview).
 /// "关闭" accepts and closes; "撤销全部" reverts to the state before the dialog opened.
 ///
 /// Page 1 ("属性") card layout:
-///   基本信息 → 几何 → 跟随角度·连接 → 终点指向 → 外观 → 起点/终点.
+///   基本信息 → 几何 → 跟随角度·连接 → [延长 | 外观] → [起点 | 终点].
 class LinePropertyDialog : public ElaDialog
 {
     Q_OBJECT
@@ -64,6 +65,11 @@ public:
     ~LinePropertyDialog() override;
 
     [[nodiscard]] bool confirmed() const { return m_confirmed; }
+
+    /// Target of this dialog (block/segment under edit) — used by tests to
+    /// verify that a double-click picked the intended line.
+    [[nodiscard]] QUuid targetBlockId() const { return m_blockId; }
+    [[nodiscard]] QUuid targetSegmentId() const { return m_segmentId; }
 
     /// Switch the dialog to edit a different segment (used by the group tree).
     void setTarget(const QUuid& blockId, const QUuid& segmentId);
@@ -131,6 +137,7 @@ private:
     SegmentAuxTab*    m_auxTab = nullptr;
     SegmentAimCard*   m_aimCard = nullptr;   ///< 终点指向 card.
     SegmentConnectionCard* m_connCard = nullptr;  ///< 跟随角度·连接 card.
+    SegmentExtendCard* m_extendCard = nullptr;    ///< 延长 card (端点延长线).
 
     // Snapshot for cancel-revert
     struct Snapshot {

@@ -20,10 +20,17 @@
 #include "canvas/CanvasScene.h"
 #include "AuxPointForm.h"
 #include "IntersectionForm.h"
+#include "tools/LayerFeedback.h"
+#include "ui/Theme.h"
 
 namespace cad::tools {
 
 namespace {
+
+/// 跟随线角色色 — 跨层 badge 同族语义橙。CanvasStyle 侧同步定义 (canvas
+/// 端点/跟随线高亮同色); 此处是 UI rich-text 侧, 与 CanvasStyle 手工同步。
+/// 换主题时两处需一起改。
+const QString kFollowerRoleColor = QStringLiteral("#D97706");
 
 /// One connection at an endpoint of the current segment.
 struct ConnEntry {
@@ -37,24 +44,6 @@ struct ConnEntry {
     QUuid   segmentId;
     QString layerBadge;  ///< Cross-layer badge ("→ 层名"); empty = same layer.
 };
-
-/// Cross-layer badge text for an attachment whose follower and leader live on
-/// different layer kinds (合法方向: aux follower → working leader): returns
-/// "→ <leader 所在层名>"; empty for same-layer attachments.
-QString crossLayerBadge(cad::param::ParamDocument* doc,
-                        const cad::param::Attachment& att)
-{
-    if (!doc) return QString();
-    const cad::param::Block* from = doc->findBlock(att.fromBlockId);
-    const cad::param::Block* to   = doc->findBlock(att.toBlockId);
-    if (!from || !to) return QString();
-    if (doc->isAuxBlock(*from) == doc->isAuxBlock(*to)) return QString();
-    const auto* leaderLayer = doc->layerById(to->layer);
-    if (!leaderLayer)
-        return QString();
-    return QStringLiteral("\u2192 ")  // → <层名>
-         + leaderLayer->name;
-}
 
 /// Clickable bubble card describing one connection. Single-click selects the
 /// related segment on canvas; double-click jumps the dialog to edit it.
@@ -74,17 +63,17 @@ public:
 
         const QString role = e.isLeader ? QString::fromUtf8("\u57fa\u51c6\u7ebf")   // 基准线
                                         : QString::fromUtf8("\u8ddf\u968f\u7ebf");  // 跟随线
-        const QString roleColor = e.isLeader ? QStringLiteral("#2F6FED")
-                                             : QStringLiteral("#D97706");
+        const QString roleColor = e.isLeader ? cad::ui::Theme::tokens().text1.name()
+                                             : kFollowerRoleColor;
         const QString angleLabel = e.isLeader
             ? QString::fromUtf8("跟随角度")        // 跟随角度（本线所有）
             : QString::fromUtf8("其跟随角度");    // 其跟随角度（跟随线所有）
         // Cross-layer badge ("→ 操作层1") appended after the arrow; empty for
         // same-layer connections (no markup, card keeps its original look).
         const QString badgeHtml = e.layerBadge.isEmpty() ? QString()
-            : QStringLiteral(" <span style='color:#8e44ad;background:#f3e8ff;"
-                             "border-radius:3px;padding:0 4px;font-size:10px;'>%1</span>")
-                .arg(e.layerBadge.toHtmlEscaped());
+            : QStringLiteral(" <span style='%1'>%2</span>")
+                .arg(cad::ui::Theme::purpleBadgeStyle(),
+                     e.layerBadge.toHtmlEscaped());
         // Segment label: NAME first, serial as the fallback when unnamed
         // (有名称显示名称，无名称显示编号); same rule for the point.
         const QString segLabel = e.segName.isEmpty()
@@ -93,10 +82,10 @@ public:
         const QString pointLabel = e.pointName.isEmpty()
             ? cad::param::Serial::toHtml(e.pointSerial)
             : e.pointName.toHtmlEscaped();
-        const QString html = QStringLiteral(
+        QString html = QStringLiteral(
             "<div style='margin:2px;'>"
-            "<div><b style='color:%1;'>[%2]</b> %3 &nbsp;%4 &nbsp;<span style='color:#2F6FED;'>&rarr;</span>%9</div>"
-            "<div style='color:#6B7280;'>\u70b9 %5 &middot; %6 &middot; %7 &ang;%8&deg;</div>"
+            "<div><b style='color:%1;'>[%2]</b> %3 &nbsp;%4 &nbsp;<span style='color:__ACCENT__;'>&rarr;</span>%9</div>"
+            "<div style='color:__MUTED__;'>\u70b9 %5 &middot; %6 &middot; %7 &ang;%8&deg;</div>"
             "</div>")
             .arg(roleColor, role,
                  segLabel,
@@ -106,6 +95,8 @@ public:
                  angleLabel,
                  QString::number(e.angle, 'f', 1),
                  badgeHtml);
+        html.replace(QStringLiteral("__ACCENT__"), cad::ui::Theme::tokens().text1.name());
+        html.replace(QStringLiteral("__MUTED__"), cad::ui::Theme::tokens().text3.name());
 
         setToolTip(e.isLeader
             ? QStringLiteral("基准线：当前线（跟随线）的端点吸附于该线。\n"

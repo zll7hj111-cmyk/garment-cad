@@ -422,7 +422,7 @@ void LayerPanel::setupUi()
     auto* addBtn = new ElaToolButton(header);
     m_addBtn = addBtn;
     addBtn->setIcon(cad::ui::IconHelper::iconByName(
-        QStringLiteral("plus"), tk.accent));
+        QStringLiteral("plus"), tk.text1));
     addBtn->setIconSize(QSize(13, 13));
     addBtn->setToolTip(QString::fromUtf8("\u65b0\u5efa\u56fe\u5c42"));  // 新建图层
     addBtn->setFixedSize(26, 26);
@@ -431,7 +431,7 @@ void LayerPanel::setupUi()
         "QToolButton { background: transparent; border: 1px solid %1;"
         "  border-radius: 5px; }"
         "QToolButton:hover { background: %2; border: 1px solid %3; }")
-        .arg(tk.accent.name(), tk.accentTint.name(), tk.accentStrong.name()));
+        .arg(tk.borderStrong.name(), tk.surface2.name(), tk.borderStrong.name()));
     connect(addBtn, &QToolButton::clicked, this, &LayerPanel::onAddLayerClicked);
     headerLayout->addWidget(addBtn);
 
@@ -486,12 +486,12 @@ void LayerPanel::applyTheme()
         m_header->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
     if (m_addBtn) {
         m_addBtn->setIcon(cad::ui::IconHelper::iconByName(
-            QStringLiteral("plus"), tk.accent));
+            QStringLiteral("plus"), tk.text1));
         m_addBtn->setStyleSheet(QStringLiteral(
             "QToolButton { background: transparent; border: 1px solid %1;"
             "  border-radius: 5px; }"
             "QToolButton:hover { background: %2; border: 1px solid %3; }")
-            .arg(tk.accent.name(), tk.accentTint.name(), tk.accentStrong.name()));
+            .arg(tk.borderStrong.name(), tk.surface2.name(), tk.borderStrong.name()));
     }
     if (m_sep)
         m_sep->setStyleSheet(QStringLiteral("background: %1; border: none;").arg(tk.border.name()));

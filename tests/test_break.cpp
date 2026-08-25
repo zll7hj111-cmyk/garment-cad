@@ -2,14 +2,17 @@
 #include <QUuid>
 #include <QUndoStack>
 
+#include <algorithm>
 #include <cmath>
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
+#include "parametric/Component.h"
 #include "document/commands/BreakCommands.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
+#include "geometry/CurveMath.h"
 
 using namespace cad::param;
 using cad::geo::Vec2;
@@ -92,6 +95,108 @@ QUuid addAuxPoint(ParamDocument& doc, const QUuid& blockId,
     return ptId;
 }
 
+/// Flatten a curve entry's spans (local) into a world-space polyline.
+std::vector<Vec2> worldPolyline(const Block& b,
+                                const CurveSpanEntry& e)
+{
+    std::vector<Vec2> out;
+    for (const auto& s : e.spans) {
+        cad::geo::BezierSpan ws;
+        ws.p0 = b.transform.toWorld(s.p0);
+        ws.ctrl1 = b.transform.toWorld(s.ctrl1);
+        ws.ctrl2 = b.transform.toWorld(s.ctrl2);
+        ws.p3 = b.transform.toWorld(s.p3);
+        auto seg = cad::geo::flattenBezierSpans({ws}, 0.05);
+        if (out.empty()) out.insert(out.end(), seg.begin(), seg.end());
+        else out.insert(out.end(), seg.begin() + 1, seg.end());
+    }
+    return out;
+}
+
+/// Max deviation: for every point of A, the min distance to polyline B's
+/// segments (one-directional Hausdorff).
+double maxDeviation(const std::vector<Vec2>& a, const std::vector<Vec2>& b)
+{
+    double worst = 0.0;
+    auto distToSeg = [](const Vec2& p, const Vec2& s0, const Vec2& s1) {
+        const Vec2 d = s1 - s0;
+        double l2 = d.lengthSquared();
+        if (l2 < 1e-12) return p.distanceTo(s0);
+        double t = std::clamp((p - s0).dot(d) / l2, 0.0, 1.0);
+        return p.distanceTo(s0 + d * t);
+    };
+    for (const auto& p : a) {
+        double best = 1e18;
+        for (size_t i = 0; i + 1 < b.size(); ++i)
+            best = std::min(best, distToSeg(p, b[i], b[i + 1]));
+        worst = std::max(worst, best);
+    }
+    return worst;
+}
+
+/// Build a curve block: Free start (local 0,0) → Polar end, Bezier segment
+/// with two CurveAnchor pass points.
+struct CurveSetup {
+    QUuid blockId;
+    QUuid segId;
+    QUuid pp1Id;
+    QUuid pp2Id;
+};
+
+CurveSetup makeCurve(ParamDocument& doc)
+{
+    Block block;
+    block.transform.origin = Vec2(30.0, -40.0);
+    block.transform.rotation = 25.0 * M_PI / 180.0;
+
+    ParamPoint sp;
+    sp.constraint = PointConstraint::Free;
+    sp.freePos = Vec2::zero();
+    QUuid spId = sp.id;
+
+    ParamPoint ep;
+    ep.constraint = PointConstraint::Polar;
+    ep.refPointId = spId;
+    ep.distance = 120.0;
+    ep.angle = 0.0;
+    QUuid epId = ep.id;
+
+    block.addPoint(std::move(sp));
+    block.addPoint(std::move(ep));
+
+    Segment seg;
+    seg.type = SegmentType::Bezier;
+    seg.startPointId = spId;
+    seg.endPointId = epId;
+    seg.tension = 0.0;
+    QUuid segId = seg.id;
+
+    ParamPoint pp1;
+    pp1.constraint = PointConstraint::CurveAnchor;
+    pp1.hostSegmentId = segId;
+    pp1.interpPercent = 0.33;
+    pp1.interpOffsetDist = 18.0;
+    pp1.autoTangent = true;
+    QUuid pp1Id = pp1.id;
+
+    ParamPoint pp2;
+    pp2.constraint = PointConstraint::CurveAnchor;
+    pp2.hostSegmentId = segId;
+    pp2.interpPercent = 0.66;
+    pp2.interpOffsetDist = -14.0;
+    pp2.autoTangent = true;
+    QUuid pp2Id = pp2.id;
+
+    block.addPoint(std::move(pp1));
+    block.addPoint(std::move(pp2));
+    seg.passPointIds = {pp1Id, pp2Id};
+    QUuid blockId = block.id;
+    block.addSegment(std::move(seg));
+    doc.addBlock(std::move(block));
+    doc.resolveAll();
+    return {blockId, segId, pp1Id, pp2Id};
+}
+
 } // namespace
 
 class TestBreak : public QObject
@@ -109,6 +214,14 @@ private slots:
     void breakWithFormulaConstantNoRef();
     void breakInheritsLayer();
     void breakRefChainBackKeepsFormula();
+    void curveBreakKeepsShape();          // repro 1
+    void breakFollowerAtBreakpoint();     // repro 2a
+    void breakComponentAtBreakpoint();    // repro 2b
+    void curveBreakNearStartKeepsShape();
+    void curveBreakAtAnchorKeepsShape();
+    void breakFollowerAtOriginalEnd();
+    void curveBreakFollowerKeepsDirection();
+    void polarEndpointAnchorCycleResolves();
 };
 
 // ---------------------------------------------------------------------------
@@ -862,6 +975,498 @@ void TestBreak::breakRefChainBackKeepsFormula()
         if (b.id != blockId && b.id != originBlockId) backBlockId2 = b.id;
     QCOMPARE(doc.findBlock(backBlockId2)->segments[0].lengthFormula,
              QStringLiteral("(B/5)-%1").arg(refName));
+}
+
+// ---------------------------------------------------------------------------
+// REPRO 1 (曲线打断不能维持形状): breaking a Bezier segment must keep the
+// original shape for both halves (world-space Hausdorff deviation ≈ 0).
+// ---------------------------------------------------------------------------
+void TestBreak::curveBreakKeepsShape()
+{
+    ParamDocument doc;
+    auto [blockId, segId, pp1Id, pp2Id] = makeCurve(doc);
+
+    // Break point: interpolated (arc-length 50%) on the curve.
+    QUuid auxId = addAuxPoint(doc, blockId, segId, 0.5);
+    QVERIFY(!auxId.isNull());
+
+    const auto* preBlk = doc.findBlock(blockId);
+    const auto* preEntry = preBlk->curveSpanEntry(segId);
+    QVERIFY(preEntry && !preEntry->spans.empty());
+    const auto origPoly = worldPolyline(*preBlk, *preEntry);
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, auxId);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    std::vector<Vec2> broken;
+    int curveSegCount = 0;
+    for (const auto& b : doc.blocks()) {
+        for (const auto& s : b.segments) {
+            if (!s.isCurve()) continue;
+            ++curveSegCount;
+            if (const auto* e = b.curveSpanEntry(s.id)) {
+                const auto p = worldPolyline(b, *e);
+                broken.insert(broken.end(), p.begin(), p.end());
+            }
+        }
+    }
+    QCOMPARE(curveSegCount, 2);  // both halves must stay curves
+
+    const double d1 = maxDeviation(origPoly, broken);
+    const double d2 = maxDeviation(broken, origPoly);
+    qInfo().noquote() << QStringLiteral("curve shape deviation orig->broken=%1 broken->orig=%2")
+        .arg(d1, 0, 'f', 4).arg(d2, 0, 'f', 4);
+    QVERIFY2(d1 < 0.3, qPrintable(QStringLiteral("front/back drifted %1 mm from original").arg(d1, 0, 'f', 4)));
+    QVERIFY2(d2 < 0.3, qPrintable(QStringLiteral("broken curve drifted %1 mm from original").arg(d2, 0, 'f', 4)));
+}
+
+/// Collect every curve polyline (world space) in the document.
+static std::vector<Vec2> collectCurvePolylines(const ParamDocument& doc)
+{
+    std::vector<Vec2> out;
+    for (const auto& b : doc.blocks()) {
+        for (const auto& s : b.segments) {
+            if (!s.isCurve()) continue;
+            if (const auto* e = b.curveSpanEntry(s.id)) {
+                const auto p = worldPolyline(b, *e);
+                out.insert(out.end(), p.begin(), p.end());
+            }
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// 曲线打断形状保持 — 断点在第一个 pass 点之前（前段无 pass 点 → 中点插入
+// 路径，de Casteljau 半参数化）也必须按原曲线形状重建。
+// ---------------------------------------------------------------------------
+void TestBreak::curveBreakNearStartKeepsShape()
+{
+    ParamDocument doc;
+    auto [blockId, segId, pp1Id, pp2Id] = makeCurve(doc);
+
+    QUuid auxId = addAuxPoint(doc, blockId, segId, 0.08);
+    QVERIFY(!auxId.isNull());
+
+    const auto* preBlk = doc.findBlock(blockId);
+    const auto* preEntry = preBlk->curveSpanEntry(segId);
+    QVERIFY(preEntry && !preEntry->spans.empty());
+    const auto origPoly = worldPolyline(*preBlk, *preEntry);
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, auxId);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    const auto broken = collectCurvePolylines(doc);
+    const double d1 = maxDeviation(origPoly, broken);
+    const double d2 = maxDeviation(broken, origPoly);
+    qInfo().noquote() << QStringLiteral("near-start deviation orig->broken=%1 broken->orig=%2")
+        .arg(d1, 0, 'f', 4).arg(d2, 0, 'f', 4);
+    QVERIFY2(d1 < 0.3 && d2 < 0.3,
+             qPrintable(QStringLiteral("near-start break drifted (%1, %2) mm")
+                        .arg(d1, 0, 'f', 4).arg(d2, 0, 'f', 4)));
+}
+
+// ---------------------------------------------------------------------------
+// 曲线打断形状保持 — 断点本身就是链点（CurveAnchor / pass point）：无子跨度
+// 细分（hasSubSpans=false），冻结原曲线逐点 Hobby in/out 切线必须精确。
+// ---------------------------------------------------------------------------
+void TestBreak::curveBreakAtAnchorKeepsShape()
+{
+    ParamDocument doc;
+    auto [blockId, segId, pp1Id, pp2Id] = makeCurve(doc);
+
+    // pp1 is a CurveAnchor pass point at 33% chord — break right at it.
+    const auto* blk = doc.findBlock(blockId);
+    const auto* pp1 = blk->findPoint(pp1Id);
+    QVERIFY(pp1);
+
+    const auto* preEntry = blk->curveSpanEntry(segId);
+    QVERIFY(preEntry && !preEntry->spans.empty());
+    const auto origPoly = worldPolyline(*blk, *preEntry);
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, pp1Id);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    const auto broken = collectCurvePolylines(doc);
+    const double d1 = maxDeviation(origPoly, broken);
+    const double d2 = maxDeviation(broken, origPoly);
+    qInfo().noquote() << QStringLiteral("anchor break deviation orig->broken=%1 broken->orig=%2")
+        .arg(d1, 0, 'f', 4).arg(d2, 0, 'f', 4);
+    QVERIFY2(d1 < 0.3 && d2 < 0.3,
+             qPrintable(QStringLiteral("anchor break drifted (%1, %2) mm")
+                        .arg(d1, 0, 'f', 4).arg(d2, 0, 'f', 4)));
+}
+
+// ---------------------------------------------------------------------------
+// 原端点上的连接：打断后应被重指到后段终点（原线尾部）——连接保留、
+// 位置不动。
+// ---------------------------------------------------------------------------
+void TestBreak::breakFollowerAtOriginalEnd()
+{
+    ParamDocument doc;
+    auto [blockId, startId, endId, segId] = makeLine(doc, 200.0);
+    QUuid auxId = addAuxPoint(doc, blockId, segId, 0.5);
+
+    Block b;
+    b.transform.origin = Vec2(200.0, 0.0);
+    ParamPoint b1;
+    b1.constraint = PointConstraint::Free;
+    b1.freePos = Vec2::zero();
+    QUuid b1Id = b1.id;
+    ParamPoint b2;
+    b2.constraint = PointConstraint::Polar;
+    b2.refPointId = b1Id;
+    b2.distance = 80.0;
+    b2.angle = 0.0;
+    QUuid b2Id = b2.id;
+    b.addPoint(std::move(b1));
+    b.addPoint(std::move(b2));
+    Segment bs;
+    bs.startPointId = b1Id;
+    bs.endPointId = b2Id;
+    b.addSegment(std::move(bs));
+    QUuid bId = doc.addBlock(std::move(b));
+    doc.resolveAll();
+
+    Attachment att;
+    att.fromBlockId = bId;
+    att.fromPointId = b1Id;
+    att.toBlockId = blockId;
+    att.toPointId = endId;
+    att.toSegmentId = segId;
+    att.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    const auto* blk = doc.findBlock(bId);
+    const Vec2 before = blk->transform.toWorld(blk->findPoint(b1Id)->resolvedPos);
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, auxId);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    const auto* blk2 = doc.findBlock(bId);
+    QVERIFY(blk2);
+    const Vec2 after = blk2->transform.toWorld(blk2->findPoint(b1Id)->resolvedPos);
+    QVERIFY2(after.distanceTo(before) < 0.01,
+             qPrintable(QStringLiteral("end follower jumped %1 mm").arg(after.distanceTo(before))));
+
+    // Connection survives, re-pointed to the BACK block's end.
+    QUuid backBlockId;
+    for (const auto& bb : doc.blocks())
+        if (bb.id != blockId) backBlockId = bb.id;
+    QVERIFY(!backBlockId.isNull());
+    bool attAlive = false;
+    for (const auto& a : doc.attachments())
+        if (a.fromBlockId == bId) {
+            attAlive = true;
+            QCOMPARE(a.toBlockId, backBlockId);
+        }
+    QVERIFY(attAlive);
+
+    // Undo/redo round-trip keeps the connection and position.
+    cmd.undo();
+    bool attBack = false;
+    for (const auto& a : doc.attachments())
+        if (a.fromBlockId == bId) attBack = true;
+    QVERIFY(attBack);
+    cmd.redo();
+    bool attAlive2 = false;
+    for (const auto& a : doc.attachments())
+        if (a.fromBlockId == bId) attAlive2 = true;
+    QVERIFY(attAlive2);
+}
+
+// ---------------------------------------------------------------------------
+// 曲线断点上的跟随线：打断后世界朝向必须零跳变（角度补偿 refDeltaRad）。
+// ---------------------------------------------------------------------------
+void TestBreak::curveBreakFollowerKeepsDirection()
+{
+    ParamDocument doc;
+    auto [blockId, segId, pp1Id, pp2Id] = makeCurve(doc);
+    QUuid auxId = addAuxPoint(doc, blockId, segId, 0.5);
+
+    Block b;
+    b.transform.origin = Vec2::zero();
+    ParamPoint b1;
+    b1.constraint = PointConstraint::Free;
+    b1.freePos = Vec2::zero();
+    QUuid b1Id = b1.id;
+    ParamPoint b2;
+    b2.constraint = PointConstraint::Polar;
+    b2.refPointId = b1Id;
+    b2.distance = 80.0;
+    b2.angle = 20.0;
+    QUuid b2Id = b2.id;
+    b.addPoint(std::move(b1));
+    b.addPoint(std::move(b2));
+    Segment bs;
+    bs.startPointId = b1Id;
+    bs.endPointId = b2Id;
+    b.addSegment(std::move(bs));
+    QUuid bId = doc.addBlock(std::move(b));
+    doc.resolveAll();
+
+    Attachment att;
+    att.fromBlockId = bId;
+    att.fromPointId = b1Id;
+    att.toBlockId = blockId;
+    att.toPointId = auxId;
+    att.toSegmentId = segId;
+    att.followerAngle = 55.0;  // some non-trivial relative angle
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    const auto* blk = doc.findBlock(bId);
+    const Vec2 p0before = blk->transform.toWorld(blk->findPoint(b1Id)->resolvedPos);
+    const Vec2 p1before = blk->transform.toWorld(blk->findPoint(b2Id)->resolvedPos);
+    const double dirBefore = std::atan2(p1before.y - p0before.y, p1before.x - p0before.x);
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, auxId);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    const auto* blk2 = doc.findBlock(bId);
+    QVERIFY(blk2);
+    const Vec2 p0after = blk2->transform.toWorld(blk2->findPoint(b1Id)->resolvedPos);
+    const Vec2 p1after = blk2->transform.toWorld(blk2->findPoint(b2Id)->resolvedPos);
+    const double dirAfter = std::atan2(p1after.y - p0after.y, p1after.x - p0after.x);
+    double dAng = std::abs(dirAfter - dirBefore);
+    dAng = std::fmod(dAng, 2.0 * M_PI);
+    if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
+    const double dAngDeg = dAng * 180.0 / M_PI;
+    qInfo().noquote() << QStringLiteral("follower dir before=%1 after=%2 deltaDeg=%3")
+        .arg(dirBefore * 180.0 / M_PI, 0, 'f', 3)
+        .arg(dirAfter * 180.0 / M_PI, 0, 'f', 3).arg(dAngDeg, 0, 'f', 4);
+
+    QVERIFY2(dAngDeg < 0.01,
+             qPrintable(QStringLiteral("curve follower rotated %1 deg on break").arg(dAngDeg)));
+    QVERIFY2(p0after.distanceTo(p0before) < 0.01,
+             qPrintable(QStringLiteral("curve follower jumped %1 mm")
+                        .arg(p0after.distanceTo(p0before))));
+    bool attAlive = false;
+    for (const auto& a : doc.attachments())
+        if (a.fromBlockId == bId) attAlive = true;
+    QVERIFY(attAlive);
+}
+
+// ---------------------------------------------------------------------------
+// REPRO 2a (端点连接打断位置跳变): a follower line attached at the break
+// point must keep its position AND its connection after the break.
+// ---------------------------------------------------------------------------
+void TestBreak::breakFollowerAtBreakpoint()
+{
+    ParamDocument doc;
+    auto [blockId, startId, endId, segId] = makeLine(doc, 200.0);
+    QUuid auxId = addAuxPoint(doc, blockId, segId, 0.5);
+
+    Block b;
+    b.transform.origin = Vec2(100.0, 0.0);
+    ParamPoint b1;
+    b1.constraint = PointConstraint::Free;
+    b1.freePos = Vec2::zero();
+    QUuid b1Id = b1.id;
+    ParamPoint b2;
+    b2.constraint = PointConstraint::Polar;
+    b2.refPointId = b1Id;
+    b2.distance = 80.0;
+    b2.angle = 0.0;
+    QUuid b2Id = b2.id;
+    b.addPoint(std::move(b1));
+    b.addPoint(std::move(b2));
+    Segment bs;
+    bs.startPointId = b1Id;
+    bs.endPointId = b2Id;
+    QUuid bSegId = bs.id;
+    b.addSegment(std::move(bs));
+    QUuid bId = doc.addBlock(std::move(b));
+    doc.resolveAll();
+
+    Attachment att;
+    att.fromBlockId = bId;
+    att.fromPointId = b1Id;
+    att.toBlockId = blockId;
+    att.toPointId = auxId;
+    att.toSegmentId = segId;
+    att.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    const auto* blk = doc.findBlock(bId);
+    const Vec2 before = blk->transform.toWorld(blk->findPoint(b1Id)->resolvedPos);
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, auxId);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    const auto* blk2 = doc.findBlock(bId);
+    QVERIFY(blk2);
+    const Vec2 after = blk2->transform.toWorld(blk2->findPoint(b1Id)->resolvedPos);
+    qInfo().noquote() << QStringLiteral("follower before=(%1,%2) after=(%3,%4)")
+        .arg(before.x, 0, 'f', 3).arg(before.y, 0, 'f', 3)
+        .arg(after.x, 0, 'f', 3).arg(after.y, 0, 'f', 3);
+
+    bool attAlive = false;
+    for (const auto& a : doc.attachments())
+        if (a.fromBlockId == bId) attAlive = true;
+    qInfo() << "follower attachment alive:" << attAlive;
+
+    QVERIFY2(after.distanceTo(before) < 0.01,
+             qPrintable(QStringLiteral("follower jumped %1 mm").arg(after.distanceTo(before))));
+    QVERIFY(attAlive);  // the connection must survive the break
+}
+
+// ---------------------------------------------------------------------------
+// REPRO 2b (组件连接打断位置跳变): a component attached at the break point
+// must keep its position AND its connection after the break.
+// ---------------------------------------------------------------------------
+void TestBreak::breakComponentAtBreakpoint()
+{
+    ParamDocument doc;
+    auto [blockId, startId, endId, segId] = makeLine(doc, 200.0);
+    QUuid auxId = addAuxPoint(doc, blockId, segId, 0.5);
+
+    // Component member A: starts at (100, 0) → (150, 0).
+    Block ma;
+    ma.transform.origin = Vec2(100.0, 0.0);
+    ParamPoint ma1;
+    ma1.constraint = PointConstraint::Free;
+    ma1.freePos = Vec2::zero();
+    QUuid ma1Id = ma1.id;
+    ParamPoint ma2;
+    ma2.constraint = PointConstraint::Free;
+    ma2.freePos = Vec2(50.0, 0.0);
+    QUuid ma2Id = ma2.id;
+    ma.addPoint(std::move(ma1));
+    ma.addPoint(std::move(ma2));
+    Segment mas;
+    mas.startPointId = ma1Id;
+    mas.endPointId = ma2Id;
+    ma.addSegment(std::move(mas));
+    QUuid maId = doc.addBlock(std::move(ma));
+
+    Block mb;
+    mb.transform.origin = Vec2(150.0, 0.0);
+    ParamPoint mb1;
+    mb1.constraint = PointConstraint::Free;
+    mb1.freePos = Vec2::zero();
+    QUuid mb1Id = mb1.id;
+    ParamPoint mb2;
+    mb2.constraint = PointConstraint::Free;
+    mb2.freePos = Vec2(40.0, 30.0);
+    QUuid mb2Id = mb2.id;
+    mb.addPoint(std::move(mb1));
+    mb.addPoint(std::move(mb2));
+    Segment mbs;
+    mbs.startPointId = mb1Id;
+    mbs.endPointId = mb2Id;
+    mb.addSegment(std::move(mbs));
+    QUuid mbId = doc.addBlock(std::move(mb));
+    doc.resolveAll();
+
+    Component comp;
+    comp.name = QStringLiteral("C");
+    comp.memberBlockIds = {maId, mbId};
+    QUuid compId = doc.addComponent(comp);
+
+    Attachment att;
+    att.fromComponentId = compId;
+    att.fromPointId = ma1Id;  // exposed endpoint at the break point
+    att.toBlockId = blockId;
+    att.toPointId = auxId;
+    att.toSegmentId = segId;
+    att.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    const auto* blk = doc.findBlock(maId);
+    const Vec2 before = blk->transform.toWorld(blk->findPoint(ma1Id)->resolvedPos);
+
+    cad::cmd::BreakSegmentCommand cmd(&doc, blockId, segId, auxId);
+    QVERIFY(cmd.isValid());
+    cmd.redo();
+
+    const auto* blk2 = doc.findBlock(maId);
+    QVERIFY(blk2);
+    const Vec2 after = blk2->transform.toWorld(blk2->findPoint(ma1Id)->resolvedPos);
+    qInfo().noquote() << QStringLiteral("component member before=(%1,%2) after=(%3,%4)")
+        .arg(before.x, 0, 'f', 3).arg(before.y, 0, 'f', 3)
+        .arg(after.x, 0, 'f', 3).arg(after.y, 0, 'f', 3);
+
+    bool attAlive = false;
+    for (const auto& a : doc.attachments())
+        if (a.fromComponentId == compId) attAlive = true;
+    qInfo() << "component attachment alive:" << attAlive;
+
+    QVERIFY2(after.distanceTo(before) < 0.01,
+             qPrintable(QStringLiteral("component jumped %1 mm").arg(after.distanceTo(before))));
+    QVERIFY(attAlive);  // the component connection must survive the break
+}
+
+// ---------------------------------------------------------------------------
+// 3.gcad 循环复现（引擎级修复回归）：线段端点（Polar）锚在本线段交点辅助点
+// 上 = 冷启动死锁（端点无缓存位姿 → 线段退化 → 交点永不解析 → 端点永不解析）。
+// 修复：退化线段启动种子（极角公式暂时锚段起点），不动点随后收敛到真锚。
+// 不动点解析值：P175=(7.5,0)，P176=(22.5,0)（= P175 + 15mm @0°，两轮收敛）。
+// ---------------------------------------------------------------------------
+void TestBreak::polarEndpointAnchorCycleResolves()
+{
+    ParamDocument doc;
+    auto [blockId, startId, endId, segId] = makeLine(doc, 15.0);
+
+    // 交点射线锚点块（起点位于 (7.5, -50)，射线 90° 竖直向上）。
+    auto [bId, bStartId, bEndId, bSegId] = makeLine(doc, 50.0);
+    {
+        auto* bBlk = doc.findBlock(bId);
+        bBlk->transform.origin = Vec2(7.5, -50.0);
+        doc.resolveAll();
+    }
+
+    // P175: 交点（host=线段本身, 锚点=另一块起点, 相对宿主角 90°）。
+    QUuid auxId;
+    {
+        auto* blk = doc.findBlock(blockId);
+        auto* seg = blk->findSegment(segId);
+        ParamPoint pt;
+        pt.constraint = PointConstraint::Intersection;
+        pt.hostSegmentId = segId;
+        pt.refPointA = bStartId;
+        pt.interAngle = 90.0;
+        pt.isAuxiliary = true;
+        auxId = pt.id;
+        blk->addPoint(std::move(pt));
+        seg->auxPointIds.push_back(auxId);
+    }
+
+    // 复现 3.gcad：把线段端点锚到同段交点（循环依赖）。
+    {
+        auto* blk = doc.findBlock(blockId);
+        auto* seg = blk->findSegment(segId);
+        auto* ep = blk->findPoint(seg->endPointId);
+        ep->refPointId = auxId;
+    }
+
+    // 冷启动（全新文档 = 无缓存位姿）——修复前此调用后端点永久 unresolved。
+    doc.resolveAll();
+
+    const auto* blk = doc.findBlock(blockId);
+    const auto* seg = blk->findSegment(segId);
+    const auto* sp = blk->findPoint(seg->startPointId);
+    const auto* ep = blk->findPoint(seg->endPointId);
+    const auto* aux = blk->findPoint(auxId);
+    qInfo().noquote() << QStringLiteral("aux=(%1,%2) ep=(%3,%4)")
+        .arg(aux->resolvedPos.x, 0, 'f', 3).arg(aux->resolvedPos.y, 0, 'f', 3)
+        .arg(ep->resolvedPos.x, 0, 'f', 3).arg(ep->resolvedPos.y, 0, 'f', 3);
+    QVERIFY2(aux->resolved, "intersection anchored to own segment must resolve");
+    QVERIFY2(ep->resolved, "polar endpoint anchored to own-segment aux must resolve");
+    QVERIFY2(aux->resolvedPos.distanceTo(Vec2(7.5, 0.0)) < 0.01,
+             "aux must converge to the fixed point");
+    QVERIFY2(ep->resolvedPos.distanceTo(Vec2(22.5, 0.0)) < 0.01,
+             "endpoint must converge to the fixed point");
+    (void)sp;
 }
 
 QTEST_MAIN(TestBreak)

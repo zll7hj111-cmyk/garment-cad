@@ -59,6 +59,41 @@ struct Units {
     static QString formatAngle(double degrees, int precision = 1) {
         return QString::number(degrees, 'f', precision) + QChar(0x00B0); // ° symbol
     }
+
+    // --- Trimmed display strings (card value labels) ---
+
+    /// Trim trailing zeros (and a trailing decimal point) from a formatted
+    /// number string, e.g. "12.50" -> "12.5", "12.00" -> "12".
+    static QString trimTrailingZeros(QString s) {
+        while (s.endsWith(QLatin1Char('0'))) s.chop(1);
+        if (s.endsWith(QLatin1Char('.'))) s.chop(1);
+        return s;
+    }
+
+    /// Format a mm value as a trimmed cm string WITHOUT a unit suffix
+    /// (e.g. "12.5"). Shared by the variable/measure card value labels.
+    static QString formatCmTrimmed(double mm) {
+        return trimTrailingZeros(QString::number(mmToCm(mm), 'f', 2));
+    }
+
+    /// Format a plain number with 2 decimals, trailing zeros trimmed
+    /// (e.g. "12.5"). Shared by the formula card result label.
+    static QString formatNumberTrimmed(double v) {
+        return trimTrailingZeros(QString::number(v, 'f', 2));
+    }
+
+    /// Format a degree value with trailing zeros trimmed and a degree suffix
+    /// (e.g. "12.5°"). Shared by the angle-measure card value label.
+    static QString formatDegTrimmed(double deg) {
+        return trimTrailingZeros(QString::number(deg, 'f', 1)) + QChar(0x00B0);
+    }
+
+    /// Format a degree value with 1 decimal, trailing ".0" trimmed, WITHOUT a
+    /// degree suffix (e.g. "22" / "22.5"). Shared by the rotate HUD and the
+    /// segment property dialogs (formerly local formatDeg/formatAngleDeg).
+    static QString formatDegValue(double deg) {
+        return trimTrailingZeros(QString::number(deg, 'f', 1));
+    }
 };
 
 } // namespace cad::geo

@@ -1,7 +1,8 @@
-#include "Resolver.h"
+﻿#include "Resolver.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include <QHash>
 
@@ -9,6 +10,7 @@
 #include "Attachment.h"
 #include "ConditionEngine.h"
 #include "parametric/PerfProbe.h"
+#include "parametric/IntersectDebug.h"
 #include "geometry/Units.h"
 
 namespace cad::param {
@@ -28,6 +30,145 @@ void report(std::vector<ResolveDiagnostic>* diagnostics,
 
 } // namespace
 
+bool Resolver::resolveCrossBlockIntersection(
+    std::vector<Block>& blocks, Block& block, ParamPoint& pt,
+    const QHash<QString, double>& params,
+    const QHash<QString, QList<Condition>>& conditioned,
+    EvalContext& ctx, int pass, Scope scope)
+{
+    // Skip if BOTH the origin and (when set) the aim point live in the
+    // same block (already resolved in Step 1). An origin or aim point
+    // outside this block is resolved here in world space.
+    if (block.findPoint(pt.refPointA)
+        && (pt.interAimPointId.isNull() || block.findPoint(pt.interAimPointId)))
+        return false;
+
+    // Find the origin point in another block.
+    geo::Vec2 originWorld;
+    bool found = false;
+    for (const auto& ob : blocks) {
+        const ParamPoint* op = ob.findPoint(pt.refPointA);
+        if (op && op->resolved) {
+            originWorld = ob.worldPos(pt.refPointA);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        if (idbg::enabled())
+            idbg::log(QStringLiteral("[inter] origin NOT resolved pt=%1 pass=%2 scope=%3")
+                          .arg(pt.serial).arg(pass).arg(int(scope)));
+        return false;
+    }
+    if (idbg::enabled())
+        idbg::log(QStringLiteral("[inter] eval pt=%1 pass=%2 scope=%3 origin=(%4,%5)")
+                      .arg(pt.serial).arg(pass).arg(int(scope))
+                      .arg(originWorld.x).arg(originWorld.y));
+
+    // Target segment endpoints (world). The END point may be
+    // mid-cycle in the outer fixpoint (e.g. a break endpoint whose
+    // position depends on this intersection): its cached position is
+    // used now and later iterations converge once the endpoint
+    // resolves. The START point must be resolved — it anchors the
+    // segment geometry.
+    const Segment* seg = block.findSegment(pt.hostSegmentId);
+    if (!seg) return false;
+    const ParamPoint* sp = block.findPoint(seg->startPointId);
+    const ParamPoint* ep = block.findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved) return false;
+
+    // 宿主段几何按"有效位置"（含端点延长尾巴，D7b：交叉点跟实际线走）。
+    geo::Vec2 w1 = block.transform.toWorld(block.effectiveLocalPos(seg->startPointId));
+    geo::Vec2 w2 = block.transform.toWorld(block.effectiveLocalPos(seg->endPointId));
+    geo::Vec2 segDir = w2 - w1;
+    double segLen = segDir.length();
+    // Degenerate-segment bootstrap: only when the endpoint has NO
+    // cached pose either (cold start — zero position). The cached
+    // pose of a warm/live doc is the designed bootstrap and is left
+    // untouched. The seed evaluates the polar formula anchored at the
+    // segment START so the intersection can fire; the fixpoint
+    // re-anchors the endpoint once the aux resolves.
+    if (segLen < 1e-9 && !ep->resolved) {
+        geo::Vec2 seedLocal;
+        if (Block::polarEndpointCycleSeed(*ep, block, *seg, *sp,
+                                          params, conditioned, &ctx,
+                                          seedLocal)) {
+            w2 = block.transform.toWorld(seedLocal);
+            segDir = w2 - w1;
+            segLen = segDir.length();
+        }
+    }
+    if (segLen < 1e-9) return false;
+
+    // Ray direction: aim-point mode (指向点) overrides the angle —
+    // the ray points straight at interAimPointId (world space).
+    double theta;
+    if (!pt.interAimPointId.isNull()) {
+        geo::Vec2 aimWorld;
+        bool aimFound = false;
+        for (const auto& ob : blocks) {
+            const ParamPoint* ap = ob.findPoint(pt.interAimPointId);
+            if (ap && ap->resolved) {
+                aimWorld = ob.worldPos(pt.interAimPointId);
+                aimFound = true;
+                break;
+            }
+        }
+        if (!aimFound) return false;
+        geo::Vec2 toAim = aimWorld - originWorld;
+        if (toAim.lengthSquared() < 1e-12) return false;  // Coincident with origin.
+        theta = std::atan2(toAim.y, toAim.x);
+    } else {
+        double baseAngle = std::atan2(segDir.y, segDir.x);
+
+        // Evaluate angle (formula).
+        double angleDeg = pt.interAngle;
+        if (!pt.interAngleFormula.isEmpty()) {
+            auto r = ConditionEngine::evaluate(pt.interAngleFormula, params, conditioned, &ctx);
+            if (r.ok) angleDeg = r.value;
+        }
+        if (pt.interUseWorldAngle) {
+            theta = angleDeg * M_PI / 180.0;
+        } else {
+            theta = baseAngle + angleDeg * M_PI / 180.0;
+        }
+    }
+    geo::Vec2 d{std::cos(theta), std::sin(theta)};
+
+    double denom = d.cross(segDir);
+    if (std::abs(denom) < 1e-9) return false;  // Parallel.
+
+    geo::Vec2 w = w1 - originWorld;
+    double s = w.cross(segDir) / denom;
+    double t = w.cross(d) / denom;
+
+    constexpr double eps = 1e-6;
+    bool validT = (t >= -eps && t <= 1.0 + eps);
+    bool validS = pt.interBidirectional ? true : (s >= -eps);
+    if (!validT || !validS) {
+        if (idbg::enabled())
+            idbg::log(QStringLiteral("[inter] MISS pt=%1 s=%2 t=%3 (bidir=%4) prior=(%5,%6)")
+                          .arg(pt.serial).arg(s).arg(t)
+                          .arg(pt.interBidirectional ? 1 : 0)
+                          .arg(pt.resolvedPos.x).arg(pt.resolvedPos.y));
+        return false;
+    }
+
+    geo::Vec2 hitWorld = originWorld + d * s;
+    const geo::Vec2 newLocal = block.transform.toLocal(hitWorld);
+    if (idbg::enabled())
+        idbg::log(QStringLiteral("[inter] HIT pt=%1 hit=(%2,%3) local=(%4,%5) moved=%6")
+                      .arg(pt.serial).arg(hitWorld.x).arg(hitWorld.y)
+                      .arg(newLocal.x).arg(newLocal.y)
+                      .arg((pt.resolvedPos - newLocal).length()));
+    if (!pt.resolved || pt.resolvedPos.distanceSquaredTo(newLocal) > 1e-6)
+        ++block.geometryEpoch;  // canvas must rebuild the cache
+    const bool madeProgress = !pt.resolved;
+    pt.resolvedPos = newLocal;
+    pt.resolved = true;
+    return madeProgress;
+}
+
 void Resolver::resolveAll(std::vector<Block>& blocks,
                           const std::vector<Attachment>& attachments,
                           const QHash<QString, double>& params,
@@ -35,8 +176,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                           std::vector<ResolveDiagnostic>* diagnostics,
                           Scope scope,
                           const QUuid& auxLayerId,
-                          const QSet<QUuid>* affectedOnly,
-                           const std::vector<Component>& components)
+                          const QSet<QUuid>* affectedOnly)
 {
     if (diagnostics) diagnostics->clear();
     GCAD_PERF_SCOPE("r.total");
@@ -77,20 +217,6 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     for (int i = 0; i < static_cast<int>(blocks.size()); ++i)
         blockIndex.insert(blocks[i].id, i);
 
-    // Component (组件) prep: active components own their members, so ordinary
-    // attachments from those members are skipped below; the component pass
-    // later drives the whole assembly from the single hinge.
-    QSet<QUuid> componentMembers;
-    QList<int> activeComponents;
-    for (int ci = 0; ci < static_cast<int>(components.size()); ++ci) {
-        const Component& comp = components[static_cast<size_t>(ci)];
-        if (comp.hasHinge) {
-            activeComponents.push_back(ci);
-            for (const QUuid& mid : comp.memberIds)
-                componentMembers.insert(mid);
-        }
-    }
-
     // Settle the (non-pin) attachment forest in TOPOLOGICAL order. The forest
     // invariant (see AttachmentGraph.h) guarantees every block is the follower
     // of AT MOST one regular attachment and the leader links are acyclic, so
@@ -113,73 +239,79 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         GCAD_PERF_SCOPE("r.settle");
         const int n = static_cast<int>(blocks.size());
 
-        // incoming[b] = index of the unique non-pin attachment whose from-block
-        // is b (-1 if none); leader[b] = block index b follows (-1 if none/absent).
+        // Each follower is driven by its position leader (toBlock) and, when a
+        // separate angle reference is configured, also by the angle-ref block.
+        // This is a small DAG: a block is settled only after all in-scope
+        // dependencies (position leader + optional angle reference) are final.
         std::vector<int> incoming(n, -1);
-        std::vector<int> leader(n, -1);
+        std::vector<std::vector<int>> dependents(n);
+        std::vector<int> remaining(n, 0);
+        std::vector<char> inScopeArr(n, 0);
+        for (int b = 0; b < n; ++b)
+            inScopeArr[b] = inScope(blocks[b]) ? 1 : 0;
+
+        int toSettle = 0;
         for (int ai = 0; ai < static_cast<int>(attachments.size()); ++ai) {
             const auto& att = attachments[ai];
             // Bridge pins are pure position constraints resolved in Step 4 —
             // they never participate in the leader forest settlement.
             if (att.isPin) continue;
-            if (componentMembers.contains(att.fromBlockId)) continue;
             auto fromIt = blockIndex.find(att.fromBlockId);
             if (fromIt == blockIndex.end()) {              // dangling from-block
                 report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
                 continue;
             }
             const int fi = fromIt.value();
-            if (!inScope(blocks[fi])) continue;            // frozen group
+            if (!inScopeArr[fi]) continue;                // frozen group
             incoming[fi] = ai;
-            auto toIt = blockIndex.find(att.toBlockId);
-            leader[fi] = (toIt != blockIndex.end()) ? toIt.value() : -1;
-        }
-
-        // Child adjacency as flat linked lists (firstChild/nextSibling) to avoid
-        // per-block heap allocations on this per-frame path.
-        std::vector<int> firstChild(n, -1);
-        std::vector<int> nextSibling(n, -1);
-        int toSettle = 0;  // # in-scope blocks that own an incoming attachment
-        for (int b = 0; b < n; ++b) {
-            if (incoming[b] < 0) continue;
             ++toSettle;
-            const int l = leader[b];
-            if (l >= 0 && inScope(blocks[l])) {  // b is a child of an in-scope leader
-                nextSibling[b] = firstChild[l];
-                firstChild[l] = b;
-            }
+
+            auto addDep = [&](const QUuid& depBlockId) {
+                if (depBlockId.isNull()) return;
+                auto depIt = blockIndex.find(depBlockId);
+                if (depIt == blockIndex.end()) return;     // missing = static/absent
+                const int di = depIt.value();
+                if (di == fi || !inScopeArr[di]) return;   // self or frozen
+                dependents[di].push_back(fi);
+                ++remaining[fi];
+            };
+            addDep(att.toBlockId);
+            addDep(att.angleRefBlockId);
         }
 
-        // Seed the queue with roots: in-scope blocks with no in-scope leader
-        // (unconstrained blocks, and followers of a static/absent leader). A root
-        // with no incoming attachment still must be visited to release its children.
+        // Seed with every in-scope block whose dependencies are already final.
         std::vector<int> queue;
         queue.reserve(n);
         for (int b = 0; b < n; ++b) {
-            if (!inScope(blocks[b])) continue;
-            const int l = leader[b];
-            if (!(l >= 0 && inScope(blocks[l])))
+            if (inScopeArr[b] && remaining[b] == 0)
                 queue.push_back(b);
         }
 
-        // BFS: settle a block (its leader is already final), then release followers.
         int settled = 0;
         for (size_t head = 0; head < queue.size(); ++head) {
             const int b = queue[head];
             if (incoming[b] >= 0) {
                 const auto& att = attachments[incoming[b]];
                 auto toIt = blockIndex.find(att.toBlockId);
+                const Block* angleRef = nullptr;
+                if (!att.angleRefBlockId.isNull()) {
+                    auto refIt = blockIndex.find(att.angleRefBlockId);
+                    if (refIt != blockIndex.end())
+                        angleRef = &blocks[refIt.value()];
+                }
                 if (toIt == blockIndex.end()) {
                     report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
                 } else {
-                    applyAttachment(blocks[b], att, blocks[toIt.value()],
+                    applyAttachment(blocks[b], att, blocks[toIt.value()], angleRef,
                                     params, conditioned, diagnostics, &ctx,
                                     preserveEndTargetRotation);
+                    ++settled;
                 }
-                ++settled;
             }
-            for (int c = firstChild[b]; c != -1; c = nextSibling[c])
-                queue.push_back(c);
+            for (const int d : dependents[b]) {
+                if (--remaining[d] == 0)
+                    queue.push_back(d);
+            }
         }
 
         // Unsettled owners mean a cycle/unreachable block (forest invariant
@@ -252,89 +384,6 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // so bridge followers (and anything downstream of them) land correctly.
     // Skipped entirely when no bridge moved — the Step 3 settlement is still
     // valid then, and an extra settle pass is the single biggest per-frame cost.
-    // Step 5b: COMPONENT hinges (路线B). Active components are rigid bodies:
-    // the single main hinge positions/rotates the root block, then every
-    // member transform is derived from the root so the whole assembly moves
-    // as one. Internal/owned attachments were excluded from Steps 3/5.
-    if (!activeComponents.isEmpty()) {
-        GCAD_PERF_SCOPE("r.components");
-        for (const int ci : activeComponents) {
-            const Component& comp = components[static_cast<size_t>(ci)];
-            if (!comp.hasHinge || !comp.hinge.isValid()) continue;
-
-            auto rootIt = blockIndex.find(comp.rootBlockId);
-            if (rootIt == blockIndex.end()) continue;
-            Block& root = blocks[rootIt.value()];
-            if (!inScope(root)) continue;   // frozen group/pass
-
-            auto leaderIt = blockIndex.find(comp.hinge.leaderBlockId);
-            if (leaderIt == blockIndex.end()) continue;
-            const Block& leader = blocks[leaderIt.value()];
-            const ParamPoint* leaderPt = leader.findPoint(comp.hinge.leaderPointId);
-            if (!leaderPt || !leaderPt->resolved) continue;
-
-            auto memberIt = blockIndex.find(comp.hinge.memberBlockId);
-            if (memberIt == blockIndex.end()) continue;
-            const Block& member = blocks[memberIt.value()];
-            const ParamPoint* memberPt = member.findPoint(comp.hinge.memberPointId);
-            if (!memberPt || !memberPt->resolved) continue;
-
-            // Capture the assembly's local layout relative to the root BEFORE
-            // the root transform changes.
-            struct MemberLocal {
-                Block* block = nullptr;
-                geo::Vec2 localOrigin;
-                double localRot = 0.0;
-            };
-            std::vector<MemberLocal> locals;
-            locals.reserve(comp.memberIds.size());
-            for (const QUuid& mid : comp.memberIds) {
-                auto it = blockIndex.find(mid);
-                if (it == blockIndex.end()) continue;
-                Block& b = blocks[it.value()];
-                MemberLocal ml;
-                ml.block = &b;
-                ml.localOrigin = root.transform.toLocal(b.transform.origin);
-                ml.localRot = b.transform.rotation - root.transform.rotation;
-                locals.push_back(ml);
-            }
-            const double memberLocalRot = member.transform.rotation - root.transform.rotation;
-            const geo::Vec2 memberLocalPoint =
-                root.transform.toLocal(member.worldPos(comp.hinge.memberPointId));
-
-            // Same closed-base convention as applyAttachment:
-            //   desired member world direction = refWorld + π − angle − localDir.
-            const double refWorld = leader.transform.rotation
-                                  + leader.exitDirectionAtPoint(comp.hinge.leaderPointId,
-                                                                comp.hinge.leaderSegmentId);
-            double angleDeg = comp.hinge.followerAngle;
-            if (!comp.hinge.followerAngleFormula.isEmpty()) {
-                auto r = ConditionEngine::evaluate(comp.hinge.followerAngleFormula,
-                                                   params, conditioned, &ctx);
-                if (r.ok) angleDeg = r.value;
-            }
-            const double angleRad = angleDeg * M_PI / 180.0;
-            const double localDir = member.directionAtPoint(comp.hinge.memberPointId);
-            const double desiredMemberRot = refWorld + M_PI - angleRad - localDir;
-            const double newRootRot = desiredMemberRot - memberLocalRot;
-
-            const double c = std::cos(newRootRot);
-            const double s = std::sin(newRootRot);
-            const geo::Vec2 rotatedMemberLocalPoint{
-                memberLocalPoint.x * c - memberLocalPoint.y * s,
-                memberLocalPoint.x * s + memberLocalPoint.y * c
-            };
-            const geo::Vec2 targetWorld = leader.worldPos(comp.hinge.leaderPointId);
-            const geo::Vec2 newRootOrigin = targetWorld - rotatedMemberLocalPoint;
-
-            root.transform.rotation = newRootRot;
-            root.transform.origin = newRootOrigin;
-            for (const auto& ml : locals) {
-                ml.block->transform.rotation = newRootRot + ml.localRot;
-                ml.block->transform.origin = root.transform.toWorld(ml.localOrigin);
-            }
-        }
-    }
 
     // Step 6/6b/6c: cross-block intersection points and the interpolated points
     // that depend on them, in a SHARED bounded fixpoint. An intersection's ray
@@ -358,94 +407,9 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         if (!inScope(block)) continue;  // frozen group
         for (auto& pt : block.points) {
             if (pt.constraint != PointConstraint::Intersection) continue;
-            // Skip if BOTH the origin and (when set) the aim point live in the
-            // same block (already resolved in Step 1). An origin or aim point
-            // outside this block is resolved here in world space.
-            if (block.findPoint(pt.refPointA)
-                && (pt.interAimPointId.isNull() || block.findPoint(pt.interAimPointId)))
-                continue;
-
-            // Find the origin point in another block.
-            geo::Vec2 originWorld;
-            bool found = false;
-            for (const auto& ob : blocks) {
-                const ParamPoint* op = ob.findPoint(pt.refPointA);
-                if (op && op->resolved) {
-                    originWorld = ob.worldPos(pt.refPointA);
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) continue;
-
-            // Target segment endpoints (world). The END point may be
-            // mid-cycle in the outer fixpoint (e.g. a break endpoint whose
-            // position depends on this intersection): its cached position is
-            // used now and later iterations converge once the endpoint
-            // resolves. The START point must be resolved — it anchors the
-            // segment geometry.
-            const Segment* seg = block.findSegment(pt.hostSegmentId);
-            if (!seg) continue;
-            const ParamPoint* sp = block.findPoint(seg->startPointId);
-            const ParamPoint* ep = block.findPoint(seg->endPointId);
-            if (!sp || !ep || !sp->resolved) continue;
-
-            geo::Vec2 w1 = block.transform.toWorld(sp->resolvedPos);
-            geo::Vec2 w2 = block.transform.toWorld(ep->resolvedPos);
-            geo::Vec2 segDir = w2 - w1;
-            double segLen = segDir.length();
-            if (segLen < 1e-9) continue;
-
-            // Ray direction: aim-point mode (指向点) overrides the angle —
-            // the ray points straight at interAimPointId (world space).
-            double theta;
-            if (!pt.interAimPointId.isNull()) {
-                geo::Vec2 aimWorld;
-                bool aimFound = false;
-                for (const auto& ob : blocks) {
-                    const ParamPoint* ap = ob.findPoint(pt.interAimPointId);
-                    if (ap && ap->resolved) {
-                        aimWorld = ob.worldPos(pt.interAimPointId);
-                        aimFound = true;
-                        break;
-                    }
-                }
-                if (!aimFound) continue;
-                geo::Vec2 toAim = aimWorld - originWorld;
-                if (toAim.lengthSquared() < 1e-12) continue;  // Coincident with origin.
-                theta = std::atan2(toAim.y, toAim.x);
-            } else {
-                double baseAngle = std::atan2(segDir.y, segDir.x);
-
-                // Evaluate angle (formula).
-                double angleDeg = pt.interAngle;
-                if (!pt.interAngleFormula.isEmpty()) {
-                    auto r = ConditionEngine::evaluate(pt.interAngleFormula, params, conditioned, &ctx);
-                    if (r.ok) angleDeg = r.value;
-                }
-                theta = baseAngle + angleDeg * M_PI / 180.0;
-            }
-            geo::Vec2 d{std::cos(theta), std::sin(theta)};
-
-            double denom = d.cross(segDir);
-            if (std::abs(denom) < 1e-9) continue;  // Parallel.
-
-            geo::Vec2 w = w1 - originWorld;
-            double s = w.cross(segDir) / denom;
-            double t = w.cross(d) / denom;
-
-            constexpr double eps = 1e-6;
-            bool validT = (t >= -eps && t <= 1.0 + eps);
-            bool validS = pt.interBidirectional ? true : (s >= -eps);
-            if (!validT || !validS) continue;
-
-            geo::Vec2 hitWorld = originWorld + d * s;
-            const geo::Vec2 newLocal = block.transform.toLocal(hitWorld);
-            if (!pt.resolved || pt.resolvedPos.distanceSquaredTo(newLocal) > 1e-6)
-                ++block.geometryEpoch;  // canvas must rebuild the cache
-            if (!pt.resolved) progressed = true;
-            pt.resolvedPos = newLocal;
-            pt.resolved = true;
+            if (resolveCrossBlockIntersection(blocks, block, pt, params,
+                                              conditioned, ctx, pass, scope))
+                progressed = true;
         }
     }
 
@@ -702,6 +666,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
 
 bool Resolver::applyAttachment(Block& from, const Attachment& att,
                                const Block& to,
+                                const Block* angleRef,
                                const QHash<QString, double>& params,
                                const QHash<QString, QList<Condition>>& conditioned,
                                std::vector<ResolveDiagnostic>* diagnostics,
@@ -718,15 +683,35 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // Get the target point's world position on the "to" block.
     geo::Vec2 targetWorldPos = to.worldPos(att.toPointId);
 
-    // Reference direction: the leader's world "exit" direction at the snapped
-    // point — the direction that continues the leader straight past that point
-    // (see Block::exitDirectionAtPoint). Using the exit direction (rather than
-    // the raw start->end direction) makes followerAngle == 0 mean "continue
-    // straight along the leader" regardless of which leader endpoint is snapped.
-    // toSegmentId (when set) pins the reference to the explicitly chosen leader
-    // segment — points shared by several segments stay unambiguous.
-    double refWorld = to.transform.rotation
+    // Reference direction for the POSITION leader (used by slide rails).
+    const double leaderRefWorld = to.transform.rotation
                     + to.exitDirectionAtPoint(att.toPointId, att.toSegmentId);
+    double refWorld = leaderRefWorld;
+    // 位置锚点与角度基准分离 (用户需求 2026): when angleRefBlockId is set, the
+    // followerAngle is measured against the separate reference SEGMENT instead of
+    // the position leader's exit direction.
+    if (!att.angleRefBlockId.isNull() && angleRef) {
+        const Segment* refSeg = angleRef->findSegment(att.angleRefSegmentId);
+        if (refSeg) {
+            if (!att.angleRefPointId.isNull()) {
+                // 使用用户选择的角度基准点的出口方向（与位置连接同构）。
+                const ParamPoint* rp = angleRef->findPoint(att.angleRefPointId);
+                if (rp && rp->resolved) {
+                    refWorld = angleRef->transform.rotation
+                             + angleRef->exitDirectionAtPoint(
+                                   att.angleRefPointId, att.angleRefSegmentId);
+                }
+            } else {
+                const ParamPoint* rsp = angleRef->findPoint(refSeg->startPointId);
+                const ParamPoint* rep = angleRef->findPoint(refSeg->endPointId);
+                if (rsp && rep && rsp->resolved && rep->resolved) {
+                    // 旧档/未选点：保持历史行为，用 start->end 世界方向。
+                    refWorld = angleRef->transform.rotation
+                             + angleRef->directionAtPoint(refSeg->startPointId);
+                }
+            }
+        }
+    }
 
     // The follower's attached point must exist and be resolved (checked before
     // any direction lookup so dangling points short-circuit cleanly).
@@ -782,12 +767,18 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     if (preserveEndTargetRotation && !from.endTargetBlockId.isNull())
         newRotation = from.transform.rotation;
 
+    // 位置吸附保持、角度独立 (用户新需求 2026): the point is still pinned to
+    // the leader, but the follower keeps its OWN rotation. This is the inverse
+    // of angleOnly: position follows, angle does not.
+    if (att.angleIndependent)
+        newRotation = from.transform.rotation;
+
     // 拆开保留角度 (angleOnly, 用户拍板 2026-08): the follower keeps following
     // the leader's ANGLE — rotation is still driven by leader direction +
     // followerAngle — but the position constraint is released: the from-point
     // no longer has to land on the leader's point, so the line translates
     // freely while its orientation keeps the relative angle.
-    if (att.angleOnly) {
+    if (att.angleOnly && !att.angleIndependent) {
         const bool moved = std::abs(newRotation - from.transform.rotation) > 1e-9;
         from.transform.rotation = newRotation;
         return moved;
@@ -804,9 +795,9 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // 携带; 拖动跟随线时由拖拽工具每帧调用
     // ParamDocument::updateSlideOffsetsFromCurrent() 回写**自由轴**坐标,
     // 锁轴坐标保持激活时快照不变。
-    if (att.slideMode != SlideMode::None) {
+    if (att.slideMode != SlideMode::None && !att.angleIndependent) {
         // Leader-local rail frame at the anchor point.
-        const double railAngle = refWorld;  // leader's world exit direction
+        const double railAngle = leaderRefWorld;  // leader's world exit direction
         const geo::Vec2 alongDir(std::cos(railAngle), std::sin(railAngle));
         const geo::Vec2 perpDir(-alongDir.y, alongDir.x);
 

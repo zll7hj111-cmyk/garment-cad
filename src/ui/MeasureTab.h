@@ -1,7 +1,9 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
+#include <QVector>
+#include <QString>
 
 class ElaScrollArea;
 class ElaText;
@@ -34,10 +36,18 @@ public:
     /// Also updates the empty-hint visibility.
     void sync();
 
+    /// Called by the panel when measure/angle/layer data changed: marks the
+    /// metadata cache dirty so the next sync() performs a full metadata
+    /// comparison instead of the value-only resolved fast path.
+    void notifyMeasureDataChanged();
+
 signals:
-    /// Flash the measured points precisely (MeasureCard source click).
+    /// Flash the measured points precisely (MeasureCard source click/hover).
     void highlightMeasureRequested(const QUuid& measureId);
-    /// Highlight the source block on canvas (angle card source click).
+    /// Flash the angle measurement's two segments and half-arc (angle card
+    /// source click/hover).
+    void highlightAngleMeasureRequested(const QUuid& angleMeasureId);
+    /// Highlight a source block on canvas (linked cards / fallback paths).
     void highlightBlockRequested(const QUuid& blockId);
 
 private:
@@ -53,6 +63,12 @@ private:
     QWidget*     m_container = nullptr;
     VirtualCardList* m_host = nullptr;
     ElaText*     m_emptyHint = nullptr;
+
+    /// Cached metadata signature: lets sync() detect name/comment/ref/source
+    /// changes without forcing a full card rebind on every value-only resolve.
+    QString m_lastMetaSignature;
+    QVector<QUuid> m_lastKeys;
+    bool m_metaDirty = true;   ///< Set by notifyMeasureDataChanged; first sync evaluates.
 };
 
 } // namespace cad::ui

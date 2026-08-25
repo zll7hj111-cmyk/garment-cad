@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -55,7 +55,7 @@ enum class SlideMode {
 ///                          （垂直拉出）—— 角度跟随始终保留。滑轨与
 ///                          拆开 (angleOnly) 互斥：进滑轨自动清 angleOnly
 ///                          并解除拖动保护（位置必须可滑动）；切回
-///                          None 恢复全连接（重新焊接，拖动保护默认开）。
+///                          None 恢复全连接。
 ///
 /// 约束：每个 Block 至多作为一条连接的跟随线（附着图是一棵树/森林）。
 /// ────────────────────────────────────────────────────────────────────────────
@@ -63,6 +63,14 @@ struct Attachment {
     QUuid id = QUuid::createUuid();
 
     QUuid fromBlockId;  ///< The Block being attached (follower / 跟随线).
+    /// 组件级连接 (用户拍板 2026-09): when non-null the FOLLOWER is a whole
+    /// COMPONENT (整组作为单一实体跟随外部线). fromPointId = the exposed
+    /// endpoint (暴露端点, a point on one member); the component's overall
+    /// pose is driven as ONE rigid transform while member-internal relations
+    /// (attachment/变量/公式) stay fully ACTIVE. fromComponentId and
+    /// fromBlockId are mutually exclusive (null fromBlockId = 组件级连接).
+    /// A component follows at most ONE external line (森林不变式 组件维度).
+    QUuid fromComponentId;
     QUuid fromPointId;  ///< Point on the from-Block that snaps.
 
     QUuid toBlockId;    ///< The target Block (leader / 基准线).
@@ -73,6 +81,17 @@ struct Attachment {
                         ///< points shared by multiple segments. Null (legacy
                         ///< documents) = fall back to the first segment found
                         ///< at toPointId (old behaviour).
+
+    /// 可选：独立角度基准 (位置锚点与角度基准分离, 用户需求 2026).
+    /// 当非空时, 位置仍吸附到 toBlockId/toPointId, 但 followerAngle 改为相对
+    /// 这条“角度基准线段”的方向计算。为空 = 沿用旧行为 (角度基准=位置宿主)。
+    QUuid angleRefBlockId;
+    QUuid angleRefSegmentId;
+    /// 可选：角度基准上的具体点。当非空时，角度基准方向使用该点的出口方向
+    /// （与位置连接同构），而不是固定用线段 start→end 方向；为空时兼容旧档，
+    /// 回退到引用线段起点方向。
+    QUuid angleRefPointId;
+
 
     double followerAngle = 0.0;  ///< 跟随角度 in degrees (跟随角度), owned by
                                ///< the FOLLOWER. Measured from the leader's exit
@@ -103,20 +122,33 @@ struct Attachment {
                          ///< hosts and lets the bridge length/direction be passive.
 
     bool isLocked = false;  ///< 拖动保护 (焊接语义): 拖动不可拆散, 且拖动任一端时
-                            ///< 另一端 (递归) 一并整体移动。新建连接由 addAttachment
-                            ///< 统一默认置位 (只要建立跟随就保护); 辅助层线段建立的
-                            ///< 连接同样默认锁定。工作层可由属性面板手动开关。锁定
-                            ///< 时拖动跟随线也不拆 (普通连接拖跟随线拆散、拖宿主不拆)。
+                            ///< 另一端 (递归) 一并整体移动。**新建连接默认置位**
+                            ///< (用户拍板 2026-08 复旧; 2026-10 曾改为可选后按用户
+                            ///< 要求回滚): addAttachment/addComponentAttachment 对
+                            ///< 新建连接强制 isLocked=true; 字段默认 false 仅供
+                            ///< 反序列化/undo 回放与解焊态使用。面板「拖动保护」仍
+                            ///< 是可选焊接开关 (✗ = 解焊仍完整连接, 拖跟随线可拆)。
+                            ///< 多线整体移动仍可交给组件 (componentClosure)。
+                            ///< 旧档案读出的 isLocked=false 保持解焊 (不迁移)。
+                            ///< 锁定 时拖动跟随线也不拆 (普通连接拖跟随线拆散、
+                            ///< 拖宿主不拆)。
 
     bool angleOnly = false;  ///< 拆开保留角度 (用户拍板 2026-08): 位置吸附已解除,
                              ///< 但角度跟随保留 —— Resolver 只驱动跟随线的旋转
                              ///< (基准线方向 + followerAngle), 跳过位置约束, 因此
                              ///< 线段位置自由、平移不动角度、基准线旋转时跟着转。
                              ///< 所有拆开路径 (拖端点快拆 / 拖跟随线拆散 / 属性面板
-                             ///< 取消「跟随宿主」) 统一置位; 彻底断开 = 删除本结构。
+                             ///< 取消「位置吸附」) 统一置位; 彻底断开 = 删除本结构。
                              ///< angleOnly 与拖动保护互斥 (位置自由 ↔ 焊接语义),
                              ///< 置位时自动清 isLocked; 与滑轨 (slideMode) 互斥,
                              ///< 置位时自动清 slideMode。
+
+    bool angleIndependent = false;  ///< 位置吸附保持、角度独立 (用户新需求 2026):
+                                     ///< 连接仍把 from-point 钉在 leader 点上, 但
+                                     ///< Resolver 不驱动跟随线旋转 —— 本线角度由
+                                     ///< 自己的绝对角度/公式/旋转工具自由控制。
+                                     ///< 与 angleOnly (位置自由+角度跟随) 相反;
+                                     ///< 与 slideMode (角度跟随+一轴滑轨) 互斥。
 
     /// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08); 与 angleOnly 互斥.
     SlideMode slideMode = SlideMode::None;

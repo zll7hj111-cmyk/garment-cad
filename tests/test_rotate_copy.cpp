@@ -24,7 +24,9 @@
 #include "ElaLineEdit.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Duplicate.h"
+#include "geometry/Angle.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/ComponentCommands.h"
 #include "TestHelpers.h"
 
 using namespace cad::param;
@@ -127,6 +129,13 @@ private slots:
     void clickEndPointSwitchesAnchor();
     void connectedLineXAnchorSwitchBlocked();
     void endAnchorRotateCopyAttachesToEnd();
+    // ── W 键组件整组旋转 (用户拍板 2026-12) ──
+    void wTogglesGroupModeOnlyForComponent();
+    void groupRotateAboutFreePivotRotatesAllMembers();
+    void groupRotateAboutSnappedPivot();
+    void groupRotateKeepsInternalAttachment();
+    void groupRotateReleasesExternalConstraints();
+    void escCancelsGroupRotate();
     void endAnchorLineFollowsCursor();
 
     // ── 弧长/角度显示归一化 (多圈不爆表) ──
@@ -1868,6 +1877,470 @@ void TestRotateCopy::arcLengthModeOverflowNormalized()
     QCOMPARE(hud->edit()->text(), QStringLiteral("-9.4"));
     QTest::mouseClick(toggle, Qt::LeftButton);   // → 角度（显示 −90°）
     QCOMPARE(hud->edit()->text(), QStringLiteral("-90"));
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// W 键组件整组旋转 (2026-12 用户拍板, ROTATE_COMPONENT_DESIGN.md)
+// ═══════════════════════════════════════════════════════════════════
+
+namespace {
+
+/// Send a W key event straight to the view (bypasses the HUD's focus).
+void sendKeyW(CanvasView& view)
+{
+    QKeyEvent ev(QEvent::KeyPress, Qt::Key_W, Qt::NoModifier);
+    QApplication::sendEvent(&view, &ev);
+}
+
+/// Send an Esc key event straight to the view.
+void sendKeyEsc(CanvasView& view)
+{
+    QKeyEvent ev(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(&view, &ev);
+}
+
+/// World position (mm) of a point on a block.
+Vec2 pointWorld(const ParamDocument& doc, const QUuid& blockId, const QUuid& pointId)
+{
+    const Block* b = doc.findBlock(blockId);
+    if (!b) return Vec2();
+    const ParamPoint* p = b->findPoint(pointId);
+    if (!p) return Vec2();
+    return b->transform.toWorld(p->resolvedPos);
+}
+
+} // namespace
+
+// W 键只在目标属于组件时切换整组旋转模式: 独立线无效果 (toast), 组件成员
+// 按 W 进入、再按 W 退出.
+void TestRotateCopy::wTogglesGroupModeOnlyForComponent()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);            // (0,0)→(100,0)
+    const LineSetup b = makeLine(doc, 100.0, Vec2(0, 120));
+    const LineSetup solo = makeLine(doc, 80.0, Vec2(300, 140));
+    doc.resolveAll();
+    cad::cmd::MakeComponentCommand(&doc, {a.blockId, b.blockId}, QStringLiteral("C")).redo();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+    auto* tool = dynamic_cast<cad::tools::ToolRotate*>(tm.activeTool());
+    QVERIFY(tool);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 1) 独立线: W 不切换 (无组件).
+    sendMouse(QEvent::MouseButtonPress, vp(340.0, 140.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(340.0, 140.0), Qt::LeftButton, Qt::NoModifier);
+    sendKeyW(view);
+    QCOMPARE(tool->groupMode(), false);
+
+    // 2) 组件成员线: W → 整组模式; 再 W → 回单线.
+    sendMouse(QEvent::MouseButtonPress, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendKeyW(view);
+    QCOMPARE(tool->groupMode(), true);
+    sendKeyW(view);
+    QCOMPARE(tool->groupMode(), false);
+    sendKeyW(view);
+    QCOMPARE(tool->groupMode(), true);
+}
+
+// 整组绕自由锚点旋转: 第一击设锚 (可捕捉点吸附, 否则自由), 第二击起手拖动,
+// 全体成员刚体变换一致; 一步 undo 全部回位.
+void TestRotateCopy::groupRotateAboutFreePivotRotatesAllMembers()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);
+    const LineSetup b = makeLine(doc, 100.0, Vec2(0, 120));
+    doc.resolveAll();
+    cad::cmd::MakeComponentCommand(&doc, {a.blockId, b.blockId}, QStringLiteral("C")).redo();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+    auto* tool = dynamic_cast<cad::tools::ToolRotate*>(tm.activeTool());
+    QVERIFY(tool);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 1) 选中成员 a → W 进入整组模式.
+    sendMouse(QEvent::MouseButtonPress, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendKeyW(view);
+    QVERIFY(tool->groupMode());
+
+    // 2) 第一击 = 自由锚点 (远离任何点); delta = 光标增量角.
+    const Vec2 pivot(250.0, 250.0);
+    sendMouse(QEvent::MouseButtonPress, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    // 3) 第二击起手 (基准方向 = 0°), 拖到 +30°.
+    const Vec2 press2 = pivot + Vec2(50.0, 0.0);
+    const Vec2 endPos = pivot + Vec2(50.0 * std::cos(M_PI / 6.0), 50.0 * std::sin(M_PI / 6.0));
+    sendMouse(QEvent::MouseButtonPress, vp(press2.x, press2.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(endPos.x, endPos.y), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(endPos.x, endPos.y), Qt::LeftButton, Qt::NoModifier);
+
+    // 4) 全体成员 rotate += delta、origin 绕 pivot 旋转 delta (基准位姿
+    // a=(0,0)、b=(0,120) — 刚体变换公式: origin = pivot + (base-pivot).rotated(delta)).
+    const Block* ba = doc.findBlock(a.blockId);
+    const Block* bb = doc.findBlock(b.blockId);
+    QVERIFY(ba && bb);
+    // 视口像素取整会量化拖拽终点 (~0.2°), 故: 全体成员同 delta + 刚体公式
+    // 精确成立 + delta 方向/大小合理 (≈+30° CCW).
+    const double delta = ba->transform.rotation;
+    QVERIFY(std::abs(bb->transform.rotation - delta) < 1e-9);
+    QVERIFY(delta > 0.4 && delta < 0.7);
+    const Vec2 expectA = pivot + (Vec2(0, 0) - pivot).rotated(delta);
+    const Vec2 expectB = pivot + (Vec2(0, 120) - pivot).rotated(delta);
+    QVERIFY(ba->transform.origin.distanceTo(expectA) < 1e-6);
+    QVERIFY(bb->transform.origin.distanceTo(expectB) < 1e-6);
+    QVERIFY(ba->transform.origin.distanceTo(expectA) < 1e-6);
+    QVERIFY(bb->transform.origin.distanceTo(expectB) < 1e-6);
+    // 5) 一步 undo 全部回位.
+    stack.undo();
+    for (const LineSetup& m : {a, b}) {
+        const Block* blk = doc.findBlock(m.blockId);
+        QVERIFY(blk);
+        QVERIFY(std::abs(blk->transform.rotation) < 1e-9);
+    }
+    QVERIFY(doc.findBlock(a.blockId)->transform.origin.distanceTo(Vec2(0, 0)) < 1e-6);
+    QVERIFY(doc.findBlock(b.blockId)->transform.origin.distanceTo(Vec2(0, 120)) < 1e-6);
+}
+
+// 锚点吸附到成员端点: 旋转后该端点世界位置不变 (绕自身转); 再验证 HUD
+// 增量角 + Shift 15° 吸附.
+void TestRotateCopy::groupRotateAboutSnappedPivot()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);
+    const LineSetup b = makeLine(doc, 100.0, Vec2(0, 120));
+    const LineSetup ext = makeLine(doc, 100.0, Vec2(300, 0));
+    doc.resolveAll();
+    cad::cmd::MakeComponentCommand(&doc, {a.blockId, b.blockId}, QStringLiteral("C")).redo();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    sendMouse(QEvent::MouseButtonPress, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendKeyW(view);
+
+    // 第一击靠近 a 的起点 (0,0) → 吸附到点; 第二击起手, 拖 +90°.
+    sendMouse(QEvent::MouseButtonPress, vp(3.0, 3.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(3.0, 3.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonPress, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(0.0, 50.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(0.0, 50.0), Qt::LeftButton, Qt::NoModifier);
+
+    // 锚点 = (0,0) 吸附: a 的起点世界位置不动; b 的 origin 绕 (0,0) 转 90°.
+    const Vec2 aStart = pointWorld(doc, a.blockId, a.startId);
+    QVERIFY(aStart.distanceTo(Vec2(0, 0)) < 1e-6);
+    const Block* bb = doc.findBlock(b.blockId);
+    QVERIFY(bb);
+    QVERIFY(std::abs(bb->transform.rotation - M_PI / 2.0) < 1e-6);
+    QVERIFY(bb->transform.origin.distanceTo(Vec2(-120.0, 0.0)) < 1e-6);
+    // 组外线 ext 未受影响.
+    QVERIFY(doc.findBlock(ext.blockId)->transform.origin.distanceTo(Vec2(300, 0)) < 1e-6);
+}
+
+// 组内 attachment 在整组旋转中保持 (相对关系自洽): 成员线 c 挂在成员 a 上,
+// 旋转后连接仍存在且 c 仍精确落在 a 的起点.
+void TestRotateCopy::groupRotateKeepsInternalAttachment()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);
+    const LineSetup c = makeLine(doc, 60.0, Vec2(0, 80));
+    doc.resolveAll();
+    // c → a 组内跟随 (a 为 leader).
+    Attachment att;
+    att.fromBlockId = c.blockId;
+    att.fromPointId = c.startId;
+    att.toBlockId = a.blockId;
+    att.toPointId = a.startId;
+    att.toSegmentId = a.segId;
+    att.followerAngle = 45.0;
+    att.rotationMode = RotationMode::Angle;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    cad::cmd::MakeComponentCommand(&doc, {a.blockId, c.blockId}, QStringLiteral("C")).redo();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // c 挂到 a 的 (0,0) 后: 折叠 45° (闭合基准) → 世界方向 = 315° (右下),
+    // 线体中点在 (0,0) + 30·(cos315°, sin315°).
+    const Vec2 midC(30.0 * std::cos(-M_PI / 4.0), 30.0 * std::sin(-M_PI / 4.0));
+    sendMouse(QEvent::MouseButtonPress, vp(midC.x, midC.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(midC.x, midC.y), Qt::LeftButton, Qt::NoModifier);
+    sendKeyW(view);
+
+    // 自由锚点, 拖 +30°.
+    const Vec2 pivot(250.0, 250.0);
+    sendMouse(QEvent::MouseButtonPress, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonPress, vp(pivot.x + 50, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(pivot.x + 43.301269, pivot.y + 25.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x + 43.301269, pivot.y + 25.0), Qt::LeftButton, Qt::NoModifier);
+
+    // 组内连接保持: c 仍精确挂在 a 的起点上; 相对几何不破坏.
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Vec2 aStart = pointWorld(doc, a.blockId, a.startId);
+    const Vec2 cStart = pointWorld(doc, c.blockId, c.startId);
+    QVERIFY(aStart.distanceTo(cStart) < 1e-6);
+    // undo: 回位, 连接仍在.
+    stack.undo();
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    QVERIFY(doc.findBlock(a.blockId)->transform.origin.distanceTo(Vec2(0, 0)) < 1e-6);
+
+    // redo: 再转, 连接仍在.
+    stack.redo();
+    QCOMPARE(doc.attachments().size(), size_t(1));
+}
+
+// 成员线对组外 leader 的 attachment + 指向组外点的 endTarget: 整组旋转前
+// 释放 (D7), 一步 undo 全部恢复.
+void TestRotateCopy::groupRotateReleasesExternalConstraints()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);
+    const LineSetup b = makeLine(doc, 100.0, Vec2(0, 120));
+    const LineSetup ext = makeLine(doc, 100.0, Vec2(300, 0));
+    doc.resolveAll();
+    cad::cmd::MakeComponentCommand(&doc, {a.blockId, b.blockId}, QStringLiteral("C")).redo();
+
+    // 成员 a 挂到组外 leader ext (a 成为跟随线): a 的起点被拉到 ext 起点.
+    Attachment att;
+    att.fromBlockId = a.blockId;
+    att.fromPointId = a.startId;
+    att.toBlockId = ext.blockId;
+    att.toPointId = ext.startId;
+    att.toSegmentId = ext.segId;
+    att.followerAngle = 180.0;   // 折叠 180 = 沿 ext 直行延续 (a 向左伸出)
+    att.rotationMode = RotationMode::Angle;
+    QVERIFY(doc.addAttachment(att));
+    // 成员 b 指向组外点 (ext 的终点).
+    if (auto* blk = doc.findBlock(b.blockId)) {
+        blk->endTargetBlockId = ext.blockId;
+        blk->endTargetPointId = ext.endId;
+    }
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // a 现在位于 (300,0) 向左伸出 → 线体中点在 (250,0).
+    sendMouse(QEvent::MouseButtonPress, vp(250.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(250.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendKeyW(view);
+
+    const Vec2 pivot(450.0, 250.0);
+    sendMouse(QEvent::MouseButtonPress, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonPress, vp(pivot.x + 50, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(pivot.x + 43.301269, pivot.y + 25.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x + 43.301269, pivot.y + 25.0), Qt::LeftButton, Qt::NoModifier);
+
+    // 旋转提交: 外部 attachment 释放 (a 已独立), 外部 endTarget 清空.
+    QCOMPARE(doc.attachments().size(), size_t(0));
+    const Block* bb = doc.findBlock(b.blockId);
+    QVERIFY(bb);
+    QVERIFY(bb->endTargetBlockId.isNull());
+    QVERIFY(bb->endTargetPointId.isNull());
+    const QUuid attId = att.id;
+    const Block* aa = doc.findBlock(a.blockId);
+    QVERIFY(aa);
+    // base 旋转 180° (挂载位姿) + ~30° 增量; 存储域归一化到 (−180,180]
+    // （210° ≡ −150°），比较用带符号折角差 (±1° 视口像素量化).
+    const double target = M_PI + M_PI / 6.0;
+    const double diffDeg = std::abs(cad::geo::normalizeDeg180(
+        cad::geo::radToDeg(aa->transform.rotation - target)));
+    QVERIFY(diffDeg < 1.0);
+
+    // 一步 undo: transform + attachment + endTarget 全部恢复.
+    stack.undo();
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    bool restored = false;
+    for (const auto& r : doc.attachments())
+        if (r.id == attId) restored = true;
+    QVERIFY(restored);
+    bb = doc.findBlock(b.blockId);
+    QVERIFY(bb);
+    QCOMPARE(bb->endTargetBlockId, ext.blockId);
+    QCOMPARE(bb->endTargetPointId, ext.endId);
+    // a 回到挂载位姿 (起点在 ext 起点, 沿 180° 直行).
+    const Vec2 aStart = pointWorld(doc, a.blockId, a.startId);
+    QVERIFY(aStart.distanceTo(Vec2(300, 0)) < 1e-6);
+}
+
+// Esc 取消整组旋转: 位姿回位 + 释放的约束恢复 (未提交 = 现场还原).
+void TestRotateCopy::escCancelsGroupRotate()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);
+    const LineSetup b = makeLine(doc, 100.0, Vec2(0, 120));
+    const LineSetup ext = makeLine(doc, 100.0, Vec2(300, 0));
+    doc.resolveAll();
+    cad::cmd::MakeComponentCommand(&doc, {a.blockId, b.blockId}, QStringLiteral("C")).redo();
+
+    Attachment att;
+    att.fromBlockId = a.blockId;
+    att.fromPointId = a.startId;
+    att.toBlockId = ext.blockId;
+    att.toPointId = ext.startId;
+    att.toSegmentId = ext.segId;
+    att.followerAngle = 180.0;
+    att.rotationMode = RotationMode::Angle;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setToolManager(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    sendMouse(QEvent::MouseButtonPress, vp(250.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(250.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendKeyW(view);
+
+    const Vec2 pivot(450.0, 250.0);
+    sendMouse(QEvent::MouseButtonPress, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonPress, vp(pivot.x + 50, pivot.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(pivot.x + 43.301269, pivot.y + 25.0), Qt::NoButton, Qt::NoModifier);
+    sendKeyEsc(view);
+
+    // 现场还原: attachment 恢复, 位姿回位, undo 栈空 (无命令).
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Vec2 aStart = pointWorld(doc, a.blockId, a.startId);
+    QVERIFY(aStart.distanceTo(Vec2(300, 0)) < 1e-6);
+    QCOMPARE(stack.count(), 0);
 }
 
 QTEST_MAIN(TestRotateCopy)

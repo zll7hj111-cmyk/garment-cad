@@ -8,7 +8,6 @@
 
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
-#include "parametric/Group.h"
 #include "parametric/LinkedVariable.h"
 #include "parametric/MeasureVariable.h"
 #include "geometry/Vec2.h"
@@ -56,12 +55,6 @@ private:
     std::vector<cad::param::Attachment> m_attachments;
     std::vector<cad::param::LinkedVariable> m_linked;   ///< Auto-deleted with the block.
     std::vector<cad::param::MeasureVariable> m_measures; ///< Auto-deleted with the block.
-    // Group cascade snapshot: removeBlock() drops the member from its user
-    // group and may dissolve it (< 2 members) — undo restores the pristine
-    // record + membership (快照完整性).
-    QUuid m_groupId;
-    cad::param::Group m_groupSnapshot;
-    QList<QUuid> m_groupMembers;
     bool m_valid = false;  ///< False when the block was already gone at construction
                            ///< (e.g. cascaded away by a previous command in a macro).
 };

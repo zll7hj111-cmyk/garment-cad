@@ -85,15 +85,6 @@ DeleteBlockCommand::DeleteBlockCommand(cad::param::ParamDocument* doc,
             if (mv.blockA == srcId || mv.blockB == srcId || mv.ownerBlockId == srcId)
                 m_measures.push_back(mv);
     }
-
-    // Group cascade snapshot: removing a member shrinks (and may dissolve)
-    // its user group — capture the pristine record + membership for undo.
-    m_groupId = doc->groupOfBlock(blockId);
-    if (!m_groupId.isNull()) {
-        if (const auto* g = doc->findGroup(m_groupId))
-            m_groupSnapshot = *g;
-        m_groupMembers = doc->blocksInGroup(m_groupId);
-    }
 }
 
 void DeleteBlockCommand::redo()
@@ -121,9 +112,6 @@ void DeleteBlockCommand::undo()
         m_doc->addLinked(lv);
     for (const auto& mv : m_measures)
         m_doc->addMeasure(mv);
-    // Restore the user group mutated/dissolved by redo's removeBlock().
-    if (!m_groupId.isNull())
-        m_doc->restoreGroup(m_groupSnapshot, m_groupMembers);
     if (!m_linked.empty() || !m_measures.empty())
         m_doc->resolveAll();
 }
@@ -259,7 +247,7 @@ void BakeMeasureCopyCommand::undo()
     if (!m_valid) return;
     // Full-snapshot symmetry (快照完整性): redo() mutated the document in
     // exactly one way — adding m_newBlock. The copy carries no attachments,
-    // no group membership, no owned/linked variables, so removeBlock() alone
+    // no owned/linked variables, so removeBlock() alone
     // restores the pre-redo state; the source measure line and its variable
     // were never touched.
     m_doc->removeBlock(m_newBlock.id);

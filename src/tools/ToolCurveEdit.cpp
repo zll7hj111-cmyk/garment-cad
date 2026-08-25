@@ -1,4 +1,4 @@
-#include "ToolCurveEdit.h"
+﻿#include "ToolCurveEdit.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -18,7 +18,6 @@
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
 #include "document/commands/BlockCommands.h"
-#include "GroupGuard.h"
 
 namespace cad::tools {
 
@@ -239,10 +238,6 @@ QUuid ToolCurveEdit::placeCurvePoint(const SegmentSnapResult& segSnap)
     auto* seg = block ? block->findSegment(segSnap.segmentId) : nullptr;
     if (!block || !seg) return {};
     if (block->isBridge) return {};  // 桥接线必须保持直线
-    // Group guard: adding a curve point is a structural change (组内线拦截).
-    if (guardGroupedBlock(m_scene, m_paramDoc, segSnap.blockId,
-                          QString::fromUtf8("\xe6\xb7\xbb\xe5\x8a\xa0\xe6\x9b\xb2\xe7\xba\xbf\xe7\x82\xb9")))  // 添加曲线点
-        return {};
 
     const cad::geo::Vec2 localPos = block->transform.toLocal(segSnap.worldPos);
     double percent = 0.5, offset = 0.0;
@@ -268,6 +263,7 @@ QUuid ToolCurveEdit::placeCurvePoint(const SegmentSnapResult& segSnap)
         block->addPoint(pt);
         seg->passPointIds.push_back(newId);
         seg->type = cad::param::SegmentType::Bezier;
+        ++block->geometryEpoch;  // structure changed → curve cache must rebuild
         m_paramDoc->resolveAll();
     }
     return newId;
@@ -321,8 +317,11 @@ void ToolCurveEdit::dragCurveAnchorTo(const cad::geo::Vec2& worldPos)
     pt->interpPercent = percent;
     pt->interpOffsetDist = offset;
     m_dragLastCursor = worldPos;  // remember for snap on release
+    // Per-frame hot path (锚点拖拽每帧): resolve ONLY the host block's dirty
+    // subgraph (followers/referencers cascade via collectAffected) — the old
+    // resolveAll() re-resolved the whole document every frame.
     m_paramDoc->invalidateLayer(block->layer);  // per-frame: freeze the other group
-    m_paramDoc->resolveAll();
+    m_paramDoc->resolveForDrag(QList<QUuid>{block->id});
 
     // --- Snap indicator: show green circle when cursor is near another point ---
     double zoom = 1.0;
@@ -447,10 +446,6 @@ void ToolCurveEdit::deleteCurvePoint(const SnapResult& snap)
     auto* block = m_paramDoc->findBlock(snap.blockId);
     auto* pt = block ? block->findPoint(snap.pointId) : nullptr;
     if (!block || !pt) return;
-    // Group guard: removing a curve point is a structural change (组内线拦截).
-    if (guardGroupedBlock(m_scene, m_paramDoc, snap.blockId,
-                          QString::fromUtf8("\xe5\x88\xa0\xe9\x99\xa4\xe6\x9b\xb2\xe7\xba\xbf\xe7\x82\xb9")))  // 删除曲线点
-        return;
 
     const QUuid segId = pt->hostSegmentId;
     if (m_undoStack) {
@@ -558,31 +553,38 @@ void ToolCurveEdit::updateHandleGraphics()
     const cad::geo::Vec2 outWorld = block->transform.toWorld(pLocal + tanOut / 3.0);
     const cad::geo::Vec2 pWorld   = block->transform.toWorld(pLocal);
 
-    const QColor kHandle(0x00, 0xA8, 0xE1);  // cyan handles
+    const QColor kHandleLine(0x00, 0xA8, 0xE1, 120);      // 手柄线: 半透明青色 (不遮曲线)
+    const QColor kHandleTipPen(0x00, 0xA8, 0xE1, 150);    // 控制点描边: 半透明青色
+    // 控制点填充 = 完全透明 (NoBrush) — 圈内不遮挡任何几何, 只留淡描边;
+    // 圆点比原 r2.0 再缩小 (2026-09 用户两轮反馈: 实心大点不透明/太大 →
+    // 纸色填充仍是"不透明补丁"盖住圈下线条 → 真透明 + 更小).
+    const QBrush kHandleTipFill = Qt::NoBrush;
 
     if (!m_hLineIn) {
         m_hLineIn = new QGraphicsLineItem();
-        QPen pen(kHandle, 1.0); pen.setCosmetic(true);
+        QPen pen(kHandleLine, 1.0); pen.setCosmetic(true);
         m_hLineIn->setPen(pen); m_hLineIn->setZValue(104.0);
         m_scene->addItem(m_hLineIn);
     }
     if (!m_hLineOut) {
         m_hLineOut = new QGraphicsLineItem();
-        QPen pen(kHandle, 1.0); pen.setCosmetic(true);
+        QPen pen(kHandleLine, 1.0); pen.setCosmetic(true);
         m_hLineOut->setPen(pen); m_hLineOut->setZValue(104.0);
         m_scene->addItem(m_hLineOut);
     }
     if (!m_hDotIn) {
-        constexpr double r = 3.0;
+        constexpr double r = 1.6;
         m_hDotIn = new QGraphicsEllipseItem(-r, -r, r * 2.0, r * 2.0);
-        m_hDotIn->setPen(Qt::NoPen); m_hDotIn->setBrush(kHandle);
+        QPen tipPen(kHandleTipPen, 1.0); tipPen.setCosmetic(true);
+        m_hDotIn->setPen(tipPen); m_hDotIn->setBrush(kHandleTipFill);
         m_hDotIn->setZValue(105.0);
         m_scene->addItem(m_hDotIn);
     }
     if (!m_hDotOut) {
-        constexpr double r = 3.0;
+        constexpr double r = 1.6;
         m_hDotOut = new QGraphicsEllipseItem(-r, -r, r * 2.0, r * 2.0);
-        m_hDotOut->setPen(Qt::NoPen); m_hDotOut->setBrush(kHandle);
+        QPen tipPen(kHandleTipPen, 1.0); tipPen.setCosmetic(true);
+        m_hDotOut->setPen(tipPen); m_hDotOut->setBrush(kHandleTipFill);
         m_hDotOut->setZValue(105.0);
         m_scene->addItem(m_hDotOut);
     }
@@ -689,8 +691,11 @@ void ToolCurveEdit::dragHandleTo(const cad::geo::Vec2& worldPos)
     // resolve pass won't bump geometryEpoch — bump it here to force the
     // BlockItem cache rebuild (otherwise the curve wouldn't refresh live).
     ++block->geometryEpoch;
+    // Per-frame hot path (切线拖拽每帧): resolve ONLY the host block's dirty
+    // subgraph; syncFromBlock rebuilds just the blocks whose epoch changed
+    // (the old resolveAll() re-resolved the whole document every frame).
     m_paramDoc->invalidateLayer(block->layer);  // per-frame: freeze the other group
-    m_paramDoc->resolveAll();
+    m_paramDoc->resolveForDrag(QList<QUuid>{block->id});
     updateHandleGraphics();
 }
 

@@ -69,6 +69,12 @@ public:
     /// from internal shape changes (full cache rebuild).
     quint64 geometryEpoch = 0;
 
+    /// Curve-cache rebuild counter (telemetry / 回归): every
+    /// rebuildCurveCache() call increments this. A pure rigid drag (transform
+    /// only) must NOT increase it — the drawn curve stays frozen (用户 2026-09:
+    /// 跟随对象拖动抖动 = 每帧重算 + 余量; 拖动不改形状, 重算纯浪费).
+    quint64 curveCacheBuilds = 0;
+
     /// Canvas layer — stable Layer::id reference (into ParamDocument::layers()).
     /// Pure selection / visibility filter — does not affect solving,
     /// measurements or links. Null only before assignment (addBlock clamps a
@@ -176,6 +182,22 @@ public:
                                    const QHash<QString, QList<Condition>>& conditioned = {},
                                    EvalContext* ctx = nullptr);
 
+    /// Bootstrap seed for the "break-endpoint" cycle (3.gcad L68/P175/P176:
+    /// a Polar ENDPOINT anchored to an aux point — Intersection/Interpolated —
+    /// on its OWN segment). On a cold start the endpoint has no cached pose,
+    /// the segment degenerates to zero length, and the intersection (which the
+    /// endpoint depends on) can never fire: deadlock. This evaluates the
+    /// endpoint's polar formula anchored at the SEGMENT START instead, giving
+    /// the fixpoint a non-degenerate first pass; once the aux resolves in a
+    /// later pass the endpoint re-anchors to the true reference.
+    /// Returns true (and fills @p outLocal) when @p ep is such a Polar
+    /// endpoint whose ref is an on-segment aux point of @p seg.
+    [[nodiscard]] static bool polarEndpointCycleSeed(
+        const ParamPoint& ep, const Block& block, const Segment& seg,
+        const ParamPoint& sp, const QHash<QString, double>& params,
+        const QHash<QString, QList<Condition>>& conditioned,
+        EvalContext* ctx, geo::Vec2& outLocal);
+
     /// Get the world-coordinate position of a point by ID.
     [[nodiscard]] geo::Vec2 worldPos(const QUuid& pointId) const;
 
@@ -230,6 +252,27 @@ public:
     /// are unresolved.
     [[nodiscard]] double segmentLengthAtPoint(const QUuid& pointId) const;
 
+    // ── 端点延长线 (EXTEND_LINE_DESIGN.md) ─────────────────────────────────
+    /// 端点的"有效位置"（本体 + 延长量 × 出方向）。所有按"点位置"定义的消费方
+    /// （绘制/捕捉/附着/测量/交点/长度显示）应读取本值；按"本体长度/比例"定义
+    /// 的内部计算（辅助点/曲线锚点）继续读 resolvedPos（本体）。
+    /// 按当前 resolvedPos 即时计算（不依赖缓存），求解 pass 内也正确。
+    [[nodiscard]] geo::Vec2 effectiveLocalPos(const QUuid& pointId) const;
+
+    /// 本体段长（未延长）：直线 = 弦长；曲线 = 弧长（曲线不支持延长）。
+    [[nodiscard]] double segmentBaseLength(const QUuid& segmentId) const;
+
+    /// 有效段长（含延长量）：直线 = |有效终点 − 有效起点|；曲线 = 本体弧长。
+    [[nodiscard]] double segmentEffectiveLength(const QUuid& segmentId) const;
+
+    /// 端点延长量（已求值 mm；无延长 = 0）。
+    [[nodiscard]] double segmentExtendStart(const QUuid& segmentId) const;
+    [[nodiscard]] double segmentExtendEnd(const QUuid& segmentId) const;
+
+    /// SnapEngine 的段身参数 t（沿有效段 0..1）是否落在本体范围内。
+    /// 用于"尾巴上禁止建辅助点/打断"判定（EXTEND_LINE_DESIGN.md D7）。
+    [[nodiscard]] bool segmentSnapWithinBase(const QUuid& segmentId, double t) const;
+
     /// Freeze the current (resolved, possibly stretched) world geometry of
     /// this single-segment block into a self-contained local construction:
     /// origin at the start point, rotation along start→end, end point
@@ -259,7 +302,39 @@ private:
     mutable QHash<QUuid, int> m_pointIndex;  ///< pointId -> index (mutable cache).
     mutable QHash<QUuid, int> m_segmentIndex;  ///< segmentId -> index (mutable cache).
 
+    /// ── 端点延长线 (EXTEND_LINE_DESIGN.md) ──────────────────────────────
+    /// Per-segment evaluated extension values (mm; filled at end of resolve).
+    struct ExtendEval {
+        double startMm = 0.0;
+        double endMm   = 0.0;
+    };
+    /// pointId -> effective local position (本体 + 延长量 × 出方向).
+    mutable QHash<QUuid, geo::Vec2> m_effectiveLocal;
+    /// segmentId -> evaluated extension values (0-entries omitted).
+    mutable QHash<QUuid, ExtendEval> m_extendEval;
+
+    /// End-of-resolve pass: 用 m_extendEval（resolve 开头已求值）+ 当前本体位置
+    /// 重建 m_effectiveLocal 缓存，并在可视尾巴变化时显式 +geometryEpoch
+    /// （本体不变但视觉要重绘 —— 铁律: 只改显示/语义属性必须显式 +epoch）。
+    void applyEffectivePositions();
+
+    /// resolve() 开头：求值各段延长量（数值 mm / 公式 cm 域，防御性 clamp ≥0）
+    /// 存入 m_extendEval —— 使求解 pass 内的 effectiveLocalPos（如交叉点宿主段）
+    /// 即能看到本帧延长量。
+    void evaluateExtendValues(const QHash<QString, double>& params = {},
+                              const QHash<QString, QList<Condition>>& conditioned = {},
+                              EvalContext* ctx = nullptr);
+
     std::vector<CurveSpanEntry> m_curveSpans;  ///< Frame cache, rebuilt in resolve().
+    /// segmentId -> index into m_curveSpans (rebuilt together with the spans).
+    /// curveSpanEntry() is on the per-frame snap/paint path, so a linear scan
+    /// would make a block with k curves cost O(k^2) per mouse-move query.
+    mutable QHash<QUuid, int> m_curveSpanIndex;
+    /// geometryEpoch at the last curve-cache rebuild. The cache is stale only
+    /// when the local geometry actually changed (epoch delta) or the cache is
+    /// cold — a transform-only drag keeps the spans frozen, so no per-frame
+    /// C2 solve / flatten / arc-length integration (2026-09 用户反馈).
+    quint64 m_curveCacheEpoch = 0;
 
     /// Collect the resolved anchor sequence (start + passPoints + end) of a
     /// curve segment. Returns false when any anchor is unresolved.
@@ -269,8 +344,9 @@ private:
                                            std::vector<geo::Vec2>& tOut,
                                            std::vector<bool>& autoTan) const;
 
-    /// Rebuild m_curveSpans from the CURRENT resolved positions (call at the
-    /// end of resolve() — one C2 solve per curve segment per frame).
+    /// Rebuild m_curveSpans from the CURRENT resolved positions — called from
+    /// resolve() only when the local geometry actually changed (epoch delta /
+    /// cold cache), never on transform-only frames.
     void rebuildCurveCache();
 
     /// Resolve a single Interpolated (auxiliary) point from its host segment's
@@ -279,6 +355,19 @@ private:
                                   const QHash<QString, double>& params,
                                   const QHash<QString, QList<Condition>>& conditioned,
                                   EvalContext* ctx);
+
+    /// Per-constraint workers of resolveUnresolved's fixpoint switch
+    /// (2026-08 拆分, 压平嵌套). Each returns true iff it resolved the point
+    /// this call; false = leave unresolved for a later fixpoint pass.
+    bool resolvePolarPoint(ParamPoint& pt,
+                           const QHash<QString, double>& params,
+                           const QHash<QString, QList<Condition>>& conditioned,
+                           EvalContext* ctx);
+    bool resolveIntersectionPoint(ParamPoint& pt,
+                                  const QHash<QString, double>& params,
+                                  const QHash<QString, QList<Condition>>& conditioned,
+                                  EvalContext* ctx);
+    bool resolveCurveAnchorPoint(ParamPoint& pt);
 };
 
 } // namespace cad::param

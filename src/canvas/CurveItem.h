@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QGraphicsObject>
 #include <QPainterPath>
@@ -29,8 +29,7 @@ public:
     /// Curve render data (built once per resolve by BlockItem::rebuildCache).
     struct Data {
         QUuid id;
-        QPainterPath path;       ///< Dense flattened polyline (for painting).
-        QPainterPath shapePath;  ///< Coarse control-polygon polyline (for hit shape).
+        QPainterPath path;       ///< Dense flattened polyline (for painting AND hit shape).
         QPointF labelPos;        ///< Name/length label anchor.
         double labelAngle = 0;   ///< Label tangent angle (radians).
         QColor color;
@@ -76,7 +75,7 @@ private:
     bool m_leader = false;   ///< Pen-tool leader candidate (teal).
     bool m_grayed = false;   ///< Non-active layer reference rendering.
 
-    /// Cached stroked hit shape (shapePath widened to the pick tolerance);
+    /// Cached stroked hit shape (path widened to the pick tolerance);
     /// rebuilt lazily when the tolerance moves >2% (same policy as the old
     /// BlockItem-level caches). Qt calls shape() at high frequency.
     mutable QPainterPath m_strokedShape;

@@ -34,18 +34,13 @@ constexpr double kAxisZeroEps = 0.05;
 
 void ToolMeasure::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
 {
-    m_scene = &scene;
-    m_paramDoc = paramDoc;
+    Tool::activate(scene, paramDoc);
     m_state = State::SelectA;
     m_kind = cad::param::MeasureKind::Distance;
 
     // Persistent mode HUD: tells the user which mode is active even before
     // point A is picked (and after every W cycle).
-    if (!m_hud) {
-        m_hud = new HudItem();
-        m_scene->addItem(m_hud);
-    }
-    m_hud->setText(modeHint());
+    ensureHud()->setText(modeHint());
     m_hud->setVisible(true);
 }
 
@@ -54,9 +49,7 @@ void ToolMeasure::deactivate()
     clearPreview();
     if (m_previewLine) { m_scene->removeItem(m_previewLine); delete m_previewLine; m_previewLine = nullptr; }
     if (m_markerA)     { m_scene->removeItem(m_markerA);     delete m_markerA;     m_markerA     = nullptr; }
-    if (m_hud)         { m_scene->removeItem(m_hud);         delete m_hud;         m_hud         = nullptr; }
-    m_scene = nullptr;
-    m_paramDoc = nullptr;
+    Tool::deactivate();
 }
 
 // ---------------------------------------------------------------------------

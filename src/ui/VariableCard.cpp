@@ -6,13 +6,11 @@
 #include "ElaToolButton.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
-#include <QStyleOption>
-#include <QPainter>
 #include <QMouseEvent>
 
 #include "CopyChip.h"
-#include "IconHelper.h"
 #include "geometry/Units.h"
+#include "Theme.h"
 
 namespace {
 
@@ -22,32 +20,19 @@ public:
     using ElaDoubleSpinBox::ElaDoubleSpinBox;
     QString textFromValue(double value) const override
     {
-        QString s = QString::number(value, 'f', decimals());
-        while (s.endsWith(QLatin1Char('0'))) s.chop(1);
-        if (s.endsWith(QLatin1Char('.'))) s.chop(1);
-        return s;
+        return cad::geo::Units::trimTrailingZeros(
+            QString::number(value, 'f', decimals()));
     }
 };
-
-QString fmtCm(double mm)
-{
-    const double cm = cad::geo::Units::mmToCm(mm);
-    QString s = QString::number(cm, 'f', 2);
-    while (s.endsWith(QLatin1Char('0'))) s.chop(1);
-    if (s.endsWith(QLatin1Char('.'))) s.chop(1);
-    return s;
-}
 
 } // namespace
 
 VariableCard::VariableCard(const cad::param::Variable& var, bool alternate,
                            QWidget* parent)
-    : QWidget(parent)
+    : CardBase(alternate, parent)
     , m_id(var.id)
-    , m_alternate(alternate)
 {
-    setAttribute(Qt::WA_StyledBackground, true);
-    setupUi(var, alternate);
+    setupUi(var);
 }
 
 cad::param::Variable VariableCard::variable() const
@@ -59,23 +44,6 @@ cad::param::Variable VariableCard::variable() const
     v.value = cad::geo::Units::cmToMm(m_valueSpin->value());
     v.comment = m_commentEdit->text().trimmed();
     return v;
-}
-
-void VariableCard::setIndex(int n)
-{
-    if (!m_indexLabel) return;
-    // Pure presentation: only touch the label when the ordinal changed.
-    const QString text = n > 0 ? QString::number(n) : QString();
-    if (m_indexLabel->text() != text)
-        m_indexLabel->setText(text);
-}
-
-void VariableCard::setAlternate(bool alternate)
-{
-    if (m_alternate == alternate)
-        return;
-    m_alternate = alternate;
-    update();
 }
 
 void VariableCard::focusName()
@@ -100,40 +68,13 @@ void VariableCard::syncFromModel(const cad::param::Variable& var)
 
 void VariableCard::updateValueLabel()
 {
-    m_valueLabel->setText(fmtCm(cad::geo::Units::cmToMm(m_valueSpin->value())));
+    m_valueLabel->setText(
+        cad::geo::Units::formatCmTrimmed(cad::geo::Units::cmToMm(m_valueSpin->value())));
 }
 
-void VariableCard::paintEvent(QPaintEvent* event)
-{
-        QStyleOption opt;
-    opt.initFrom(this);
-    QPainter p(this);
-    style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
-
-    // Left accent bar — 行交替竖线: 偶数行蓝 / 奇数行橙 (2026-08 用户拍板
-    // 统一蓝橙交替, 替代原类型色条与背景斑马纹).
-    p.setPen(Qt::NoPen);
-    p.setBrush(m_alternate ? QColor(0xF5, 0x9E, 0x0B)   // 橙
-                           : QColor(0x2F, 0x6F, 0xED)); // 蓝
-    p.drawRoundedRect(0, 2, 3, height() - 4, 1.5, 1.5);
-}
-
-void VariableCard::enterEvent(QEnterEvent*)
-{
-    m_deleteBtn->setVisible(true);
-    m_deleteBtnSlot->setVisible(false);
-}
-
-void VariableCard::leaveEvent(QEvent*)
-{
-    m_deleteBtn->setVisible(false);
-    m_deleteBtnSlot->setVisible(true);
-}
-
-void VariableCard::setupUi(const cad::param::Variable& var, bool alternate)
+void VariableCard::setupUi(const cad::param::Variable& var)
 {
     setObjectName(QStringLiteral("VariableCard"));
-    (void)alternate;  // 竖线颜色已按 alternate 存为 m_alternate (构造时).
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 7, 8, 7);
@@ -144,38 +85,15 @@ void VariableCard::setupUi(const cad::param::Variable& var, bool alternate)
     header->setSpacing(6);
 
     // 视图行序号 (虚拟化跨行复用, 每次 (re)bind 重设 — 见 setIndex).
-    m_indexLabel = new ElaText(QString(), 13, this);
-    m_indexLabel->setObjectName(QStringLiteral("varIndex"));
-    m_indexLabel->setStyleSheet("font-size: 11px; background: transparent;");
-    m_indexLabel->setToolTip(QStringLiteral("变量序号（视图行号）"));
-    header->addWidget(m_indexLabel, 0);
+    header->addWidget(createIndexLabel(QStringLiteral("varIndex"),
+                                       QStringLiteral("变量序号（视图行号）")), 0);
 
-    m_nameChip = new cad::ui::CopyChip(cad::ui::CopyChip::Variant::Name, this);
-    m_nameChip->setPlaceholderText(QStringLiteral("名称"));
-    m_nameChip->setText(var.name);
-    header->addWidget(m_nameChip, 1);
+    header->addWidget(createNameChip(cad::ui::CopyChip::Variant::Name,
+                                     QStringLiteral("名称"), var.name), 1);
 
-    m_valueLabel = new ElaText(QString(), 13, this);
-    m_valueLabel->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace;"
-        "font-size: 12px; font-weight: bold; background: transparent;");
-    header->addWidget(m_valueLabel, 0);
+    header->addWidget(createValueLabel(), 0);
 
-    // 悬停占位: 与删除按钮同尺寸, 二者互斥显隐 → 布局空间恒定,
-    // 按钮出现/消失不引起行宽挤压或行高变化 (VirtualCardList 不重测).
-    m_deleteBtnSlot = new QWidget(this);
-    m_deleteBtnSlot->setFixedSize(20, 20);
-    header->addWidget(m_deleteBtnSlot, 0);
-
-    m_deleteBtn = new ElaToolButton(this);
-    m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
-        QStringLiteral("trash"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
-    m_deleteBtn->setIconSize(QSize(12, 12));
-    m_deleteBtn->setToolTip(QStringLiteral("删除变量"));
-    m_deleteBtn->setFixedSize(20, 20);
-    m_deleteBtn->setCursor(Qt::PointingHandCursor);
-    m_deleteBtn->setVisible(false);  // revealed on card hover
-    header->addWidget(m_deleteBtn, 0);
+    appendDeleteButton(header, QStringLiteral("删除变量"));
 
     mainLayout->addLayout(header);
 
@@ -201,13 +119,11 @@ void VariableCard::setupUi(const cad::param::Variable& var, bool alternate)
     m_valueSpin->setFixedHeight(22);
     m_valueSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_valueSpin->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_valueSpin->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace; font-size: 12px;");
+    m_valueSpin->setStyleSheet(cad::ui::ThemeTokens::kMonospaceMd);
     detailLayout->addWidget(m_valueSpin, 0);
 
-    m_commentEdit = new ElaLineEdit(m_detail);     m_commentEdit->setText(var.comment);
-    m_commentEdit->setPlaceholderText(QStringLiteral("注释…"));
-    m_commentEdit->setFixedHeight(22);
+    m_commentEdit = createCommentEdit(m_detail);
+    m_commentEdit->setText(var.comment);
     detailLayout->addWidget(m_commentEdit, 1);
 
     mainLayout->addWidget(m_detail);

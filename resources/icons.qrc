@@ -18,5 +18,8 @@
     <file alias="scissors.svg">icons/scissors.svg</file>
     <file alias="eye.svg">icons/eye.svg</file>
     <file alias="eye-closed.svg">icons/eye-closed.svg</file>
+    <file alias="crosshair.svg">icons/crosshair.svg</file>
+    <file alias="terminal.svg">icons/terminal.svg</file>
+    <file alias="layers.svg">icons/layers.svg</file>
 </qresource>
 </RCC>

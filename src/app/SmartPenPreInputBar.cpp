@@ -1,4 +1,4 @@
-#include "SmartPenPreInputBar.h"
+﻿#include "SmartPenPreInputBar.h"
 
 #include <QHBoxLayout>
 #include <QLineEdit>
@@ -7,6 +7,8 @@
 
 #include "ElaText.h"
 #include "ElaLineEdit.h"
+
+#include "ui/Theme.h"
 
 namespace cad::app {
 
@@ -17,13 +19,14 @@ SmartPenPreInputBar::SmartPenPreInputBar(QWidget* parent)
     lay->setContentsMargins(6, 0, 6, 0);
     lay->setSpacing(6);
 
-    auto* caption = new ElaText(QString::fromUtf8("预输入:"), 13, this);
+    auto* caption = new ElaText(QString::fromUtf8("预输入:"), 12, this);
     caption->setObjectName(QStringLiteral("mutedText"));
     lay->addWidget(caption);
 
     auto addField = [this, lay](const QString& label, const QString& placeholder,
                                 int width, const QString& objName) {
-        auto* lbl = new ElaText(label, 13, this);
+        auto* lbl = new ElaText(label, 12, this);
+        lbl->setObjectName(QStringLiteral("mutedText"));
         lay->addWidget(lbl);
         auto* edit = new ElaLineEdit(this);
         edit->setObjectName(objName);
@@ -41,12 +44,10 @@ SmartPenPreInputBar::SmartPenPreInputBar(QWidget* parent)
                           QString::fromUtf8("线段名称"), 100, QStringLiteral("preInputName"));
     m_lenEdit = addField(QString::fromUtf8("长度(cm)"),
                          QString::fromUtf8("数值或公式"), 90, QStringLiteral("preInputLength"));
-    m_lenEdit->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace;");
+    m_lenEdit->setStyleSheet(cad::ui::ThemeTokens::kMonospaceFamily);
     m_angleEdit = addField(QString::fromUtf8("角度(°)"),
                            QString::fromUtf8("数值或公式"), 90, QStringLiteral("preInputAngle"));
-    m_angleEdit->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace;");
+    m_angleEdit->setStyleSheet(cad::ui::ThemeTokens::kMonospaceFamily);
 
     lay->addStretch();
 

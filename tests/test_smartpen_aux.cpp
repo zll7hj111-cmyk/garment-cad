@@ -119,7 +119,7 @@ private slots:
     /// endSnapFlipsLineAndCreatesConnection) and the connection is created
     /// AND 拖动保护-locked by default — otherwise the stroke degrades into a
     /// free line with no attachment (拖动保护失效).
-    void auxPointEndFlipsAndCreatesLockedConnection();
+    void auxPointEndFlipsAndCreatesLockedConnection();  // 名称保持 (默认焊接)
 
     // ── 预输入 (status-bar pre-input): 名称/长度/角度一次性构造 ──
     void preInputLengthAngleCreatesLineInOneClick();
@@ -464,12 +464,12 @@ void TestSmartPenAux::auxPointEndFlipsAndCreatesLockedConnection()
     QTest::qWait(30);
 
     // The new line FLIPPED: its start = the aux point on B, and a real
-    // attachment was created — NOT a free line (free line = no attachment =
-    // 拖动保护失效). The connection is 拖动保护-locked by default.
+    // attachment was created — NOT a free line (free line = no attachment).
+    // 新建连接默认勾选「拖动保护」(焊接) (用户拍板 2026-08 复旧).
     QCOMPARE(doc.blocks().size(), size_t(2));   // B + new line
     QCOMPARE(doc.attachments().size(), size_t(1));
     const Attachment& att = doc.attachments().front();
-    QVERIFY2(att.isLocked, "aux-point connection must default to 拖动保护");
+    QVERIFY2(att.isLocked, "aux-point connection must default welded (拖动保护默认勾选)");
 
     const Block& nb = doc.blocks().back();
     const Segment& ns = nb.segments.front();

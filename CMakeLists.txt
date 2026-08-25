@@ -13,8 +13,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # MSVC: use /std:c++latest to enable C++26 features
 if(MSVC)
     add_compile_options(/std:c++latest /permissive-)
-    # /FS: safe parallel compilation 鈥?several CL.EXE share one PDB per
-    # target (without it, /m:N builds intermittently fail with C1041).
+    # /FS: safe parallel compilation (several CL.EXE share one PDB per
+    # target; without it, /m:N builds intermittently fail with C1041).
     add_compile_options(/FS)
 endif()
 
@@ -58,9 +58,10 @@ if(NOT elawidgettools_POPULATED)
     add_subdirectory(${elawidgettools_SOURCE_DIR}/ElaWidgetTools
                      ${elawidgettools_BINARY_DIR}/ElaWidgetTools EXCLUDE_FROM_ALL)
     # Their sources are UTF-8 without BOM; without /utf-8 MSVC mis-parses
-    # Chinese string literals (C2001/C2061).
+    # Chinese string literals (C2001/C2061). /FS: parallel cl.exe sharing
+    # ElaWidgetTools.pdb must not race (C1041) under Ninja's high parallelism.
     if(MSVC)
-        target_compile_options(ElaWidgetTools PRIVATE /utf-8)
+        target_compile_options(ElaWidgetTools PRIVATE /utf-8 /FS)
     endif()
 endif()
 
@@ -88,9 +89,258 @@ FetchContent_Declare(
 set(TRACY_ON_DEMAND ON CACHE BOOL "Connect to profiler only when a listener is present" FORCE)
 FetchContent_MakeAvailable(tracy)
 
-add_executable(${PROJECT_NAME}
-    resources/icons.qrc
-    src/main.cpp
+set(GCAD_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Static libraries — one per module directory. Layering (bottom → top):
+#   gcad_geometry → gcad_parametric → gcad_canvas / gcad_document
+#                                 → gcad_ui → gcad_tools → gcad_app
+# Every .cpp lives in exactly ONE library; the app and the test executables
+# link the libraries instead of re-listing sources. When adding a new .cpp,
+# add it ONLY to its module library below (no per-test edits needed).
+#
+# NOTE: do NOT list project headers in the test/executable source lists —
+# AUTOMOC would moc them again in the executable and collide with the
+# library's own moc output (LNK2005). Headers are found via the include dir.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ─── geometry: pure math, no engine/UI dependency ────────────────────────────
+add_library(gcad_geometry STATIC
+    src/geometry/Vec2.h
+    src/geometry/Units.h
+    src/geometry/Angle.h
+    src/geometry/CurveMath.h
+    src/geometry/CurveMath.cpp
+    src/geometry/TriangleUnfold.h
+    src/geometry/TriangleUnfold.cpp
+)
+target_include_directories(gcad_geometry PUBLIC ${GCAD_SRC})
+target_link_libraries(gcad_geometry PUBLIC Qt6::Core Qt6::Gui)
+
+# ─── parametric: the engine core (never depends on UI/tools/canvas) ──────────
+add_library(gcad_parametric STATIC
+    src/parametric/ParamPoint.h
+    src/parametric/Segment.h
+    src/parametric/TrianglePrototypeBlock.h
+    src/parametric/TrianglePrototypeBlock.cpp
+    src/parametric/Block.h
+    src/parametric/Block.cpp
+    src/parametric/Component.h
+    src/parametric/Attachment.h
+    src/parametric/AttachmentGraph.h
+    src/parametric/FollowerAngle.h
+    src/parametric/Resolver.h
+    src/parametric/Resolver.cpp
+    src/parametric/ParamDocument.h
+    src/parametric/ParamDocument.cpp
+    src/parametric/ParamDocumentStores.cpp
+    src/parametric/ParamDocumentParameters.cpp
+    src/parametric/ParamDocumentBlocks.cpp
+    src/parametric/ParamDocumentAttachments.cpp
+    src/parametric/ParamDocumentIndexes.cpp
+    src/parametric/ParamDocumentResolver.cpp
+    src/parametric/ParamDocumentLifecycle.cpp
+    src/parametric/LayerRegistry.h
+    src/parametric/LayerRegistry.cpp
+    src/parametric/VariableStore.h
+    src/parametric/VariableStore.cpp
+    src/parametric/MeasurementStore.h
+    src/parametric/MeasurementStore.cpp
+    src/parametric/Duplicate.h
+    src/parametric/Duplicate.cpp
+    src/parametric/Serial.h
+    src/parametric/Serial.cpp
+    src/parametric/Variable.h
+    src/parametric/FormulaVariable.h
+    src/parametric/FormulaGroup.h
+    src/parametric/Layer.h
+    src/parametric/LinkedVariable.h
+    src/parametric/LinkedVariable.cpp
+    src/parametric/MeasureVariable.h
+    src/parametric/AngleMeasureVariable.h
+    src/parametric/ExpressionEvaluator.h
+    src/parametric/ExpressionEvaluator.cpp
+    src/parametric/Condition.h
+    src/parametric/ConditionEngine.h
+    src/parametric/ConditionEngine.cpp
+    src/parametric/PerfProbe.h
+)
+target_include_directories(gcad_parametric PUBLIC ${GCAD_SRC})
+target_link_libraries(gcad_parametric PUBLIC Qt6::Gui gcad_geometry)
+
+# ─── canvas: scene/view rendering ────────────────────────────────────────────
+add_library(gcad_canvas STATIC
+    src/canvas/CanvasView.h
+    src/canvas/CanvasView.cpp
+    src/canvas/CanvasScene.h
+    src/canvas/CanvasScene.cpp
+    src/canvas/CanvasStyle.h
+    src/canvas/CanvasStyle.cpp
+    src/canvas/CanvasAnimator.h
+    src/canvas/CanvasAnimator.cpp
+    src/canvas/OriginCrosshair.h
+    src/canvas/OriginCrosshair.cpp
+    src/canvas/BlockItem.h
+    src/canvas/BlockItem.cpp
+    src/canvas/CurveItem.h
+    src/canvas/CurveItem.cpp
+)
+target_include_directories(gcad_canvas PUBLIC ${GCAD_SRC})
+target_link_libraries(gcad_canvas PUBLIC
+    Qt6::Widgets Qt6::OpenGLWidgets ElaWidgetTools
+    gcad_parametric gcad_geometry)
+
+# ─── document: serialization + undo commands ─────────────────────────────────
+add_library(gcad_document STATIC
+    src/document/DocumentSerializer.h
+    src/document/DocumentSerializer.cpp
+    src/document/DocumentFile.h
+    src/document/DocumentFile.cpp
+    src/document/commands/BlockCommands.h
+    src/document/commands/BlockCommands.cpp
+    src/document/commands/ComponentCommands.h
+    src/document/commands/ComponentCommands.cpp
+    src/document/commands/LayerCommands.h
+    src/document/commands/LayerCommands.cpp
+    src/document/commands/AttachmentCommands.h
+    src/document/commands/AttachmentCommands.cpp
+    src/document/commands/VariableCommands.h
+    src/document/commands/VariableCommands.cpp
+    src/document/commands/DocumentCommands.h
+    src/document/commands/DocumentCommands.cpp
+    src/document/commands/BreakCommands.h
+    src/document/commands/BreakCommands.cpp
+)
+target_include_directories(gcad_document PUBLIC ${GCAD_SRC})
+target_link_libraries(gcad_document PUBLIC Qt6::Gui miniz gcad_parametric gcad_geometry)
+
+# ─── ui: panels, cards, dialogs, theme (DeleteImpactConfirm is a UI dialog,
+#      so it lives here — document/ must not depend on ui/) ───────────────────
+add_library(gcad_ui STATIC
+    src/ui/VariableCard.h
+    src/ui/VariableCard.cpp
+    src/ui/CopyChip.h
+    src/ui/CopyChip.cpp
+    src/ui/FormulaCard.h
+    src/ui/FormulaCard.cpp
+    src/ui/FormulaGroupHeader.h
+    src/ui/FormulaGroupHeader.cpp
+    src/ui/LinkedCard.h
+    src/ui/LinkedCard.cpp
+    src/ui/MeasureCard.h
+    src/ui/MeasureCard.cpp
+    src/ui/AngleMeasureCard.h
+    src/ui/AngleMeasureCard.cpp
+    src/ui/VirtualCardList.h
+    src/ui/VirtualCardList.cpp
+    src/ui/CardBase.h
+    src/ui/CardBase.cpp
+    src/ui/ConditionDialog.h
+    src/ui/ConditionDialog.cpp
+    src/ui/VariablePanel.h
+    src/ui/VariablePanel.cpp
+    src/ui/MeasureTab.h
+    src/ui/MeasureTab.cpp
+    src/ui/ComponentTab.h
+    src/ui/ComponentTab.cpp
+    src/ui/FormulaTabModel.h
+    src/ui/FormulaTabModel.cpp
+    src/ui/SerialDelegate.h
+    src/ui/SerialDelegate.cpp
+    src/ui/LayerPanel.h
+    src/ui/LayerPanel.cpp
+    src/ui/IconHelper.h
+    src/ui/IconHelper.cpp
+    src/ui/Theme.h
+    src/ui/Theme.cpp
+    src/ui/ElaMsgBox.h
+    src/ui/ElaDialogButtons.h
+    src/document/DeleteImpactConfirm.h
+    src/document/DeleteImpactConfirm.cpp
+)
+target_include_directories(gcad_ui PUBLIC ${GCAD_SRC})
+target_link_libraries(gcad_ui PUBLIC
+    Qt6::Widgets Qt6::Svg ElaWidgetTools
+    gcad_document gcad_parametric gcad_geometry)
+
+# ─── tools: interactive tools / gestures / snapping ──────────────────────────
+add_library(gcad_tools STATIC
+    src/tools/Tool.h
+    src/tools/Tool.cpp
+    src/tools/ToolManager.h
+    src/tools/ToolManager.cpp
+    src/tools/ToolSelect.h
+    src/tools/ToolSelect.cpp
+    src/tools/MarqueeGesture.h
+    src/tools/MarqueeGesture.cpp
+    src/tools/SelectState.h
+    src/tools/ConnectGesture.h
+    src/tools/ConnectGesture.cpp
+    src/tools/CopyDragController.h
+    src/tools/CopyDragController.cpp
+    src/tools/ToolSmartPen.h
+    src/tools/ToolSmartPen.cpp
+    src/tools/LineFactory.h
+    src/tools/LineFactory.cpp
+    src/tools/LeaderCandidatePicker.h
+    src/tools/LeaderCandidatePicker.cpp
+    src/tools/ToolCurveEdit.h
+    src/tools/ToolCurveEdit.cpp
+    src/tools/ToolRotate.h
+    src/tools/ToolRotate.cpp
+    src/tools/RotateCopyGesture.h
+    src/tools/RotateCopyGesture.cpp
+    src/tools/RotateGizmo.h
+    src/tools/RotateGizmo.cpp
+    src/tools/ToolBreak.h
+    src/tools/ToolBreak.cpp
+    src/tools/ToolIntersection.h
+    src/tools/ToolIntersection.cpp
+    src/tools/ToolMeasure.h
+    src/tools/ToolMeasure.cpp
+    src/tools/ToolAngleMeasure.h
+    src/tools/ToolAngleMeasure.cpp
+    src/tools/AngleHud.h
+    src/tools/AngleHud.cpp
+    src/tools/SnapEngine.h
+    src/tools/SnapEngine.cpp
+    src/tools/LayerFeedback.h
+    src/tools/AuxPointForm.h
+    src/tools/AuxPointForm.cpp
+    src/tools/QuickAuxDialog.h
+    src/tools/QuickAuxDialog.cpp
+    src/tools/MeasureResultDialog.h
+    src/tools/MeasureResultDialog.cpp
+    src/tools/IntersectionForm.h
+    src/tools/IntersectionForm.cpp
+    src/tools/LinePropertyDialog.h
+    src/tools/LinePropertyDialog.cpp
+    src/tools/SegmentAnchorTab.h
+    src/tools/SegmentAnchorTab.cpp
+    src/tools/SegmentAuxTab.h
+    src/tools/SegmentAuxTab.cpp
+    src/tools/SegmentAimCard.h
+    src/tools/SegmentAimCard.cpp
+    src/tools/SegmentConnectionCard.h
+    src/tools/SegmentConnectionCard.cpp
+    src/tools/SegmentConnectionCardBuild.cpp
+    src/tools/SegmentConnectionCardRefresh.cpp
+    src/tools/SegmentConnectionCardAngle.cpp
+    src/tools/SegmentConnectionCardConn.cpp
+    src/tools/SegmentConnectionCardRefAim.cpp
+    src/tools/SegmentConnectionCardDart.cpp
+    src/tools/SegmentExtendCard.h
+    src/tools/SegmentExtendCard.cpp
+    src/tools/PointRefEdit.h
+    src/tools/PointRefEdit.cpp
+)
+target_include_directories(gcad_tools PUBLIC ${GCAD_SRC})
+target_link_libraries(gcad_tools PUBLIC
+    Qt6::Widgets ElaWidgetTools
+    gcad_ui gcad_canvas gcad_document gcad_parametric gcad_geometry)
+
+# ─── app: application shell ───────────────────────────────────────────────────
+add_library(gcad_app STATIC
     src/app/MainWindow.h
     src/app/MainWindow.cpp
     src/app/SegmentEditBar.h
@@ -99,1801 +349,266 @@ add_executable(${PROJECT_NAME}
     src/app/SmartPenPreInputBar.cpp
     src/app/DemoData.h
     src/app/DemoData.cpp
-    src/geometry/Vec2.h
-    src/geometry/TriangleUnfold.h
-    src/geometry/TriangleUnfold.cpp
-    src/geometry/Units.h
-    src/geometry/Angle.h
-    src/geometry/CurveMath.h
-    src/geometry/CurveMath.cpp
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.h
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.h
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.h
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.h
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.h
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.h
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-    src/parametric/TrianglePrototypeBlock.h
-    src/parametric/TrianglePrototypeBlock.cpp
-    src/parametric/Block.h
-    src/parametric/Block.cpp
-    src/parametric/Attachment.h
-    src/parametric/AttachmentGraph.h
-    src/parametric/FollowerAngle.h
-    src/parametric/Resolver.h
-    src/parametric/Resolver.cpp
-    src/parametric/ParamDocument.h
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.h
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.h
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.h
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.h
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Duplicate.h
-    src/parametric/Duplicate.cpp
-    src/parametric/Serial.h
-    src/parametric/Serial.cpp
-    src/parametric/Group.h
-    src/parametric/Variable.h
-    src/parametric/FormulaVariable.h
-    src/parametric/FormulaGroup.h
-    src/parametric/Layer.h
-    src/parametric/LinkedVariable.h
-    src/parametric/LinkedVariable.cpp
-    src/parametric/MeasureVariable.h
-    src/parametric/AngleMeasureVariable.h
-    src/parametric/ExpressionEvaluator.h
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/Condition.h
-    src/parametric/ConditionEngine.h
-    src/parametric/ConditionEngine.cpp
-    src/parametric/PerfProbe.h
-    src/ui/VariableCard.h
-    src/ui/VariableCard.cpp
-    src/ui/CopyChip.h
-    src/ui/CopyChip.cpp
-    src/ui/FormulaCard.h
-    src/ui/FormulaCard.cpp
-    src/ui/FormulaGroupHeader.h
-    src/ui/FormulaGroupHeader.cpp
-    src/ui/LinkedCard.h
-    src/ui/LinkedCard.cpp
-    src/ui/MeasureCard.h
-    src/ui/MeasureCard.cpp
-    src/ui/AngleMeasureCard.h
-    src/ui/AngleMeasureCard.cpp
-    src/ui/VirtualCardList.h
-    src/ui/VirtualCardList.cpp
-    src/ui/ConditionDialog.h
-    src/ui/ConditionDialog.cpp
-    src/ui/VariablePanel.h
-    src/ui/MeasureTab.h
-    src/ui/MeasureTab.cpp
-    src/ui/VariablePanel.cpp
-    src/ui/FormulaTabModel.h
-    src/ui/FormulaTabModel.cpp
-    src/ui/SerialDelegate.h
-    src/ui/SerialDelegate.cpp
-    src/ui/LayerPanel.h
-    src/ui/LayerPanel.cpp
-    src/ui/GroupPanel.h
-    src/ui/GroupPanel.cpp
-    src/tools/Tool.h
-    src/tools/ToolManager.h
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.h
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.h
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.h
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.h
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.h
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.h
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.h
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.h
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.h
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.h
-    src/tools/SnapEngine.cpp
-    src/tools/AuxPointForm.h
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.h
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.h
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.h
-    src/tools/IntersectionForm.cpp
-    src/tools/LinePropertyDialog.h
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.h
-    src/tools/PointRefEdit.cpp
-    src/document/DocumentSerializer.h
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.h
-    src/document/DocumentFile.cpp
-    src/document/DeleteImpactConfirm.h
-    src/document/DeleteImpactConfirm.cpp
-    src/document/commands/BlockCommands.h
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/LayerCommands.h
-    src/document/commands/LayerCommands.cpp
-    src/document/commands/AttachmentCommands.h
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.h
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.h
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.h
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/BreakCommands.h
-    src/document/commands/BreakCommands.cpp
-    src/ui/IconHelper.h
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
 )
+target_include_directories(gcad_app PUBLIC ${GCAD_SRC})
+target_link_libraries(gcad_app PUBLIC
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets ElaWidgetTools miniz
+    gcad_tools gcad_ui gcad_canvas gcad_document gcad_parametric gcad_geometry)
 
-target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# ═════════════════════════════════════════════════════════════════════════════
+# Application
+# ═════════════════════════════════════════════════════════════════════════════
+add_executable(${PROJECT_NAME}
+    resources/icons.qrc
+    src/main.cpp
+)
+target_link_libraries(${PROJECT_NAME} PRIVATE gcad_app spdlog::spdlog Tracy::TracyClient)
 
-target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets miniz ElaWidgetTools spdlog::spdlog Tracy::TracyClient avatar_view)
-
-# Avatar assets location for the 3D virtual model panel (absolute, runtime read-only).
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
-
-# --- Unit Tests (CTest + Qt Test) ---
+# ═════════════════════════════════════════════════════════════════════════════
+# Unit Tests (CTest + Qt Test)
+# ═════════════════════════════════════════════════════════════════════════════
 enable_testing()
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
-# Test: ExpressionEvaluator
-add_executable(test_expression
-    tests/test_expression.cpp
-    src/parametric/ExpressionEvaluator.h
-    src/parametric/ExpressionEvaluator.cpp
-)
-target_include_directories(test_expression PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_expression PRIVATE Qt6::Core Qt6::Test)
+# ── Test: ExpressionEvaluator ──
+add_executable(test_expression tests/test_expression.cpp)
+target_include_directories(test_expression PRIVATE ${GCAD_SRC})
+target_link_libraries(test_expression PRIVATE gcad_parametric Qt6::Core Qt6::Test)
 add_test(NAME test_expression COMMAND test_expression)
 
-# Test: Resolver
-add_executable(test_resolver
-    tests/test_resolver.cpp
-    src/parametric/Resolver.h
-    src/parametric/Resolver.cpp
-    src/parametric/Block.h
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/ExpressionEvaluator.h
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.h
-    src/parametric/ConditionEngine.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-    src/parametric/Attachment.h
-    src/parametric/AttachmentGraph.h
-    src/parametric/Condition.h
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-    src/geometry/Vec2.h
-    src/geometry/Units.h
-)
-target_include_directories(test_resolver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_resolver PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+# ── Test: Resolver ──
+add_executable(test_resolver tests/test_resolver.cpp)
+target_include_directories(test_resolver PRIVATE ${GCAD_SRC})
+target_link_libraries(test_resolver PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_resolver COMMAND test_resolver)
 
-# Test: DocumentSerializer round-trip
-add_executable(test_serializer
-    tests/test_serializer.cpp
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-)
-target_include_directories(test_serializer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_serializer PRIVATE Qt6::Core Qt6::Gui Qt6::Test miniz)
+# ── Test: DocumentSerializer round-trip ──
+add_executable(test_serializer tests/test_serializer.cpp)
+target_include_directories(test_serializer PRIVATE ${GCAD_SRC})
+target_link_libraries(test_serializer PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_serializer COMMAND test_serializer)
 
-# Test: real-doc P612 borrow-point intersection colinearity (1.gcad regression)
-add_executable(test_p612_colinearity
-    tests/test_p612_colinearity.cpp
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-)
-target_include_directories(test_p612_colinearity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_p612_colinearity PRIVATE Qt6::Core Qt6::Gui Qt6::Test miniz)
+# ── Test: real-doc P612 borrow-point intersection colinearity (1.gcad regression) ──
+add_executable(test_p612_colinearity tests/test_p612_colinearity.cpp)
+target_include_directories(test_p612_colinearity PRIVATE ${GCAD_SRC})
+target_link_libraries(test_p612_colinearity PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_p612_colinearity COMMAND test_p612_colinearity)
 
-# Test: user groups (閹存劗绮? make/ungroup, guards, undo, serialization)
-add_executable(test_group
-    tests/test_group.cpp
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/DocumentSerializer.cpp
-    src/parametric/Duplicate.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-)
-target_include_directories(test_group PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_group PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
-add_test(NAME test_group COMMAND test_group)
+# ── Test: cross-layer intersection follows parameter changes (3.gcad regression) ──
+add_executable(test_intersection_update tests/test_intersection_update.cpp)
+target_include_directories(test_intersection_update PRIVATE ${GCAD_SRC})
+target_link_libraries(test_intersection_update PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_intersection_update COMMAND test_intersection_update)
 
-# Test: duplicateBlocks (Ctrl+drag quick copy)
-add_executable(test_duplicate
-    tests/test_duplicate.cpp
-    src/parametric/Duplicate.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-)
-target_include_directories(test_duplicate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_duplicate PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+# ── Test: duplicateBlocks (Ctrl+drag quick copy) ──
+add_executable(test_duplicate tests/test_duplicate.cpp)
+target_include_directories(test_duplicate PRIVATE ${GCAD_SRC})
+target_link_libraries(test_duplicate PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_duplicate COMMAND test_duplicate)
 
-# Test: breakSegment (point break tool)
-add_executable(test_break
-    tests/test_break.cpp
-    src/document/commands/BreakCommands.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-)
-target_include_directories(test_break PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_break PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+# ── Test: breakSegment (point break tool) ──
+add_executable(test_break tests/test_break.cpp)
+target_include_directories(test_break PRIVATE ${GCAD_SRC})
+target_link_libraries(test_break PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_break COMMAND test_break)
 
-# Test: intersection point + aux ref point
-add_executable(test_intersection
-    tests/test_intersection.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-    src/parametric/Attachment.h
-    src/parametric/AttachmentGraph.h
-    src/parametric/Condition.h
-    src/geometry/Vec2.h
-    src/geometry/Units.h
-)
-target_include_directories(test_intersection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_intersection PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+# ── Test: intersection point + aux ref point ──
+add_executable(test_intersection tests/test_intersection.cpp)
+target_include_directories(test_intersection PRIVATE ${GCAD_SRC})
+target_link_libraries(test_intersection PRIVATE gcad_parametric Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_intersection COMMAND test_intersection)
 
-# Test: document commands (BlockCommands + VariableCommands undo/redo)
-add_executable(test_commands
-    tests/test_commands.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/LayerCommands.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
+# ── Test: component (组件) create / rigid sync / dissolve / delete / round-trip
+#    + full connect-gesture harness (junction internal-follower connect) ──
+add_executable(test_component
+    tests/test_component.cpp
+    resources/icons.qrc
 )
-target_include_directories(test_commands PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_commands PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+target_include_directories(test_component PRIVATE ${GCAD_SRC})
+target_link_libraries(test_component PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_component COMMAND test_component)
+
+# ── Test: document commands (BlockCommands + VariableCommands undo/redo) ──
+add_executable(test_commands tests/test_commands.cpp)
+target_include_directories(test_commands PRIVATE ${GCAD_SRC})
+target_link_libraries(test_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_commands COMMAND test_commands)
 
-# Test: CurveMath (B鑼厇ier / Catmull-Rom / arc length / projection / intersection)
-add_executable(test_curve
-    tests/test_curve.cpp
-    src/geometry/CurveMath.h
-    src/geometry/CurveMath.cpp
-    src/geometry/Vec2.h
-)
-target_include_directories(test_curve PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_curve PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+# ── Test: CurveMath (Bezier / Catmull-Rom / arc length / projection / intersection) ──
+add_executable(test_curve tests/test_curve.cpp)
+target_include_directories(test_curve PRIVATE ${GCAD_SRC})
+target_link_libraries(test_curve PRIVATE gcad_geometry Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_curve COMMAND test_curve)
 
-# Test: triangle sloper surface unfolding (edge-preserving paper-space layout)
-add_executable(test_triangle_unfold
-    tests/test_triangle_unfold.cpp
-    src/geometry/TriangleUnfold.h
-    src/geometry/TriangleUnfold.cpp
-    src/geometry/Vec2.h
-)
-target_include_directories(test_triangle_unfold PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_triangle_unfold PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+# ── Test: triangle sloper surface unfolding (edge-preserving paper-space layout) ──
+add_executable(test_triangle_unfold tests/test_triangle_unfold.cpp)
+target_include_directories(test_triangle_unfold PRIVATE ${GCAD_SRC})
+target_link_libraries(test_triangle_unfold PRIVATE gcad_geometry Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_triangle_unfold COMMAND test_triangle_unfold)
 
-# ---------------------------------------------------------------------------
-# Avatar 3D 模块：核心引擎（纯 C++23，无 Qt 依赖）
-# ---------------------------------------------------------------------------
-add_library(avatar_core STATIC
-    src/avatar/AvatarVec3.h
-    src/avatar/JsonReader.h
-    src/avatar/JsonReader.cpp
-    src/avatar/Mesh3D.h
-    src/avatar/Mesh3D.cpp
-    src/avatar/TargetData.h
-    src/avatar/TargetData.cpp
-    src/avatar/AvatarModel.h
-    src/avatar/AvatarModel.cpp
-    src/avatar/MeasureSystem.h
-    src/avatar/MeasureSystem.cpp
-    src/avatar/AvatarSolver.h
-    src/avatar/AvatarSolver.cpp
-)
-target_include_directories(avatar_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(avatar_core PUBLIC Qt6::Core Qt6::Gui miniz)
-
-# Avatar 3D 模块：渲染/视口/控制面板（Qt OpenGL + Widgets）
-add_library(avatar_view STATIC
-    src/avatar/AvatarMat4.h
-    src/avatar/AvatarRenderMesh.h
-    src/avatar/AvatarRenderMesh.cpp
-    src/avatar/AvatarView3D.h
-    src/avatar/AvatarView3D.cpp
-    src/avatar/AvatarPanel.h
-    src/avatar/AvatarPanel.cpp
-)
-target_include_directories(avatar_view PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(avatar_view PUBLIC
-    avatar_core Qt6::OpenGL Qt6::OpenGLWidgets ElaWidgetTools)
-# Avatar 资源绝对路径：库内代码（AvatarPanel）与所有调用方统一拿到绝对路径，
-# 避免 #ifndef 兜底相对路径随 cwd 漂移（ctest 的 cwd 是 build 目录）。
-target_compile_definitions(avatar_view PUBLIC
-    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
-
-# Test: avatar core engine (MakeHuman-compatible morph / measure pipeline)
-add_executable(test_avatar_core tests/test_avatar_core.cpp)
-target_include_directories(test_avatar_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_avatar_core PRIVATE avatar_core Qt6::Test)
-target_compile_definitions(test_avatar_core PRIVATE
-    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
-add_test(NAME test_avatar_core COMMAND test_avatar_core)
-
-# Test: avatar measure solver (single binary-search + multi Gauss-Seidel)
-add_executable(test_avatar_solver tests/test_avatar_solver.cpp)
-target_include_directories(test_avatar_solver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_avatar_solver PRIVATE avatar_core Qt6::Test)
-target_compile_definitions(test_avatar_solver PRIVATE
-    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
-add_test(NAME test_avatar_solver COMMAND test_avatar_solver)
-
-# Test: avatar render data layer (CPU-side VBO/EBO packing + bounds)
-add_executable(test_avatar_render tests/test_avatar_render.cpp)
-target_include_directories(test_avatar_render PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_avatar_render PRIVATE avatar_core avatar_view Qt6::Test)
-target_compile_definitions(test_avatar_render PRIVATE
-    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
-add_test(NAME test_avatar_render COMMAND test_avatar_render)
-
-# Test: avatar 3D view (orbit camera matrices + GL smoke, QSKIP when no GL)
-add_executable(test_avatar_view tests/test_avatar_view.cpp)
-target_include_directories(test_avatar_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_avatar_view PRIVATE avatar_core avatar_view Qt6::Test)
-target_compile_definitions(test_avatar_view PRIVATE
-    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
-add_test(NAME test_avatar_view COMMAND test_avatar_view)
-
-# Test: avatar control panel (CLO four-measures + sliders drive the mesh)
-add_executable(test_avatar_panel tests/test_avatar_panel.cpp)
-target_include_directories(test_avatar_panel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_avatar_panel PRIVATE avatar_core avatar_view Qt6::Test)
-target_compile_definitions(test_avatar_panel PRIVATE
-    AVATAR_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/avatar")
-add_test(NAME test_avatar_panel COMMAND test_avatar_panel)
-
-# Benchmark: layered dirty-marking resolve pipeline (aux frozen vs full)
-add_executable(test_perf
-    tests/test_perf.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-)
-target_include_directories(test_perf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_perf PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+# ── Benchmark: layered dirty-marking resolve pipeline (aux frozen vs full) ──
+add_executable(test_perf tests/test_perf.cpp)
+target_include_directories(test_perf PRIVATE ${GCAD_SRC})
+target_link_libraries(test_perf PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_perf COMMAND test_perf)
 
-# Test: auxiliary-layer rendering (aux point visibility across layer modes)
-add_executable(test_aux_layer
-    tests/test_aux_layer.cpp
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.cpp
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.cpp
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/BreakCommands.cpp
-    src/document/commands/VariableCommands.cpp
-    src/document/DeleteImpactConfirm.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Duplicate.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
-)
-target_include_directories(test_aux_layer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_aux_layer PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
+# ── Test: auxiliary-layer rendering (aux point visibility across layer modes) ──
+add_executable(test_aux_layer tests/test_aux_layer.cpp)
+target_include_directories(test_aux_layer PRIVATE ${GCAD_SRC})
+target_link_libraries(test_aux_layer PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
 add_test(NAME test_aux_layer COMMAND test_aux_layer)
 
-# Test: smart-pen line-body X marker / quick aux point interaction
-add_executable(test_smartpen_aux
-    tests/test_smartpen_aux.cpp
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/SnapEngine.cpp
-    src/tools/QuickAuxDialog.cpp
-    src/tools/AuxPointForm.cpp
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.cpp
-    src/tools/IntersectionForm.cpp
-    src/tools/AngleHud.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.cpp
-    src/document/DeleteImpactConfirm.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Duplicate.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
-    src/app/SmartPenPreInputBar.h
-    src/app/SmartPenPreInputBar.cpp
-)
-target_include_directories(test_smartpen_aux PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_smartpen_aux PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
+# ── Test: 端点延长线 (EXTEND_LINE_DESIGN.md): 辅助点本体不动 / 交点尾巴 /
+#    跟随线联动 / 打断归属 / 命令 undo / 序列化 / 尾巴范围判定 ──
+add_executable(test_extend tests/test_extend.cpp)
+target_include_directories(test_extend PRIVATE ${GCAD_SRC})
+target_link_libraries(test_extend PRIVATE
+    gcad_canvas gcad_document gcad_parametric gcad_tools
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+add_test(NAME test_extend COMMAND test_extend)
+
+# ── Test: smart-pen line-body X marker / quick aux point interaction ──
+add_executable(test_smartpen_aux tests/test_smartpen_aux.cpp)
+target_include_directories(test_smartpen_aux PRIVATE ${GCAD_SRC})
+target_link_libraries(test_smartpen_aux PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
 add_test(NAME test_smartpen_aux COMMAND test_smartpen_aux)
 
-# Test: measure tool W-mode cycling (距离/水平/垂直), per-kind values, and
-# axis-coincidence rejection (the source set mirrors test_smartpen_aux —
-# HudItem lives in ToolSmartPen.cpp).
-add_executable(test_measure
-    tests/test_measure.cpp
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/SnapEngine.cpp
-    src/tools/QuickAuxDialog.cpp
-    src/tools/AuxPointForm.cpp
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.cpp
-    src/tools/IntersectionForm.cpp
-    src/tools/AngleHud.cpp
-    src/tools/MeasureResultDialog.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.cpp
-    src/document/DeleteImpactConfirm.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Duplicate.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
-)
-target_include_directories(test_measure PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_measure PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
+# ── Test: measure tool W-mode cycling (距离/水平/垂直), per-kind values ──
+add_executable(test_measure tests/test_measure.cpp)
+target_include_directories(test_measure PRIVATE ${GCAD_SRC})
+target_link_libraries(test_measure PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
 add_test(NAME test_measure COMMAND test_measure)
 
-# Test: SegmentEditBar (鍒涘缓鍚庡唴宓岀紪杈戞潯)
-add_executable(test_segment_edit_bar
-    tests/test_segment_edit_bar.cpp
-    src/app/SegmentEditBar.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/parametric/Duplicate.cpp
-    src/geometry/CurveMath.cpp
-    src/document/commands/BlockCommands.cpp
-)
-target_include_directories(test_segment_edit_bar PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_segment_edit_bar PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+# ── Test: SegmentEditBar (创建后内嵌编辑条) ──
+add_executable(test_segment_edit_bar tests/test_segment_edit_bar.cpp)
+target_include_directories(test_segment_edit_bar PRIVATE ${GCAD_SRC})
+target_link_libraries(test_segment_edit_bar PRIVATE
+    gcad_app gcad_document gcad_parametric
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
 add_test(NAME test_segment_edit_bar COMMAND test_segment_edit_bar)
 
-# Test: formula-tab grouping (VirtualCardList stale-rebind regression —
-# 结构变化后存活行必须重绑定, 否则分组数量/箭头/序号过期; FormulaTabModel
-# 拖入分组/撤销/折叠; FormulaCard 组内缩进).
+# ── Test: formula-tab grouping (VirtualCardList stale-rebind regression) ──
 add_executable(test_formula_groups
     tests/test_formula_groups.cpp
     resources/icons.qrc
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/parametric/Duplicate.cpp
-    src/geometry/CurveMath.cpp
-    src/document/commands/VariableCommands.cpp
-    src/ui/VirtualCardList.cpp
-    src/ui/FormulaTabModel.cpp
-    src/ui/FormulaGroupHeader.cpp
-    src/ui/FormulaCard.cpp
-    src/ui/VariableCard.cpp
-    src/ui/LinkedCard.cpp
-    src/ui/MeasureCard.cpp
-    src/ui/AngleMeasureCard.cpp
-    src/ui/CopyChip.cpp
-    src/ui/IconHelper.cpp
-    src/ui/Theme.cpp
 )
-target_include_directories(test_formula_groups PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_formula_groups PRIVATE Qt6::Widgets Qt6::Svg Qt6::Test ElaWidgetTools)
+target_include_directories(test_formula_groups PRIVATE ${GCAD_SRC})
+target_link_libraries(test_formula_groups PRIVATE
+    gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::Test ElaWidgetTools)
 add_test(NAME test_formula_groups COMMAND test_formula_groups)
 
-# Test: user-group tool guards (缂佸嫬鍞撮崡鏇犲殠娑撳秴褰查崚?/ 缂佸嫬鍞存潻鐐村复閹峰棔绗夊鈧?
-add_executable(test_group_guards
-    tests/test_group_guards.cpp
-    src/tools/ToolSelect.cpp
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/SnapEngine.cpp
-    src/tools/AngleHud.cpp
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.cpp
-    src/tools/AuxPointForm.cpp
-    src/tools/IntersectionForm.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.cpp
-    src/document/DeleteImpactConfirm.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Duplicate.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
-)
-target_include_directories(test_group_guards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_group_guards PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
-add_test(NAME test_group_guards COMMAND test_group_guards)
-
-# Test: intersection tool aim-point (閹稿洤鎮滈悙? interaction flow 閳?full event
-# chain through CanvasView (QTest mouse events 閳?dispatch 閳?tool).
+# ── Test: intersection tool aim-point interaction flow (full event chain) ──
 add_executable(test_tool_intersection
     tests/test_tool_intersection.cpp
     resources/icons.qrc
-    src/geometry/Vec2.h
-    src/geometry/Units.h
-    src/geometry/Angle.h
-    src/geometry/CurveMath.h
-    src/geometry/CurveMath.cpp
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.h
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.h
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.h
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.h
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.h
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.h
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-    src/parametric/Block.h
-    src/parametric/Block.cpp
-    src/parametric/Attachment.h
-    src/parametric/AttachmentGraph.h
-    src/parametric/FollowerAngle.h
-    src/parametric/Resolver.h
-    src/parametric/Resolver.cpp
-    src/parametric/ParamDocument.h
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.h
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.h
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.h
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.h
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Duplicate.h
-    src/parametric/Duplicate.cpp
-    src/parametric/Serial.h
-    src/parametric/Serial.cpp
-    src/parametric/Group.h
-    src/parametric/Variable.h
-    src/parametric/FormulaVariable.h
-    src/parametric/FormulaGroup.h
-    src/parametric/Layer.h
-    src/parametric/LinkedVariable.h
-    src/parametric/LinkedVariable.cpp
-    src/parametric/MeasureVariable.h
-    src/parametric/AngleMeasureVariable.h
-    src/parametric/ExpressionEvaluator.h
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/Condition.h
-    src/parametric/ConditionEngine.h
-    src/parametric/ConditionEngine.cpp
-    src/parametric/PerfProbe.h
-    src/ui/VariableCard.h
-    src/ui/VariableCard.cpp
-    src/ui/CopyChip.h
-    src/ui/CopyChip.cpp
-    src/ui/FormulaCard.h
-    src/ui/FormulaCard.cpp
-    src/ui/FormulaGroupHeader.h
-    src/ui/FormulaGroupHeader.cpp
-    src/ui/LinkedCard.h
-    src/ui/LinkedCard.cpp
-    src/ui/MeasureCard.h
-    src/ui/MeasureCard.cpp
-    src/ui/AngleMeasureCard.h
-    src/ui/AngleMeasureCard.cpp
-    src/ui/VirtualCardList.h
-    src/ui/VirtualCardList.cpp
-    src/ui/ConditionDialog.h
-    src/ui/ConditionDialog.cpp
-    src/ui/VariablePanel.h
-    src/ui/MeasureTab.h
-    src/ui/MeasureTab.cpp
-    src/ui/VariablePanel.cpp
-    src/ui/FormulaTabModel.h
-    src/ui/FormulaTabModel.cpp
-    src/ui/SerialDelegate.h
-    src/ui/SerialDelegate.cpp
-    src/ui/LayerPanel.h
-    src/ui/LayerPanel.cpp
-    src/ui/GroupPanel.h
-    src/ui/GroupPanel.cpp
-    src/tools/Tool.h
-    src/tools/ToolManager.h
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.h
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.h
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.h
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.h
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.h
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.h
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.h
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.h
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.h
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.h
-    src/tools/SnapEngine.cpp
-    src/tools/AuxPointForm.h
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.h
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.h
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.h
-    src/tools/IntersectionForm.cpp
-    src/tools/LinePropertyDialog.h
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.h
-    src/tools/PointRefEdit.cpp
-    src/document/DocumentSerializer.h
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.h
-    src/document/DocumentFile.cpp
-    src/document/DeleteImpactConfirm.h
-    src/document/DeleteImpactConfirm.cpp
-    src/document/commands/BlockCommands.h
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/LayerCommands.h
-    src/document/commands/LayerCommands.cpp
-    src/document/commands/AttachmentCommands.h
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.h
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.h
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.h
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/BreakCommands.h
-    src/document/commands/BreakCommands.cpp
-    src/ui/IconHelper.h
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
 )
-target_include_directories(test_tool_intersection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_tool_intersection PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+target_include_directories(test_tool_intersection PRIVATE ${GCAD_SRC})
+target_link_libraries(test_tool_intersection PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_tool_intersection COMMAND test_tool_intersection)
 
-# Test: select tool W-key mode toggle through the full event
-# chain: real QKeyEvent -> CanvasView::keyPressEvent -> ToolManager -> ToolSelect.
+# ── Test: select tool W-key mode toggle through the full event chain ──
 add_executable(test_select_wkey
     tests/test_select_wkey.cpp
-    src/geometry/Vec2.h
-    src/geometry/Units.h
-    src/geometry/CurveMath.h
-    src/geometry/CurveMath.cpp
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.h
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.h
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.h
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.h
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.h
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.h
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-    src/parametric/Block.h
-    src/parametric/Block.cpp
-    src/parametric/Attachment.h
-    src/parametric/AttachmentGraph.h
-    src/parametric/FollowerAngle.h
-    src/parametric/Resolver.h
-    src/parametric/Resolver.cpp
-    src/parametric/ParamDocument.h
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.h
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.h
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.h
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.h
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Duplicate.h
-    src/parametric/Duplicate.cpp
-    src/parametric/Serial.h
-    src/parametric/Serial.cpp
-    src/parametric/Group.h
-    src/parametric/Variable.h
-    src/parametric/FormulaVariable.h
-    src/parametric/FormulaGroup.h
-    src/parametric/Layer.h
-    src/parametric/LinkedVariable.h
-    src/parametric/LinkedVariable.cpp
-    src/parametric/MeasureVariable.h
-    src/parametric/AngleMeasureVariable.h
-    src/parametric/ExpressionEvaluator.h
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/Condition.h
-    src/parametric/ConditionEngine.h
-    src/parametric/ConditionEngine.cpp
-    src/parametric/PerfProbe.h
-    src/tools/Tool.h
-    src/tools/ToolManager.h
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.h
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.h
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.h
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.h
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.h
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.h
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.h
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.h
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.h
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.h
-    src/tools/SnapEngine.cpp
-    src/tools/AuxPointForm.h
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.h
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.h
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.h
-    src/tools/IntersectionForm.cpp
-    src/tools/LinePropertyDialog.h
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.h
-    src/tools/PointRefEdit.cpp
-    src/document/DocumentSerializer.h
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.h
-    src/document/DocumentFile.cpp
-    src/document/DeleteImpactConfirm.h
-    src/document/DeleteImpactConfirm.cpp
-    src/document/commands/BlockCommands.h
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/LayerCommands.h
-    src/document/commands/LayerCommands.cpp
-    src/document/commands/AttachmentCommands.h
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.h
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.h
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.h
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/BreakCommands.h
-    src/document/commands/BreakCommands.cpp
-    src/ui/IconHelper.h
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
+    resources/icons.qrc
 )
-target_include_directories(test_select_wkey PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_select_wkey PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+target_include_directories(test_select_wkey PRIVATE ${GCAD_SRC})
+target_link_libraries(test_select_wkey PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_select_wkey COMMAND test_select_wkey)
 
-# Test: rotate-copy (Ctrl+drag in ToolRotate) 鈥?clone attaches back to the
-# original with a relative construction angle; full event-chain coverage.
+# ── Test: rotate-copy (Ctrl+drag in ToolRotate) ──
 add_executable(test_rotate_copy
     tests/test_rotate_copy.cpp
-    src/geometry/Vec2.h
-    src/geometry/Units.h
-    src/geometry/CurveMath.h
-    src/geometry/CurveMath.cpp
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.h
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.h
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.h
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.h
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.h
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.h
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-    src/parametric/Block.h
-    src/parametric/Block.cpp
-    src/parametric/Attachment.h
-    src/parametric/AttachmentGraph.h
-    src/parametric/FollowerAngle.h
-    src/parametric/Resolver.h
-    src/parametric/Resolver.cpp
-    src/parametric/ParamDocument.h
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.h
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.h
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.h
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.h
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Duplicate.h
-    src/parametric/Duplicate.cpp
-    src/parametric/Serial.h
-    src/parametric/Serial.cpp
-    src/parametric/Group.h
-    src/parametric/Variable.h
-    src/parametric/FormulaVariable.h
-    src/parametric/FormulaGroup.h
-    src/parametric/Layer.h
-    src/parametric/LinkedVariable.h
-    src/parametric/LinkedVariable.cpp
-    src/parametric/MeasureVariable.h
-    src/parametric/AngleMeasureVariable.h
-    src/parametric/ExpressionEvaluator.h
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/Condition.h
-    src/parametric/ConditionEngine.h
-    src/parametric/ConditionEngine.cpp
-    src/parametric/PerfProbe.h
-    src/tools/Tool.h
-    src/tools/ToolManager.h
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.h
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.h
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.h
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.h
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.h
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.h
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.h
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.h
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.h
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.h
-    src/tools/SnapEngine.cpp
-    src/tools/LinePropertyDialog.h
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.h
-    src/tools/PointRefEdit.cpp
-    src/tools/AuxPointForm.h
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.h
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.h
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.h
-    src/tools/IntersectionForm.cpp
-    src/document/DocumentSerializer.h
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.h
-    src/document/DocumentFile.cpp
-    src/document/DeleteImpactConfirm.h
-    src/document/DeleteImpactConfirm.cpp
-    src/document/commands/BlockCommands.h
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/LayerCommands.h
-    src/document/commands/LayerCommands.cpp
-    src/document/commands/AttachmentCommands.h
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.h
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.h
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.h
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/BreakCommands.h
-    src/document/commands/BreakCommands.cpp
-    src/ui/IconHelper.h
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
+    resources/icons.qrc
 )
-target_include_directories(test_rotate_copy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_rotate_copy PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+target_include_directories(test_rotate_copy PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_copy PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_rotate_copy COMMAND test_rotate_copy)
 
-# Test: line-property dialog tab switching (灞炴€?tab must not freeze when the
-# aux tab's focused editor loses focus on page switch).
+# ── Test: line-property dialog tab switching ──
 add_executable(test_dialog_tabs
     tests/test_dialog_tabs.cpp
-    src/geometry/Vec2.h
-    src/geometry/Units.h
-    src/geometry/CurveMath.h
-    src/geometry/CurveMath.cpp
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.h
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.h
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.h
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.h
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.h
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.h
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-    src/parametric/Block.h
-    src/parametric/Block.cpp
-    src/parametric/Attachment.h
-    src/parametric/AttachmentGraph.h
-    src/parametric/FollowerAngle.h
-    src/parametric/Resolver.h
-    src/parametric/Resolver.cpp
-    src/parametric/ParamDocument.h
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.h
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.h
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.h
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.h
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Duplicate.h
-    src/parametric/Duplicate.cpp
-    src/parametric/Serial.h
-    src/parametric/Serial.cpp
-    src/parametric/Group.h
-    src/parametric/Variable.h
-    src/parametric/FormulaVariable.h
-    src/parametric/FormulaGroup.h
-    src/parametric/Layer.h
-    src/parametric/LinkedVariable.h
-    src/parametric/LinkedVariable.cpp
-    src/parametric/MeasureVariable.h
-    src/parametric/AngleMeasureVariable.h
-    src/parametric/ExpressionEvaluator.h
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/Condition.h
-    src/parametric/ConditionEngine.h
-    src/parametric/ConditionEngine.cpp
-    src/parametric/PerfProbe.h
-    src/tools/Tool.h
-    src/tools/ToolManager.h
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.h
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.h
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.h
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.h
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.h
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.h
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.h
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.h
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.h
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.h
-    src/tools/SnapEngine.cpp
-    src/tools/LinePropertyDialog.h
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.h
-    src/tools/PointRefEdit.cpp
-    src/tools/AuxPointForm.h
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.h
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.h
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.h
-    src/tools/IntersectionForm.cpp
-    src/document/DocumentSerializer.h
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.h
-    src/document/DocumentFile.cpp
-    src/document/DeleteImpactConfirm.h
-    src/document/DeleteImpactConfirm.cpp
-    src/document/commands/BlockCommands.h
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/LayerCommands.h
-    src/document/commands/LayerCommands.cpp
-    src/document/commands/AttachmentCommands.h
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.h
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.h
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.h
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/BreakCommands.h
-    src/document/commands/BreakCommands.cpp
-    src/ui/IconHelper.h
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
+    resources/icons.qrc
 )
-target_include_directories(test_dialog_tabs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_dialog_tabs PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+target_include_directories(test_dialog_tabs PRIVATE ${GCAD_SRC})
+target_link_libraries(test_dialog_tabs PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_dialog_tabs COMMAND test_dialog_tabs)
 
-# Benchmark: curve-heavy canvas interaction (compute + software repaint cost)
-add_executable(test_canvas_perf
-    tests/test_canvas_perf.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-)
-target_include_directories(test_canvas_perf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_canvas_perf PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Test)
+# ── Benchmark: curve-heavy canvas interaction (compute + software repaint cost) ──
+add_executable(test_canvas_perf tests/test_canvas_perf.cpp)
+target_include_directories(test_canvas_perf PRIVATE ${GCAD_SRC})
+target_link_libraries(test_canvas_perf PRIVATE
+    gcad_canvas gcad_parametric gcad_tools
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Test)
 add_test(NAME test_canvas_perf COMMAND test_canvas_perf)
 
-# Test: hold-to-show overlays (N = all names, L = all lengths) — force flags
-# reveal labels at the pixel level, release restores model flags, and
-# overlapping same-name points merge into one label.
-add_executable(test_hold_show
-    tests/test_hold_show.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamPoint.h
-    src/parametric/Segment.h
-)
-target_include_directories(test_hold_show PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_hold_show PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Test)
+# ── Test: hold-to-show overlays (N = all names, L = all lengths) ──
+add_executable(test_hold_show tests/test_hold_show.cpp)
+target_include_directories(test_hold_show PRIVATE ${GCAD_SRC})
+target_link_libraries(test_hold_show PRIVATE
+    gcad_canvas gcad_parametric gcad_tools
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 add_test(NAME test_hold_show COMMAND test_hold_show)
 
-# Benchmark: real user document drag-frame breakdown (env GCAD_DOC=<path>)
-add_executable(test_realdoc_perf
-    tests/test_realdoc_perf.cpp
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/geometry/CurveMath.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/tools/SnapEngine.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-)
-target_include_directories(test_realdoc_perf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_realdoc_perf PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test miniz)
+# ── Benchmark: real user document drag-frame breakdown (env GCAD_DOC=<path>) ──
+add_executable(test_realdoc_perf tests/test_realdoc_perf.cpp)
+target_include_directories(test_realdoc_perf PRIVATE ${GCAD_SRC})
+target_link_libraries(test_realdoc_perf PRIVATE
+    gcad_document gcad_canvas gcad_parametric gcad_tools
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test miniz)
 
-# Benchmark: FULL MainWindow drag on a real document (env GCAD_DOC=<path>).
-# Same sources as the app itself (minus main.cpp) for full fidelity.
+# ── Benchmark: FULL MainWindow drag on a real document (env GCAD_DOC=<path>).
+#    Links gcad_app (the whole application minus main.cpp) for full fidelity. ──
 add_executable(test_realdoc_full
     tests/test_realdoc_full.cpp
     resources/icons.qrc
-    src/app/MainWindow.cpp
-    src/app/SegmentEditBar.cpp
-    src/app/SmartPenPreInputBar.h
-    src/app/SmartPenPreInputBar.cpp
-    src/app/DemoData.cpp
-    src/geometry/CurveMath.cpp
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/parametric/Duplicate.cpp
-    src/ui/VariableCard.cpp
-    src/ui/FormulaCard.cpp
-    src/ui/FormulaGroupHeader.cpp
-    src/ui/LinkedCard.cpp
-    src/ui/MeasureCard.cpp
-    src/ui/AngleMeasureCard.cpp
-    src/ui/VirtualCardList.cpp
-    src/ui/ConditionDialog.cpp
-    src/ui/VariablePanel.cpp
-    src/ui/MeasureTab.h
-    src/ui/MeasureTab.cpp
-    src/ui/FormulaTabModel.h
-    src/ui/FormulaTabModel.cpp
-    src/ui/SerialDelegate.cpp
-    src/ui/LayerPanel.cpp
-    src/ui/GroupPanel.cpp
-    src/ui/CopyChip.cpp
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.cpp
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.cpp
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.cpp
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.cpp
-    src/document/DeleteImpactConfirm.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/LayerCommands.cpp
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/BreakCommands.cpp
 )
-target_include_directories(test_realdoc_full PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_realdoc_full PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools avatar_view)
+target_include_directories(test_realdoc_full PRIVATE ${GCAD_SRC})
+target_link_libraries(test_realdoc_full PRIVATE
+    gcad_app
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 
-# Smoke test: ElaWindow navigation stack switching (reproduces the
-# "点击图层=闪退" crash). Not registered with ctest — run manually.
+# ── Smoke test: ElaWindow navigation stack switching (reproduces the
+#    "点击图层=闪退" crash). Not registered with ctest — run manually. ──
 add_executable(test_nav_smoke
     tests/test_nav_smoke.cpp
     resources/icons.qrc
-    src/app/MainWindow.cpp
-    src/app/SegmentEditBar.cpp
-    src/app/SmartPenPreInputBar.h
-    src/app/SmartPenPreInputBar.cpp
-    src/app/DemoData.cpp
-    src/geometry/CurveMath.cpp
-    src/canvas/CanvasView.h
-    src/canvas/CanvasView.cpp
-    src/canvas/CanvasScene.cpp
-    src/canvas/GroupBadgeItem.h
-    src/canvas/GroupBadgeItem.cpp
-    src/canvas/CanvasStyle.cpp
-    src/canvas/CanvasAnimator.cpp
-    src/canvas/OriginCrosshair.cpp
-    src/canvas/BlockItem.cpp
-    src/canvas/CurveItem.cpp
-    src/parametric/ParamDocument.cpp
-    src/parametric/LayerRegistry.cpp
-    src/parametric/VariableStore.cpp
-    src/parametric/MeasurementStore.cpp
-    src/parametric/GroupRegistry.cpp
-    src/parametric/Block.cpp
-    src/parametric/Resolver.cpp
-    src/parametric/ExpressionEvaluator.cpp
-    src/parametric/ConditionEngine.cpp
-    src/parametric/Serial.cpp
-    src/parametric/LinkedVariable.cpp
-    src/parametric/Duplicate.cpp
-    src/ui/VariableCard.cpp
-    src/ui/FormulaCard.cpp
-    src/ui/FormulaGroupHeader.cpp
-    src/ui/LinkedCard.cpp
-    src/ui/MeasureCard.cpp
-    src/ui/AngleMeasureCard.cpp
-    src/ui/VirtualCardList.cpp
-    src/ui/ConditionDialog.cpp
-    src/ui/VariablePanel.cpp
-    src/ui/MeasureTab.h
-    src/ui/MeasureTab.cpp
-    src/ui/FormulaTabModel.h
-    src/ui/FormulaTabModel.cpp
-    src/ui/SerialDelegate.cpp
-    src/ui/LayerPanel.cpp
-    src/ui/GroupPanel.cpp
-    src/ui/CopyChip.cpp
-    src/ui/IconHelper.cpp
-    src/ui/Theme.h
-    src/ui/Theme.cpp
-    src/tools/ToolManager.cpp
-    src/tools/ToolSelect.cpp
-    src/tools/MarqueeGesture.h
-    src/tools/MarqueeGesture.cpp
-    src/tools/SelectState.h
-    src/tools/ConnectGesture.h
-    src/tools/ConnectGesture.cpp
-    src/tools/CopyDragController.h
-    src/tools/CopyDragController.cpp
-    src/tools/ToolSmartPen.cpp
-    src/tools/LineFactory.h
-    src/tools/LineFactory.cpp
-    src/tools/LeaderCandidatePicker.h
-    src/tools/LeaderCandidatePicker.cpp
-    src/tools/ToolCurveEdit.cpp
-    src/tools/ToolRotate.cpp
-    src/tools/RotateCopyGesture.h
-    src/tools/RotateCopyGesture.cpp
-    src/tools/RotateGizmo.h
-    src/tools/RotateGizmo.cpp
-    src/tools/ToolBreak.cpp
-    src/tools/ToolIntersection.cpp
-    src/tools/ToolMeasure.cpp
-    src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.cpp
-    src/tools/SnapEngine.cpp
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.cpp
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/PointRefEdit.cpp
-    src/document/DocumentSerializer.cpp
-    src/document/DocumentFile.cpp
-    src/document/DeleteImpactConfirm.cpp
-    src/document/commands/BlockCommands.cpp
-    src/document/commands/LayerCommands.cpp
-    src/document/commands/AttachmentCommands.cpp
-    src/document/commands/VariableCommands.cpp
-    src/document/commands/DocumentCommands.cpp
-    src/document/commands/GroupCommands.cpp
-    src/document/commands/BreakCommands.cpp
 )
-target_include_directories(test_nav_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_nav_smoke PRIVATE Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools avatar_view)
+target_include_directories(test_nav_smoke PRIVATE ${GCAD_SRC})
+target_link_libraries(test_nav_smoke PRIVATE
+    gcad_app
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 
-# Test: spdlog + Tracy integration (file-sink log write + ZoneScoped probe)
-add_executable(test_log_probe
-    tests/test_log_probe.cpp
-)
-target_include_directories(test_log_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# ── Test: spdlog + Tracy integration (file-sink log write + ZoneScoped probe) ──
+add_executable(test_log_probe tests/test_log_probe.cpp)
+target_include_directories(test_log_probe PRIVATE ${GCAD_SRC})
 target_link_libraries(test_log_probe PRIVATE Qt6::Core Qt6::Test spdlog::spdlog Tracy::TracyClient)
 add_test(NAME test_log_probe COMMAND test_log_probe)
+
+# ── PDB 膨胀治理（2026-08）：全链测试关增量链接 ────────────────────────────
+# 这些测试把整个项目 + ElaWidgetTools 链接进一个 exe，Debug /Zi 符号下 PDB
+# 达 ~1GB；/INCREMENTAL 让 PDB 跨重链只增不减（实测 12GB 总量，大头在此）。
+# 关掉增量后 PDB 每次链接重写一次、大小封顶，调试能力完整保留；代价仅是
+# 重链为全量链接（慢几秒）。主程序 WildWindPattern 保留增量（日常调试迭代）。
+foreach(_t IN ITEMS
+        test_realdoc_full test_nav_smoke test_aux_layer test_smartpen_aux
+        test_measure test_segment_edit_bar test_tool_intersection
+        test_select_wkey test_rotate_copy test_dialog_tabs test_component)
+    target_link_options(${_t} PRIVATE /INCREMENTAL:NO)
+endforeach()

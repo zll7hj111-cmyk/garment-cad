@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QList>
@@ -27,6 +27,7 @@ namespace cad::param { class ParamDocument; }
 namespace cad::ui {
 class FormulaTabModel;
 class MeasureTab;
+class ComponentTab;
 
 /// Sidebar page with four sub-tabs:
 ///   Tab 0 "变量": plain value variables (editable cards)
@@ -52,6 +53,9 @@ signals:
     void highlightBlockRequested(const QUuid& blockId);
     /// Emitted when the user clicks a measure card (flash the measured points).
     void highlightMeasureRequested(const QUuid& measureId);
+    /// Emitted when the user hovers/clicks an angle measure card (flash the
+    /// two source segments + half arc).
+    void highlightAngleMeasureRequested(const QUuid& angleMeasureId);
 
 protected:
     /// Drag-and-drop handling for the formula list container.
@@ -132,6 +136,9 @@ private:
 
     /// Tab 3: measure variables (length + angle cards, extracted).
     MeasureTab* m_measureTab = nullptr;
+
+    /// Tab 4: components (组件 rigid work groups).
+    ComponentTab* m_componentTab = nullptr;
 };
 
 } // namespace cad::ui

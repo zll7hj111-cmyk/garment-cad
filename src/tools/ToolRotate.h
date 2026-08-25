@@ -3,17 +3,20 @@
 #include <QUuid>
 #include <QString>
 #include <QPointer>
+#include <QHash>
+#include <vector>
 
 #include "Tool.h"
+#include "document/commands/ComponentCommands.h"
 #include "geometry/Vec2.h"
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
-#include "parametric/Group.h"
 #include "parametric/Duplicate.h"
 
 class QGraphicsEllipseItem;
 class QGraphicsPathItem;
 class QGraphicsSimpleTextItem;
+class QGraphicsRectItem;
 
 namespace cad::param { struct Attachment; }
 
@@ -77,6 +80,9 @@ public:
     [[nodiscard]] const char* name() const override
     { return "\xe6\x97\x8b\xe8\xbd\xac"; }  // 旋转
     [[nodiscard]] RotateState state() const { return m_state; }
+    /// W 键组件整组旋转模式 (2026-12 用户拍板): true = 目标组件整组绕任意
+    /// 锚点旋转 (仅当目标线属于某组件时可切换).
+    [[nodiscard]] bool groupMode() const { return m_groupMode; }
 
 private:
     // ── Target selection ──
@@ -88,14 +94,9 @@ private:
     /// Non-pin follower attachment whose follower point is @p pointId
     /// (nullptr when no link hangs on that point).
     [[nodiscard]] cad::param::Attachment* attachmentAtPoint(const QUuid& pointId);
-    /// Live editable attachment: real attachment in ordinary connected mode,
-    /// synthetic mirror of the component hinge in component mode.
+    /// Live editable attachment: real attachment in ordinary connected mode.
     [[nodiscard]] cad::param::Attachment* editableAttachment();
     [[nodiscard]] const cad::param::Attachment* editableAttachment() const;
-    /// Push the synthetic hinge editing state into the real component hinge.
-    void syncComponentHingeFromEdit();
-    /// Authored hinge attachment connecting this block's group to the outside world.
-    [[nodiscard]] cad::param::Attachment* findGroupHingeAttachment(const QUuid& blockId);
 
     // ── Anchor point (锚心: 起点 ↔ 终点) ──
     /// Toggle the anchor between the start and end points (X key or a click
@@ -181,6 +182,47 @@ private:
     /// Clear the aim-candidate highlight and forget the pending target.
     void clearAimCandidate();
 
+    // ── W 键组件整组旋转 (2026-12 用户拍板, ROTATE_COMPONENT_DESIGN.md) ──
+    /// W 切换: 进入/退出整组旋转模式 (仅目标属组件).
+    void toggleGroupMode();
+    void enterGroupMode();
+    /// 退出整组模式回单线 (保留目标; 若释放未提交先恢复).
+    void exitGroupMode();
+    /// 第一击: 设锚点 (吸附最近 8px/zoom 内 resolved 点, 否则自由位置).
+    void beginGroupPivot(const cad::geo::Vec2& pos);
+    /// 第二击按下: 起手整组旋转 (收集 + 释放外部约束, D7).
+    void beginGroupRotation(const cad::geo::Vec2& pos);
+    void updateGroupRotation(const cad::geo::Vec2& pos, bool snap);
+    /// 提交 (restore-then-replay → RotateComponentCommand, 一步 undo).
+    void commitGroupRotation();
+    void cancelGroupRotation();
+    /// 施加增量角 (全体成员绕锚点刚体变换, resolveForDrag 热路径).
+    void applyGroupDelta(double deltaDeg);
+    /// 收集并释放组件全部外部约束 (D7 判定表); 幂等 (已释放则 no-op).
+    void collectAndReleaseComponentExternal();
+    /// 恢复被释放的外部约束 + resolveAll (Esc/cancel 路径).
+    void restoreComponentExternal();
+    /// 任意可捕捉点吸附 (8px/zoom): 返回命中点 id, 失败返回 null.
+    [[nodiscard]] QUuid snapAnyPoint(const cad::geo::Vec2& worldPos) const;
+    /// 组件虚线包围盒高亮 (防呆: 转的是整组; 随旋转逐帧更新).
+    void updateGroupHighlightBox();
+    void removeGroupHighlightBox();
+
+    // ── W 键组件整组旋转状态 (2026-12) ──
+    QUuid m_compId;                  ///< 当前目标的所属组件 (null = 非组件线).
+    bool  m_groupMode = false;       ///< W 切换的整组旋转模式.
+    bool  m_groupPivotSet = false;   ///< 第一击已设锚点.
+    cad::geo::Vec2 m_groupPivot;     ///< 整组旋转锚点 (world mm).
+    QUuid m_groupPivotPointId;       ///< 吸附到的点 id (null = 自由锚点).
+    double m_groupDelta = 0.0;       ///< 当前增量角 (deg, 带符号; 0 = 原始位姿).
+    double m_groupBaselineRad = 0.0; ///< 拖起始方向 (pivot → 按下点, rad).
+    QHash<QUuid, cad::param::Transform2D> m_groupBaseTf;  ///< 成员位姿基准.
+    std::vector<cad::cmd::AimRelease>  m_groupReleasedTargets; ///< 外部 endTarget 快照.
+    std::vector<cad::cmd::DartRelease> m_groupReleasedDarts;   ///< 外部省道快照.
+    std::vector<cad::param::Attachment> m_groupReleasedAtts;   ///< 外部 attachment 快照.
+    bool m_groupReleasedHeld = false;  ///< 释放已执行未提交/未恢复.
+    QGraphicsRectItem* m_groupHighlightBox = nullptr; ///< 组件虚线包围盒.
+
     // ── Core state ──
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
@@ -189,10 +231,6 @@ private:
     QUuid m_blockId;               ///< Rotation target.
     bool  m_connected = false;     ///< true = connected (followerAngle), false = free (transform).
     QUuid m_attId;                 ///< Follower attachment id (connected mode).
-    bool  m_componentHinge = false;  ///< Connected mode backed by a component main hinge (路线B).
-    QUuid m_componentHingeGroupId;   ///< Group holding the component hinge.
-    cad::param::ComponentHinge m_componentHingeBase; ///< Base hinge snapshot for undo/restore.
-    cad::param::Attachment m_componentHingeEditAtt;  ///< Synthetic attachment mirroring the live hinge.
     cad::geo::Vec2 m_pivot;        ///< Rotation centre (world, mm).
     double m_refWorldRad = 0.0;    ///< Reference direction (rad): leader exit dir (connected) or 0 (free).
 
@@ -216,7 +254,6 @@ private:
     double  m_baseArcLength = 0.0; ///< connected: base arc length (mm).
     QString m_baseArcFormula;      ///< connected: base arc length formula.
     cad::param::Transform2D m_baseTf;  ///< free: base transform.
-    QHash<QUuid, cad::param::Transform2D> m_groupBaseTransforms; ///< free group: base transforms for all members
     QUuid m_baseEndTargetBlock;    ///< free: endpoint-aim constraint at selection
     QUuid m_baseEndTargetPoint;    ///< (released by rotation, restored on undo).
 

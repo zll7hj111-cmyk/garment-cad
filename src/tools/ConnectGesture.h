@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QSet>
@@ -10,7 +10,6 @@
 
 #include "geometry/Vec2.h"
 #include "parametric/Attachment.h"
-#include "parametric/Group.h"
 #include "tools/SnapEngine.h"
 #include "tools/SelectState.h"
 
@@ -25,6 +24,16 @@ class ParamDocument;
 }
 
 namespace cad::tools {
+
+/// Connection snap reach (user units): the target-DROP magnet radius — also
+/// drives the halo and target-ring visuals (WYSIWYG 铁律: 光环/目标环 = 吸附
+/// 范围). Shared by ConnectGesture and ToolSelect (hover endpoint hint).
+inline constexpr double kConnectSnapRadius = 7.5;
+/// Source-GRAB radius (用户拍板 2026-09): grabbing an endpoint to START a
+/// connection is deliberately more generous than the drop radius — grabbing
+/// must feel easy (10px), dropping must stay precise (7.5px). ToolSelect's
+/// hover endpoint hint uses the same value.
+inline constexpr double kConnectGrabRadius = 10.0;
 
 class AngleHud;
 
@@ -87,15 +96,20 @@ public:
     /// leader; blank / non-candidate click cancels the gesture.
     void pressConfirmTarget(const Vec2& pos);
     /// Enter ConfirmSource when several source endpoints overlap at the same
-    /// spot (e.g. component members sharing a corner). The user clicks one of
-    /// the candidate member segments to choose which member endpoint starts
+    /// spot. The user clicks one of
+    /// the candidate member segments to choose which endpoint starts
     /// the connection.
     void beginSourceConfirm(std::vector<ConfirmCandidate> candidates,
                             const Vec2& pos);
     /// Press while ConfirmSource: click a candidate member segment; the chosen
-    /// member endpoint then begins a normal connection drag. Blank /
+    /// endpoint then begins a normal connection drag. Blank /
     /// non-candidate click cancels.
     void pressConfirmSource(const Vec2& pos);
+    /// Press while AngleInput (组件级连接重叠切换, 用户要求 2026-09): when the
+    /// connected point has several overlapping endpoints, click one of the
+    /// candidate leader segments to re-pick the followed object (点选重叠点的
+    /// 线段确定跟随对象). Non-candidate click keeps the current connection.
+    void pressAngleTarget(const Vec2& pos);
     /// Esc / right-click: abort the gesture and restore the pre-drag state.
     void cancel();
     /// Key events while AngleInput (Esc / Enter; the HUD owns all others).
@@ -121,11 +135,33 @@ private:
     /// into AngleInput. Returns false when rejected (cycle etc.).
     bool attachToTarget(const QUuid& toBlockId, const QUuid& toPointId,
                         const QUuid& toSegmentId);
+    /// 连接候选校验 (move 磁铁判定 / release 候选池共用): 仅角度 (angleOnly)
+    /// 源排除将被重挂的自身附件 (重挂 = 原附件换代, 不占新 follower 名额),
+    /// 其余与 checkAttachment 完全同规 (环 / 跨层单向契约照旧).
+    [[nodiscard]] bool lineConnectValid(const QUuid& toBlockId,
+                                        const QUuid& toPointId) const;
+    /// 该块现存的仅角度 (angleOnly) 跟随附件 id (位置自由、角度随基准线 =
+    /// 使用了引用线段但没有连接线段); 无则空 id.
+    [[nodiscard]] QUuid angleOnlyAttachmentId(const QUuid& fromBlockId) const;
+    /// 仅角度线拖端点重挂: 旧角度基准保留为独立角度基准 (双基准), 位置挂到
+    /// 新端点, 恢复完整连接并重新焊接. 旧附件态在此快照, finalizeConnection
+    /// 经 ReconnectAttachmentCommand 整步撤销 (无 undo 栈时原地生效).
+    bool reattachAngleOnly(const QUuid& attId, const QUuid& toBlockId,
+                           const QUuid& toPointId, const QUuid& toSegmentId);
+    /// True when the source is a component member and a COMPONENT-level
+    /// connection should be created (整组作为 follower, 借用暴露端点) instead of
+    /// a line-level one. Component-level connections do NOT occupy any member
+    /// block's line-level follower slot (森林不变式 组件维度).
+    [[nodiscard]] bool isComponentConnect() const { return !m_connectComponentId.isNull(); }
+    /// Component-level attach pre-check: this component must not already follow
+    /// an external line (一个组件至多一条外部跟随线).
+    [[nodiscard]] bool componentCanConnect() const;
     /// Failed connect (released away from any target): commit the plain move
     /// (+ quick-detach) through the undo stack.
     void commitConnectMove();
     /// Mouse move during ConfirmTarget: highlight the hovered candidate line.
-    void updateConfirmHighlight(const Vec2& pos);
+    void updateCandidateHighlight(const Vec2& pos,
+                                  const std::vector<ConfirmCandidate>& candidates);
     void removeConfirmHighlight();
     /// Show/move the small source-port marker at the selected source line's
     /// overlapping endpoint (replaces the old yellow line in ConfirmSource).
@@ -135,6 +171,15 @@ private:
     /// (overlapping-target disambiguation candidates).
     std::vector<ConfirmCandidate> collectConfirmCandidates(
         const Vec2& connWorldPos) const;
+    /// 组件级连接重叠切换: leader segments whose endpoint ALSO stacks on the
+    /// component connection spot — excluding the current leader and the
+    /// component's own members (自身成员 = 环). Drives the AngleInput re-pick.
+    std::vector<ConfirmCandidate> collectComponentSwitchCandidates(
+        const Vec2& connWorldPos, const QUuid& curBlockId, const QUuid& curSegId) const;
+    /// Re-target the in-flight component-level attachment (AngleInput stage)
+    /// onto the confirmed candidate; uses the same angle back-solve as a fresh
+    /// attach (zero visual jump) and rolls back on validation failure.
+    bool switchComponentTarget(const ConfirmCandidate& cand);
 
     void showAngleHud(const Vec2& anchorUser);
     void hideAngleHud();
@@ -167,12 +212,15 @@ private:
     // Connection state (block physically follows the cursor while connecting)
     QUuid m_connectFromBlock;
     QUuid m_connectFromPoint;
-    QUuid m_connectGroupId;               ///< Group ID if connecting a group member.
-    QHash<QUuid, Vec2> m_connectGroupOrigOrigins; ///< Group members' pre-drag origins.
+    /// Non-null when the source endpoint belongs to a component member: the
+    /// connection is COMPONENT-level (整组作为 follower, 借用端点).
+    QUuid m_connectComponentId;
+    /// Component-level drag preview: pre-drag origins of every member (the
+    /// WHOLE component follows the cursor as one rigid unit).
+    QHash<QUuid, Vec2> m_connectOrigOrigins;
     Vec2 m_connectGrabOffset;         ///< origin − fromPointWorld at press.
     Vec2 m_connectOrigOrigin;         ///< Pre-drag origin (undo restore).
     double m_connectOrigRotation = 0.0;  ///< Pre-drag rotation (undo restore).
-    std::optional<cad::param::Attachment> m_connectOldAtt;  ///< Detached at drag start (快拆).
     // 滑轨模式拖动 (抽屉式滑动, 用户拍板 2026-08): the slide attachment stays
     // ACTIVE during the drag (never quick-detached) — the endpoint drag slides
     // along the rail. Snapshot its pre-drag rail coordinates for undo.
@@ -188,21 +236,30 @@ private:
     // leader SEGMENTS whose endpoint lies on the connection spot.
     std::vector<ConfirmCandidate> m_confirmCandidates;
     /// Source-side disambiguation (ConfirmSource state): after the user picks
-    /// a member segment, this remembers the chosen endpoint so the source-port
+    /// a segment, this remembers the chosen endpoint so the source-port
     /// marker persists until the connection is committed or cancelled.
     std::optional<ConfirmCandidate> m_selectedSourceCandidate;
     QGraphicsPathItem* m_confirmHighlight = nullptr;  ///< Hovered candidate line (ConfirmTarget only).
     QGraphicsEllipseItem* m_sourcePortMarker = nullptr;  ///< Selected source endpoint marker.
+    /// AngleInput 重叠切换候选 (组件级连接, 用户要求 2026-09): leader segments
+    /// whose endpoints stack on the connection spot. Empty for line-level
+    /// connections / no overlaps. Clicking one re-picks the followed object.
+    std::vector<ConfirmCandidate> m_componentSwitchCandidates;
+
+    // 仅角度重挂 (2026-12): 本连接由原附件重挂建立 (true) — finalizeConnection
+    // 走 ReconnectAttachmentCommand 单步撤销 (含 HUD 角度调整); 重挂前的
+    // 仅角度附件态在 reattachAngleOnly 时快照。
+    bool m_reattachActive = false;
+    cad::param::Attachment m_reattachOldAtt;
 
     // Angle HUD state
     QPointer<AngleHud> m_angleHud;   ///< Viewport-overlay angle input (owned).
     QUuid m_editingAttachmentId;            ///< Attachment being angle-tuned.
-    bool m_connectIsComponentHinge = false;   ///< True when the pending connect is a component hinge (路线B).
-    QUuid m_editingComponentGroupId;          ///< Group being hinge-connected.
-    cad::param::ComponentHinge m_editingComponentHinge; ///< Snapshot for finalize/undo.
     double m_initialAngle = 0.0;            ///< Orientation-preserving angle at connect time.
     bool  m_angleValid = true;
     cad::param::RotationMode m_angleMode = cad::param::RotationMode::Angle;
+
 };
+
 
 } // namespace cad::tools

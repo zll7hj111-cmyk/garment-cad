@@ -1,10 +1,12 @@
-#include "IconHelper.h"
+﻿#include "IconHelper.h"
 
 #include <QFile>
 #include <QByteArray>
 #include <QSvgRenderer>
 #include <QPainter>
 #include <QPixmap>
+
+#include "Theme.h"
 
 namespace cad::ui {
 
@@ -57,7 +59,7 @@ QIcon IconHelper::icon2State(const QString& name, const QColor& normal, const QC
 
 QIcon IconHelper::appIcon()
 {
-    return iconByName(QStringLiteral("t-shirt"), QColor(0x2F, 0x6F, 0xED));
+    return iconByName(QStringLiteral("t-shirt"), Theme::tokens().text1);
 }
 
 } // namespace cad::ui

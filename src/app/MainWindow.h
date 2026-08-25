@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QList>
 #include <QString>
@@ -22,7 +22,6 @@ class QFrame;
 class CanvasView;
 class CanvasScene;
 class LayerPanel;
-class GroupPanel;
 
 namespace cad::ui { class VariablePanel; }
 
@@ -102,7 +101,7 @@ private:
     void setupPages();
     void connectSignals();
 
-    /// 面板悬浮窗（Qt::Tool 侧边栏样式）: 主窗口顶部 变量/图层/组 标签是
+    /// 面板悬浮窗（Qt::Tool 侧边栏样式）: 主窗口顶部 变量/图层 标签是
     /// 开关, 点击显示/切换大标签页, 再点当前分类隐藏。
     /// 同步主窗口标签选中态 + 激活指示圆点到当前面板状态。
     void syncPanelTabs();
@@ -133,7 +132,7 @@ private:
     /// 网页式标签页导航：顶部标签栏 + 自建页面堆栈（替代 Ela 左侧导航）。
     ElaTabBar* m_pageTabs = nullptr;
     QStackedWidget* m_pageStack = nullptr;
-    /// 变量/图层/组 标签不再是页面：它们是面板悬浮窗的开关, 打开时对应
+    /// 变量/图层 标签不再是页面：它们是面板悬浮窗的开关, 打开时对应
     /// 按钮保持选中高亮 + 强调色圆点 (syncPanelTabs)。
     bool m_tabSyncGuard = false;       ///< 防 currentChanged 重入.
     /// Fluent tool buttons inside the pill (order matches the tool actions).
@@ -170,11 +169,10 @@ private:
     cad::ui::VariablePanel* m_variablePanel = nullptr;
     /// 面板悬浮窗 (Qt::Tool, 侧边栏样式长竖条): 变量/图层/组 三个大标签页。
     QWidget* m_panelWindow = nullptr;
-    ElaTabBar*     m_panelBigBar = nullptr;   ///< 悬浮窗内 变量/图层/组 大标签.
+    ElaTabBar*     m_panelBigBar = nullptr;   ///< 悬浮窗内 变量/图层 大标签.
     QStackedWidget* m_panelStack = nullptr;
     bool     m_panelWindowPositioned = false;  ///< 用户移动后不再自动归位.
     LayerPanel* m_layerPanel = nullptr;
-    GroupPanel* m_groupPanel = nullptr;
 
     QString     m_currentFilePath;   ///< Empty = untitled.
     QStringList m_recentFiles;

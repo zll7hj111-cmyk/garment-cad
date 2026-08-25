@@ -1,18 +1,23 @@
-#include "CanvasScene.h"
+﻿#include "CanvasScene.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsRectItem>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsEllipseItem>
+#include <QGraphicsPathItem>
+#include <QPainterPath>
 #include <QGraphicsView>
 #include <QPen>
 #include <QTimer>
+#include <cmath>
+#include <utility>
+#include <bit>
 
 #include "OriginCrosshair.h"
 #include "BlockItem.h"
-#include "GroupBadgeItem.h"
 #include "geometry/Units.h"
+#include "parametric/Block.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/PerfProbe.h"
 
@@ -34,7 +39,9 @@ CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
         connect(m_paramDoc, &cad::param::ParamDocument::documentReset,
                 this, &CanvasScene::clearAllBlockItems);
         connect(m_paramDoc, &cad::param::ParamDocument::resolved,
-                this, [this] { syncBlockPositions(); });
+                this, [this] { syncBlockPositions(); refreshComponentBoxes(); });
+        connect(m_paramDoc, &cad::param::ParamDocument::componentsChanged,
+                this, &CanvasScene::refreshComponentBoxes);
         // Layer changes only affect display mode (normal/grayed/hidden), not
         // geometry — but rebuildCache recomputes the layer mode, so a refresh
         // is still required.
@@ -42,19 +49,17 @@ CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
                 this, &CanvasScene::refreshAllBlockItems);
         connect(m_paramDoc, &cad::param::ParamDocument::activeLayerChanged,
                 this, [this](const QUuid&) { refreshAllBlockItems(); });
-        connect(m_paramDoc, &cad::param::ParamDocument::groupsChanged,
-                this, &CanvasScene::reconcileGroupBadges);
-        connect(m_paramDoc, &cad::param::ParamDocument::documentReset,
-                this, &CanvasScene::reconcileGroupBadges);
     }
 
-    // Animator requests repaint → forward to the owning item (and its
+    // Animator requests repaint → repaint the owning item's rect (and its
     // children: curve items animate through the parent as animator owner).
+    // The animator hands out a const identity handle, so repaint goes through
+    // scene-level update(rect) instead of the non-const QGraphicsItem::update().
     connect(&m_animator, &CanvasAnimator::invalidationRequested,
-            this, [](QGraphicsItem* item) {
-                item->update();
+            this, [this](const QGraphicsItem* item) {
+                update(item->sceneBoundingRect());
                 for (QGraphicsItem* child : item->childItems())
-                    child->update();
+                    update(child->sceneBoundingRect());
             });
 }
 
@@ -88,6 +93,102 @@ void CanvasScene::clearAllBlockItems()
         delete item;
     }
     m_blockItems.clear();
+    for (auto* box : m_componentBoxes) {
+        removeItem(box);
+        delete box;
+    }
+    m_componentBoxes.clear();
+}
+
+void CanvasScene::refreshComponentBoxes()
+{
+    if (!m_paramDoc) return;
+
+    // Which components want a visible box right now.
+    QSet<QUuid> wanted;
+    for (const auto& c : m_paramDoc->components())
+        if (c.showBoundingBox)
+            wanted.insert(c.id);
+
+    // Drop stale boxes.
+    for (auto it = m_componentBoxes.begin(); it != m_componentBoxes.end(); ) {
+        if (!wanted.contains(it.key())) {
+            const QUuid id = it.key();  // erase 前快照 (erase 后 it = 下一项)
+            removeItem(it.value());
+            delete it.value();
+            it = m_componentBoxes.erase(it);
+            m_componentBoxSig.remove(id);
+        } else {
+            ++it;
+        }
+    }
+
+    // Create / reposition the live boxes (dashed outline behind the blocks).
+    for (const auto& c : m_paramDoc->components()) {
+        if (!c.showBoundingBox) continue;
+        QGraphicsRectItem* item = m_componentBoxes.value(c.id);
+        if (!item) {
+            item = new QGraphicsRectItem();
+            QPen pen(QColor(47, 111, 237, 210));
+            pen.setWidthF(1.0);
+            pen.setCosmetic(true);
+            pen.setStyle(Qt::DashLine);
+            item->setPen(pen);
+            item->setBrush(Qt::NoBrush);
+            item->setZValue(-1.0);  // behind the geometry
+            item->setFlag(QGraphicsItem::ItemIsSelectable, false);
+            item->setFlag(QGraphicsItem::ItemIsFocusable, false);
+            addItem(item);
+            m_componentBoxes.insert(c.id, item);
+        }
+
+        // 2026-09 性能: geometry signature — bbox 只依赖成员 (epoch, origin,
+        // rotation) 与 zoom(外扩像素); 没变则复用现缓存的 rect, 零重算.
+        // FNV-1a mix; collision = 只多算一次, 安全。
+        quint64 sig = 0x811c9dc5ULL;
+        for (const QUuid& mid : c.memberBlockIds) {
+            if (const auto* mb = m_paramDoc->findBlock(mid)) {
+                const quint64 h[4] = {
+                    mb->geometryEpoch,
+                    std::bit_cast<quint64>(mb->transform.origin.x),
+                    std::bit_cast<quint64>(mb->transform.origin.y),
+                    std::bit_cast<quint64>(mb->transform.rotation)
+                };
+                for (const quint64 v : h) {
+                    sig ^= v;
+                    sig *= 0x01000193ULL;
+                }
+            } else {
+                sig ^= 0xDEADBEAFULL;  // 成员缺失 → sig 必变
+                sig *= 0x01000193ULL;
+            }
+        }
+        double zoom = 1.0;
+        if (!views().isEmpty())
+            zoom = views().first()->transform().m11();
+        if (zoom < 1e-9) zoom = 1.0;
+        sig ^= std::bit_cast<quint64>(zoom) ^ std::bit_cast<quint64>(5.0 / zoom);
+
+        if (m_componentBoxSig.value(c.id) == sig) {
+            item->show();
+            continue;   // 几何未变: 保留现缓存的 rect
+        }
+
+        const cad::param::BBox box = m_paramDoc->boundingBoxOf(c.id);
+        if (!box.valid) {
+            m_componentBoxSig.remove(c.id);
+            item->hide();
+            continue;
+        }
+        m_componentBoxSig.insert(c.id, sig);
+        // World (+Y up) → scene (+Y down): top-left = (min.x, -max.y).
+        // 5px outward padding (用户要求 2026-09): 1 screen px = 1/zoom scene mm.
+        const double pad = 5.0 / zoom;
+        const QRectF r(QPointF(box.min.x - pad, -box.max.y - pad),
+                       QPointF(box.max.x + pad, -box.min.y + pad));
+        item->setRect(r);
+        item->show();
+    }
 }
 
 void CanvasScene::refreshAllBlockItems()
@@ -96,8 +197,6 @@ void CanvasScene::refreshAllBlockItems()
     for (auto* item : m_blockItems) {
         item->updateFromBlock();
     }
-    // Layer visibility changes affect badge visibility — full reconcile.
-    reconcileGroupBadges();
 }
 
 void CanvasScene::syncBlockPositions()
@@ -106,7 +205,6 @@ void CanvasScene::syncBlockPositions()
     for (auto* item : m_blockItems) {
         item->syncFromBlock();
     }
-    updateGroupBadgePositions();   // badges track live drags (positions only)
 }
 
 void CanvasScene::syncBlockPositions(const QList<QUuid>& blockIds)
@@ -116,7 +214,6 @@ void CanvasScene::syncBlockPositions(const QList<QUuid>& blockIds)
         if (it != m_blockItems.constEnd())
             it.value()->syncFromBlock();
     }
-    updateGroupBadgePositions();
 }
 
 BlockItem* CanvasScene::findBlockItem(const QUuid& blockId) const
@@ -150,10 +247,6 @@ void CanvasScene::setForceShowLength(bool on)
     emit forceShowChanged(m_forceShowName, m_forceShowLength);
 }
 
-void CanvasScene::notifyGroupInfoChanged()
-{
-    emit groupInfoChanged();
-}
 
 void CanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
 {
@@ -235,7 +328,8 @@ void CanvasScene::showToast(const QString& text)
 }
 
 bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
-                               const QUuid& blockB, const QUuid& pointB)
+                                const QUuid& blockB, const QUuid& pointB,
+                                cad::param::MeasureKind kind)
 {
     if (!m_paramDoc) return false;
 
@@ -267,7 +361,22 @@ bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
         addItem(ring);
         overlay.append(ring);
     }
-    auto* line = new QGraphicsLineItem(QLineF(sa, sb));
+    // Mirror the ToolMeasure preview: distance draws a straight connector;
+    // horizontal/vertical draw the projected span line (the "already built"
+    // dimension-style display was only on the live measure tool, not on card
+    // flashes).
+    QPointF lineStart = sa;
+    switch (kind) {
+        case cad::param::MeasureKind::Horizontal:
+            lineStart = QPointF(sa.x(), sb.y());
+            break;
+        case cad::param::MeasureKind::Vertical:
+            lineStart = QPointF(sb.x(), sa.y());
+            break;
+        case cad::param::MeasureKind::Distance:
+            break;
+    }
+    auto* line = new QGraphicsLineItem(QLineF(lineStart, sb));
     QPen linePen(amber, 1.4);
     linePen.setCosmetic(true);
     linePen.setStyle(Qt::DashLine);
@@ -288,139 +397,147 @@ bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
     return true;
 }
 
-QSet<QUuid> CanvasScene::groupMemberSet(const QUuid& blockId) const
+bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
+                                    const QUuid& blockB, const QUuid& segmentB)
 {
-    QSet<QUuid> result;
-    if (blockId.isNull() || !m_paramDoc) return result;
-    const QUuid gid = m_paramDoc->groupOfBlock(blockId);
-    if (gid.isNull()) return result;
-    const QList<QUuid> members = m_paramDoc->blocksInGroup(gid);
-    return QSet<QUuid>(members.begin(), members.end());
-}
+    if (!m_paramDoc) return false;
 
-void CanvasScene::setGroupHoverSource(const QUuid& blockId)
-{
-    if (m_groupHoverSource == blockId) return;
+    const cad::param::Block* bA = m_paramDoc->blockById(blockA);
+    const cad::param::Block* bB = m_paramDoc->blockById(blockB);
+    if (!bA || !bB) return false;
+    const auto* segA = bA->findSegment(segmentA);
+    const auto* segB = bB->findSegment(segmentB);
+    if (!segA || !segB) return false;
+    const cad::param::ParamPoint* a0 = bA->findPoint(segA->startPointId);
+    const cad::param::ParamPoint* a1 = bA->findPoint(segA->endPointId);
+    const cad::param::ParamPoint* b0 = bB->findPoint(segB->startPointId);
+    const cad::param::ParamPoint* b1 = bB->findPoint(segB->endPointId);
+    if (!a0 || !a1 || !b0 || !b1 || !a0->resolved || !a1->resolved ||
+        !b0->resolved || !b1->resolved)
+        return false;
 
-    const QSet<QUuid> oldMembers = groupMemberSet(m_groupHoverSource);
-    m_groupHoverSource = blockId;
-    const QSet<QUuid> newMembers = groupMemberSet(blockId);
+    const QPointF a0s = cad::geo::Coord::toScene(bA->worldPos(segA->startPointId));
+    const QPointF a1s = cad::geo::Coord::toScene(bA->worldPos(segA->endPointId));
+    const QPointF b0s = cad::geo::Coord::toScene(bB->worldPos(segB->startPointId));
+    const QPointF b1s = cad::geo::Coord::toScene(bB->worldPos(segB->endPointId));
 
-    // Diff-apply: only items whose membership flipped are touched.
-    for (const QUuid& id : oldMembers) {
-        if (!newMembers.contains(id))
-            if (BlockItem* bi = findBlockItem(id))
-                bi->setGroupHovered(false);
+    // Vertex = intersection of the two infinite lines. Parallel/coincident
+    // fallbacks keep the visual useful instead of dropping the flash.
+    const QPointF da = a1s - a0s;
+    const QPointF db = b1s - b0s;
+    const double denom = da.x() * db.y() - da.y() * db.x();
+    QPointF pivot;
+    bool havePivot = false;
+    if (std::abs(denom) > 1e-9) {
+        const double t = ((b0s.x() - a0s.x()) * db.y() -
+                          (b0s.y() - a0s.y()) * db.x()) / denom;
+        pivot = a0s + t * da;
+        havePivot = true;
     }
-    for (const QUuid& id : newMembers) {
-        if (!oldMembers.contains(id))
-            if (BlockItem* bi = findBlockItem(id))
-                bi->setGroupHovered(true);
-    }
-    updateBadgeAccents();
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// Group visual markers (组包围框): one dashed bounding box per group,
-// anchored at the member union bounds top-left
-// ═════════════════════════════════════════════════════════════════════════
-
-void CanvasScene::reconcileGroupBadges()
-{
-    if (!m_paramDoc) return;
-
-    // Reconcile: drop badges whose group vanished.
-    QSet<QUuid> live;
-    for (const auto& g : m_paramDoc->groups())
-        live.insert(g.id);
-    for (auto it = m_groupBadges.begin(); it != m_groupBadges.end(); ) {
-        if (!live.contains(it.key())) {
-            removeItem(it.value());
-            delete it.value();
-            it = m_groupBadges.erase(it);
-        } else {
-            ++it;
-        }
-    }
-
-    // Create / label / position the survivors.
-    for (const auto& g : m_paramDoc->groups()) {
-        GroupBadgeItem* badge = m_groupBadges.value(g.id, nullptr);
-        if (!badge) {
-            badge = new GroupBadgeItem(g.id);
-            m_groupBadges.insert(g.id, badge);
-            addItem(badge);
-            connect(badge, &GroupBadgeItem::hoverChanged, this,
-                    [this, gid = g.id](bool hovered) { onBadgeHover(gid, hovered); });
-            connect(badge, &GroupBadgeItem::clicked, this,
-                    &CanvasScene::groupBadgeClicked);
-        }
-
-        const QString label = g.name.isEmpty() ? g.serial : g.name;
-        const int count = m_paramDoc->blocksInGroup(g.id).size();
-        // 前片 · 3条
-        badge->setText(QString::fromUtf8("%1 \xc2\xb7 %2\xe6\x9d\xa1")
-                           .arg(label).arg(count));
-        // 组名（序列号）· 成员数
-        badge->setToolTip(QString::fromUtf8("%1\xef\xbc\x88%2\xef\xbc\x89")
-                              .arg(label, g.serial));
-
-        badge->setShowBoundingBox(g.showBoundingBox);
-
-        // A badge whose members are ALL on manually hidden layers is hidden
-        // too — a floating label over invisible geometry would look orphaned.
-        bool anyVisible = false;
-        for (const QUuid& memberId : m_paramDoc->blocksInGroup(g.id)) {
-            if (const auto* blk = m_paramDoc->findBlock(memberId))
-                if (m_paramDoc->layerVisible(blk->layer)) {
-                    anyVisible = true;
+    if (!havePivot) {
+        // Prefer a literally shared endpoint; otherwise anchor at the middle
+        // of segment A so the arc is still drawn near the measured pair.
+        const QPointF cand[4] = { a0s, a1s, b0s, b1s };
+        for (int i = 0; i < 4 && !havePivot; ++i) {
+            for (int j = i + 1; j < 4; ++j) {
+                if ((cand[i] - cand[j]).manhattanLength() < 0.5) {
+                    pivot = (cand[i] + cand[j]) / 2.0;
+                    havePivot = true;
                     break;
                 }
-        }
-        if (!anyVisible) badge->hide();
-        else badge->show();
-    }
-    updateGroupBadgePositions();
-    updateBadgeAccents();
-}
-
-void CanvasScene::updateGroupBadgePositions()
-{
-    if (!m_paramDoc) return;
-    for (auto it = m_groupBadges.cbegin(); it != m_groupBadges.cend(); ++it) {
-        GroupBadgeItem* badge = it.value();
-        const auto* g = m_paramDoc->findGroup(it.key());
-        if (g)
-            badge->setShowBoundingBox(g->showBoundingBox);
-        QRectF bounds;
-        bool first = true;
-        for (const QUuid& memberId : m_paramDoc->blocksInGroup(it.key())) {
-            if (BlockItem* bi = findBlockItem(memberId)) {
-                const QRectF b = bi->sceneBoundingRect();
-                bounds = first ? b : bounds.united(b);
-                first = false;
             }
         }
-        if (first) {
-            badge->setMemberSceneBounds(QRectF());
-            continue;
-        }
-        badge->setPos(bounds.topLeft());
-        badge->setMemberSceneBounds(bounds);
+        if (!havePivot)
+            pivot = (a0s + a1s) / 2.0;
     }
+
+    const QColor amber(0xFF, 0x98, 0x00);
+    QList<QGraphicsItem*> overlay;
+
+    // Two source segments.
+    for (const auto& [p0, p1] : { std::pair<QPointF, QPointF>{a0s, a1s},
+                                  std::pair<QPointF, QPointF>{b0s, b1s} }) {
+        auto* seg = new QGraphicsLineItem(QLineF(p0, p1));
+        QPen pen(amber, 2.0);
+        pen.setCosmetic(true);
+        seg->setPen(pen);
+        seg->setZValue(102.0);
+        addItem(seg);
+        overlay.append(seg);
+    }
+
+    // Half arc. Use the rays from the intersection towards the segments'
+    // actual endpoint bodies (not the raw start->end direction). When the
+    // vertex lies inside a segment, pick the pair that forms the smaller
+    // (acute) angle, which is the natural dimension visual.
+    const QPointF aOpts[2] = { a0s, a1s };
+    const QPointF bOpts[2] = { b0s, b1s };
+    constexpr double kZeroEps = 0.5;
+    bool haveRays = false;
+    double bestAbs = M_PI;
+    double dirA = 0.0;
+    double dirB = 0.0;
+    for (int i = 0; i < 2; ++i) {
+        if ((aOpts[i] - pivot).manhattanLength() < kZeroEps) continue;
+        for (int j = 0; j < 2; ++j) {
+            if ((bOpts[j] - pivot).manhattanLength() < kZeroEps) continue;
+            const double da = std::atan2(aOpts[i].y() - pivot.y(),
+                                         aOpts[i].x() - pivot.x());
+            const double db = std::atan2(bOpts[j].y() - pivot.y(),
+                                         bOpts[j].x() - pivot.x());
+            double span = db - da;
+            while (span >  M_PI) span -= 2.0 * M_PI;
+            while (span < -M_PI) span += 2.0 * M_PI;
+            if (!haveRays || std::abs(span) < bestAbs) {
+                haveRays = true;
+                bestAbs = std::abs(span);
+                dirA = da;
+                dirB = db;
+            }
+        }
+    }
+    if (!haveRays) {
+        // Degenerate fallback: anchor at the middle of segment A.
+        dirA = 0.0;
+        dirB = 0.0;
+    }
+    double span = dirB - dirA;
+    while (span >  M_PI) span -= 2.0 * M_PI;
+    while (span < -M_PI) span += 2.0 * M_PI;
+
+    double zoom = 1.0;
+    if (!views().isEmpty())
+        zoom = views().first()->transform().m11();
+    const double arcR = 40.0 / zoom;
+    QPainterPath arcPath;
+    constexpr int kSamples = 40;
+    for (int i = 0; i <= kSamples; ++i) {
+        const double t = dirA + span * i / kSamples;
+        const QPointF p(pivot.x() + arcR * std::cos(t),
+                        pivot.y() + arcR * std::sin(t));
+        if (i == 0)
+            arcPath.moveTo(p);
+        else
+            arcPath.lineTo(p);
+    }
+    auto* arc = new QGraphicsPathItem(arcPath);
+    QPen arcPen(amber, 2.0);
+    arcPen.setCosmetic(true);
+    arc->setPen(arcPen);
+    arc->setZValue(102.0);
+    addItem(arc);
+    overlay.append(arc);
+
+    QTimer::singleShot(1500, this, [this, overlay]() {
+        for (QGraphicsItem* item : overlay) {
+            if (item->scene() == this)
+                removeItem(item);
+            delete item;
+        }
+    });
+    return true;
 }
 
-GroupBadgeItem* CanvasScene::groupBadge(const QUuid& groupId) const
-{
-    return m_groupBadges.value(groupId, nullptr);
-}
-
-void CanvasScene::setGroupSelected(const QSet<QUuid>& groupIds)
-{
-    if (m_selectedGroups == groupIds) return;
-    m_selectedGroups = groupIds;
-    updateBadgeAccents();
-}
 
 void CanvasScene::notifyLineCreated(const QUuid& blockId, const QUuid& segmentId)
 {
@@ -432,31 +549,4 @@ void CanvasScene::notifyLinePreview(double lenCm, double angleDeg)
     emit linePreviewChanged(lenCm, angleDeg);
 }
 
-void CanvasScene::onBadgeHover(const QUuid& groupId, bool hovered)
-{
-    if (!m_paramDoc) return;
-    if (hovered) {
-        // Badge hover is now driven by GroupBadgeItem's own hover events;
-        // the badge uses the first member as the hover source so BlockItem's
-        // hover broadcast and the badge accent stay in sync.
-        const QList<QUuid> members = m_paramDoc->blocksInGroup(groupId);
-        if (!members.isEmpty())
-            setGroupHoverSource(members.first());
-    } else {
-        // Withdraw ONLY when the current source belongs to this badge's group
-        // (the cursor may have moved to a block, which owns the source now).
-        if (!m_groupHoverSource.isNull()
-            && m_paramDoc->groupOfBlock(m_groupHoverSource) == groupId)
-            setGroupHoverSource(QUuid());
-    }
-}
 
-void CanvasScene::updateBadgeAccents()
-{
-    QUuid hoverGid;
-    if (!m_groupHoverSource.isNull() && m_paramDoc)
-        hoverGid = m_paramDoc->groupOfBlock(m_groupHoverSource);
-    for (auto it = m_groupBadges.cbegin(); it != m_groupBadges.cend(); ++it)
-        it.value()->setAccent(m_selectedGroups.contains(it.key())
-                              || it.key() == hoverGid);
-}

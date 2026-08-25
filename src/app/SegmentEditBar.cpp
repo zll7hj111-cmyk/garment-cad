@@ -1,4 +1,4 @@
-#include "SegmentEditBar.h"
+﻿#include "SegmentEditBar.h"
 
 #include <cmath>
 
@@ -11,6 +11,7 @@
 
 #include "ElaLineEdit.h"
 
+#include "ui/Theme.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Segment.h"
@@ -43,11 +44,14 @@ SegmentEditBar::SegmentEditBar(cad::param::ParamDocument* paramDoc, QWidget* par
     lay->setContentsMargins(0, 0, 6, 0);
     lay->setSpacing(6);
 
-    m_idLabel = new ElaText(QString(), 13, this);
+    m_idLabel = new ElaText(QString(), 12, this);
     m_idLabel->setObjectName(QStringLiteral("accentText"));
+    m_idLabel->setStyleSheet(QStringLiteral("%1 font-weight: bold;")
+                                 .arg(cad::ui::ThemeTokens::kMonospaceFamily));
     lay->addWidget(m_idLabel);
 
-    auto* lblName = new ElaText(QString::fromUtf8("名称:"), 13, this);
+    auto* lblName = new ElaText(QString::fromUtf8("名称:"), 12, this);
+    lblName->setObjectName(QStringLiteral("mutedText"));
     lay->addWidget(lblName);
     m_nameEdit = new ElaLineEdit(this);
     m_nameEdit->setObjectName(QStringLiteral("nameEdit"));
@@ -59,26 +63,26 @@ SegmentEditBar::SegmentEditBar(cad::param::ParamDocument* paramDoc, QWidget* par
     m_nameEdit->setFixedHeight(24);
     lay->addWidget(m_nameEdit);
 
-    auto* lblLen = new ElaText(QString::fromUtf8("长度(cm):"), 13, this);
+    auto* lblLen = new ElaText(QString::fromUtf8("长度(cm):"), 12, this);
+    lblLen->setObjectName(QStringLiteral("mutedText"));
     lay->addWidget(lblLen);
     m_lenEdit = new ElaLineEdit(this);
     m_lenEdit->setObjectName(QStringLiteral("lenEdit"));
     m_lenEdit->setPlaceholderText(QString::fromUtf8("数值或公式"));
     m_lenEdit->setMaximumWidth(110);
     m_lenEdit->setFixedHeight(24);
-    m_lenEdit->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace;");
+    m_lenEdit->setStyleSheet(cad::ui::ThemeTokens::kMonospaceFamily);
     lay->addWidget(m_lenEdit);
 
-    auto* lblAng = new ElaText(QString::fromUtf8("角度(°):"), 13, this);
+    auto* lblAng = new ElaText(QString::fromUtf8("角度(°):"), 12, this);
+    lblAng->setObjectName(QStringLiteral("mutedText"));
     lay->addWidget(lblAng);
     m_angleEdit = new ElaLineEdit(this);
     m_angleEdit->setObjectName(QStringLiteral("angleEdit"));
     m_angleEdit->setPlaceholderText(QString::fromUtf8("数值或公式"));
     m_angleEdit->setMaximumWidth(110);
     m_angleEdit->setFixedHeight(24);
-    m_angleEdit->setStyleSheet(
-        "font-family: 'Consolas','Courier New',monospace;");
+    m_angleEdit->setStyleSheet(cad::ui::ThemeTokens::kMonospaceFamily);
     lay->addWidget(m_angleEdit);
 
     lay->addStretch();

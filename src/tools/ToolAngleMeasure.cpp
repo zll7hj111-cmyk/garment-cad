@@ -1,4 +1,4 @@
-#include "ToolAngleMeasure.h"
+﻿#include "ToolAngleMeasure.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -12,6 +12,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/AngleMeasureVariable.h"
+#include "ui/Theme.h"
 #include "parametric/Serial.h"
 #include "geometry/Angle.h"
 #include "geometry/Units.h"
@@ -26,8 +27,7 @@ namespace cad::tools {
 
 void ToolAngleMeasure::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
 {
-    m_scene = &scene;
-    m_paramDoc = paramDoc;
+    Tool::activate(scene, paramDoc);
     m_state = State::SelectA;
 }
 
@@ -36,9 +36,7 @@ void ToolAngleMeasure::deactivate()
     clearPreview();
     if (m_highlightA) { m_scene->removeItem(m_highlightA); delete m_highlightA; m_highlightA = nullptr; }
     if (m_highlightB) { m_scene->removeItem(m_highlightB); delete m_highlightB; m_highlightB = nullptr; }
-    if (m_hud)        { m_scene->removeItem(m_hud);        delete m_hud;        m_hud        = nullptr; }
-    m_scene = nullptr;
-    m_paramDoc = nullptr;
+    Tool::deactivate();
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +145,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
                       m_hoverSnap->segmentId != m_snapA->segmentId;
     if (!m_highlightB) {
         m_highlightB = new QGraphicsLineItem();
-        QPen pen(QColor(0x2F, 0x6F, 0xED), 2.4);  // accent blue
+        QPen pen(cad::ui::Theme::tokens().accent, 2.4);  // accent blue
         pen.setCosmetic(true);
         m_highlightB->setPen(pen);
         m_highlightB->setZValue(101.0);
@@ -162,8 +160,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
     }
 
     if (!m_hud) {
-        m_hud = new HudItem();
-        m_scene->addItem(m_hud);
+        m_hud = ensureHud();
     }
     if (hasB) {
         const double deg = angleBetween(*m_snapA, *m_hoverSnap);

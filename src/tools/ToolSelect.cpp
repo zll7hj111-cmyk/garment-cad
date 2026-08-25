@@ -4,10 +4,12 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
 #include <QGraphicsRectItem>
+#include <QGraphicsSimpleTextItem>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QUndoStack>
 #include <QPen>
+#include <QFontMetrics>
 #include <QLineEdit>
 #include <QInputDialog>
 #include <QWidget>
@@ -20,7 +22,6 @@
 
 #include "canvas/CanvasScene.h"
 #include "canvas/BlockItem.h"
-#include "canvas/GroupBadgeItem.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/AttachmentGraph.h"
@@ -35,14 +36,38 @@
 #include "CopyDragController.h"
 #include "MarqueeGesture.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/ComponentCommands.h"
 #include "document/commands/DocumentCommands.h"
 #include "document/commands/AttachmentCommands.h"
-#include "document/commands/GroupCommands.h"
+#include "document/commands/AttachmentCommands.h"
 #include "document/DeleteImpactConfirm.h"
 
 namespace cad::tools {
 
 namespace {
+
+/// 长按拖动判定阈值 (2026-09 取消确认基准): press 线身后移动超过该像素数
+/// → 进入拖动 (锚点 = press 位置, 与旧"press 即拖"位移语义一致).
+constexpr double kDragThresholdPx = 5.0;
+
+/// 线段角色 → 界面文案 (与 LinePropertyDialog 的角色下拉一致).
+QString segmentRoleText(cad::param::SegmentRole role)
+{
+    using cad::param::SegmentRole;
+    switch (role) {
+    case SegmentRole::Outline:   return QString::fromUtf8("轮廓线");
+    case SegmentRole::Internal:  return QString::fromUtf8("内部线");
+    case SegmentRole::Auxiliary: return QString::fromUtf8("辅助线");
+    }
+    return QString::fromUtf8("轮廓线");
+}
+
+/// 重叠提示 HUD 的共用字体 (每帧创建 QFont 代价高).
+const QFont& overlapHintFont()
+{
+    static QFont f = [] { QFont fnt; fnt.setPixelSize(11); return fnt; }();
+    return f;
+}
 
 /// True if segment [p1,p2] intersects (or is contained in) rect r.
 /// Liang-Barsky clipping; also counts either endpoint inside the rect.
@@ -75,11 +100,9 @@ void ToolSelect::activate(CanvasScene& scene, cad::param::ParamDocument* paramDo
         m_scene, m_paramDoc, undo,
         [this](SelectState s) { setState(s); },
         [this]() {
-            if (!m_selection.isEmpty())
-                setState(m_confirmed ? SelectState::Confirmed
-                                     : SelectState::Selecting);
-            else
-                setState(SelectState::Idle);
+            // 2026-09 取消确认基准: 选中即就绪 (Confirmed 由 setState 归一化).
+            setState(m_selection.isEmpty() ? SelectState::Idle
+                                           : SelectState::Selecting);
         },
         [this]() { clearSelectionAndIdle(); });
     m_marqueeGesture = new MarqueeGesture(m_scene, m_paramDoc);
@@ -91,6 +114,7 @@ void ToolSelect::deactivate()
         m_copyDrag->cancel();       // tool switch mid-copy: drop the clones
     if (m_connectGesture && m_connectGesture->active())
         m_connectGesture->cancel();  // abort any in-progress connection
+    deactivateOverlapContext();  // 工具切换: 隐藏 HUD + 清循环状态
     delete m_connectGesture;
     m_connectGesture = nullptr;
     delete m_copyDrag;
@@ -99,11 +123,13 @@ void ToolSelect::deactivate()
     m_marqueeGesture = nullptr;
 
     m_selection.clear();
-    m_confirmed = false;
     if (m_scene && m_paramDoc)
-        syncSelectionVisual();
+        syncSelectionVisual();   // 去掉选中高亮
     if (m_scene)
         m_scene->clearSelection();
+    m_hoverCursor = Qt::ArrowCursor;  // 离开工具恢复默认光标
+    if (m_scene && !m_scene->views().isEmpty())
+        m_scene->views().first()->viewport()->setCursor(Qt::ArrowCursor);
 
     m_scene = nullptr;
     m_paramDoc = nullptr;
@@ -114,12 +140,18 @@ void ToolSelect::deactivate()
 // State management
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void ToolSelect::setState(SelectState s) { m_state = s; }
+void ToolSelect::setState(SelectState s)
+{
+    // 2026-09 取消确认基准: ConnectGesture/CopyDragController 等仍会发
+    // Confirmed (选中可操作态), 归一化为 Selecting — 选中即就绪, 无需右键.
+    if (s == SelectState::Confirmed) s = SelectState::Selecting;
+    m_state = s;
+}
 
 void ToolSelect::clearSelectionAndIdle()
 {
+    deactivateOverlapContext();
     m_selection.clear();
-    m_confirmed = false;
     syncSelectionVisual();
     setState(SelectState::Idle);
     notifyEditTarget();
@@ -140,6 +172,7 @@ void ToolSelect::clearSelectionOnLayerChange()
 void ToolSelect::selectBlocksExternally(const QList<QUuid>& blockIds)
 {
     if (!m_paramDoc || blockIds.isEmpty()) return;
+    deactivateOverlapContext();  // 面板联动选择与画布循环上下文互斥
     // Abort any in-flight gesture first (same hygiene as a layer switch).
     if (m_copyDrag && m_copyDrag->active())
         m_copyDrag->cancel();
@@ -147,11 +180,9 @@ void ToolSelect::selectBlocksExternally(const QList<QUuid>& blockIds)
         m_connectGesture->cancel();
     if (m_marqueeGesture) m_marqueeGesture->cancel();
 
-    m_selection = MarqueeGesture::expandWithGroups(
-        m_paramDoc, QSet<QUuid>(blockIds.begin(), blockIds.end()));
-    m_confirmed = !m_selection.isEmpty();
+    m_selection = QSet<QUuid>(blockIds.begin(), blockIds.end());
     syncSelectionVisual();
-    setState(m_confirmed ? SelectState::Confirmed : SelectState::Idle);
+    setState(m_selection.isEmpty() ? SelectState::Idle : SelectState::Selecting);
     notifyEditTarget();
 }
 
@@ -176,16 +207,18 @@ void ToolSelect::toggleSelectionMode()
 
 void ToolSelect::showModeToast()
 {
+    // 2026-09 取消确认基准: 单击选中 / 按住拖动 / 端点按住连接 / 悬停提示.
     const QString text = (m_selectionMode == SelectionMode::Single)
         ? QString::fromUtf8("\xe5\x8d\x95\xe9\x80\x89\xe6\xa8\xa1\xe5\xbc\x8f\xef\xbc\x9a"
                             "\xe7\x82\xb9\xe5\x87\xbb\xe9\x80\x89\xe4\xb8\xad"
-                            " | \xe5\x8f\xb3\xe9\x94\xae\xe7\xa1\xae\xe8\xae\xa4"
-                            " | \xe5\x86\x8d\xe7\x82\xb9\xe6\x8b\x96\xe5\x8a\xa8/\xe7\xab\xaf\xe7\x82\xb9\xe9\x95\xbf\xe6\x8c\x89\xe8\xbf\x9e\xe6\x8e\xa5"
-                            " | \xe5\x86\x8d\xe5\x8f\xb3\xe9\x94\xae\xe8\x8f\x9c\xe5\x8d\x95")   // 单选模式：点击选中 | 右键确认 | 再点拖动/端点长按连接 | 再右键菜单
+                            " | \xe6\x8c\x89\xe4\xbd\x8f\xe6\x8b\x96\xe5\x8a\xa8"
+                            " | \xe7\xab\xaf\xe7\x82\xb9\xe6\x8c\x89\xe4\xbd\x8f\xe8\xbf\x9e\xe6\x8e\xa5")
+                            // 单选模式：点击选中 | 按住拖动 | 端点按住连接
         : QString::fromUtf8("\xe5\xa4\x9a\xe9\x80\x89\xe6\xa8\xa1\xe5\xbc\x8f\xef\xbc\x9a"
                             "\xe7\x82\xb9\xe5\x87\xbb\xe5\x8a\xa0\xe5\x87\x8f\xe9\x80\x89"
-                            " | \xe6\xa1\x86\xe9\x80\x89 | \xe5\x8f\xb3\xe9\x94\xae\xe7\xa1\xae\xe8\xae\xa4"
-                            " | \xe5\x86\x8d\xe5\x8f\xb3\xe9\x94\xae\xe6\x88\x90\xe7\xbb\x84\xe8\x8f\x9c\xe5\x8d\x95");  // 多选模式：点击加减选 | 框选 | 右键确认 | 再右键成组菜单
+                            " | \xe6\xa1\x86\xe9\x80\x89"
+                            " | \xe5\xb7\xb2\xe9\x80\x89\xe6\x8c\x89\xe4\xbd\x8f\xe6\x8b\x96\xe5\x8a\xa8");
+                            // 多选模式：点击加减选 | 框选 | 已选按住拖动
     showToast(text);
 }
 
@@ -202,14 +235,11 @@ void ToolSelect::showToast(const QString& text)
 
 void ToolSelect::toggleBlock(const QUuid& blockId)
 {
-    // 点成员=单选线段: canvas 上的点击只切换被点击的这一条线段, 不展开成整组.
-    // 整组操作只发生在真正需要“组”的语境 (拖动/旋转/删除/面板/包围框) —
-    // 那些入口仍会按组展开; 这里保留单条线段的点击编辑/查看语义.
+    // 点成员=单选线段: canvas 上的点击只切换被点击的这一条线段.
     const bool anySelected = m_selection.contains(blockId);
     if (anySelected) m_selection.remove(blockId);
     else             m_selection.insert(blockId);
 
-    m_confirmed = false;  // any toggle invalidates confirmation
     syncSelectionVisual();
     setState(m_selection.isEmpty() ? SelectState::Idle : SelectState::Selecting);
     notifyEditTarget();
@@ -222,22 +252,10 @@ void ToolSelect::syncSelectionVisual()
         if (BlockItem* bi = m_scene->findBlockItem(blk.id)) {
             const bool inSel = m_selection.contains(blk.id);
             bi->setToolSelected(inSel);
-            bi->setToolLocked(inSel && m_confirmed);  // confirmed = bold
+            // 2026-09 取消确认基准: 选中即加粗 (原 confirmed = bold).
+            bi->setToolLocked(inSel);
         }
     }
-    // Accent a group badge only when the WHOLE group is selected (外部选中/
-    // 框选/包围框/整组删除入口仍会展开); 点成员现在只选单条线段, 不点亮整组徽标.
-    QSet<QUuid> selGroups;
-    for (const QUuid& id : m_selection) {
-        const QUuid gid = m_paramDoc->groupOfBlock(id);
-        if (gid.isNull()) continue;
-        const QList<QUuid> members = m_paramDoc->blocksInGroup(gid);
-        bool whole = true;
-        for (const QUuid& member : members)
-            if (!m_selection.contains(member)) { whole = false; break; }
-        if (whole) selGroups.insert(gid);
-    }
-    m_scene->setGroupSelected(selGroups);
 }
 
 void ToolSelect::setBlockHighlight(const QUuid& blockId, bool on)
@@ -260,9 +278,18 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
 
     // ── Connect gesture owns input while active (Connecting / ConfirmTarget /
     //    AngleInput): the HUD takes all input, ConfirmTarget clicks resolve
-    //    the overlap, Connecting presses are button-already-down no-ops. ──
+    //    the overlap, AngleInput forwards clicks so a component connection
+    //    whose spot has overlapping endpoints can re-pick the follower's
+    //    leader segment (点选重叠线段确定跟随对象), Connecting presses are
+    //    button-already-down no-ops. ──
     if (m_connectGesture && m_connectGesture->active()) {
-        if (m_state == SelectState::AngleInput) return;  // HUD owns input
+        if (m_state == SelectState::AngleInput) {
+            // HUD owns keyboard input; clicks on the canvas still reach the
+            // gesture so overlapping-leader re-picking works.
+            if (event->button() == Qt::LeftButton)
+                m_connectGesture->pressAngleTarget(pos);
+            return;
+        }
         if (event->button() == Qt::RightButton) {
             m_connectGesture->cancel();  // right-click cancels the gesture
             return;
@@ -276,72 +303,126 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         return;
     }
 
-    // Badge-click path (选中整组): GroupBadgeItem is hit-testable now; when the
-    // cursor is on a group badge outline, the badge itself emits clicked() and
-    // the tool must NOT also toggle a block underneath.
-    if (badgeAt(pos))
-        return;
-
-    // ── Right button: Idle 空白=切智能笔, 选中=确认, 已确认=上下文菜单 ──
-    // 单选/多选共用同一套 选中→确认→操作 语义 (设计统一, 减少误操作):
-    // 单击对象只选中; 右键把选中集锁定为可操作单元; 确认后再右键弹
-    // 上下文菜单 (做成组 / 解散组 / 取消选择). 无选中时空白右键切回
-    // 智能笔 —— 智能笔 ↔ 选择 two-way gesture 的反向腿.
+    // ── Right button: 无选中空白=切智能笔, 有选中=上下文菜单; 重叠处
+    //    追加「重叠候选」子菜单 (B' 方案: 显式点名选哪条, 复用右键菜单语言). ──
+    // 2026-09 取消确认基准: 右键不再确认 (单击即选中 / 按住即拖动),
+    // 右键直接弹上下文菜单; 无选中空白右键切回智能笔 (two-way 手势反向腿).
     if (event->button() == Qt::RightButton) {
-        if (m_state == SelectState::Idle && hitBlock(pos).isNull()) {
-            requestToolSwitch(ToolType::SmartPen);
-        } else if (m_state == SelectState::Selecting) {
-            confirmSelection();
-        } else if (m_state == SelectState::Confirmed) {
-            showContextMenu();
+        // 重叠候选先生成: 菜单项需要列出全部名单 (无论当前有无选中).
+        const auto cands = collectOverlapCandidates(pos);
+        QMenu menu;
+        QAction* actCancel = nullptr;
+        QAction* actComponent = nullptr;
+        QMenu* overlapMenu = nullptr;
+        if (!m_selection.isEmpty()) {
+            if (m_selection.size() >= 2)
+                actComponent = menu.addAction(QString::fromUtf8("创建组件"));
+            actCancel = menu.addAction(QString::fromUtf8("取消选择"));
+        }
+        if (cands.size() >= 2) {
+            overlapMenu = menu.addMenu(QString::fromUtf8("重叠候选 (%1 条)").arg(cands.size()));
+            for (int i = 0; i < cands.size(); ++i) {
+                const auto& c = cands[i];
+                QString label = QString::fromUtf8("%1 %2").arg(c.roleText, c.name);
+                if (!c.layerName.isEmpty())
+                    label += QString::fromUtf8(" · %1").arg(c.layerName);
+                if (c.lengthMm > 0.0)
+                    label += QString::fromUtf8(" · %1").arg(
+                        cad::geo::Units::formatLength(c.lengthMm));
+                QAction* act = overlapMenu->addAction(label);
+                act->setProperty("overlapPick", i);
+            }
+        }
+        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr
+            && cands.size() < 2) {
+            // 既有行为: 无选中 + 空白右键 = 切智能笔.
+            if (m_selection.isEmpty() && hitBlock(pos).isNull())
+                requestToolSwitch(ToolType::SmartPen);
+            return;
+        }
+        QAction* chosen = menu.exec(QCursor::pos());
+        if (chosen == actCancel) {
+            deactivateOverlapContext();
+            clearSelectionAndIdle();
+        } else if (chosen && chosen == actComponent && actComponent) {
+            deactivateOverlapContext();
+            createComponentFromSelection();
+        } else if (chosen && chosen->property("overlapPick").isValid()) {
+            // 点名选定: 选中后退出循环上下文 (菜单是显式终点, 不再需要 W)。
+            pickOverlapCandidate(chosen->property("overlapPick").toInt());
+            deactivateOverlapContext();
         }
         return;
     }
     if (event->button() != Qt::LeftButton) return;
 
-    // ── Ctrl+press on a CONFIRMED selection → quick copy drag (快捷复制) ──
-    // 复制仅对右键确认后的选择集生效 —— 与整组移动同一语法
-    // (确认 = 锁定为可整体操作的单元), 单条线也需先选中并确认。
+    // ── Ctrl+press on a SELECTED block → quick copy drag (快捷复制) ──
+    // 2026-09 取消确认基准: 选中即就绪, 无需右键确认.
     if ((event->modifiers() & Qt::ControlModifier)
-        && m_state == SelectState::Confirmed && m_copyDrag) {
+        && !m_selection.isEmpty() && m_copyDrag) {
         const QUuid blockHit = hitBlock(pos);
         if (!blockHit.isNull() && m_selection.contains(blockHit)) {
+            deactivateOverlapContext();  // 复制拖拽与循环上下文互斥
             m_copyDrag->begin(m_selection, blockHit, pos);
             return;
         }
     }
 
     // ── Point-level press first (端点连接手势 / 曲线锚点拖拽) ──
-    // 用户直接抓取端点即可发起端点连接 (无论单线还是组件，直观一抓即连)
-    if (tryPointOperation(pos))
+    // 用户直接抓取已选线端点即可发起端点连接 (直观一抓即连)
+    if (tryPointOperation(pos)) {
+        deactivateOverlapContext();  // 点级操作接管后退出循环上下文
         return;
+    }
 
+    // ── 线身 press: 单选=选中+待定拖动; 多选=增减+待定拖动 ──
+    // 2026-09 取消确认基准: press 后不立即拖 — 移动超过 kDragThresholdPx
+    // 由 mouseMove 判定进入 Dragging (锚点 = press 位置); release 未触发
+    // = 单击语义 (单选保持选中; 多选按 wasSelected 增减).
     switch (m_state) {
     case SelectState::Idle:
     case SelectState::Selecting: {
         const QUuid blockHit = hitBlock(pos);
         if (m_selectionMode == SelectionMode::Single) {
-            // Single mode: press SELECTS the object only — 右键确认后才可
-            // 拖动 (与多选同一套 选中→确认→操作 语义, 减少误操作).
+            // Single mode: press selects, holding moves (no right-click step).
             // 点击空白清选; 无框选.
             if (!blockHit.isNull()) {
                 m_lastHitSegmentId = hitSegmentAt(pos);
-                m_selection = {blockHit};   // 点成员=单选线段, 拖动/删除仍整组
-                m_confirmed = false;
+                m_selection = {blockHit};
                 syncSelectionVisual();
                 setState(SelectState::Selecting);
                 notifyEditTarget();
+                beginPressPending(pos, blockHit, /*wasSelected=*/false);
+                // 重叠线段消歧 (2026-10): 单击集群 ≥2 候选 → 激活 W 循环上下文
+                // (HUD 显示第 i/N + 候选名); 单条 / 异处点击 → 退出循环态.
+                const auto cands = collectOverlapCandidates(pos);
+                if (cands.size() >= 2)
+                    activateOverlapContext(cands, blockHit, pos);
+                else
+                    deactivateOverlapContext();
             } else if (!m_selection.isEmpty()) {
+                deactivateOverlapContext();
                 clearSelectionAndIdle();
             }
             return;
         }
-        // Multi mode: click toggles in/out of selection.
+        // Multi mode: click toggles; press on an ALREADY-selected block is a
+        // pending drag (release without moving = 减选), on an unselected one
+        // it joins immediately (release without moving = 保持). W 循环仅在
+        // 单选模式生效 — 多选有加减选语义, 循环上下文不激活.
         if (!blockHit.isNull()) {
-            toggleBlock(blockHit);
+            deactivateOverlapContext();
+            const bool wasSelected = m_selection.contains(blockHit);
+            if (wasSelected) {
+                beginPressPending(pos, blockHit, /*wasSelected=*/true);
+            } else {
+                toggleBlock(blockHit);
+                beginPressPending(pos, blockHit, /*wasSelected=*/false);
+            }
             return;
         }
         // Empty space → marquee.
+        deactivateOverlapContext();
         if (m_marqueeGesture) {
             m_marqueeGesture->begin(pos, m_selection);
             setState(SelectState::Marquee);
@@ -349,50 +430,8 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         break;
     }
 
-    case SelectState::Confirmed: {
-        const QUuid blockHit = hitBlock(pos);
-        if (m_selectionMode == SelectionMode::Single) {
-            // Single mode confirmed: clicking the SAME block again starts a
-            // drag ON the object (第一次点击=选中, 再次点击=拖动); a click on
-            // a DIFFERENT block switches the selection to it (also confirmed);
-            // empty space falls through to beginDrag below.
-            if (!blockHit.isNull()) {
-                if (!m_selection.contains(blockHit)) {
-                    m_lastHitSegmentId = hitSegmentAt(pos);
-                    m_selection = {blockHit};   // 点成员=单选线段, 拖动/删除仍整组
-                    m_confirmed = true;
-                    syncSelectionVisual();
-                    setState(SelectState::Confirmed);
-                    notifyEditTarget();
-                } else {
-                    beginDrag(pos);   // second click on the selected object
-                }
-                return;
-            }
-        } else {
-            // Multi mode CONFIRMED: the set is locked as one operational
-            // unit — clicking a member drags the WHOLE set (same as single
-            // mode's second click); clicking a NON-member switches the
-            // selection to it (also confirmed). 确认后不再减选.
-            if (!blockHit.isNull()) {
-                if (!m_selection.contains(blockHit)) {
-                    m_selection = {blockHit};   // 点成员=单选线段, 拖动/删除仍整组
-                    m_confirmed = true;
-                    syncSelectionVisual();
-                    setState(SelectState::Confirmed);
-                } else {
-                    beginDrag(pos);   // drag the confirmed set
-                }
-                return;
-            }
-        }
-        // Empty space → drag anchor for moving the confirmed selection.
-        beginDrag(pos);
-        break;
-    }
-
     default:
-        break;  // Marquee / Dragging / CopyDragging / Connecting: button already down.
+        break;  // Dragging / CopyDragging / Connecting: button already down.
     }
 }
 
@@ -411,6 +450,33 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
     }
     if (m_copyDrag && m_copyDrag->active()) {
         m_copyDrag->move(pos);
+        return;
+    }
+
+    // ── press 后移动超阈值 → 进入拖动 (长按拖动, 2026-09) ──
+    // 锚点 = press 位置 (m_pressPos), 与旧"press 即拖"的位移语义一致.
+    // 不依赖 event->buttons() — 测试注入的 move 事件 buttons 可能为空,
+    // 真实拖动中 press→release 期间的任意 move 都算拖动意图.
+    if (m_pressPending) {
+        double zoom = 1.0;
+        if (!m_scene->views().isEmpty())
+            zoom = m_scene->views().first()->transform().m11();
+        const double thresh = kDragThresholdPx / (zoom > 1e-9 ? zoom : 1.0);
+        if (pos.distanceTo(m_pressPos) > thresh) {
+            cancelPressPending();
+            beginDrag(m_pressPos);
+        }
+        return;   // pending 期间吞掉 move
+    }
+
+    // ── 悬停反馈 (2026-09): 无按钮移动 = 提示可操作区域 ──
+    // 已选块端点 = 十字 (可连接), 线身 = 抓手 (可拖动), 空白 = 箭头.
+    // 拖拽/框选/锚点拖等有按钮态由 buttons() 天然排除.
+    if (event->buttons() == Qt::NoButton
+        && !m_anchorDragging
+        && m_state != SelectState::Dragging
+        && m_state != SelectState::Marquee) {
+        updateHoverCursor(pos);
         return;
     }
 
@@ -449,13 +515,25 @@ void ToolSelect::mouseRelease(QGraphicsSceneMouseEvent* event)
     // Curve anchor drag override
     if (m_anchorDragging) { endAnchorDrag(); return; }
 
+    // ── press 未触发拖动 = 单击 (2026-09 长按拖动判定) ──
+    if (m_pressPending) {
+        const QUuid pendingBlock = m_pressBlockId;
+        const bool wasSelected = m_pressWasSelected;
+        cancelPressPending();
+        // 多选: 单击已选块 = 减选 (press 时已选才减; press 时未选已在
+        // mousePress 加入, release 保持). 单选: 单击保持选中 (无操作).
+        if (m_selectionMode == SelectionMode::Multi
+            && wasSelected && !pendingBlock.isNull())
+            toggleBlock(pendingBlock);
+        return;
+    }
+
     switch (m_state) {
     case SelectState::Marquee: {
-        // The gesture applies the toggle (base XOR hits, group-expanded);
+        // The gesture applies the toggle (base XOR hits);
         // the tool owns the selection-state transitions.
         if (m_marqueeGesture)
             m_selection = m_marqueeGesture->end(pos);
-        m_confirmed = false;
         syncSelectionVisual();
         setState(m_selection.isEmpty() ? SelectState::Idle
                                        : SelectState::Selecting);
@@ -473,23 +551,21 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     if (m_state == SelectState::AngleInput) return;
 
     const QPointF up = event->scenePos();
-    if (badgeAt(cad::geo::Vec2(up.x(), up.y())))
-        return;   // future badge clicks never open the property dialog underneath
-    const QList<QGraphicsItem*> hits = m_scene->items(cad::geo::Coord::toScene(up.x(), up.y()));
-    BlockItem* blockItem = nullptr;
-    for (QGraphicsItem* item : hits) {
-        // Curve children belong to their block — walk up to the BlockItem.
-        if (auto* bi = BlockItem::containingItem(item)) { blockItem = bi; break; }
-    }
-    if (!blockItem) return;
-
-    cad::param::Block* block = m_paramDoc->findBlock(blockItem->blockId());
-    if (!block || block->segments.empty()) return;
-    // Only the active layer opens the property dialog (same rule as
-    // hitBlock): grayed reference layers stay non-editable via the canvas.
-    if (block->layer != m_paramDoc->activeLayer()) return;
-
     const cad::geo::Vec2 clickPos(up.x(), up.y());
+
+    // Pick rule identical to press (hitBlock): the FIRST ACTIVE-LAYER block
+    // under the cursor wins — items on grayed (non-active) layers are skipped,
+    // not a veto. The old loop stopped at the first BlockItem and bailed when
+    // its layer was not active: at a crossing of an aux/working segment the
+    // topmost item was often the off-layer (grayed) block, so the double-click
+    // silently died even though an active-layer segment was right under the
+    // cursor — and single-click selection (hitBlock scan) worked fine. 修复:
+    // 辅助层激活时在交叉点双击辅助线也能稳定打开属性面板; 工作层激活时
+    // 双击交叉点则稳定命中工作层线.
+    const QUuid blockId = hitBlock(clickPos);
+    if (blockId.isNull()) return;
+    cad::param::Block* block = m_paramDoc->findBlock(blockId);
+    if (!block || block->segments.empty()) return;
     double zoom = 1.0;
     if (!m_scene->views().isEmpty())
         zoom = m_scene->views().first()->transform().m11();
@@ -538,7 +614,7 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     if (bestSegId.isNull() || bestDist > tolerance) return;
 
     QWidget* parentWidget = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    auto* dlg = new LinePropertyDialog(blockItem->blockId(), bestSegId, m_paramDoc,
+    auto* dlg = new LinePropertyDialog(blockId, bestSegId, m_paramDoc,
                                        m_scene, parentWidget);
     // NOTE: no WA_DeleteOnClose — the dialog schedules its own deleteLater()
     // on accept/reject (ElaAppBar's default-close path would delete it while
@@ -564,20 +640,27 @@ void ToolSelect::keyPress(QKeyEvent* event)
         return;
     }
 
-    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+    if (event->key() == Qt::Key_Escape && m_overlapIndex >= 0) {
+        // 重叠循环上下文优先: Esc 只退出循环 (保留当前选中), 不触发清除.
+        deactivateOverlapContext();
+        event->accept();
+    } else if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
         deleteSelectedBlocks();
         event->accept();
     } else if (event->key() == Qt::Key_W) {
-        // W toggles 多选 ↔ 单选 mode (same leader key as other tools use for
-        // their in-tool mode switches).
-        toggleSelectionMode();
-        event->accept();
-    } else if (event->key() == Qt::Key_G) {
-        // G = 做成组 (same validation as the context menu); Shift+G = 解散组.
-        if (event->modifiers() & Qt::ShiftModifier)
-            ungroupSelection();
+        // 重叠循环上下文激活时 W = 循环候选 (2026-10); 其余场合照旧切换
+        // 多选 ↔ 单选 mode (same leader key as other tools' mode switches).
+        if (m_overlapIndex >= 0)
+            cycleOverlapCandidate();
         else
-            makeGroupFromSelection();
+            toggleSelectionMode();
+        event->accept();
+    } else if (event->key() == Qt::Key_D
+               && !(m_connectGesture && m_connectGesture->active())) {
+        // 快拆 (D = Detach, 用户拍板 2026-09): 解除选中线连接的位置吸附、
+        // 保留角度跟随 (angleOnly)。连接手势激活时屏蔽 (手势内 D 不应拆
+        // 刚建立的连接)。
+        quickDetachSelection();
         event->accept();
     } else if (event->key() == Qt::Key_Escape) {
         if (m_state == SelectState::Dragging) {
@@ -589,7 +672,7 @@ void ToolSelect::keyPress(QKeyEvent* event)
             }
             m_paramDoc->resolveAll();
             m_scene->refreshAllBlockItems();
-            setState(SelectState::Confirmed);
+            setState(SelectState::Selecting);  // 回到选中态 (2026-09 无确认态)
         } else {
             if (m_marqueeGesture) m_marqueeGesture->cancel();
             clearSelectionAndIdle();
@@ -602,208 +685,17 @@ void ToolSelect::keyPress(QKeyEvent* event)
 // Marquee selection (intersect = select; toggle add/remove)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void ToolSelect::confirmSelection()
-{
-    if (m_selection.isEmpty()) return;
-    m_confirmed = true;
-    syncSelectionVisual();  // selected → locked (bold strokes)
-    setState(SelectState::Confirmed);
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// User groups (成组): selection expansion, context menu, make/ungroup
-// ═════════════════════════════════════════════════════════════════════════
-
-QSet<QUuid> ToolSelect::wholeGroupSet(const QUuid& blockId) const
-{
-    if (m_paramDoc) {
-        const QUuid gid = m_paramDoc->groupOfBlock(blockId);
-        if (!gid.isNull()) {
-            const QList<QUuid> members = m_paramDoc->blocksInGroup(gid);
-            return QSet<QUuid>(members.begin(), members.end());
-        }
-    }
-    return {blockId};
-}
-
-QString ToolSelect::groupLabel(const QUuid& groupId)
-{
-    if (!m_paramDoc) return QString();
-    const cad::param::Group* g = m_paramDoc->findGroup(groupId);
-    if (!g) return QString();
-    return g->name.isEmpty() ? g->serial : g->name;
-}
-
-bool ToolSelect::selectionGroupable() const
-{
-    // Pure rule (no toast): >= 2 ungrouped blocks on one layer. The menu
-    // enable state and canMakeGroupWithToast share this single rule — keep
-    // the two loops in sync when the grouping rules change.
-    if (!m_paramDoc || m_selection.size() < 2) return false;
-    QUuid layer;
-    for (const QUuid& id : m_selection) {
-        const auto* b = m_paramDoc->findBlock(id);
-        if (!b || !m_paramDoc->groupOfBlock(id).isNull()) return false;
-        if (layer.isNull()) layer = b->layer;
-        else if (b->layer != layer) return false;
-    }
-    return true;
-}
-
-bool ToolSelect::canMakeGroupWithToast()
-{
-    // Same rules as selectionGroupable, but reports the specific reason via
-    // a toast (the caller wants feedback, not just a boolean).
-    if (!m_paramDoc) return false;
-    if (m_selection.size() < 2) {
-        showToast(QString::fromUtf8("\xe8\x87\xb3\xe5\xb0\x91\xe9\x80\x89\xe4\xb8\xad\xe4\xb8\xa4\xe6\x9d\xa1\xe7\xba\xbf\xe6\x89\x8d\xe8\x83\xbd\xe6\x88\x90\xe7\xbb\x84"));  // 至少选中两条线才能成组
-        return false;
-    }
-    QUuid layer;
-    for (const QUuid& id : m_selection) {
-        const auto* b = m_paramDoc->findBlock(id);
-        if (!b) return false;
-        const QUuid gid = m_paramDoc->groupOfBlock(id);
-        if (!gid.isNull()) {
-            showToast(QString::fromUtf8("\xe9\x80\x89\xe4\xb8\xad\xe9\x9b\x86\xe5\x8c\x85\xe5\x90\xab\xe7\xbb\x84 ")  // 选中集包含组
-                      + groupLabel(gid)
-                      + QString::fromUtf8("\xef\xbc\x8c\xe8\xaf\xb7\xe5\x85\x88\xe8\xa7\xa3\xe6\x95\xa3\xe5\x86\x8d\xe9\x87\x8d\xe6\x96\xb0\xe6\x88\x90\xe7\xbb\x84"));  // ，请先解散再重新成组
-            return false;
-        }
-        if (layer.isNull()) layer = b->layer;
-        else if (b->layer != layer) {
-            showToast(QString::fromUtf8("\xe7\xbb\x84\xe6\x88\x90\xe5\x91\x98\xe5\xbf\x85\xe9\xa1\xbb\xe5\x9c\xa8\xe5\x90\x8c\xe4\xb8\x80\xe5\x9b\xbe\xe5\xb1\x82"));  // 组成员必须在同一图层
-            return false;
-        }
-    }
-    return true;
-}
-
-QUuid ToolSelect::wholeSelectedGroup() const
-{
-    if (!m_paramDoc || m_selection.isEmpty()) return QUuid();
-    const QUuid gid = m_paramDoc->groupOfBlock(*m_selection.cbegin());
-    if (gid.isNull()) return QUuid();
-    const QList<QUuid> members = m_paramDoc->blocksInGroup(gid);
-    const QSet<QUuid> memberSet(members.begin(), members.end());
-    return (memberSet == m_selection) ? gid : QUuid();
-}
-
-void ToolSelect::showContextMenu()
-{
-    if (!m_paramDoc || m_selection.isEmpty()) return;
-
-    const QUuid selectedGid = wholeSelectedGroup();
-    const bool isBBoxVisible = !selectedGid.isNull() ? m_paramDoc->isGroupBoundingBoxVisible(selectedGid) : true;
-
-    QMenu menu;
-    QAction* actGroup   = menu.addAction(QString::fromUtf8("\xe5\x81\x9a\xe6\x88\x90\xe7\xbb\x84"));   // 做成组
-    QAction* actUngroup = menu.addAction(QString::fromUtf8("\xe8\xa7\xa3\xe6\x95\xa3\xe7\xbb\x84"));   // 解散组
-    QAction* actRename  = menu.addAction(QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d\xe7\xbb\x84"));  // 重命名组
-    QAction* actBBox    = nullptr;
-    if (!selectedGid.isNull()) {
-        actBBox = menu.addAction(isBBoxVisible
-            ? QString::fromUtf8("\xe9\x9a\x90\xe8\x97\x8f\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86")   // 隐藏包围框
-            : QString::fromUtf8("\xe6\x98\xbe\xe7\xa4\xba\xe5\x8c\x85\xe5\x9b\xb4\xe6\xa1\x86"));  // 显示包围框
-    }
-    menu.addSeparator();
-    QAction* actCancel  = menu.addAction(QString::fromUtf8("\xe5\x8f\x96\xe6\xb6\x88\xe9\x80\x89\xe6\x8b\xa9"));  // 取消选择
-
-    // Enable states: 做成组 needs >= 2 ungrouped same-layer blocks; 解散组
-    // needs the selection to be EXACTLY one whole group.
-    actGroup->setEnabled(selectionGroupable());
-    actUngroup->setEnabled(!selectedGid.isNull());
-    actRename->setEnabled(!selectedGid.isNull());
-
-    QAction* picked = menu.exec(QCursor::pos());
-    if (picked == actGroup)          makeGroupFromSelection();
-    else if (picked == actUngroup)   ungroupSelection();
-    else if (picked == actRename)    renameSelectedGroup();
-    else if (picked == actBBox && !selectedGid.isNull()) {
-        if (m_undoStack)
-            m_undoStack->push(new cad::cmd::SetGroupBoundingBoxCommand(m_paramDoc, selectedGid, !isBBoxVisible));
-        else
-            m_paramDoc->setGroupBoundingBoxVisible(selectedGid, !isBBoxVisible);
-        if (m_scene) m_scene->refreshAllBlockItems();
-    }
-    else if (picked == actCancel)    clearSelectionAndIdle();
-}
-
-void ToolSelect::makeGroupFromSelection()
-{
-    if (!m_paramDoc || !m_undoStack) return;
-    if (!canMakeGroupWithToast()) return;
-
-    m_undoStack->push(new cad::cmd::MakeGroupCommand(m_paramDoc, m_selection.values()));
-    if (m_scene) m_scene->refreshAllBlockItems();
-    clearSelectionAndIdle();
-}
-
-void ToolSelect::ungroupSelection()
-{
-    if (!m_paramDoc || !m_undoStack) return;
-    const QUuid gid = wholeSelectedGroup();
-    if (gid.isNull()) {
-        showToast(QString::fromUtf8("\xe8\xaf\xb7\xe9\x80\x89\xe4\xb8\xad\xe6\x95\xb4\xe4\xb8\xaa\xe7\xbb\x84\xe5\x86\x8d\xe8\xa7\xa3\xe6\x95\xa3"));  // 请选中整个组再解散
-        return;
-    }
-    m_undoStack->push(new cad::cmd::UngroupCommand(m_paramDoc, gid));
-    if (m_scene) m_scene->refreshAllBlockItems();
-    clearSelectionAndIdle();
-}
-
-void ToolSelect::renameSelectedGroup()
-{
-    if (!m_paramDoc) return;
-    const QUuid gid = wholeSelectedGroup();
-    if (gid.isNull()) return;
-    QString current;
-    if (const auto* g = m_paramDoc->findGroup(gid))
-        current = g->name;
-    bool ok = false;
-    const QString name = QInputDialog::getText(
-        nullptr,
-        QString::fromUtf8("\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d\xe7\xbb\x84"),   // 重命名组
-        QString::fromUtf8("\xe7\xbb\x84\xe5\x90\x8d\xe7\xa7\xb0"),               // 组名称
-        QLineEdit::Normal, current, &ok);
-    if (ok) {
-        if (m_undoStack)
-            m_undoStack->push(new cad::cmd::RenameGroupCommand(m_paramDoc, gid, name.trimmed()));
-        else
-            m_paramDoc->setGroupName(gid, name.trimmed());
-    }
-}
-
-bool ToolSelect::badgeAt(const cad::geo::Vec2& pos) const
-{
-    if (!m_scene) return false;
-    const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
-    const QList<QGraphicsItem*> hits = m_scene->items(scenePt);
-    for (QGraphicsItem* item : hits)
-        if (item->type() == GroupBadgeItem::Type)
-            return true;
-    return false;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Drag (move confirmed selection; anchor = blank-space press point)
-// ═══════════════════════════════════════════════════════════════════════════════
-
 void ToolSelect::beginDrag(const cad::geo::Vec2& pos)
 {
+    hideOverlapHint();  // 拖动期间隐藏重叠 HUD (悬停不刷新)
     m_dragStartPos = pos;
     m_detachedAttachments.clear();
 
-    // Drag set = the confirmed selection (expanded by whole groups + protected connections)
-    QSet<QUuid> baseSet = m_selection;
-    for (const QUuid& selId : m_selection) {
-        const QUuid gid = m_paramDoc->groupOfBlock(selId);
-        if (!gid.isNull()) {
-            for (const QUuid& memberId : m_paramDoc->blocksInGroup(gid))
-                baseSet.insert(memberId);
-        }
-    }
-    const QSet<QUuid> dragSet = m_paramDoc->lockedClosure(baseSet);
+    // Drag set = the confirmed selection (expanded by protected connections),
+    // then expanded to full rigid components (dragging any member moves the
+    // whole component — 刚体组件整体拖动).
+    const QSet<QUuid> dragSet =
+        m_paramDoc->componentClosure(m_paramDoc->lockedClosure(m_selection));
     m_dragBlockIds = dragSet.values();
     m_dragOrigins.clear();
     for (const QUuid& id : m_dragBlockIds) {
@@ -816,11 +708,26 @@ void ToolSelect::beginDrag(const cad::geo::Vec2& pos)
     // apart — 拖跟随线 = 拆散 (门开着); dragging the LEADER keeps the
     // follower attached so it follows (跟随线跟随, 不拆). 拖动保护
     // (isLocked) attachments are welded: never detached by a drag.
-    // Groups stay zero-restriction at the model layer — 组内连接与自由连接
-    // 同样处理 (模型层组零限制). 注: 新建连接默认已勾选拖动保护 (addAttachment 统一置位),
-    // 此处只对用户手动取消保护的连接生效. 已拆开 (angleOnly) 的连接位置
-    // 本就自由, 无需再拆. 滑轨连接 (slideMode != None) 位置只留一轴自由度,
-    // 拖动必须保持滑轨约束 (抽屉式滑动) —— 也不拆, 由 Resolver 每帧锁轴.
+    // 注: **新建连接默认焊接** (用户拍板 2026-08 复旧) — 拖动保护默认勾选,
+    // 拖跟随线即整对移动不拆; 拆散 = D 键快拆 / 面板取消「拖动保护」, 或把
+    // 多线打包成组件 (componentClosure 整体移动)。已拆开 (angleOnly) 的连接
+    // 位置本就自由, 无需再拆。滑轨连接 (slideMode != None) 位置只留一轴
+    // 自由度, 拖动必须保持滑轨约束 (抽屉式滑动) —— 也不拆, 由 Resolver
+    // 每帧锁轴。
+    // 组件级连接 (整组跟随外部线): 拖动组件任一部分 → 拆散外部跟随线
+    // (与"拖 follower 拆散"语义一致 — 组件整体被拖走, 不再跟随外部线).
+    for (const auto& att : m_paramDoc->attachments()) {
+        if (att.fromComponentId.isNull()) continue;
+        const cad::param::Component* c = m_paramDoc->findComponent(att.fromComponentId);
+        if (!c) continue;
+        bool memberIn = false;
+        for (const QUuid& mid : c->memberBlockIds)
+            if (dragSet.contains(mid)) { memberIn = true; break; }
+        if (memberIn) {
+            m_detachedAttachments.append(att.id);
+            continue;
+        }
+    }
     for (const auto& att : m_paramDoc->attachments()) {
         if (att.isLocked || att.angleOnly
             || att.slideMode != cad::param::SlideMode::None) continue;
@@ -870,6 +777,38 @@ void ToolSelect::updateDrag(const cad::geo::Vec2& pos)
     m_paramDoc->resolveForDrag(m_dragBlockIds, m_detachedAttachments);
 }
 
+bool ToolSelect::tryReattachOnDragEnd(const cad::geo::Vec2& pos)
+{
+    if (!m_paramDoc || !m_undoStack) return false;
+    // 只在单一跟随线拖拽释放时做“位置重挂 + 角度基准保留”，避免多选拖动语义复杂化。
+    if (m_detachedAttachments.size() != 1 || m_dragBlockIds.size() != 1)
+        return false;
+
+    const cad::param::Attachment* att = m_paramDoc->findAttachment(m_detachedAttachments.first());
+    if (!att || att->isPin || !att->fromComponentId.isNull())
+        return false;
+
+    double zoom = 1.0;
+    if (m_scene && !m_scene->views().isEmpty())
+        zoom = m_scene->views().first()->transform().m11();
+
+    const auto snap = m_snapEngine.findSnap(
+        pos, m_paramDoc, zoom, kConnectSnapRadius, {}, &att->fromBlockId);
+    if (!snap || snap->blockId == att->fromBlockId)
+        return false;
+
+    const auto* leader = m_paramDoc->findBlock(snap->blockId);
+    const QUuid segId = leader ? leader->exitSegmentAtPoint(snap->pointId) : QUuid();
+    if (segId.isNull()) return false;
+
+    m_undoStack->beginMacro(QStringLiteral("重新挂接"));
+    m_undoStack->push(new cad::cmd::ReattachAttachmentCommand(
+        m_paramDoc, att->id, snap->blockId, snap->pointId, segId));
+    m_undoStack->endMacro();
+    return true;
+}
+
+
 void ToolSelect::endDrag(const cad::geo::Vec2& pos)
 {
     const cad::geo::Vec2 delta = pos - m_dragStartPos;
@@ -881,22 +820,22 @@ void ToolSelect::endDrag(const cad::geo::Vec2& pos)
     }
 
     // A pure click (press + release without moving) is NOT a drag: keep the
-    // selection confirmed — 单击已选对象保持选中, 按住移动才是拖动
-    // (second-click-to-drag semantics; also keeps double-click edit intact).
+    // selection — 按住移动才是拖动, 几乎没动的拖动按单击回退 (2026-09;
+    // 双击编辑保持完好).
     if (delta.lengthSquared() <= 1e-10) {
         if (m_scene) m_scene->refreshAllBlockItems();
-        setState(SelectState::Confirmed);
+        setState(SelectState::Selecting);
         return;
     }
 
-    if (m_undoStack) {
+    if (m_undoStack && !tryReattachOnDragEnd(pos)) {
         m_undoStack->beginMacro(QStringLiteral(
             "\xe7\xa7\xbb\xe5\x8a\xa8 %1 \xe4\xb8\xaa\xe5\xaf\xb9\xe8\xb1\xa1").arg(m_dragBlockIds.size()));
         for (const QUuid& attId : m_detachedAttachments) {
             const cad::param::Attachment* att = m_paramDoc->findAttachment(attId);
-            if (att && !att->isPin)
+            if (att && !att->isPin && att->fromComponentId.isNull())
                 // 拆开保留角度 (用户拍板 2026-08): 只解除位置吸附, 角度跟随
-                // 保留; 桥 pin 无角度语义, 仍走彻底删除.
+                // 保留; 桥 pin / 组件级连接 无角度语义, 仍走彻底删除.
                 m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
                     m_paramDoc, attId, /*angleOnly=*/true));
             else
@@ -943,59 +882,49 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
     if (!m_connectGesture || !m_paramDoc) return false;
 
     // Endpoint: begin a connection drag. Gather all candidate points stacked at
-    // this location (多点重叠/组内角点) so we can pick a valid member from the
-    // selection or active group, even when multiple endpoints share the spot.
+    // this location so we can pick a valid point even when multiple endpoints
+    // share the spot.
     const auto cands = m_connectGesture->hitPointCandidates(pos);
     if (cands.empty()) return false;
-
-    // Collect eligible blocks: explicitly selected blocks + all members of any
-    // selected group (组内任意端点均可发起组件对外挂接).
-    QSet<QUuid> eligibleBlocks = m_selection;
-    for (const auto& selId : m_selection) {
-        const QUuid gid = m_paramDoc->groupOfBlock(selId);
-        if (!gid.isNull()) {
-            for (const auto& bid : m_paramDoc->blocksInGroup(gid))
-                eligibleBlocks.insert(bid);
-        }
-    }
 
     // Filter to valid source candidates (same rules as before: eligible,
     // non-bridge, active layer, no external welded attachment).
     std::vector<SnapResult> validCands;
     for (const auto& c : cands) {
-        if (!eligibleBlocks.isEmpty() && !eligibleBlocks.contains(c.blockId))
+        if (!m_selection.contains(c.blockId))
             continue;
         const auto* blk = m_paramDoc->findBlock(c.blockId);
         if (!blk || blk->isBridge) continue;
         if (blk->layer != m_paramDoc->activeLayer()) continue;
 
-        // Check external welded attachments (locked external connection):
-        // Internal connections between members of the same group are part of the
-        // group's internal structure and DO NOT prevent active connection to an external leader!
-        const QUuid candGid = m_paramDoc->groupOfBlock(c.blockId);
-        bool externalWelded = false;
-        for (const auto& att : m_paramDoc->attachments()) {
-            if (!att.isLocked) continue;
-            if (!candGid.isNull()
-                && m_paramDoc->groupOfBlock(att.fromBlockId) == candGid
-                && m_paramDoc->groupOfBlock(att.toBlockId) == candGid) {
-                continue;  // internal group attachment -> ignore
+        // 组件成员: 抓端点 = 组件级连接 (整组跟随, 借用端点), 不占用线级
+        // follower 名额 —— 放行 (内部关系保持活性). 非组件成员: 线级连接
+        // 检查照旧 (森林不变式 线级: 已是 follower 的块不能发起线级连接;
+        // **例外**: 仅角度 angleOnly 跟随线位置自由 — 放行, 让它能拖端点
+        // 重新建立位置连接, 用户报告: 使用了引用线段但没有连接线段的线,
+        // 拖动端点没有任何吸附反应)。
+        if (!m_paramDoc->componentOfBlock(c.blockId)) {
+            bool externalWelded = false;
+            for (const auto& att : m_paramDoc->attachments()) {
+                if (!att.isLocked) continue;
+                if (att.fromBlockId == c.blockId
+                    || (att.toBlockId == c.blockId && att.toPointId == c.pointId)) {
+                    externalWelded = true;
+                    break;
+                }
             }
-            if (att.fromBlockId == c.blockId
-                || (att.toBlockId == c.blockId && att.toPointId == c.pointId)) {
-                externalWelded = true;
-                break;
-            }
-        }
-        if (externalWelded) continue;
+            if (externalWelded) continue;
 
-        // 方案A 排除规则（用户拍板）：已经是 follower 的块不能作为组件对外
-        // 连接端口。引擎森林不变式保证每个块最多只能是一个 attachment 的
-        // follower，因此整个块都不能再作为新连接的 fromBlock。
-        bool isFollower = false;
-        for (const auto& att : m_paramDoc->attachments())
-            if (att.fromBlockId == c.blockId) { isFollower = true; break; }
-        if (isFollower) continue;
+            bool isFollower = false;
+            bool angleOnlyFree = false;
+            for (const auto& att : m_paramDoc->attachments())
+                if (att.fromBlockId == c.blockId) {
+                    isFollower = true;
+                    if (!att.isPin && att.angleOnly) angleOnlyFree = true;
+                    break;
+                }
+            if (isFollower && !angleOnlyFree) continue;
+        }
 
         validCands.push_back(c);
     }
@@ -1028,24 +957,20 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
         }
     }
 
-    // Unambiguous source: prefer a directly selected block, otherwise the first
-    // valid candidate (fallback for grouped members at a non-overlapping spot).
-    const SnapResult* pickedCand = nullptr;
-    for (const auto& c : validCands) {
-        if (m_selection.contains(c.blockId)) {
-            pickedCand = &c;
-            break;  // Highest priority: directly selected block
-        }
-        if (!pickedCand)
-            pickedCand = &c;
-    }
+    // 所有候选都被过滤掉 (按下的是未选线段 / 桥 / 已焊接或 follower 的端点):
+    // 这不是连接手势 — 退回普通选中/拖动路径 (未选线段的端点按下 = 普通线段
+    // 选中)。缺此守卫 validCands.front() 会在空 vector 上断言崩溃.
+    if (validCands.empty())
+        return false;
 
-    if (pickedCand) {
-        m_connectGesture->beginConnect(pickedCand->blockId, pickedCand->pointId, pos);
-        return true;
-    }
-
-    return false;
+    // 单选模式源点确定 (用户设计提案 2026-09, 已用 test_select_wkey 回归锁定):
+    // 重叠点集合中属于当前选中线段的点恒胜出 — validCands 已按"选中块"过滤
+    // (上面 for 循环), 无重叠时直接取选中块的最近端点即可 (validCands 按距离
+    // 升序, front = 最近者). 行为与旧"for 循环首选选中块"完全等价, 但意图
+    // 显式化: 先点选线段、再点击重叠部位 = 默认选中该线段的所属点.
+    const SnapResult& pickedCand = validCands.front();
+    m_connectGesture->beginConnect(pickedCand.blockId, pickedCand.pointId, pos);
+    return true;
 }
 
 QUuid ToolSelect::hitBlock(const cad::geo::Vec2& worldPos) const
@@ -1100,17 +1025,37 @@ void ToolSelect::notifyEditTarget()
 // Visual helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
+void ToolSelect::createComponentFromSelection()
+{
+    if (!m_paramDoc || m_selection.size() < 2) return;
+
+    // Stable member order = document block order (anchor = earliest block).
+    QList<QUuid> members;
+    for (const auto& b : m_paramDoc->blocks())
+        if (m_selection.contains(b.id))
+            members.append(b.id);
+    if (members.size() < 2) return;
+
+    const QString name = QStringLiteral("组件 %1")
+        .arg(m_paramDoc->components().size() + 1);
+    if (m_undoStack)
+        m_undoStack->push(new cad::cmd::MakeComponentCommand(m_paramDoc, members, name));
+    else {
+        cad::param::Component c;
+        c.name = name;
+        c.memberBlockIds.assign(members.begin(), members.end());
+        m_paramDoc->addComponent(c);
+    }
+
+    showToast(QStringLiteral("已创建组件（%1 条线段）——拖任一成员整组移动").arg(members.size()));
+    clearSelectionAndIdle();
+}
+
 void ToolSelect::deleteSelectedBlocks()
 {
     if (!m_scene || !m_paramDoc || m_selection.isEmpty()) return;
 
-    // 点成员=单选线段, 但 Del 仍按整组删除: 删除前把选中集展开为整组, 因此
-    // Del 删除的是整组而不是单个成员 (组内连接与跨边界线随块删除正常善后,
-    // 组不设结构保护; 剩余成员不足 2 时组自动解散).
-    QSet<QUuid> expanded;
-    for (const QUuid& id : m_selection)
-        expanded.unite(wholeGroupSet(id));
-    const QList<QUuid> toRemove = expanded.values();
+    const QList<QUuid> toRemove = m_selection.values();
 
     // Show the aggregated delete-impact report before committing (批量删除
     // 时善后可能合并, 报告计数为上限). The cascade itself is unchanged.
@@ -1133,6 +1078,324 @@ void ToolSelect::deleteSelectedBlocks()
 
     m_scene->refreshAllBlockItems();
     clearSelectionAndIdle();
+}
+
+void ToolSelect::quickDetachSelection()
+{
+    if (!m_paramDoc || m_selection.isEmpty()) return;
+
+    // 快拆 = 拆开保留角度 (angleOnly): 位置约束解除、角度仍跟随基准线。
+    // 与拖动保护 (isLocked) 无关 — 拆开会自动清锁 (位置自由 ↔ 焊接互斥,
+    // setAttachmentAngleOnly 内部处理)。桥线 pin 无角度语义, 跳过
+    // (彻底断开走「清除」)。已经是 angleOnly 的连接无需再拆。
+    QList<QUuid> toDetach;
+    for (const QUuid& blockId : m_selection) {
+        for (const auto& att : m_paramDoc->attachments()) {
+            if (att.fromBlockId != blockId || att.isPin) continue;
+            if (!att.angleOnly) toDetach.append(att.id);
+            break;  // 每块至多一条非 pin 跟随连接 (森林不变式)
+        }
+    }
+
+    if (toDetach.isEmpty()) {
+        showToast(QString::fromUtf8(
+            "\xe9\x80\x89\xe4\xb8\xad\xe7\xba\xbf\xe6\xb2\xa1\xe6\x9c\x89\xe5\x8f\xaf"
+            "\xe6\x8b\x86\xe5\xbc\x80\xe7\x9a\x84\xe8\xbf\x9e\xe6\x8e\xa5"));  // 选中线没有可拆开的连接
+        return;
+    }
+
+    if (m_undoStack) {
+        m_undoStack->beginMacro(QStringLiteral(
+            "\xe6\x8b\x86\xe5\xbc\x80 %1 \xe4\xb8\xaa\xe8\xbf\x9e\xe6\x8e\xa5")
+            .arg(toDetach.size()));  // 拆开 %1 个连接
+        for (const QUuid& id : toDetach)
+            m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                m_paramDoc, id, /*angleOnly=*/true));
+        m_undoStack->endMacro();
+    } else {
+        for (const QUuid& id : toDetach)
+            m_paramDoc->setAttachmentAngleOnly(id, true);
+    }
+
+    m_scene->refreshAllBlockItems();
+}
+
+// ── 长按/拖动判定与悬停反馈 (2026-09 取消确认基准) ──
+
+void ToolSelect::beginPressPending(const cad::geo::Vec2& pos, const QUuid& blockId,
+                                   bool wasSelected)
+{
+    m_pressPending = true;
+    m_pressBlockId = blockId;
+    m_pressWasSelected = wasSelected;
+    m_pressPos = pos;
+}
+
+void ToolSelect::cancelPressPending()
+{
+    m_pressPending = false;
+    m_pressBlockId = QUuid();
+    m_pressWasSelected = false;
+}
+
+void ToolSelect::updateHoverCursor(const cad::geo::Vec2& pos)
+{
+    Qt::CursorShape cur = Qt::ArrowCursor;
+    if (m_scene && m_paramDoc) {
+        const QUuid blockHit = hitBlock(pos);
+        if (!blockHit.isNull() && m_selection.contains(blockHit)) {
+            // 已选块的端点 (抓取半径内) → 十字 (提示可连接);
+            // 否则线身 → 抓手 (提示可拖动).
+            double zoom = 1.0;
+            if (!m_scene->views().isEmpty())
+                zoom = m_scene->views().first()->transform().m11();
+            const double worldR = kConnectGrabRadius / (zoom > 1e-9 ? zoom : 1.0);
+            if (blockHasEndpointNear(blockHit, pos, worldR))
+                cur = Qt::CrossCursor;
+            else
+                cur = Qt::OpenHandCursor;
+        }
+    }
+    if (cur != m_hoverCursor) {
+        m_hoverCursor = cur;
+        if (m_scene && !m_scene->views().isEmpty())
+            m_scene->views().first()->viewport()->setCursor(cur);
+    }
+    // 重叠提示 HUD: 无按钮悬停时跟随 (集群 ≥2 条才显示; 同值短路).
+    refreshOverlapHint(pos);
+}
+
+bool ToolSelect::blockHasEndpointNear(const QUuid& blockId,
+                                      const cad::geo::Vec2& pos,
+                                      double worldRadius) const
+{
+    const auto* blk = m_paramDoc ? m_paramDoc->findBlock(blockId) : nullptr;
+    if (!blk) return false;
+    const double rSq = worldRadius * worldRadius;
+    for (const auto& pt : blk->points) {
+        if (!pt.selectable || !pt.resolved) continue;
+        if (blk->worldPos(pt.id).distanceSquaredTo(pos) < rSq)
+            return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// 重叠线段消歧 (2026-10: 悬停提示 → 点选+W 循环 → 右键候选菜单)
+// ---------------------------------------------------------------------------
+
+QList<ToolSelect::OverlapCandidate> ToolSelect::collectOverlapCandidates(
+    const cad::geo::Vec2& worldPos) const
+{
+    QList<OverlapCandidate> out;
+    if (!m_scene || !m_paramDoc) return out;
+
+    const QPointF scenePt = cad::geo::Coord::toScene(worldPos.x, worldPos.y);
+    // 场景命中返回全部包含该点的 item (堆叠降序): 完全重合的多条线都会出现,
+    // 与 hitBlock 取首项的顺序一致 (顶部/后建者在前).
+    const QList<QGraphicsItem*> hits = m_scene->items(scenePt);
+    QSet<QUuid> seen;
+    for (QGraphicsItem* item : hits) {
+        auto* bi = BlockItem::containingItem(item);
+        if (!bi) continue;
+        const QUuid bid = bi->blockId();
+        if (seen.contains(bid)) continue;
+        seen.insert(bid);
+        const auto* blk = m_paramDoc->findBlock(bid);
+        if (!blk) continue;
+        // 与 hitBlock 同规: 只有活动层可选中 (跨层重叠靠图层过滤区分).
+        if (blk->layer != m_paramDoc->activeLayer()) continue;
+        out.append(makeOverlapCandidate(*blk, bi->hitSegmentAtScene(scenePt)));
+    }
+    return out;
+}
+
+ToolSelect::OverlapCandidate ToolSelect::makeOverlapCandidate(
+    const cad::param::Block& blk, const QUuid& segmentId) const
+{
+    OverlapCandidate c;
+    c.blockId = blk.id;
+    c.segmentId = segmentId;
+    const cad::param::Segment* seg = nullptr;
+    if (!segmentId.isNull())
+        seg = blk.findSegment(segmentId);
+    if (!seg && !blk.segments.empty())
+        seg = &blk.segments.front();
+
+    // 显示名: 线段名 → 块名 → 线段 serial (可读 ID, 无名的重叠也有身份).
+    if (seg && !seg->name.isEmpty())        c.name = seg->name;
+    else if (!blk.name.isEmpty())           c.name = blk.name;
+    else if (seg && !seg->serial.isEmpty()) c.name = seg->serial;
+    else                                    c.name = QString::fromUtf8("(未命名)");
+
+    c.roleText = segmentRoleText(seg ? seg->role : cad::param::SegmentRole::Outline);
+    c.layerName.clear();
+    for (const auto& l : m_paramDoc->layers())
+        if (l.id == blk.layer) { c.layerName = l.name; break; }
+
+    if (seg) {
+        const auto* sp = blk.findPoint(seg->startPointId);
+        const auto* ep = blk.findPoint(seg->endPointId);
+        if (sp && ep && sp->resolved && ep->resolved)
+            c.lengthMm = sp->resolvedPos.distanceTo(ep->resolvedPos);
+    }
+    return c;
+}
+
+void ToolSelect::activateOverlapContext(const QList<OverlapCandidate>& cands,
+                                        const QUuid& hitBlockId,
+                                        const cad::geo::Vec2& anchor)
+{
+    if (cands.size() < 2) { deactivateOverlapContext(); return; }
+    m_overlapCandidates = cands;
+    // 与单击命中一致: 首项 = hitBlock 首选; 找不到时取 0.
+    int idx = 0;
+    for (int i = 0; i < m_overlapCandidates.size(); ++i)
+        if (m_overlapCandidates[i].blockId == hitBlockId) { idx = i; break; }
+    m_overlapIndex = idx;
+    m_overlapAnchor = anchor;
+    applyOverlapPick(m_overlapIndex);
+    // 常驻循环 HUD (锚定集群, 不随光标走).
+    const auto& c = m_overlapCandidates[m_overlapIndex];
+    showOverlapHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
+                        .arg(m_overlapCandidates.size())
+                        .arg(m_overlapIndex + 1)
+                        .arg(m_overlapCandidates.size())
+                        .arg(c.roleText)
+                        .arg(c.name),
+                    m_overlapAnchor);
+}
+
+void ToolSelect::deactivateOverlapContext()
+{
+    m_overlapIndex = -1;
+    m_overlapCandidates.clear();
+    hideOverlapHint();
+}
+
+void ToolSelect::cycleOverlapCandidate()
+{
+    if (m_overlapIndex < 0 || m_overlapCandidates.isEmpty()) return;
+    // 拖拽/框选/待定中不接收循环 (键盘事件与状态机无关联).
+    if (m_state == SelectState::Dragging || m_state == SelectState::Marquee
+        || m_pressPending) return;
+
+    // 剔除已消失的块 (拖走/删除后名单失效), 实时重取身份信息.
+    QList<OverlapCandidate> live;
+    for (const auto& c : m_overlapCandidates) {
+        const auto* blk = m_paramDoc->findBlock(c.blockId);
+        if (!blk) continue;
+        live.append(makeOverlapCandidate(*blk, c.segmentId));
+    }
+    if (live.isEmpty()) { deactivateOverlapContext(); return; }
+    if (live.size() != m_overlapCandidates.size())
+        m_overlapIndex = qBound(0, m_overlapIndex, live.size() - 1);
+    m_overlapCandidates = live;
+
+    m_overlapIndex = (m_overlapIndex + 1) % m_overlapCandidates.size();
+    applyOverlapPick(m_overlapIndex);
+    const auto& c = m_overlapCandidates[m_overlapIndex];
+    showOverlapHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
+                        .arg(m_overlapCandidates.size())
+                        .arg(m_overlapIndex + 1)
+                        .arg(m_overlapCandidates.size())
+                        .arg(c.roleText)
+                        .arg(c.name),
+                    m_overlapAnchor);
+}
+
+void ToolSelect::applyOverlapPick(int index)
+{
+    if (index < 0 || index >= m_overlapCandidates.size()) return;
+    const auto& c = m_overlapCandidates[index];
+    m_selection = {c.blockId};
+    m_lastHitSegmentId = c.segmentId;
+    syncSelectionVisual();
+    setState(SelectState::Selecting);
+    notifyEditTarget();
+}
+
+void ToolSelect::pickOverlapCandidate(int index)
+{
+    if (index < 0 || index >= m_overlapCandidates.size()) return;
+    m_overlapIndex = index;
+    applyOverlapPick(index);
+    const auto& c = m_overlapCandidates[index];
+    showOverlapHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
+                        .arg(m_overlapCandidates.size())
+                        .arg(index + 1)
+                        .arg(m_overlapCandidates.size())
+                        .arg(c.roleText)
+                        .arg(c.name),
+                    m_overlapAnchor);
+}
+
+void ToolSelect::refreshOverlapHint(const cad::geo::Vec2& worldPos)
+{
+    if (m_overlapIndex >= 0 && !m_overlapCandidates.isEmpty()) {
+        // 循环上下文已存在: HUD 锚定集群位置, 不随光标移动; 同值短路由
+        // showOverlapHint 内部处理 (拖帧路径零重建).
+        const auto& c = m_overlapCandidates[m_overlapIndex];
+        showOverlapHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
+                            .arg(m_overlapCandidates.size())
+                            .arg(m_overlapIndex + 1)
+                            .arg(m_overlapCandidates.size())
+                            .arg(c.roleText)
+                            .arg(c.name),
+                        m_overlapAnchor);
+        return;
+    }
+
+    const auto cands = collectOverlapCandidates(worldPos);
+    if (cands.size() >= 2) {
+        QString text = QString::fromUtf8("此处重叠 %1 条 ｜").arg(cands.size());
+        for (int i = 0; i < cands.size(); ++i) {
+            if (i) text += QStringLiteral("、");
+            text += cands[i].name;
+        }
+        text += QString::fromUtf8("（点选后按 W 循环）");
+        showOverlapHint(text, worldPos);
+    } else {
+        hideOverlapHint();
+    }
+}
+
+void ToolSelect::showOverlapHint(const QString& text, const cad::geo::Vec2& anchor)
+{
+    if (!m_scene) return;
+    if (text == m_overlapHitText && m_overlapHintBox && m_overlapHintBox->isVisible())
+        return;  // 同值短路: 悬停/拖帧路径不重构 HUD
+
+    if (!m_overlapHintBox) {
+        m_overlapHintBox = new QGraphicsRectItem();
+        m_overlapHintBox->setZValue(9990.0);
+        m_scene->addItem(m_overlapHintBox);
+        m_overlapHintLabel = new QGraphicsSimpleTextItem(m_overlapHintBox);
+        m_overlapHintLabel->setBrush(QColor(255, 255, 255));
+        m_overlapHintLabel->setFont(overlapHintFont());
+    }
+    m_overlapHitText = text;
+    m_overlapHintLabel->setText(text);
+
+    const QFontMetrics fm(overlapHintFont());
+    const QRectF tr = fm.boundingRect(text);
+    const double w = tr.width() + 16.0, h = tr.height() + 8.0;
+    const QPointF sp = cad::geo::Coord::toScene(anchor);
+    // 锚点右下 12px, 保持恒定 (避免挡在光标正下方).
+    m_overlapHintBox->setRect(sp.x() + 12.0, sp.y() + 12.0, w, h);
+    m_overlapHintBox->setPen(QPen(QColor(0, 0, 0, 40)));
+    m_overlapHintBox->setBrush(QColor(38, 50, 56, 225));
+    m_overlapHintLabel->setPos(sp.x() + 12.0 + (w - tr.width()) / 2.0,
+                               sp.y() + 12.0 + (h - tr.height()) / 2.0);
+    m_overlapHintBox->show();
+}
+
+void ToolSelect::hideOverlapHint()
+{
+    if (m_overlapHintLabel) m_overlapHintLabel->setText(QString());
+    if (m_overlapHintBox) m_overlapHintBox->hide();
+    // 清缓存重触发: 每次都重新隐现
+    m_overlapHitText.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,7 +1458,7 @@ void ToolSelect::updateAnchorDrag(const cad::geo::Vec2& worldPos)
     pt->freePos = local;
     pt->constraint = cad::param::PointConstraint::Free;
 
-    m_paramDoc->invalidateLayer(block->layer);  // per-frame: freeze the other group
+    m_paramDoc->invalidateLayer(block->layer);
     m_paramDoc->resolveForDrag({m_anchorBlockId});
     // resolveForDrag() emits resolved() → CanvasScene::syncBlockPositions(), which
     // rebuilds ONLY the blocks whose geometryEpoch changed. The old

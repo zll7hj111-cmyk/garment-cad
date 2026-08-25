@@ -16,10 +16,10 @@ namespace cad::tools {
 /// Used by the "辅助点" tab of LinePropertyDialog (intersection points are
 /// listed together with auxiliary points).
 ///
-/// Angle reference: the stored value (interAngle) is ALWAYS relative to the
-/// target segment's start→end direction. The optional "绝对角度" checkbox is a
-/// display/input convenience — when checked the field shows/accepts an absolute
-/// (world) angle which is back-calculated to the relative value (通过绝对角度反算).
+/// Angle reference: by default interAngle is relative to the
+/// target segment's start→end direction. When "绝对角度" is checked, it is
+/// stored as an absolute world angle (persisted) and stays world-anchored.
+/// The checkbox is persisted via interUseWorldAngle.
 ///
 /// Dumb view: loadFrom() fills fields, applyTo() writes back.
 class IntersectionForm : public QWidget
