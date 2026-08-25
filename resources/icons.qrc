@@ -13,7 +13,6 @@
     <file alias="trash.svg">icons/trash.svg</file>
     <file alias="copy.svg">icons/copy.svg</file>
     <file alias="ruler.svg">icons/ruler.svg</file>
-    <file alias="sigma.svg">icons/sigma.svg</file>
     <file alias="rotate.svg">icons/rotate.svg</file>
     <file alias="scissors.svg">icons/scissors.svg</file>
     <file alias="eye.svg">icons/eye.svg</file>
