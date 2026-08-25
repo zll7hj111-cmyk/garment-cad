@@ -121,8 +121,6 @@ target_link_libraries(gcad_geometry PUBLIC Qt6::Core Qt6::Gui)
 add_library(gcad_parametric STATIC
     src/parametric/ParamPoint.h
     src/parametric/Segment.h
-    src/parametric/TrianglePrototypeBlock.h
-    src/parametric/TrianglePrototypeBlock.cpp
     src/parametric/Block.h
     src/parametric/Block.cpp
     src/parametric/Component.h
@@ -347,8 +345,6 @@ add_library(gcad_app STATIC
     src/app/SegmentEditBar.cpp
     src/app/SmartPenPreInputBar.h
     src/app/SmartPenPreInputBar.cpp
-    src/app/DemoData.h
-    src/app/DemoData.cpp
 )
 target_include_directories(gcad_app PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_app PUBLIC

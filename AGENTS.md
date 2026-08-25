@@ -20,7 +20,7 @@ WildWind Pattern（野风帖）——参数化服装 CAD 系统，基于 C++23 /
 | `src/tools` | 交互工具：选择、智能笔、曲线编辑、捕捉引擎、工具管理器 |
 | `src/canvas` | 画布渲染：CanvasView/CanvasScene、BlockItem/CurveItem、图层、OpenGL 视口 |
 | `src/geometry` | 基础几何：Vec2、单位定义、CurveMath |
-| `src/app` | 应用入口、状态栏组件（SegmentEditBar/预输入条）与演示数据 |
+| `src/app` | 应用入口、状态栏组件（SegmentEditBar/预输入条） |
 
 ## 架构原则（不可破坏）
 

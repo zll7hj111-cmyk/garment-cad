@@ -46,7 +46,7 @@ The canvas is the authority and the panels are live views of the same parametric
 
 ## Evidence on Hand
 
-- Real UI evidence: Theme.cpp token table (42 colors, light+dark), Theme::buildStylesheet QSS generator, CanvasStyle.cpp canvas tokens, 17 Phosphor-style SVGs, MainWindow layout (pill dock / side panel / status bar), five card families (Variable/Formula/Measure/Linked/AngleMeasure), SegmentEditBar inline edit strip, DeleteImpactConfirm 8-class dialog, demo data in DemoData.cpp.
+- Real UI evidence: Theme.cpp token table (42 colors, light+dark), Theme::buildStylesheet QSS generator, CanvasStyle.cpp canvas tokens, 19 Phosphor-style SVGs, MainWindow layout (pill dock / side panel / status bar), five card families (Variable/Formula/Measure/Linked/AngleMeasure), SegmentEditBar inline edit strip, DeleteImpactConfirm 8-class dialog.
 - Audit evidence (impeccable critique 2026-08-09, .impeccable/critique/src-ui-2026-08-09.md): 29/40 heuristics; P0 canvas-background dead token; P0 hardcoded light colors bypassing tokens + type colors colliding with semantic hues; P1 keyboard dead ends (Tab swallowed, hover-only delete); P1 inconsistent feedback channels; WCAG failures (dark primary-button white text 3.2:1, text3 all-backgrounds <4.5:1); no loading states; no spacing/radius/type-scale token system.
 - Must not fabricate: no testimonials, no customers, no pricing, no market claims.
 
