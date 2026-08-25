@@ -162,6 +162,7 @@ add_library(gcad_parametric STATIC
     src/parametric/ConditionEngine.h
     src/parametric/ConditionEngine.cpp
     src/parametric/PerfProbe.h
+    src/parametric/IntersectDebug.h
 )
 target_include_directories(gcad_parametric PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_parametric PUBLIC Qt6::Gui gcad_geometry)
