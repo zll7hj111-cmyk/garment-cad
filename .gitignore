@@ -76,9 +76,6 @@ temp_save/
 # ── Impeccable runtime data (plugin removed) ──
 .impeccable/
 
-# ── AGPL third-party sources for study (CC0 assets will be extracted to assets/) ──
-/third_party/makehuman-src/
-
 # ── Debug/log artifacts from iterative builds & probes ──
 *.log
 *_tree.json
@@ -92,3 +89,18 @@ temp_save/
 # Debug dumps / scratch experiments
 gcad_tree_dump.txt
 
+
+# ── Cleanup of accumulated temp/debug/backup artifacts (2026-08 user cleanup) ──
+/.workbuddy/
+/build_log*.txt
+/ctest*.txt
+/ctest_failed_detail.txt
+/test_*_out.txt
+/test_write_check.txt
+/proc_dump.txt
+/src_backup*.zip
+/SESSION_SUMMARY.md
+tools/_tmp_*.bat
+tools/_cleanup_*.ps1
+*.preflatt
+*.presplit
