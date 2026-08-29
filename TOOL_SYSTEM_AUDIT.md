@@ -206,7 +206,7 @@
 - **L1**（清理样板）✅ 随 P1 `ManagedItems` 收口（7 文件 17 处）。
 - **L2**（hitBlock 两份实现）✅ 随 P1 `HitTester.h` 合并。
 - **L3**（SnapEngine 冗余实例）— **无需做**：2026-09 性能专项给 SnapEngine 加了每块坐标缓存（SnapEngine.h:170-171），"无状态"前提已过时；各工具独立实例 = 独立缓存，属有意设计。
-- **L4**（八进制中文名）— 未处理（显示名已迁 `describe().displayName`，`name()` 保留原样）。
+- **L4**（工具名十六进制转义）✅ 已修（2026-12）：8 个工具 `name()` 改 `reinterpret_cast<const char*>(u8"中文")`（u8 保证 UTF-8 字节），test_tool_hints 前缀断言同步改 `u8c(u8"...")`，相关文件补 UTF-8 BOM。
 - **L5**（重复切换重建）✅ 随 P2 常驻实例池 + 同类型 no-op。
 - **L6**（右键守卫冗余末项）✅ 已删（`cands.size() < 2` 与 `overlapMenu == nullptr` 等价）。
 - **L7**（AngleHud 父链反查样式）✅ `AngleHud(QWidget*, const CanvasStyle* = nullptr)` 构造直传，两处调用点（ToolRotate/ConnectGesture）已传 `scene->style()`。
