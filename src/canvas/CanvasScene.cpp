@@ -16,6 +16,7 @@
 
 #include "OriginCrosshair.h"
 #include "BlockItem.h"
+#include "HudItem.h"
 #include "geometry/Units.h"
 #include "parametric/Block.h"
 #include "parametric/ParamDocument.h"
@@ -64,6 +65,12 @@ CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
 }
 
 CanvasScene::~CanvasScene() = default;
+
+double CanvasScene::currentZoom() const
+{
+    if (views().isEmpty()) return 1.0;
+    return views().first()->transform().m11();
+}
 
 void CanvasScene::addBlockItem(const QUuid& blockId)
 {
@@ -149,7 +156,7 @@ void CanvasScene::refreshComponentBoxes()
         for (const QUuid& mid : c.memberBlockIds) {
             if (const auto* mb = m_paramDoc->findBlock(mid)) {
                 const quint64 h[4] = {
-                    mb->geometryEpoch,
+                    mb->geometryEpoch(),
                     std::bit_cast<quint64>(mb->transform.origin.x),
                     std::bit_cast<quint64>(mb->transform.origin.y),
                     std::bit_cast<quint64>(mb->transform.rotation)
@@ -163,9 +170,7 @@ void CanvasScene::refreshComponentBoxes()
                 sig *= 0x01000193ULL;
             }
         }
-        double zoom = 1.0;
-        if (!views().isEmpty())
-            zoom = views().first()->transform().m11();
+        double zoom = currentZoom();
         if (zoom < 1e-9) zoom = 1.0;
         sig ^= std::bit_cast<quint64>(zoom) ^ std::bit_cast<quint64>(5.0 / zoom);
 
@@ -174,7 +179,7 @@ void CanvasScene::refreshComponentBoxes()
             continue;   // 几何未变: 保留现缓存的 rect
         }
 
-        const cad::param::BBox box = m_paramDoc->boundingBoxOf(c.id);
+        const cad::param::BBox box = m_paramDoc->componentsView().boundingBoxOf(c.id);
         if (!box.valid) {
             m_componentBoxSig.remove(c.id);
             item->hide();
@@ -273,9 +278,12 @@ void CanvasScene::showToast(const QString& text)
     if (views().isEmpty()) return;
     QGraphicsView* view = views().first();
 
-    // Build (or reuse) the toast item.
+    // Build (or reuse) the toast item. HudItem (DarkPill) 自带 1/zoom 补偿
+    // —— 原 QGraphicsRectItem 方案把字体像素直接写进场景 rect, 放大 toast
+    // 缩成一点、缩小则巨大遮画布 (TOOL_SYSTEM_AUDIT M1)。
     if (!m_toastItem) {
-        m_toastItem = new QGraphicsRectItem();
+        m_toastItem = new HudItem();
+        m_toastItem->setLook(HudItem::Look::DarkPill);
         m_toastItem->setZValue(10000);
         addItem(m_toastItem);
     }
@@ -287,42 +295,15 @@ void CanvasScene::showToast(const QString& text)
         });
     }
 
-    // Measure the text and size the pill.
-    QFont font;
-    font.setPixelSize(12);
-    QFontMetrics fm(font);
-    const QRectF textRect = fm.boundingRect(text);
-    const double padX = 14.0, padY = 7.0;
-    const double w = textRect.width() + padX * 2.0;
-    const double h = textRect.height() + padY * 2.0;
+    m_toastItem->setText(text);
 
-    // Anchor at top-center of the current viewport (scene coords).
+    // Anchor at top-center of the current viewport (scene coords); 水平居中
+    // 与 14px 下沉都走 HudItem 的屏幕像素偏移参数 (÷zoom 落地, WYSIWYG)。
     const QRectF viewScene = view->mapToScene(view->viewport()->rect()).boundingRect();
-    const double x = viewScene.center().x() - w / 2.0;
-    const double y = viewScene.top() + 14.0;
-
-    m_toastItem->setRect(x, y, w, h);
-    m_toastItem->setPen(QPen(QColor(0, 0, 0, 30)));
-    m_toastItem->setBrush(QColor(38, 50, 56, 225));
+    const QSizeF sz = m_toastItem->size();
+    m_toastItem->placeAtScene(QPointF(viewScene.center().x(), viewScene.top()), view,
+                              QPointF(-sz.width() / 2.0, 14.0));
     m_toastItem->show();
-
-    // Text: reuse a child QGraphicsSimpleTextItem parented to the pill.
-    QGraphicsSimpleTextItem* textItem = nullptr;
-    for (QGraphicsItem* child : m_toastItem->childItems()) {
-        if (auto* sti = qgraphicsitem_cast<QGraphicsSimpleTextItem*>(child)) {
-            textItem = sti;
-            break;
-        }
-    }
-    if (!textItem) {
-        textItem = new QGraphicsSimpleTextItem(m_toastItem);
-        textItem->setBrush(QColor(255, 255, 255));
-    }
-    textItem->setFont(font);
-    textItem->setText(text);
-    const QRectF tiRect = textItem->boundingRect();
-    textItem->setPos(x + (w - tiRect.width()) / 2.0,
-                     y + (h - tiRect.height()) / 2.0);
 
     m_toastTimer->start(1400);
 }
@@ -335,8 +316,8 @@ bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
 
     // Both endpoints must exist AND be resolved, otherwise the caller falls
     // back to the whole-block highlight path.
-    const cad::param::Block* bA = m_paramDoc->blockById(blockA);
-    const cad::param::Block* bB = m_paramDoc->blockById(blockB);
+    const cad::param::Block* bA = m_paramDoc->blocksView().byId(blockA);
+    const cad::param::Block* bB = m_paramDoc->blocksView().byId(blockB);
     if (!bA || !bB) return false;
     const cad::param::ParamPoint* pA = bA->findPoint(pointA);
     const cad::param::ParamPoint* pB = bB->findPoint(pointB);
@@ -402,8 +383,8 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
 {
     if (!m_paramDoc) return false;
 
-    const cad::param::Block* bA = m_paramDoc->blockById(blockA);
-    const cad::param::Block* bB = m_paramDoc->blockById(blockB);
+    const cad::param::Block* bA = m_paramDoc->blocksView().byId(blockA);
+    const cad::param::Block* bB = m_paramDoc->blocksView().byId(blockB);
     if (!bA || !bB) return false;
     const auto* segA = bA->findSegment(segmentA);
     const auto* segB = bB->findSegment(segmentB);
@@ -505,9 +486,7 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
     while (span >  M_PI) span -= 2.0 * M_PI;
     while (span < -M_PI) span += 2.0 * M_PI;
 
-    double zoom = 1.0;
-    if (!views().isEmpty())
-        zoom = views().first()->transform().m11();
+    double zoom = currentZoom();
     const double arcR = 40.0 / zoom;
     QPainterPath arcPath;
     constexpr int kSamples = 40;

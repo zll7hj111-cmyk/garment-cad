@@ -1,18 +1,20 @@
 #pragma once
 
 #include "Tool.h"
+#include "ToolRegistry.h"
 #include "SnapEngine.h"
 #include "geometry/Vec2.h"
 
 #include <optional>
 
 class QGraphicsLineItem;
+#include "canvas/ManagedItems.h"
 
 namespace cad::param { class ParamDocument; }
 
-namespace cad::tools {
-
 class HudItem;
+
+namespace cad::tools {
 
 /// Angle-measure tool — publish the relative (directed) angle between two
 /// segments as an AngleMeasureVariable.
@@ -30,14 +32,16 @@ class HudItem;
 class ToolAngleMeasure : public Tool
 {
 public:
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
     void mouseRelease(QGraphicsSceneMouseEvent* event) override;
     void keyPress(QKeyEvent* event) override;
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
     { return "\xe8\xa7\x92\xe5\xba\xa6\xe6\xb5\x8b\xe9\x87\x8f"; }  // "角度测量"
 
@@ -73,6 +77,8 @@ private:
     // Preview graphics
     QGraphicsLineItem* m_highlightA = nullptr;  ///< Overlay on line A (amber).
     QGraphicsLineItem* m_highlightB = nullptr;  ///< Overlay on hovered line B (blue).
+    /// 临时图元统一登记 (deactivate 统一释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems m_managed;
 };
 
 } // namespace cad::tools

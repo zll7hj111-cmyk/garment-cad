@@ -4,6 +4,14 @@
 /// Shared test utilities for parametric CAD unit tests.
 /// Header-only: no CMake source-list changes needed.
 
+#include <QtTest>
+#include <QApplication>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QImage>
+#include <QWidget>
+
 #include <QUuid>
 #include <cmath>
 
@@ -151,6 +159,66 @@ inline QUuid layerIdAt(const ParamDocument& doc, int row)
     const auto& ls = doc.layers();
     return (row >= 0 && row < static_cast<int>(ls.size()))
         ? ls[static_cast<size_t>(row)].id : QUuid();
+}
+
+// ── Conditional waits (P2-3) ───────────────────────────────────────────────
+// GUI tests used to sleep a FIXED number of milliseconds (QTest::qWait(30))
+// and then assert on the result. That is a race: on a loaded machine the
+// widget has not finished painting when the assertion runs, so a perfectly
+// healthy feature fails — the "GUI 时序抖动" reds that made ctest unreadable
+// (a different set of tests flaked on every run). These helpers wait for a
+// CONDITION with a generous deadline instead: fast when the machine is idle,
+// stable when it is busy.
+
+/// Pump the event loop until @p pred returns true. Returns false on timeout.
+/// @p timeoutMs is a safety net, not an expected duration.
+template <typename Predicate>
+inline bool waitUntil(Predicate pred, int timeoutMs = 5000)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        if (pred()) return true;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        QTest::qSleep(1);
+    }
+    return pred();      // last chance: the condition may have just flipped
+}
+
+/// Drain the event loop for a bounded number of rounds.
+///
+/// Use ONLY for the "assert that NOTHING happened" case — e.g. editing line B
+/// must not disturb an attachment on line A. There is no state to wait FOR, so
+/// waitUntil() has no predicate to take; settle() simply gives the app every
+/// chance to react before the assertion, without betting on a wall-clock
+/// duration. For "assert that something DID happen" always use waitUntil():
+/// settle() cannot make a slow machine catch up, it only stops a fast one from
+/// over-sleeping.
+inline void settle(int rounds = 5, int perRoundMs = 5)
+{
+    for (int i = 0; i < rounds; ++i) {
+        QCoreApplication::sendPostedEvents();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, perRoundMs);
+    }
+}
+
+/// Grab a widget AFTER it has actually painted: poll until two consecutive
+/// grabs are byte-identical (bounded by @p timeoutMs). Replaces
+/// `QTest::qWait(30); view.grab()`, which produced half-painted or blank
+/// grabs under load and broke every pixel-count assertion downstream.
+inline QImage grabStable(QWidget& widget, int timeoutMs = 5000)
+{
+    QElapsedTimer timer;
+    timer.start();
+    QImage prev = widget.grab().toImage();
+    while (timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        QTest::qSleep(1);
+        const QImage cur = widget.grab().toImage();
+        if (cur == prev) return cur;
+        prev = cur;
+    }
+    return prev;        // timeout: return the last frame rather than failing
 }
 
 } // namespace cad::test

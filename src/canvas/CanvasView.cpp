@@ -1,4 +1,4 @@
-#include "CanvasView.h"
+﻿#include "CanvasView.h"
 
 #include <QWheelEvent>
 #include <QMouseEvent>
@@ -25,16 +25,11 @@
 
 #include "CanvasScene.h"
 #include "BlockItem.h"
-#include "tools/ToolManager.h"
-#include "tools/ToolSelect.h"
-#include "tools/QuickAuxDialog.h"
+#include "InputDispatcher.h"
 #include "parametric/ParamDocument.h"
-#include "parametric/LinkedVariable.h"
 #include "parametric/Serial.h"
 #include "geometry/Units.h"
-#include "document/commands/VariableCommands.h"
 #include "document/commands/BlockCommands.h"
-#include "document/commands/DocumentCommands.h"
 
 CanvasView::CanvasView(CanvasScene* scene, QWidget* parent)
     : QGraphicsView(scene, parent)
@@ -134,7 +129,7 @@ void CanvasView::mousePressEvent(QMouseEvent* event)
     }
 
     if ((event->button() == Qt::LeftButton || event->button() == Qt::RightButton)
-        && m_toolManager) {
+        && m_inputDispatcher) {
         // Convert scene coords (+Y down) to user coords (+Y up) before dispatch
         QPointF sp = mapToScene(event->pos());
         QGraphicsSceneMouseEvent sceneEvent(QEvent::GraphicsSceneMousePress);
@@ -143,7 +138,7 @@ void CanvasView::mousePressEvent(QMouseEvent* event)
         sceneEvent.setButton(event->button());
         sceneEvent.setButtons(event->buttons());
         sceneEvent.setModifiers(event->modifiers());
-        m_toolManager->dispatchMousePress(&sceneEvent);
+        m_inputDispatcher->dispatchMousePress(&sceneEvent);
     }
 
     QGraphicsView::mousePressEvent(event);
@@ -173,13 +168,13 @@ void CanvasView::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
-    if (m_toolManager) {
+    if (m_inputDispatcher) {
         QGraphicsSceneMouseEvent sceneEvent(QEvent::GraphicsSceneMouseMove);
         auto up = cad::geo::Coord::toUser(scenePos);
         sceneEvent.setScenePos(QPointF(up.x, up.y)); // user coords
         sceneEvent.setButtons(event->buttons());
         sceneEvent.setModifiers(event->modifiers());
-        m_toolManager->dispatchMouseMove(&sceneEvent);
+        m_inputDispatcher->dispatchMouseMove(&sceneEvent);
     }
 
     QGraphicsView::mouseMoveEvent(event);
@@ -194,14 +189,14 @@ void CanvasView::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
 
-    if (event->button() == Qt::LeftButton && m_toolManager) {
+    if (event->button() == Qt::LeftButton && m_inputDispatcher) {
         QPointF sp = mapToScene(event->pos());
         QGraphicsSceneMouseEvent sceneEvent(QEvent::GraphicsSceneMouseRelease);
         auto up = cad::geo::Coord::toUser(sp);
         sceneEvent.setScenePos(QPointF(up.x, up.y)); // user coords
         sceneEvent.setButton(Qt::LeftButton);
         sceneEvent.setModifiers(event->modifiers());
-        m_toolManager->dispatchMouseRelease(&sceneEvent);
+        m_inputDispatcher->dispatchMouseRelease(&sceneEvent);
     }
 
     QGraphicsView::mouseReleaseEvent(event);
@@ -209,7 +204,7 @@ void CanvasView::mouseReleaseEvent(QMouseEvent* event)
 
 void CanvasView::mouseDoubleClickEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::LeftButton && m_toolManager) {
+    if (event->button() == Qt::LeftButton && m_inputDispatcher) {
         // Convert scene coords (+Y down) to user coords (+Y up) before dispatch
         QPointF sp = mapToScene(event->pos());
         QGraphicsSceneMouseEvent sceneEvent(QEvent::GraphicsSceneMouseDoubleClick);
@@ -218,7 +213,7 @@ void CanvasView::mouseDoubleClickEvent(QMouseEvent* event)
         sceneEvent.setButton(event->button());
         sceneEvent.setButtons(event->buttons());
         sceneEvent.setModifiers(event->modifiers());
-        m_toolManager->dispatchMouseDoubleClick(&sceneEvent);
+        m_inputDispatcher->dispatchMouseDoubleClick(&sceneEvent);
     }
 
     QGraphicsView::mouseDoubleClickEvent(event);
@@ -239,8 +234,8 @@ void CanvasView::keyPressEvent(QKeyEvent* event)
         event->accept();
         return;
     }
-    if (m_toolManager) {
-        m_toolManager->dispatchKeyPress(event);
+    if (m_inputDispatcher) {
+        m_inputDispatcher->dispatchKeyPress(event);
     }
     QGraphicsView::keyPressEvent(event);
 }
@@ -261,8 +256,8 @@ void CanvasView::keyReleaseEvent(QKeyEvent* event)
             return;
         }
     }
-    if (m_toolManager) {
-        m_toolManager->dispatchKeyRelease(event);
+    if (m_inputDispatcher) {
+        m_inputDispatcher->dispatchKeyRelease(event);
     }
     QGraphicsView::keyReleaseEvent(event);
 }
@@ -393,6 +388,13 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
         return;
     }
 
+    // App-layer suppression hook (P1-6): whether a context menu should appear
+    // at all is a TOOL policy (e.g. the rotate tool owns a pending target,
+    // where right-click means "confirm/back out"). The canvas does not know
+    // about tools, so the app installs the predicate.
+    if (m_contextMenuGuard && m_contextMenuGuard())
+        return;
+
     // Hit-test: find the closest segment under the cursor.
     const QPointF sp = mapToScene(event->pos());
     const auto userPos = cad::geo::Coord::toUser(sp);
@@ -429,163 +431,29 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
         return;
     }
 
-    ElaMenu menu(this);
-    // Check if already published.
-    const bool alreadyPublished =
-        m_paramDoc->findLinkedBySource(bestBlockId, bestSegId) != nullptr;
-
-    QAction* publishAction = menu.addAction(QStringLiteral("发布长度参数"));
-    publishAction->setEnabled(!alreadyPublished);
-    if (alreadyPublished)
-        publishAction->setText(QStringLiteral("已发布长度参数"));
-
-    // --- 添加辅助点 ---
-    QAction* auxPointAction = menu.addAction(QStringLiteral("添加辅助点"));
-
-    // --- 烘焙到操作层 (measure line on the aux layer only) ---
-    // The hit segment owns a MeasureVariable AND sits on the auxiliary layer
-    // → offer a COPY onto any working layer (烘焙语义=复制而非移动: the source
-    // line stays as the measurement owner).
-    if (m_paramDoc->findMeasureByOwner(bestBlockId)) {
-        const auto* hitBlock = m_paramDoc->findBlock(bestBlockId);
-        if (hitBlock && m_paramDoc->isAuxLayer(hitBlock->layer)) {
-            QMenu* bakeMenu = menu.addMenu(QStringLiteral("烘焙到操作层"));
-            const auto& layerList = m_paramDoc->layers();
-            for (int i = 0; i < static_cast<int>(layerList.size()); ++i) {
-                if (m_paramDoc->isAuxLayer(layerList[static_cast<size_t>(i)].id))
-                    continue;   // skip the aux layer
-                QAction* act = bakeMenu->addAction(layerList[static_cast<size_t>(i)].name);
-                act->setProperty("bakeTargetLayer",
-                                 layerList[static_cast<size_t>(i)].id.toString());
-            }
-        }
-    }
-
-    QAction* chosen = menu.exec(event->globalPos());
-    if (chosen == publishAction && !alreadyPublished) {
-        publishLengthAt(sp);
-    } else if (chosen == auxPointAction) {
-        // Compute projection parameter t on the segment.
-        const auto* blk = m_paramDoc->findBlock(bestBlockId);
-        const auto* seg = blk ? blk->findSegment(bestSegId) : nullptr;
-        if (blk && seg) {
-            const auto* pSp = blk->findPoint(seg->startPointId);
-            const auto* pEp = blk->findPoint(seg->endPointId);
-            if (pSp && pEp && pSp->resolved && pEp->resolved) {
-                const auto w1 = blk->transform.toWorld(pSp->resolvedPos);
-                const auto w2 = blk->transform.toWorld(pEp->resolvedPos);
-                const auto ab = w2 - w1;
-                const double lenSq = ab.lengthSquared();
-                const double t = (lenSq < 1e-12) ? 0.5
-                    : std::clamp((userPos - w1).dot(ab) / lenSq, 0.0, 1.0);
-
-                // Prepare the auxiliary point (same as ToolSmartPen::openAuxDialog).
-                cad::param::ParamPoint pt;
-                pt.constraint = cad::param::PointConstraint::Interpolated;
-                pt.hostSegmentId = seg->id;
-                pt.isAuxiliary = true;
-                pt.visible = true;
-                pt.showName = false;
-                pt.interpPercent = t;
-                pt.serial = m_paramDoc->newPointSerial();
-
-                cad::tools::QuickAuxDialog dlg(pt, pSp, pEp, this);
-                if (dlg.exec() == QDialog::Accepted) {
-                    auto* stack = m_paramDoc->undoStack();
-                    if (stack)
-                        stack->push(new cad::cmd::AddAuxPointCommand(
-                            m_paramDoc, bestBlockId, bestSegId, dlg.point()));
-                    else {
-                        auto* b = m_paramDoc->findBlock(bestBlockId);
-                        auto* s = b ? b->findSegment(bestSegId) : nullptr;
-                        if (b && s) {
-                            b->addPoint(dlg.point());
-                            s->auxPointIds.push_back(dlg.point().id);
-                            m_paramDoc->resolveAll();
-                        }
-                    }
-                }
-            }
-        }
-    } else if (chosen && chosen->property("bakeTargetLayer").isValid()) {
-        // 烘焙到操作层: bake a COPY of the measure line onto the chosen
-        // working layer, then switch to that layer and select the new line.
-        const QUuid targetLayer =
-            QUuid::fromString(chosen->property("bakeTargetLayer").toString());
-        auto* bakeCmd = new cad::cmd::BakeMeasureCopyCommand(
-            m_paramDoc, bestBlockId, targetLayer);
-        if (!bakeCmd->isValid()) {
-            delete bakeCmd;
-        } else {
-            const QUuid bakedId = bakeCmd->newBlockId();
-            if (auto* stack = m_paramDoc->undoStack()) {
-                stack->push(bakeCmd);
-            } else {
-                bakeCmd->redo();
-                delete bakeCmd;
-            }
-            m_paramDoc->setActiveLayer(targetLayer);
-            if (m_toolManager) {
-                m_toolManager->switchTool(cad::tools::ToolType::Select);
-                if (auto* ts = dynamic_cast<cad::tools::ToolSelect*>(
-                        m_toolManager->activeTool()))
-                    ts->selectBlocksExternally(QList<QUuid>{bakedId});
-            }
-            if (auto* cs = qobject_cast<CanvasScene*>(scene()))
-                cs->showToast(QStringLiteral("已烘焙到操作层「%1」").arg(chosen->text()));
-        }
-    }
-
-    event->accept();
-}
-
-void CanvasView::publishLengthAt(const QPointF& scenePos)
-{
-    if (!m_paramDoc) return;
-
-    const auto userPos = cad::geo::Coord::toUser(scenePos);
-    const double zoom = zoomFactor();
-    const double tolerance = 8.0 / zoom;
-
-    const QList<QGraphicsItem*> hits = scene()->items(scenePos);
-    QUuid bestBlockId, bestSegId;
-    double bestDist = std::numeric_limits<double>::max();
-
-    for (QGraphicsItem* item : hits) {
-        // Curve children belong to their block — walk up to the BlockItem.
-        auto* bi = BlockItem::containingItem(item);
-        if (!bi) continue;
-        const auto* blk = m_paramDoc->findBlock(bi->blockId());
-        if (!blk) continue;
-        for (const auto& seg : blk->segments) {
-            const auto* pSp = blk->findPoint(seg.startPointId);
-            const auto* pEp = blk->findPoint(seg.endPointId);
-            if (!pSp || !pEp || !pSp->resolved || !pEp->resolved) continue;
-            const auto w1 = blk->transform.toWorld(pSp->resolvedPos);
-            const auto w2 = blk->transform.toWorld(pEp->resolvedPos);
-            const double d = cad::geo::Vec2::distanceToSegment(userPos, w1, w2);
-            if (d < bestDist) {
-                bestDist = d;
-                bestBlockId = blk->id;
-                bestSegId = seg.id;
-            }
-        }
-    }
-
-    if (bestSegId.isNull() || bestDist > tolerance) return;
-
-    // Build the LinkedVariable via the shared factory.
+    // Cursor projection along the hit segment (the app layer needs it to place
+    // an auxiliary point at the clicked position).
+    double paramT = 0.5;
     const auto* blk = m_paramDoc->findBlock(bestBlockId);
     const auto* seg = blk ? blk->findSegment(bestSegId) : nullptr;
-    if (!blk || !seg) return;
-    cad::param::LinkedVariable lv = cad::param::LinkedVariable::fromSegment(*blk, *seg);
+    if (blk && seg) {
+        const auto* pSp = blk->findPoint(seg->startPointId);
+        const auto* pEp = blk->findPoint(seg->endPointId);
+        if (pSp && pEp && pSp->resolved && pEp->resolved) {
+            const auto w1 = blk->transform.toWorld(pSp->resolvedPos);
+            const auto w2 = blk->transform.toWorld(pEp->resolvedPos);
+            const auto ab = w2 - w1;
+            const double lenSq = ab.lengthSquared();
+            paramT = (lenSq < 1e-12) ? 0.5
+                   : std::clamp((userPos - w1).dot(ab) / lenSq, 0.0, 1.0);
+        }
+    }
 
-    // Push via undo stack.
-    auto* stack = m_paramDoc->undoStack();
-    if (stack)
-        stack->push(new cad::cmd::AddLinkedCommand(m_paramDoc, lv));
-    else
-        m_paramDoc->addLinked(lv);
+    // P1-6: the menu itself (发布长度参数 / 添加辅助点 / 烘焙到操作层), the
+    // dialogs, the commands and the tool/UI follow-ups live in the APP layer.
+    emit segmentContextMenuRequested(cad::canvas::SegmentHit{
+        bestBlockId, bestSegId, sp, paramT, event->globalPos()});
+    event->accept();
 }
 
 void CanvasView::emitZoomChanged()

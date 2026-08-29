@@ -341,7 +341,7 @@ void TestToolIntersection::fullViewEventChain()
     cad::tools::ToolManager tm(&s.scene);
     tm.setParamDocument(&s.doc);
     tm.switchTool(cad::tools::ToolType::Intersection);
-    s.view.setToolManager(&tm);  // real GUI wiring (MainWindow does the same)
+    s.view.setInputDispatcher(&tm);  // real GUI wiring (MainWindow does the same)
 
     // Map user coords (+Y up) → viewport pixels via the real view transform.
     auto vp = [&](double x, double y) {
@@ -356,6 +356,8 @@ void TestToolIntersection::fullViewEventChain()
                          s.view.viewport()->mapToGlobal(vpPos),
                          Qt::NoButton, Qt::NoButton, Qt::NoModifier);
         QApplication::sendEvent(s.view.viewport(), &move);
+        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
     auto sendClick = [&](double x, double y) {
@@ -367,6 +369,8 @@ void TestToolIntersection::fullViewEventChain()
         QMouseEvent release(QEvent::MouseButtonRelease, vpPos, global,
                             Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
         QApplication::sendEvent(s.view.viewport(), &release);
+        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
 

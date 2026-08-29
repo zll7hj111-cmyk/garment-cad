@@ -18,7 +18,7 @@
 
 #include "canvas/CanvasScene.h"
 #include "tools/ToolMeasure.h"
-#include "tools/MeasureResultDialog.h"
+#include "ui/MeasureResultDialog.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/MeasureVariable.h"
 #include "geometry/Vec2.h"
@@ -60,7 +60,7 @@ void armDialogAutoDismiss()
     QTimer::singleShot(0, [] {
         const auto tops = QApplication::topLevelWidgets();
         for (QWidget* w : tops) {
-            if (auto* dlg = qobject_cast<cad::tools::MeasureResultDialog*>(w)) {
+            if (auto* dlg = qobject_cast<cad::ui::MeasureResultDialog*>(w)) {
                 dlg->reject();
                 return;
             }

@@ -1,4 +1,4 @@
-﻿#include "ToolSmartPen.h"
+#include "ToolSmartPen.h"
 #include "ToolManager.h"
 
 #include <QGraphicsSceneMouseEvent>
@@ -24,7 +24,9 @@
 #include <cmath>
 
 #include "canvas/BlockItem.h"
+#include "HitTester.h"
 #include "canvas/CanvasScene.h"
+#include "canvas/HudItem.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
@@ -34,7 +36,7 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
-#include "QuickAuxDialog.h"
+#include "ui/QuickAuxDialog.h"
 #include "LeaderCandidatePicker.h"
 #include "document/commands/BlockCommands.h"
 #include "document/commands/DocumentCommands.h"
@@ -42,71 +44,32 @@
 namespace cad::tools {
 
 // ---------------------------------------------------------------------------
-// HudItem
-// ---------------------------------------------------------------------------
-
-HudItem::HudItem(QGraphicsItem* parent)
-    : QGraphicsItem(parent)
-{
-    setZValue(200.0);
-}
-
-void HudItem::setText(const QString& text)
-{
-    prepareGeometryChange();
-    m_text = text;
-    QFont f(QStringLiteral("Segoe UI"), 9);
-    QFontMetricsF fm(f);
-    m_rect = fm.boundingRect(m_text).adjusted(-4.0, -2.0, 4.0, 2.0);
-}
-
-void HudItem::moveToPoint(const cad::geo::Vec2& userPos, const QGraphicsView* view)
-{
-    setPos(cad::geo::Coord::toScene(userPos));  // user → scene
-    double zoom = (view != nullptr) ? view->transform().m11() : 1.0;
-    if (std::abs(zoom) < 1e-9) zoom = 1.0;
-    setTransform(QTransform().scale(1.0 / zoom, 1.0 / zoom));
-}
-
-QRectF HudItem::boundingRect() const
-{
-    return m_rect.adjusted(-1.0, -1.0, 1.0, 1.0);
-}
-
-void HudItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*)
-{
-    if (m_text.isEmpty()) return;
-
-    painter->setRenderHint(QPainter::Antialiasing, false);
-    painter->setRenderHint(QPainter::TextAntialiasing, true);
-
-    // Query style from scene if available.
-    QColor bg(255, 255, 255, 215);
-    QColor fg(30, 30, 30);
-    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        bg = cs->style()->hudBackground;
-        fg = cs->style()->hudText;
-    }
-
-    painter->setPen(QPen(QColor(180, 180, 180), 0.5));
-    painter->setBrush(bg);
-    painter->drawRect(m_rect);
-
-    painter->setPen(fg);
-    painter->setFont(QFont(QStringLiteral("Segoe UI"), 9));
-    painter->drawText(m_rect, Qt::AlignCenter, m_text);
-}
-
-// ---------------------------------------------------------------------------
 // ToolSmartPen
 // ---------------------------------------------------------------------------
 
-void ToolSmartPen::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+ToolDescriptor ToolSmartPen::describe()
 {
-    m_scene    = &scene;
-    m_paramDoc = paramDoc;
+    ToolDescriptor d;
+    d.id = ToolType::SmartPen;
+    d.displayName = QString::fromUtf8("智能笔(&L)");
+    d.iconName = QStringLiteral("pen");
+    d.shortcut = QKeySequence(Qt::Key_L);
+    // M5 (TOOL_SYSTEM_AUDIT): 原提示完全没提 W —— 省道线模式在界面上不可
+    // 发现 (切过去后下一次点击的语义完全不同: 起点必须吸附到已有点, 否则
+    // 直接被拒)。提示带上当前模式 + W 键, 且模式切换时会被实时覆盖。
+    d.hintText = hintForMode(Mode::Line);
+    d.factory = [] { return std::make_unique<ToolSmartPen>(); };
+    return d;
+}
+
+void ToolSmartPen::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+{
+    (void)scene;
+    (void)paramDoc;
     m_state    = State::Idle;
     m_angleSnap = false;
+    // P2/L5 常驻实例: 每次进入回到直线模式 (旧"销毁重建"即此语义)。
+    m_mode     = Mode::Line;
     m_startSnap.reset();
     m_currentSnap.reset();
     // (Re)create the extracted collaborators with the current context.
@@ -119,28 +82,22 @@ void ToolSmartPen::activate(CanvasScene& scene, cad::param::ParamDocument* param
 bool ToolSmartPen::isBlankSpace(const QPointF& userPos) const
 {
     if (!m_scene) return false;
-    const QList<QGraphicsItem*> hits = m_scene->items(userPos);
-    for (QGraphicsItem* item : hits) {
-        // Curve children belong to their block — walk up to the BlockItem.
-        if (BlockItem::containingItem(item) != nullptr)
-            return false;
-    }
-    return true;
+    // 统一命中 (P1/M7+L2): 不分层 —— 实体处右键保留给未来的上下文菜单。
+    return isBlankSpaceAtScene(*m_scene, userPos);
 }
 
-void ToolSmartPen::deactivate()
+void ToolSmartPen::onDeactivate()
 {
     if (m_auxDialog)
         m_auxDialog->close();  // WA_DeleteOnClose; finished(Rejected) → no-op
     if (m_dartDialog)
         m_dartDialog->close();  // finished(Rejected) → keeps Drawing state
+    clearDialogBlockedCursor();   // M10: 工具切走恢复画布光标
     cancelLine();
     delete m_lineFactory;
     m_lineFactory = nullptr;
     delete m_leaderPicker;
     m_leaderPicker = nullptr;
-    m_scene    = nullptr;
-    m_paramDoc = nullptr;
 }
 
 void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
@@ -149,7 +106,11 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
 
     // While a non-modal helper dialog (quick-aux / dart) is open, canvas
     // clicks are ignored — the stroke waits for the dialog to be answered.
-    if (m_auxDialog || m_dartDialog) return;
+    // M10: 兜底维持 Forbidden 光标 (打开时已设, 防被 hover 路径覆写)。
+    if (m_auxDialog || m_dartDialog) {
+        showDialogBlockedFeedback();
+        return;
+    }
 
     if (event->button() == Qt::RightButton) {
         if (m_state == State::Drawing || m_state == State::ConfirmEnd) {
@@ -176,9 +137,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         if (m_mode == Mode::Dart) {
             // 省道线起点 A：必须吸附到已有点（自由起点禁止进入省道模式；
             // 系统设计点不孤立，均挂线/端点）。线段身点击不创建辅助点。
-            double zoom = 1.0;
-            if (!m_scene->views().isEmpty())
-                zoom = m_scene->views().first()->transform().m11();
+            double zoom = m_scene->currentZoom();
             auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
             if (!snap) {
                 if (m_scene)
@@ -202,9 +161,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
 
         // --- Set start point ---
         // Try snapping to existing point
-        double zoom = 1.0;
-        if (!m_scene->views().isEmpty())
-            zoom = m_scene->views().first()->transform().m11();
+        double zoom = m_scene->currentZoom();
 
         auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
         if (snap) {
@@ -225,9 +182,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         if (m_mode == Mode::Dart) {
             // 省道线第二击：选择偏移点 B（线段上的点）。预览线已显示
             // A→光标；B 确定后弹窗填 偏移 d / 角度 β（默认 90）/ 名称。
-            double zoom = 1.0;
-            if (!m_scene->views().isEmpty())
-                zoom = m_scene->views().first()->transform().m11();
+            double zoom = m_scene->currentZoom();
             auto bSnap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
             if (!bSnap) {
                 if (m_scene)
@@ -262,9 +217,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         }
 
         // Check for end-point snap
-        double zoom = 1.0;
-        if (!m_scene->views().isEmpty())
-            zoom = m_scene->views().first()->transform().m11();
+        double zoom = m_scene->currentZoom();
         auto endSnap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
         if (endSnap) {
             // Stacked candidates at the end spot (several layers' points on
@@ -361,18 +314,16 @@ void ToolSmartPen::captureStrokeInput()
 
     const QString lenText = m_preInput.lengthCm.trimmed();
     if (!lenText.isEmpty()) {
-        bool isNumber = false;
-        const double cm = lenText.toDouble(&isNumber);
-        if (isNumber) {
+        const auto parsed = cad::geo::parseNumberOrFormula(lenText);
+        if (parsed.isNumber) {
             m_strokeInput.hasLength = true;
-            m_strokeInput.lengthMm = cad::geo::Units::cmToMm(cm);
+            m_strokeInput.lengthMm = cad::geo::Units::cmToMm(parsed.value);
         } else if (m_paramDoc) {
-            auto r = cad::param::ConditionEngine::evaluate(
-                lenText, m_paramDoc->parameters(), m_paramDoc->conditions());
-            if (r.ok) {
+            if (cad::param::ConditionEngine::evaluateLengthMm(
+                    parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions(),
+                    m_strokeInput.lengthMm)) {
                 m_strokeInput.hasLength = true;
-                m_strokeInput.lengthMm = cad::geo::Units::cmToMm(r.value);
-                m_strokeInput.lengthFormula = lenText;
+                m_strokeInput.lengthFormula = parsed.formula;
             } else if (m_scene) {
                 m_scene->showToast(QString::fromUtf8("预输入长度无法计算，已忽略"));
             }
@@ -381,18 +332,17 @@ void ToolSmartPen::captureStrokeInput()
 
     const QString angText = m_preInput.angleDeg.trimmed();
     if (!angText.isEmpty()) {
-        bool isNumber = false;
-        const double deg = angText.toDouble(&isNumber);
-        if (isNumber) {
+        const auto parsed = cad::geo::parseNumberOrFormula(angText);
+        if (parsed.isNumber) {
             m_strokeInput.hasAngle = true;
-            m_strokeInput.displayAngleDeg = deg;
+            m_strokeInput.displayAngleDeg = parsed.value;
         } else if (m_paramDoc) {
             auto r = cad::param::ConditionEngine::evaluate(
-                angText, m_paramDoc->parameters(), m_paramDoc->conditions());
+                parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
             if (r.ok) {
                 m_strokeInput.hasAngle = true;
                 m_strokeInput.displayAngleDeg = r.value;
-                m_strokeInput.angleFormula = angText;
+                m_strokeInput.angleFormula = parsed.formula;
             } else if (m_scene) {
                 m_scene->showToast(QString::fromUtf8("预输入角度无法计算，已忽略"));
             }
@@ -487,6 +437,7 @@ void ToolSmartPen::beginStroke(Qt::KeyboardModifiers mods)
     m_previewLine->setPen(pen);
     m_previewLine->setZValue(100.0);
     m_scene->addItem(m_previewLine);
+    m_managed.own(m_previewLine, &m_previewLine);
 
     // 起点标记（橡皮筋浏览点）：直径 1px（半径 0.5），保持可见又不遮挡画布。
     constexpr double r = 0.5;
@@ -496,6 +447,7 @@ void ToolSmartPen::beginStroke(Qt::KeyboardModifiers mods)
     m_startMarker->setBrush(m_startSnap ? st->snapPointColor : st->previewLineColor);
     m_startMarker->setZValue(101.0);
     m_scene->addItem(m_startMarker);
+    m_managed.own(m_startMarker, &m_startMarker);
 
     // Snap indicator (small square, hidden by default)
     constexpr double sr = 5.0;
@@ -505,9 +457,11 @@ void ToolSmartPen::beginStroke(Qt::KeyboardModifiers mods)
     m_snapIndicator->setZValue(102.0);
     m_snapIndicator->setVisible(false);
     m_scene->addItem(m_snapIndicator);
+    m_managed.own(m_snapIndicator, &m_snapIndicator);
 
     m_hud = new HudItem();
     m_scene->addItem(m_hud);
+    m_managed.own(m_hud, &m_hud);
 
     m_angleSnap = mods & Qt::ShiftModifier;
 }
@@ -517,7 +471,10 @@ void ToolSmartPen::mouseMove(QGraphicsSceneMouseEvent* event)
     if (!m_scene) return;
 
     // Freeze hover feedback while a non-modal helper dialog is open.
-    if (m_auxDialog || m_dartDialog) return;
+    if (m_auxDialog || m_dartDialog) {
+        showDialogBlockedFeedback();   // M10: 维持 Forbidden + 提示 (toast 同值短路)
+        return;
+    }
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
@@ -663,6 +620,16 @@ void ToolSmartPen::cancelLine()
 // 省道线模式 (dart line, 用户拍板 2026-08)
 // ---------------------------------------------------------------------------
 
+QString ToolSmartPen::hintForMode(Mode mode)
+{
+    // M5: 模式常驻指示器 —— 状态栏提示把当前模式写进方括号里。切换时经
+    // ToolHost::setHintOverride 实时覆盖 (cycleMode), 切工具时由宿主清掉
+    // (MainWindow::onToolChanged 重置为 describe() 的 Line 版文案)。
+    return mode == Mode::Dart
+        ? QString::fromUtf8("智能笔[省道线]：点起点A(须吸附已有点) | 点线段上偏移点B | 填偏移d/角度β | W切直线/省道线 | 右键/Esc取消")
+        : QString::fromUtf8("智能笔[直线]：点设起点 | 再点设终点 | Shift约束45° | W切直线/省道线 | 右键/Esc取消 | 空白右键→选择");
+}
+
 void ToolSmartPen::cycleMode()
 {
     m_mode = (m_mode == Mode::Line) ? Mode::Dart : Mode::Line;
@@ -670,6 +637,32 @@ void ToolSmartPen::cycleMode()
         m_scene->showToast(m_mode == Mode::Dart
             ? QStringLiteral("\u7701\u9053\u7ebf\u6a21\u5f0f\uff1a\u70b9\u8d77\u70b9 A \u2192 \u70b9\u504f\u79fb\u70b9 B \u2192 \u586b\u504f\u79fb d \u4e0e\u89d2\u5ea6")
             : QStringLiteral("\u667a\u80fd\u7b14\uff1a\u76f4\u7ebf\u6a21\u5f0f"));
+    // 常驻指示: 一次性 toast 会消失, 状态栏提示才看得到"现在是哪个模式"。
+    reportHintOverride(hintForMode(m_mode));
+}
+
+void ToolSmartPen::showDialogBlockedFeedback()
+{
+    // M10: 弹窗打开期间画布给明确反馈 —— 用户查完公式回来点画布不再像
+    // "工具卡死" (旧实现所有输入被静默吞掉, 光标不变、无提示)。
+    if (m_scene && !m_scene->views().isEmpty())
+        m_scene->views().first()->viewport()->setCursor(Qt::ForbiddenCursor);
+    const QString toast = m_auxDialog
+        ? QString::fromUtf8("请先完成「快速辅助点」设置")
+        : QString::fromUtf8("请先完成「省道线」设置");
+    // 同值守卫: 文案不变就不重复 toast —— showToast 无内置短路, mouseMove
+    // 每帧早退调用会重定位+重启 1400ms 定时器造成刷屏。
+    if (m_scene && toast != m_lastDialogToast) {
+        m_lastDialogToast = toast;
+        m_scene->showToast(toast);
+    }
+}
+
+void ToolSmartPen::clearDialogBlockedCursor()
+{
+    m_lastDialogToast.clear();   // 下次打开同类弹窗重新 toast
+    if (m_scene && !m_scene->views().isEmpty())
+        m_scene->views().first()->viewport()->unsetCursor();
 }
 
 void ToolSmartPen::openDartDialog(const SnapResult& bSnap)
@@ -711,18 +704,17 @@ void ToolSmartPen::openDartDialog(const SnapResult& bSnap)
                 return;
             }
             QString offsetFormula;
-            bool isNum = false;
-            double offsetMm = offText.toDouble(&isNum);
-            if (!isNum) {
-                auto r = cad::param::ConditionEngine::evaluate(
-                    offText, m_paramDoc->parameters(), m_paramDoc->conditions());
-                if (!r.ok) {
+            const auto parsedOffset = cad::geo::parseNumberOrFormula(offText);
+            double offsetMm = parsedOffset.value;
+            if (!parsedOffset.isNumber) {
+                if (!cad::param::ConditionEngine::evaluateLengthMm(
+                        parsedOffset.formula, m_paramDoc->parameters(), m_paramDoc->conditions(),
+                        offsetMm)) {
                     if (m_scene)
                         m_scene->showToast(QStringLiteral("\u504f\u79fb\u8ddd\u79bb\u516c\u5f0f\u65e0\u6cd5\u8ba1\u7b97"));
                     return;
                 }
-                offsetMm = cad::geo::Units::cmToMm(r.value);
-                offsetFormula = offText;
+                offsetFormula = parsedOffset.formula;
             }
 
             // Angle β relative to the reference segment (default 90°).
@@ -730,18 +722,18 @@ void ToolSmartPen::openDartDialog(const SnapResult& bSnap)
             double betaDeg = 90.0;
             const QString angText = angEdit->text().trimmed();
             if (!angText.isEmpty()) {
-                bool okNum = false;
-                betaDeg = angText.toDouble(&okNum);
-                if (!okNum) {
+                const auto parsedAng = cad::geo::parseNumberOrFormula(angText);
+                betaDeg = parsedAng.value;
+                if (!parsedAng.isNumber) {
                     auto r = cad::param::ConditionEngine::evaluate(
-                        angText, m_paramDoc->parameters(), m_paramDoc->conditions());
+                        parsedAng.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
                     if (!r.ok) {
                         if (m_scene)
                             m_scene->showToast(QStringLiteral("\u89d2\u5ea6\u516c\u5f0f\u65e0\u6cd5\u8ba1\u7b97"));
                         return;
                     }
                     betaDeg = r.value;
-                    angleFormula = angText;
+                    angleFormula = parsedAng.formula;
                 }
             }
 
@@ -754,9 +746,12 @@ void ToolSmartPen::openDartDialog(const SnapResult& bSnap)
     QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
 
     m_dartDialog = dlg;
+    showDialogBlockedFeedback();
     QObject::connect(dlg, &QDialog::finished, dlg, [this, dlg](int result) {
-        if (m_dartDialog == dlg)
+        if (m_dartDialog == dlg) {
             m_dartDialog = nullptr;
+            clearDialogBlockedCursor();   // M10: 关闭即恢复画布光标
+        }
         dlg->deleteLater();
         // Rejected / closed: nothing committed — Drawing keeps its rubber
         // band so the user may pick another offset point B.
@@ -810,9 +805,7 @@ std::vector<SnapResult> ToolSmartPen::overlapPool(
 {
     std::vector<SnapResult> out;
     if (!m_paramDoc) return out;
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
     // findSnapCandidates applies the same layer policy as findSnap
     // (layerSnappable) — only LEGAL attachment targets ever enter the pool,
     // so a switch can never propose a rejected cross-layer attachment.
@@ -878,9 +871,7 @@ void ToolSmartPen::handleConfirmEndPress(const cad::geo::Vec2& clickPos)
     if (!m_endAutoPick) { cancelLine(); return; }
 
     std::optional<SnapResult> confirmed;
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
     const auto segSnap = m_snapEngine.findSegmentSnap(
         clickPos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
     if (segSnap) {
@@ -936,9 +927,7 @@ bool ToolSmartPen::trySwitchStartPoint(const LeaderCandidate& cand, int candInde
 void ToolSmartPen::updateEndConfirmHighlight(const cad::geo::Vec2& worldPos)
 {
     if (!m_paramDoc || !m_scene) return;
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     QUuid hitBlock, hitSeg;
     const auto segSnap = m_snapEngine.findSegmentSnap(
@@ -984,11 +973,12 @@ void ToolSmartPen::clearPreview()
 {
     if (!m_scene) return;
 
-    if (m_previewLine)   { m_scene->removeItem(m_previewLine);   delete m_previewLine;   m_previewLine   = nullptr; }
-    if (m_startMarker)   { m_scene->removeItem(m_startMarker);   delete m_startMarker;   m_startMarker   = nullptr; }
-    if (m_snapIndicator) { m_scene->removeItem(m_snapIndicator); delete m_snapIndicator; m_snapIndicator = nullptr; }
-    if (m_segMarker)     { m_scene->removeItem(m_segMarker);     delete m_segMarker;     m_segMarker     = nullptr; }
-    if (m_hud)           { m_scene->removeItem(m_hud);           delete m_hud;           m_hud           = nullptr; }
+    // 会话中释放-重建型: release 单项 (释放 + 影子置空 + 撤销登记, P1/L1)。
+    m_managed.release(m_previewLine);
+    m_managed.release(m_startMarker);
+    m_managed.release(m_snapIndicator);
+    m_managed.release(m_segMarker);
+    m_managed.release(m_hud);
     m_segSnap.reset();
 }
 
@@ -1010,14 +1000,9 @@ cad::geo::Vec2 ToolSmartPen::applyAngleSnap(const cad::geo::Vec2& raw) const
     // setupSnappedStart 注释一致）；
     // 自由起点 = 水平基准绝对角（0~360° 逆时针为正，行业默认）。
     auto displayOf = [&](double rel) {
-        if (m_startSnap.has_value()) {
-            double alpha = std::fmod(180.0 - rel, 360.0);
-            if (alpha < 0.0) alpha += 360.0;
-            return alpha > 180.0 ? alpha - 360.0 : alpha;
-        }
-        double d = std::fmod(rel, 360.0);
-        if (d < 0.0) d += 360.0;
-        return d;
+        if (m_startSnap.has_value())
+            return cad::geo::normalizeDeg180(180.0 - rel);
+        return cad::geo::normalizeDeg360(rel);
     };
 
     if (!m_angleSnap) {
@@ -1068,9 +1053,7 @@ void ToolSmartPen::updateSnapIndicator(const cad::geo::Vec2& worldPos)
 {
     if (!m_snapIndicator) return;
 
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
 
     auto snap = m_snapEngine.findSnap(worldPos, m_paramDoc, zoom);
     m_currentSnap = snap;
@@ -1093,9 +1076,7 @@ void ToolSmartPen::updateSegMarker(const cad::geo::Vec2& worldPos,
     m_segSnap.reset();
     if (!m_scene || !m_paramDoc) { hideSegMarker(); return; }
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     // Point snap wins: no X while the cursor would snap to an endpoint.
     // When the caller already ran findSnap() this frame (Drawing state runs
@@ -1140,6 +1121,7 @@ void ToolSmartPen::updateSegMarker(const cad::geo::Vec2& worldPos,
         m_segMarker->setFlag(QGraphicsItem::ItemIgnoresTransformations);
         m_segMarker->setZValue(102.0);
         m_scene->addItem(m_segMarker);
+        m_managed.own(m_segMarker, &m_segMarker);
     }
     m_segMarker->setPos(cad::geo::Coord::toScene(m_segSnap->worldPos));
     m_segMarker->setVisible(true);
@@ -1183,7 +1165,7 @@ void ToolSmartPen::openAuxDialog(const SegmentSnapResult& segSnap, bool forStart
 
     QWidget* parentWidget = m_scene && !m_scene->views().isEmpty()
         ? m_scene->views().first() : nullptr;
-    auto* dlg = new QuickAuxDialog(pt, block->findPoint(seg->startPointId),
+    auto* dlg = new cad::ui::QuickAuxDialog(pt, block->findPoint(seg->startPointId),
                                    block->findPoint(seg->endPointId), parentWidget);
     // NOTE: no WA_DeleteOnClose — the dialog schedules its own deleteLater()
     // on close (ElaAppBar's default close path would destroy it mid-call).
@@ -1192,10 +1174,12 @@ void ToolSmartPen::openAuxDialog(const SegmentSnapResult& segSnap, bool forStart
     m_auxDialog = dlg;
     m_auxDialogForStart = forStart;
     m_auxDialogSegSnap = segSnap;
+    showDialogBlockedFeedback();
 
     QObject::connect(dlg, &QDialog::finished, dlg, [this](int result) {
         auto* dlg = m_auxDialog.data();
         m_auxDialog = nullptr;
+        clearDialogBlockedCursor();   // M10: 关闭即恢复画布光标
         if (result == QDialog::Accepted && dlg)
             onAuxDialogAccepted(dlg->point());
         // Rejected / closed: nothing created, stroke state untouched

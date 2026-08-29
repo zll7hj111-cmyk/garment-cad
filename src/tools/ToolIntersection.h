@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include "Tool.h"
+#include "ToolRegistry.h"
 #include "SnapEngine.h"
 #include "geometry/Vec2.h"
 
@@ -11,12 +12,13 @@ class QGraphicsLineItem;
 class QGraphicsEllipseItem;
 class QGraphicsPathItem;
 class QGraphicsView;
+#include "canvas/ManagedItems.h"
 
 namespace cad::param { class ParamDocument; struct ParamPoint; }
 
-namespace cad::tools {
-
 class HudItem;
+
+namespace cad::tools {
 
 /// Intersection tool — creates a parametric Intersection point on a target
 /// segment by casting a ray from an existing point at a specified angle.
@@ -36,8 +38,8 @@ class HudItem;
 class ToolIntersection : public Tool
 {
 public:
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
@@ -45,6 +47,8 @@ public:
     void keyPress(QKeyEvent* event) override;
     void keyRelease(QKeyEvent* event) override;
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
     { return "\xe4\xba\xa4\xe7\x82\xb9"; }  // "交点"
 
@@ -125,6 +129,8 @@ private:
     QGraphicsPathItem*    m_noHitMarker  = nullptr;  ///< X marker when no intersection.
     QGraphicsEllipseItem* m_originMarker = nullptr;  ///< Circle at origin A.
     QGraphicsEllipseItem* m_aimMarker    = nullptr;  ///< Circle at the aim point (指向点).
+    /// 临时图元统一登记 (deactivate 统一释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems m_managed;
     QGraphicsLineItem*    m_segHighlight = nullptr;  ///< Highlighted target segment overlay.
 };
 

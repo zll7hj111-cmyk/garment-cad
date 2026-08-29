@@ -7,6 +7,7 @@
 
 #include <QtTest>
 #include <QApplication>
+#include <functional>
 #include <QGraphicsView>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsPathItem>
@@ -16,7 +17,7 @@
 #include "tools/ToolSmartPen.h"
 #include "tools/ToolSelect.h"
 #include "tools/ToolManager.h"
-#include "tools/QuickAuxDialog.h"
+#include "ui/QuickAuxDialog.h"
 #include "app/SmartPenPreInputBar.h"
 #include "ElaLineEdit.h"
 #include "parametric/ParamDocument.h"
@@ -26,6 +27,14 @@ using namespace cad::param;
 using cad::geo::Vec2;
 
 namespace {
+
+/// P2 (TOOL_SYSTEM_AUDIT): 直驱工具时的宿主桩 —— 捕获工具切换请求
+/// (旧 setToolSwitchRequest 回调的等价物, 经 ToolContext.host 注入)。
+struct SwitchHost : cad::tools::ToolHost {
+    std::function<void(cad::tools::ToolType)> onSwitch;
+    void requestToolSwitch(cad::tools::ToolType type) override { if (onSwitch) onSwitch(type); }
+    void setEditTarget(const QUuid&, const QUuid&) override {}
+};
 
 /// Test convenience: stable id of the display layer at @p row.
 QUuid layerIdAt(const cad::param::ParamDocument& doc, int row)
@@ -88,7 +97,7 @@ int openAuxDialogs()
     int n = 0;
     const auto tops = QApplication::topLevelWidgets();
     for (QWidget* w : tops) {
-        if (qobject_cast<cad::tools::QuickAuxDialog*>(w))
+        if (qobject_cast<cad::ui::QuickAuxDialog*>(w))
             ++n;
     }
     return n;
@@ -267,13 +276,18 @@ void TestSmartPenAux::penBlankRightClickSwitchesToSelect()
     doc.resolveAll();
 
     cad::tools::ToolSmartPen pen;
-    pen.activate(scene, &doc);
+    SwitchHost host;
     bool fired = false;
     cad::tools::ToolType requested = cad::tools::ToolType::Select;
-    pen.setToolSwitchRequest([&](cad::tools::ToolType t) {
+    host.onSwitch = [&](cad::tools::ToolType t) {
         fired = true;
         requested = t;
-    });
+    };
+    cad::tools::ToolContext ctx;
+    ctx.scene = &scene;
+    ctx.paramDoc = &doc;
+    ctx.host = &host;
+    pen.activate(ctx);
 
     QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
     press.setScenePos(QPointF(300.0, 300.0));  // blank space
@@ -295,9 +309,14 @@ void TestSmartPenAux::penEntityRightClickDoesNotSwitch()
     doc.resolveAll();
 
     cad::tools::ToolSmartPen pen;
-    pen.activate(scene, &doc);
+    SwitchHost host;
     bool fired = false;
-    pen.setToolSwitchRequest([&](cad::tools::ToolType) { fired = true; });
+    host.onSwitch = [&](cad::tools::ToolType) { fired = true; };
+    cad::tools::ToolContext ctx;
+    ctx.scene = &scene;
+    ctx.paramDoc = &doc;
+    ctx.host = &host;
+    pen.activate(ctx);
 
     // Right-click ON the segment: reserved for a future context menu.
     QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
@@ -319,9 +338,14 @@ void TestSmartPenAux::penDrawingRightClickCancelsNotSwitches()
     doc.resolveAll();
 
     cad::tools::ToolSmartPen pen;
-    pen.activate(scene, &doc);
+    SwitchHost host;
     bool fired = false;
-    pen.setToolSwitchRequest([&](cad::tools::ToolType) { fired = true; });
+    host.onSwitch = [&](cad::tools::ToolType) { fired = true; };
+    cad::tools::ToolContext ctx;
+    ctx.scene = &scene;
+    ctx.paramDoc = &doc;
+    ctx.host = &host;
+    pen.activate(ctx);
 
     // Start a stroke (Idle + left click on blank space → Drawing).
     QGraphicsSceneMouseEvent left(QEvent::GraphicsSceneMousePress);
@@ -350,13 +374,18 @@ void TestSmartPenAux::selectBlankRightClickSwitchesToPen()
     doc.resolveAll();
 
     cad::tools::ToolSelect select;
-    select.activate(scene, &doc);
+    SwitchHost host;
     bool fired = false;
     cad::tools::ToolType requested = cad::tools::ToolType::Select;
-    select.setToolSwitchRequest([&](cad::tools::ToolType t) {
+    host.onSwitch = [&](cad::tools::ToolType t) {
         fired = true;
         requested = t;
-    });
+    };
+    cad::tools::ToolContext ctx;
+    ctx.scene = &scene;
+    ctx.paramDoc = &doc;
+    ctx.host = &host;
+    select.activate(ctx);
 
     // Idle + blank-space right-click → switch to the smart pen.
     QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
@@ -456,11 +485,12 @@ void TestSmartPenAux::auxPointEndFlipsAndCreatesLockedConnection()
     // Accept the dialog → aux point is created, the stroke commits.
     const auto tops = QApplication::topLevelWidgets();
     for (QWidget* w : tops) {
-        if (auto* dlg = qobject_cast<cad::tools::QuickAuxDialog*>(w)) {
+        if (auto* dlg = qobject_cast<cad::ui::QuickAuxDialog*>(w)) {
             dlg->accept();
             break;
         }
     }
+    // accept() 同步建点/提交(直连), 断言为模型态; 此处仅排空后续事件, 暂留。
     QTest::qWait(30);
 
     // The new line FLIPPED: its start = the aux point on B, and a real

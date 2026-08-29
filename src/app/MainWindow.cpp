@@ -1,5 +1,6 @@
-﻿#include "SegmentEditBar.h"
+#include "SegmentEditBar.h"
 #include "SmartPenPreInputBar.h"
+#include "ToolDockStyle.h"
 
 #include "MainWindow.h"
 
@@ -24,7 +25,10 @@
 #include <QSplitter>
 #include <QSizePolicy>
 #include <QScreen>
+#include <QFontMetrics>
+#include <QHash>
 
+#include "tools/ToolRegistry.h"
 #include "canvas/CanvasView.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasStyle.h"
@@ -33,9 +37,16 @@
 #include "geometry/Units.h"
 #include "tools/ToolManager.h"
 #include "tools/ToolSelect.h"
+#include "tools/ToolRotate.h"
 #include "tools/ToolSmartPen.h"
-#include "tools/LinePropertyDialog.h"
+#include "ui/QuickAuxDialog.h"
+#include "ui/LinePropertyDialog.h"
+#include "parametric/LinkedVariable.h"
+#include "parametric/ParamPoint.h"
+#include "document/commands/VariableCommands.h"
+#include "document/commands/DocumentCommands.h"
 #include "ui/VariablePanel.h"
+#include "ui/ComponentTab.h"
 #include "ui/LayerPanel.h"
 #include "ui/IconHelper.h"
 #include "ui/Theme.h"
@@ -72,6 +83,37 @@ void showLoadWarnings(QWidget* parent, const QStringList& warnings)
             .arg(warnings.size()).arg(shown.join(QStringLiteral("\n"))));
 }
 
+/// 工具坞按钮的 Ela 字体图标 (app 层视觉偏好, 非工具元数据 —— 所以不放进
+/// ToolDescriptor, 仍留在 MainWindow)。
+///
+/// N1 (TOOL_SYSTEM_AUDIT 复核 2026-08-29): 早先这里是
+/// `std::array<IconName, 8>` 配 `arr[static_cast<int>(type)]` 的枚举序下标
+/// —— 新增第 9 个工具就是**越界读 UB, 且编译不报错**; 它还让 AGENTS.md
+/// 承诺的"新增工具不再改 MainWindow"变成假的 (实际必须回来改这个数组)。
+/// 改键控表: 查不到 = 兜底图标 + 一次警告, 永远不会读越界。
+[[nodiscard]] ElaIconType::IconName toolDockIcon(ToolType type)
+{
+    static const QHash<ToolType, ElaIconType::IconName> kIcons = {
+        { ToolType::Select,       ElaIconType::ArrowPointer },
+        { ToolType::SmartPen,     ElaIconType::PenNib },
+        { ToolType::CurveEdit,    ElaIconType::BezierCurve },
+        { ToolType::Rotate,       ElaIconType::Rotate },
+        { ToolType::Break,        ElaIconType::Scissors },
+        { ToolType::Intersection, ElaIconType::Intersection },
+        { ToolType::Measure,      ElaIconType::RulerCombined },
+        { ToolType::AngleMeasure, ElaIconType::Angle },
+    };
+    if (auto it = kIcons.constFind(type); it != kIcons.constEnd())
+        return *it;
+    // 未登记的新工具: 兜底成箭头图标 (而不是读越界), 并显式报警 —— 加工具
+    // 的人会立刻看到, 不会被静默的乱码图标或崩溃骗过去。
+    Q_ASSERT_X(false, "toolDockIcon",
+               "tool dock icon missing for a registered ToolType");
+    qWarning() << "MainWindow: no dock icon registered for ToolType"
+               << static_cast<int>(type) << "- falling back to ArrowPointer.";
+    return ElaIconType::ArrowPointer;
+}
+
 /// 面板打开时主窗口对应标签按钮上的激活指示: 主题强调色小圆点
 /// (ElaTabBarStyle 不支持 per-tab 文字色, 用图标最稳)。
 QIcon panelActiveDot(const QColor& color)
@@ -92,17 +134,31 @@ MainWindow::MainWindow(QWidget* parent)
     : ElaWindow(parent)
 {
     m_paramDoc = new ParamDocument(this);
-    m_undoStack = new QUndoStack(this);
+    // P0-1 (ARCHITECTURE_REVIEW): 单栈收口 —— 唯一 undo 栈由 ParamDocument 持有,
+    // MainWindow 只做 UI 绑定（菜单动作/脏标记/状态栏都指向文档栈）。此前这里
+    // new 了第二个 QUndoStack: CanvasView/ToolSelect/cards 推文档栈而 Ctrl+Z 与
+    // isClean 只绑本窗口栈 → 文档栈命令撤不掉、不参与脏标记, clear() 不清栈还会
+    // 跨文档污染。
+    m_undoStack = m_paramDoc->undoStack();
     m_canvasScene = new CanvasScene(m_paramDoc, this);
     m_canvasView = new CanvasView(m_canvasScene, this);
     m_toolManager = new ToolManager(m_canvasScene, this);
     m_toolManager->setParamDocument(m_paramDoc);
     m_toolManager->setUndoStack(m_undoStack);
-    m_lastWorkingLayer = m_paramDoc->firstWorkingLayerId();
+    m_lastWorkingLayer = m_paramDoc->layersView().firstWorkingLayerId();
 
-    // Connect tool manager to view for event dispatch
-    m_canvasView->setToolManager(m_toolManager);
+    // Connect tool manager to view for event dispatch (through the canvas-layer
+    // InputDispatcher interface — the canvas never includes tools/ headers).
+    m_canvasView->setInputDispatcher(m_toolManager);
     m_canvasView->setParamDoc(m_paramDoc);
+
+    // P1-6: whether the canvas context menu may appear is a TOOL policy, so the
+    // app installs the predicate instead of the canvas reaching into tools/.
+    // D15 单线确认流: 旋转工具持有目标时右键 = 确认/反悔, 发布菜单让位。
+    m_canvasView->setContextMenuGuard([this]() {
+        auto* rot = dynamic_cast<cad::tools::ToolRotate*>(m_toolManager->activeTool());
+        return rot && rot->hasSessionTarget();
+    });
 
     setupUi();
     setupMenuBar();
@@ -142,6 +198,8 @@ MainWindow::~MainWindow()
     // while clearing its commands on destruction; a live connection would
     // then invoke a slot on this half-destroyed window (Debug assert, UB in
     // Release). Drop every child→window connection before that happens.
+    // P0-1: m_undoStack now aliases m_paramDoc->undoStack() (non-owning) —
+    // the stack itself dies with the document, so disconnect before that.
     if (m_undoStack) disconnect(m_undoStack, nullptr, this, nullptr);
     if (m_paramDoc)  disconnect(m_paramDoc,  nullptr, this, nullptr);
 }
@@ -224,69 +282,34 @@ void MainWindow::setupMenuBar()
     // ===== 工具菜单 =====
     QMenu* toolMenu = elaMenuBar->addMenu(QString::fromUtf8("工具(&T)"));
 
-    m_actionSelect = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("cursor-click"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("选择(&V)"), this);
-    m_actionSelect->setCheckable(true);
-    m_actionSelect->setChecked(true);
-    m_actionSelect->setShortcut(QKeySequence(Qt::Key_V));
-    m_actionSelect->setShortcutContext(Qt::ApplicationShortcut);
-    toolMenu->addAction(m_actionSelect);
-
-    m_actionSmartPen = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("pen"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("智能笔(&L)"), this);
-    m_actionSmartPen->setCheckable(true);
-    m_actionSmartPen->setShortcut(QKeySequence(Qt::Key_L));
-    m_actionSmartPen->setShortcutContext(Qt::ApplicationShortcut);
-    toolMenu->addAction(m_actionSmartPen);
-
-    m_actionCurveEdit = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("pen"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("曲线(&C)"), this);
-    m_actionCurveEdit->setCheckable(true);
-    m_actionCurveEdit->setShortcut(QKeySequence(Qt::Key_C));
-    m_actionCurveEdit->setShortcutContext(Qt::ApplicationShortcut);
-    toolMenu->addAction(m_actionCurveEdit);
-
-    m_actionRotate = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("rotate"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("旋转(&R)"), this);
-    m_actionRotate->setCheckable(true);
-    m_actionRotate->setShortcut(QKeySequence(Qt::Key_R));
-    m_actionRotate->setShortcutContext(Qt::ApplicationShortcut);
-    toolMenu->addAction(m_actionRotate);
-
-    m_actionBreak = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("scissors"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("打断(&B)"), this);
-    m_actionBreak->setCheckable(true);
-    m_actionBreak->setShortcut(QKeySequence(Qt::Key_B));
-    m_actionBreak->setShortcutContext(Qt::ApplicationShortcut);
-    toolMenu->addAction(m_actionBreak);
-
-    m_actionIntersection = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("funnel"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("交点(&I)"), this);
-    m_actionIntersection->setCheckable(true);
-    m_actionIntersection->setShortcut(QKeySequence(Qt::Key_I));
-    m_actionIntersection->setShortcutContext(Qt::ApplicationShortcut);
-    toolMenu->addAction(m_actionIntersection);
-
-    m_actionMeasure = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("ruler"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("测量(&M)"), this);
-    m_actionMeasure->setCheckable(true);
-    // M 快捷键让给画布长按显示长度（CanvasView::keyPressEvent），测量暂不设快捷键
-    toolMenu->addAction(m_actionMeasure);
-
-    m_actionAngleMeasure = new QAction(
-        cad::ui::IconHelper::iconByName(QStringLiteral("rotate"), cad::ui::Theme::tokens().text2),
-        QString::fromUtf8("角度测量(&A)"), this);
-    m_actionAngleMeasure->setCheckable(true);
-    m_actionAngleMeasure->setShortcut(QKeySequence(Qt::Key_A));
-    m_actionAngleMeasure->setShortcutContext(Qt::ApplicationShortcut);
-    toolMenu->addAction(m_actionAngleMeasure);
+    // P3 (TOOL_SYSTEM_AUDIT): 工具 action 遍历 ToolRegistry 生成 ——
+    // 名字/图标/快捷键/提示/工厂由各工具 ToolDescriptor::describe() 携带,
+    // 不再手工逐 action 对齐 (旧 8 个 QAction 成员 + 8 个 actionX 槽全删)。
+    auto& toolReg = cad::tools::ToolRegistry::instance();
+    m_toolOrder = QList<cad::tools::ToolType>(toolReg.order().begin(),
+                                              toolReg.order().end());
+    auto* group = new QActionGroup(this);
+    group->setExclusive(true);
+    for (ToolType type : m_toolOrder) {
+        const auto* d = toolReg.descriptor(type);
+        auto* act = new QAction(
+            cad::ui::IconHelper::iconByName(d->iconName, cad::ui::Theme::tokens().text2),
+            d->displayName, this);
+        act->setCheckable(true);
+        act->setChecked(type == ToolType::Select);
+        if (!d->shortcut.isEmpty()) {
+            act->setShortcut(d->shortcut);
+            act->setShortcutContext(Qt::ApplicationShortcut);
+        }
+        // M3 (TOOL_SYSTEM_AUDIT): 悬停 tooltip = 操作说明全文。
+        act->setToolTip(d->hintText);
+        group->addAction(act);
+        toolMenu->addAction(act);
+        m_toolActions.insert(type, act);
+        connect(act, &QAction::triggered, this, [this, type]() {
+            m_toolManager->switchTool(type);
+        });
+    }
 
     toolMenu->addSeparator();
 
@@ -325,26 +348,6 @@ void MainWindow::setupMenuBar()
             QString::fromUtf8("野风帖 - 参数化服装 CAD 系统 v0.1.0\n基于 C++23 / Qt6 构建"));
     });
 
-    // Exclusive tool selection shared between menu and toolbar.
-    auto* group = new QActionGroup(this);
-    group->setExclusive(true);
-    group->addAction(m_actionSelect);
-    group->addAction(m_actionSmartPen);
-    group->addAction(m_actionCurveEdit);
-    group->addAction(m_actionRotate);
-    group->addAction(m_actionBreak);
-    group->addAction(m_actionIntersection);
-    group->addAction(m_actionMeasure);
-    group->addAction(m_actionAngleMeasure);
-
-    connect(m_actionSelect,   &QAction::triggered, this, &MainWindow::actionSelect);
-    connect(m_actionSmartPen, &QAction::triggered, this, &MainWindow::actionSmartPen);
-    connect(m_actionCurveEdit, &QAction::triggered, this, &MainWindow::actionCurveEdit);
-    connect(m_actionRotate,   &QAction::triggered, this, &MainWindow::actionRotate);
-    connect(m_actionBreak,    &QAction::triggered, this, &MainWindow::actionBreak);
-    connect(m_actionIntersection, &QAction::triggered, this, &MainWindow::actionIntersection);
-    connect(m_actionMeasure,  &QAction::triggered, this, &MainWindow::actionMeasure);
-    connect(m_actionAngleMeasure, &QAction::triggered, this, &MainWindow::actionAngleMeasure);
 }
 
 void MainWindow::setupToolBar()
@@ -371,23 +374,18 @@ void MainWindow::setupToolBar()
     pillLay->setContentsMargins(4, 4, 4, 4);
     pillLay->setSpacing(2);
 
-    struct ToolSpec { QAction* act; ElaIconType::IconName icon; };
-    const ToolSpec specs[] = {
-        {m_actionSelect,       ElaIconType::ArrowPointer},
-        {m_actionSmartPen,     ElaIconType::PenNib},
-        {m_actionCurveEdit,    ElaIconType::BezierCurve},
-        {m_actionRotate,       ElaIconType::Rotate},
-        {m_actionBreak,        ElaIconType::Scissors},
-        {m_actionIntersection, ElaIconType::Intersection},
-        {m_actionMeasure,      ElaIconType::RulerCombined},
-        {m_actionAngleMeasure, ElaIconType::Angle},
-    };
-    for (const auto& spec : specs) {
+    // P3 (TOOL_SYSTEM_AUDIT): 按钮遍历 registry 注册序生成, 与菜单同序。
+    // N1: 图标改键控查表 (见 toolDockIcon), 不再按枚举序下标 —— 新增工具
+    // 漏配图标 = 兜底 + 警告, 不会越界读。
+    for (ToolType type : m_toolOrder) {
         auto* btn = new ElaToolButton(pill);
-        btn->setDefaultAction(spec.act);
-        btn->setElaIcon(spec.icon);
+        btn->setDefaultAction(m_toolActions.value(type));
+        btn->setElaIcon(toolDockIcon(type));
         btn->setIsTransparent(true);
         btn->setCursor(Qt::PointingHandCursor);
+        // §6.1 状态矩阵: 激活 = 实心 accent 黄底 + 墨色图标 (全屏唯一实心黄),
+        // 悬停 surface2 / 按压 accentStrong —— 替换 Ela 默认灰蓝选中态。
+        btn->setStyle(new cad::app::ToolDockStyle(btn));
         m_toolButtons.append(btn);
         pillLay->addWidget(btn);
     }
@@ -438,8 +436,8 @@ void MainWindow::refreshLayerChip()
         return QIcon(pm);
     };
 
-    const QUuid cur = m_paramDoc->activeLayer();
-    const auto* layer = m_paramDoc->layerById(cur);
+    const QUuid cur = m_paramDoc->layersView().activeLayer();
+    const auto* layer = m_paramDoc->layersView().byId(cur);
     if (!layer) return;
 
     const bool aux = layer->type == cad::param::LayerType::Auxiliary;
@@ -473,22 +471,20 @@ void MainWindow::refreshLayerChip()
 void MainWindow::refreshToolIcons()
 {
     // Rebuild the tool icons from the current theme so both themes stay
-    // legible (normal = secondary text, active/checked = 墨黑).
+    // legible (normal = secondary text, active/checked = 墨黑). P3: 图标名
+    // 由各工具 ToolDescriptor::describe() 携带, 遍历 registry 统一重建。
     const auto& t = cad::ui::Theme::tokens();
     const QColor normal = t.text2;
     const QColor active = t.text1;
-    auto setIcon = [&](QAction* act, const char* name) {
-        act->setIcon(cad::ui::IconHelper::icon2State(
-            QString::fromLatin1(name), normal, active));
-    };
-    setIcon(m_actionSelect,      "cursor-click");
-    setIcon(m_actionSmartPen,    "pen");
-    setIcon(m_actionCurveEdit,   "pen");
-    setIcon(m_actionRotate,      "rotate");
-    setIcon(m_actionBreak,       "scissors");
-    setIcon(m_actionIntersection,"crosshair");
-    setIcon(m_actionMeasure,     "ruler");
-    setIcon(m_actionAngleMeasure,"rotate");
+    auto& reg = cad::tools::ToolRegistry::instance();
+    for (ToolType type : m_toolOrder) {
+        if (const auto* d = reg.descriptor(type)) {
+            if (auto* act = m_toolActions.value(type)) {
+                act->setIcon(cad::ui::IconHelper::icon2State(
+                    d->iconName, normal, active));
+            }
+        }
+    }
 }
 
 void MainWindow::toggleTheme(bool dark)
@@ -506,8 +502,12 @@ void MainWindow::toggleTheme(bool dark)
         m_variablePanel->applyTheme();
     if (m_layerPanel)
         m_layerPanel->applyTheme();
+    if (m_componentTab)
+        m_componentTab->applyTheme();
     refreshToolIcons();
     refreshLayerChip();
+    refreshStatusBarChrome();
+    refreshPanelChrome();
     syncPanelTabs();  // 激活指示圆点颜色跟随主题
 }
 
@@ -517,8 +517,50 @@ void MainWindow::setupStatusBar()
     auto* sb = new ElaStatusBar(this);
     setStatusBar(sb);
 
-    m_toolHintLabel = new ElaText(QString::fromUtf8("选择：点击选取（单选即操作）| W切换单选/多选 | 右键取消/确认 | 空白右键→智能笔 | 双击编辑 | Del删除"), 13, this);
+    m_toolHintLabel = new ElaText(QString(), 13, this);
+    // M9 (TOOL_SYSTEM_AUDIT): 提示最长 66 个汉字, QLabel/ElaText 无原生
+    // elide, 超宽即被状态栏硬裁成半句。横向 Ignored 解除"整句宽度撑布局",
+    // 文本经 setToolHint/applyToolHintElide 输出 (省略号 + tooltip 全文兜底),
+    // 宽度变化由 eventFilter 的 Resize 分支驱动重算。
+    m_toolHintLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_toolHintLabel->installEventFilter(this);
     sb->addWidget(m_toolHintLabel, 1);
+    setToolHint(cad::tools::toolHintText(cad::tools::ToolType::Select));
+
+    // 瞬时反馈 (§6.5): 保存成功对勾 / 撤销重做文字, 数秒后自动消失。
+    m_flashLabel = new ElaText(QString(), 12, this);
+    m_flashLabel->setObjectName(QStringLiteral("coordLabel"));
+    m_flashLabel->setStyleSheet(cad::ui::ThemeTokens::kMonospaceFamily);
+    m_flashLabel->hide();
+
+    // 诊断 badge (§6.5): danger 实心 ⚠ N, 点击弹出明细; 健康时完全不占位
+    // (替代旧的内嵌 danger 长文本 —— 诊断不再与工具提示混排)。
+    m_diagBadge = new QToolButton(this);
+    m_diagBadge->setText(QStringLiteral("⚠"));
+    m_diagBadge->setCursor(Qt::PointingHandCursor);
+    m_diagBadge->setToolTip(QString::fromUtf8("存在连接问题，点击查看明细"));
+    m_diagBadge->hide();
+    connect(m_diagBadge, &QToolButton::clicked, this, [this]() {
+        using cad::param::ResolveDiagnostic;
+        const auto& diags = m_paramDoc->diagnostics();
+        if (diags.empty()) return;
+        QMenu menu(this);
+        for (const auto& d : diags) {
+            QString text;
+            switch (d.kind) {
+            case ResolveDiagnostic::Kind::DanglingBlock:
+                text = QString::fromUtf8("连接引用了不存在的线段"); break;
+            case ResolveDiagnostic::Kind::DanglingPoint:
+                text = QString::fromUtf8("连接引用了不存在的端点"); break;
+            case ResolveDiagnostic::Kind::NotConverged:
+                text = QString::fromUtf8("连接存在冲突或循环，无法稳定求解"); break;
+            }
+            auto* act = menu.addAction(text);
+            act->setDisabled(true);
+        }
+        menu.exec(m_diagBadge->mapToGlobal(
+            QPoint(0, m_diagBadge->height())));
+    });
 
     m_coordLabel = new ElaText("X: 0.000  Y: 0.000", 12, this);
     m_coordLabel->setObjectName(QStringLiteral("coordLabel"));
@@ -531,28 +573,30 @@ void MainWindow::setupStatusBar()
     m_zoomLabel->setMinimumWidth(100);
     m_zoomLabel->setStyleSheet(cad::ui::ThemeTokens::kMonospaceFamily);
 
-    // Attachment diagnostics (hidden while the document is healthy).
-    m_diagLabel = new ElaText(QString(), 13, this);
-    m_diagLabel->setObjectName(QStringLiteral("dangerText"));
-    m_diagLabel->hide();
+    m_flashTimer = new QTimer(this);
+    m_flashTimer->setSingleShot(true);
+    connect(m_flashTimer, &QTimer::timeout, this,
+            [this]() { m_flashLabel->hide(); });
 
-    // 创建后内嵌编辑条 (SegmentEditBar): 替代旧的创建弹窗. 默认隐藏,
-    // 智能笔创建线段后由 onLineCreated 显示.
-    m_segmentEditBar = new cad::app::SegmentEditBar(m_paramDoc, this);
-    m_segmentEditBar->setUndoStack(m_undoStack);
-    m_segmentEditBar->hide();
-    sb->addWidget(m_segmentEditBar, 1);
-
-    // 智能笔预输入条: 切到智能笔时显示, 名称为/长度/角度供下一条线使用,
-    // 内容被使用后清空 (onLineCreated). 默认隐藏 (默认工具是选择).
-    m_preInputBar = new cad::app::SmartPenPreInputBar(this);
-    m_preInputBar->setCanvasView(m_canvasView);
-    m_preInputBar->hide();
-    sb->addWidget(m_preInputBar, 1);
-
-    sb->addPermanentWidget(m_diagLabel);
+    sb->addPermanentWidget(m_flashLabel);
+    sb->addPermanentWidget(m_diagBadge);
     sb->addPermanentWidget(m_coordLabel);
     sb->addPermanentWidget(m_zoomLabel);
+
+    refreshStatusBarChrome();
+}
+
+void MainWindow::refreshStatusBarChrome()
+{
+    if (!m_diagBadge)
+        return;
+    const auto& tk = cad::ui::Theme::tokens();
+    // danger 实心 badge (§6.5): 红底白字, 直角纪律 radius 2px。
+    m_diagBadge->setStyleSheet(QStringLiteral(
+        "QToolButton { background: %1; color: #FFFFFF; border: none;"
+        "  border-radius: 2px; padding: 1px 8px; font-size: 11px; font-weight: 600; }"
+        "QToolButton:hover { background: %2; }")
+        .arg(tk.danger.name(), tk.danger.darker(110).name()));
 }
 
 void MainWindow::connectSignals()
@@ -561,10 +605,18 @@ void MainWindow::connectSignals()
             this, &MainWindow::onSceneMouseMoved);
     connect(m_canvasView, &CanvasView::zoomFactorChanged,
             this, &MainWindow::onZoomChanged);
+    // P1-6: the canvas reports a segment hit; the menu / dialogs / commands and
+    // the tool follow-ups are app-layer policy (see showSegmentContextMenu).
+    connect(m_canvasView, &CanvasView::segmentContextMenuRequested,
+            this, &MainWindow::onSegmentContextMenu);
     connect(m_canvasScene, &CanvasScene::forceShowChanged,
             this, &MainWindow::onForceShowChanged);
     connect(m_toolManager, &ToolManager::activeToolChanged,
             this, &MainWindow::onToolChanged);
+    // M5: 活动工具的运行期状态变化 (智能笔 直线/省道线) 覆盖状态栏提示;
+    // 切换工具时由 onToolChanged 清掉并恢复 describe() 的默认文案。
+    connect(m_toolManager, &ToolManager::hintOverrideChanged,
+            this, &MainWindow::onToolHintOverride);
     connect(m_paramDoc, &ParamDocument::documentChanged,
             this, &MainWindow::onDocumentChanged);
     connect(m_undoStack, &QUndoStack::cleanChanged,
@@ -592,6 +644,28 @@ void MainWindow::connectSignals()
     // Both ids null = clear (multi-select / deselection).
     connect(m_toolManager, &ToolManager::editTargetChanged,
             this, &MainWindow::onEditTargetChanged);
+
+    // 撤销/重做瞬时反馈 (§6.5): 「已撤销：创建线段」1.5s 还原。
+    // 编辑条可见时跳过 (条带编辑的 SegmentEditBarCommand 高频提交不刷屏);
+    // 新命令 push (idx == count) 与 clear (count == 0) 不算重做。
+    m_lastUndoIndex = m_undoStack->index();
+    connect(m_undoStack, &QUndoStack::indexChanged, this, [this](int idx) {
+        const int prev = m_lastUndoIndex;
+        m_lastUndoIndex = idx;
+        if (idx == prev || m_undoStack->count() == 0)
+            return;
+        if (m_segmentEditBar && m_segmentEditBar->isVisible())
+            return;
+        const auto& tk = cad::ui::Theme::tokens();
+        if (idx < prev) {
+            if (idx >= 0)
+                flashStatus(QStringLiteral("已撤销：%1").arg(m_undoStack->text(idx)),
+                            tk.text2, 1500);
+        } else if (idx < m_undoStack->count()) {
+            flashStatus(QStringLiteral("已重做：%1").arg(m_undoStack->text(idx - 1)),
+                        tk.text2, 1500);
+        }
+    });
 }
 
 void MainWindow::onSceneMouseMoved(qreal x, qreal y)
@@ -605,12 +679,106 @@ void MainWindow::onZoomChanged(double factor)
         QString::fromUtf8("缩放: %1%").arg(factor * 100.0, 0, 'f', 0));
 }
 
+// Segment right-click menu (P1-6: moved out of CanvasView — the menu, the
+// dialog it opens and the tool/UI follow-ups are app-layer policy; the canvas
+// only reports which segment was hit and where along it).
+//
+// Actions: 发布长度参数 / 添加辅助点 / 烘焙到操作层 (measure line on the aux
+// layer → COPY onto a working layer; the source line stays the owner).
+void MainWindow::onSegmentContextMenu(const cad::canvas::SegmentHit& hit)
+{
+    const auto* blk = m_paramDoc->findBlock(hit.blockId);
+    const auto* seg = blk ? blk->findSegment(hit.segmentId) : nullptr;
+    if (!blk || !seg) return;
+
+    ElaMenu menu(this);
+
+    // Check if already published.
+    const bool alreadyPublished =
+        m_paramDoc->findLinkedBySource(hit.blockId, hit.segmentId) != nullptr;
+    QAction* publishAction = menu.addAction(QStringLiteral("发布长度参数"));
+    publishAction->setEnabled(!alreadyPublished);
+    if (alreadyPublished)
+        publishAction->setText(QStringLiteral("已发布长度参数"));
+
+    // --- 添加辅助点 ---
+    QAction* auxPointAction = menu.addAction(QStringLiteral("添加辅助点"));
+
+    // --- 烘焙到操作层 (measure line on the aux layer only) ---
+    if (m_paramDoc->measurementsView().measureByOwner(hit.blockId)
+        && m_paramDoc->layersView().isAuxLayer(blk->layer)) {
+        QMenu* bakeMenu = menu.addMenu(QStringLiteral("烘焙到操作层"));
+        const auto& layerList = m_paramDoc->layers();
+        for (int i = 0; i < static_cast<int>(layerList.size()); ++i) {
+            if (m_paramDoc->layersView().isAuxLayer(layerList[static_cast<size_t>(i)].id))
+                continue;   // skip the aux layer
+            QAction* act = bakeMenu->addAction(layerList[static_cast<size_t>(i)].name);
+            act->setProperty("bakeTargetLayer",
+                             layerList[static_cast<size_t>(i)].id.toString());
+        }
+    }
+
+    QAction* chosen = menu.exec(hit.globalPos);
+    if (!chosen) return;
+
+    if (chosen == publishAction && !alreadyPublished) {
+        // Publish the segment length as a linked variable (shared factory).
+        cad::param::LinkedVariable lv =
+            cad::param::LinkedVariable::fromSegment(*blk, *seg);
+        // P0-3: 文档栈恒非空 —— 统一走命令。
+        m_paramDoc->undoStack()->push(
+            new cad::cmd::AddLinkedCommand(m_paramDoc, lv));
+    } else if (chosen == auxPointAction) {
+        const auto* pSp = blk->findPoint(seg->startPointId);
+        const auto* pEp = blk->findPoint(seg->endPointId);
+        if (!pSp || !pEp) return;
+
+        // Auxiliary point at the clicked position along the segment
+        // (same construction as ToolSmartPen::openAuxDialog).
+        cad::param::ParamPoint pt;
+        pt.constraint = cad::param::PointConstraint::Interpolated;
+        pt.hostSegmentId = seg->id;
+        pt.isAuxiliary = true;
+        pt.visible = true;
+        pt.showName = false;
+        pt.interpPercent = hit.paramT;
+        pt.serial = m_paramDoc->newPointSerial();
+
+        cad::ui::QuickAuxDialog dlg(pt, pSp, pEp, this);
+        if (dlg.exec() == QDialog::Accepted) {
+            m_paramDoc->undoStack()->push(new cad::cmd::AddAuxPointCommand(
+                m_paramDoc, hit.blockId, hit.segmentId, dlg.point()));
+        }
+    } else if (chosen->property("bakeTargetLayer").isValid()) {
+        // Bake a COPY of the measure line onto the chosen working layer, then
+        // switch to that layer and select the new line.
+        const QUuid targetLayer =
+            QUuid::fromString(chosen->property("bakeTargetLayer").toString());
+        auto* bakeCmd = new cad::cmd::BakeMeasureCopyCommand(
+            m_paramDoc, hit.blockId, targetLayer);
+        if (!bakeCmd->isValid()) {
+            delete bakeCmd;
+            return;
+        }
+        const QUuid bakedId = bakeCmd->newBlockId();
+        m_paramDoc->undoStack()->push(bakeCmd);
+        m_paramDoc->setActiveLayer(targetLayer);
+        m_toolManager->switchTool(ToolType::Select);
+        if (auto* ts = dynamic_cast<cad::tools::ToolSelect*>(
+                m_toolManager->activeTool()))
+            ts->selectBlocksExternally(QList<QUuid>{bakedId});
+        m_canvasScene->showToast(
+            QStringLiteral("已烘焙到操作层「%1」").arg(chosen->text()));
+    }
+}
+
 void MainWindow::onDocumentChanged()
 {
     const auto& diags = m_paramDoc->diagnostics();
     if (diags.empty()) {
-        m_diagLabel->clear();
-        m_diagLabel->hide();
+        m_diagBadge->setText(QStringLiteral("⚠"));
+        m_diagBadge->setToolTip(QString::fromUtf8("无连接问题"));
+        m_diagBadge->hide();
         return;
     }
 
@@ -628,74 +796,67 @@ void MainWindow::onDocumentChanged()
         break;
     }
 
-    m_diagLabel->setText(diags.size() == 1
-        ? QStringLiteral("⚠ %1").arg(first)
-        : QStringLiteral("⚠ %1 个连接问题：%2")
-              .arg(diags.size()).arg(first));
-    m_diagLabel->show();
+    m_diagBadge->setText(QStringLiteral("⚠ %1").arg(diags.size()));
+    m_diagBadge->setToolTip(first);
+    m_diagBadge->show();
+}
+
+void MainWindow::onToolHintOverride(const QString& hint)
+{
+    // M5: 工具上报的运行期提示覆盖 (智能笔 直线/省道线)。空串 = 忽略
+    // (恢复默认由 onToolChanged 负责, 它在切工具时第一件事就是重设
+    // describe() 的文案, 所以覆盖不会跨工具继承)。
+    // 不另存"覆盖值"成员: setToolHint 已经把全文留在 m_toolHintFull 里,
+    // 多一个只写不读的成员就是本报告 H2 点名的死状态。
+    if (!hint.isEmpty())
+        setToolHint(hint);
+}
+
+void MainWindow::setToolHint(const QString& text)
+{
+    m_toolHintFull = text;
+    if (!m_toolHintLabel) return;
+    m_toolHintLabel->setToolTip(text);   // M9 兜底: 悬停看全文
+    applyToolHintElide();
+}
+
+void MainWindow::applyToolHintElide()
+{
+    if (!m_toolHintLabel || m_toolHintFull.isEmpty()) return;
+    const int avail = m_toolHintLabel->width() - 8;   // 两侧留白
+    if (avail <= 0) return;   // 尚未布局: 首个 Resize 事件再算
+    const QFontMetrics fm(m_toolHintLabel->fontMetrics());
+    const QString elided = fm.elidedText(m_toolHintFull, Qt::ElideRight, avail);
+    if (elided == m_toolHintLabel->text()) return;   // 同值短路: 防 Resize 递归
+    m_toolHintLabel->setText(elided);
 }
 
 void MainWindow::onToolChanged(ToolType type, const char* name)
 {
     (void)name;
 
-    // Sync the menu/toolbar check state. The blank-space right-click switch
-    // (智能笔 ↔ 选择) goes through switchTool() WITHOUT a QAction trigger, so
-    // the exclusive QActionGroup would otherwise keep highlighting the
-    // previous tool. The group is exclusive: setChecked(true) unchecks the
-    // rest automatically; re-setting the same action is a harmless no-op.
-    switch (type) {
-    case ToolType::Select:        m_actionSelect->setChecked(true); break;
-    case ToolType::SmartPen:      m_actionSmartPen->setChecked(true); break;
-    case ToolType::CurveEdit:     m_actionCurveEdit->setChecked(true); break;
-    case ToolType::Rotate:        m_actionRotate->setChecked(true); break;
-    case ToolType::Break:         m_actionBreak->setChecked(true); break;
-    case ToolType::Intersection:  m_actionIntersection->setChecked(true); break;
-    case ToolType::Measure:       m_actionMeasure->setChecked(true); break;
-    case ToolType::AngleMeasure:  m_actionAngleMeasure->setChecked(true); break;
-    }
+    // P3 (TOOL_SYSTEM_AUDIT): action 与按钮索引都经 registry 注册序对齐,
+    // 无平行 switch。空白右键切工具 (智能笔 ↔ 选择) 不经 QAction trigger,
+    // 此处手动 setChecked 让互斥 group 高亮跟随 (重设同 action 是 no-op)。
+    if (auto* act = m_toolActions.value(type))
+        act->setChecked(true);
 
     // Fluent tool buttons: the pill buttons are QAction-driven but their
     // highlight is drawn from setIsSelected, so mirror the active tool here.
-    int toolIndex = -1;
-    switch (type) {
-    case ToolType::Select:        toolIndex = 0; break;
-    case ToolType::SmartPen:      toolIndex = 1; break;
-    case ToolType::CurveEdit:     toolIndex = 2; break;
-    case ToolType::Rotate:        toolIndex = 3; break;
-    case ToolType::Break:         toolIndex = 4; break;
-    case ToolType::Intersection:  toolIndex = 5; break;
-    case ToolType::Measure:       toolIndex = 6; break;
-    case ToolType::AngleMeasure:  toolIndex = 7; break;
-    }
+    const int toolIndex = m_toolOrder.indexOf(type);
     for (int i = 0; i < m_toolButtons.size(); ++i)
         m_toolButtons.at(i)->setIsSelected(i == toolIndex);
 
     const bool smartPenActive =
         m_toolManager->activeToolType() == ToolType::SmartPen;
 
-    if (smartPenActive) {
-        m_toolHintLabel->setText(
-            QString::fromUtf8("智能笔：点设起点 | 再点设终点 | Shift约束45° | 右键/Esc取消 | 空白右键→选择"));
-    } else if (m_toolManager->activeToolType() == ToolType::CurveEdit) {
-        m_toolHintLabel->setText(
-            QString::fromUtf8("曲线：点线身加曲线点 | 拖曲线点弯曲 | 拖手柄调切线 | Ctrl加点 Shift删点 | Esc取消"));
-    } else if (m_toolManager->activeToolType() == ToolType::Rotate) {
-        m_toolHintLabel->setText(
-            QString::fromUtf8("旋转：点击线段选中 | 拖动旋转(Shift吸附15°) | HUD输入角度/公式 | 右键/Esc取消"));
-    } else if (m_toolManager->activeToolType() == ToolType::Break) {
-        m_toolHintLabel->setText(
-            QString::fromUtf8("打断：点击辅助点打断线段 | 点击线段空白处先建点再打断"));
-    } else if (m_toolManager->activeToolType() == ToolType::Intersection) {
-        m_toolHintLabel->setText(
-            QString::fromUtf8("交点：点选目标线段 | 点选射线起点 | 点击借用点直接创建交点 | 悬停点预览指向 | W切换跟随角度/绝对角度 | 右键/Esc取消"));
-    } else if (m_toolManager->activeToolType() == ToolType::Measure) {
-        m_toolHintLabel->setText(
-            QString::fromUtf8("测量：点选第一个点 | 点选第二个点 → 自动发布距离变量 | 右键/Esc取消"));
-    } else {
-        m_toolHintLabel->setText(
-            QString::fromUtf8("选择：点击选取实体（单选即操作）| W切换单选/多选 | 右键取消/确认 | 空白右键→智能笔 | 双击编辑 | Del删除"));
-    }
+    // H3 (TOOL_SYSTEM_AUDIT): 提示文本 = 各工具 ToolDescriptor::describe()
+    // 的 hintText (经 cad::tools::toolHintText 查 registry), 8 个 ToolType
+    // 一一对应。原 if/else 链没有 AngleMeasure 分支, else 兜底让角度测量
+    // 一直显示「选择」的操作说明。
+    // M5: 重设即覆盖掉上一个工具留下的运行期提示 (智能笔模式文案), 不会
+    // 串台 —— 覆盖的唯一落点就是 m_toolHintFull。
+    setToolHint(cad::tools::toolHintText(type));
 
     // 创建后编辑条只在智能笔创建场景有意义; 切换工具即隐藏.
     if (m_segmentEditBar)
@@ -768,78 +929,38 @@ void MainWindow::onForceShowChanged(bool showNames, bool showLengths)
     // Keep every open LinePropertyDialog's display toggles in sync while the
     // N/M hold-to-show keys are pressed (parent chain: dialogs live under the
     // canvas view). No-op when none are open.
-    const auto dialogs = m_canvasView->findChildren<cad::tools::LinePropertyDialog*>();
+    const auto dialogs = m_canvasView->findChildren<cad::ui::LinePropertyDialog*>();
     for (auto* dlg : dialogs)
         dlg->applyHoldOverride(showNames, showLengths);
-}
-
-void MainWindow::actionSelect()
-{
-    m_toolManager->switchTool(ToolType::Select);
-}
-
-void MainWindow::actionSmartPen()
-{
-    m_toolManager->switchTool(ToolType::SmartPen);
-}
-
-void MainWindow::actionCurveEdit()
-{
-    m_toolManager->switchTool(ToolType::CurveEdit);
-}
-
-void MainWindow::actionRotate()
-{
-    m_toolManager->switchTool(ToolType::Rotate);
-}
-
-void MainWindow::actionBreak()
-{
-    m_toolManager->switchTool(ToolType::Break);
-}
-
-void MainWindow::actionIntersection()
-{
-    m_toolManager->switchTool(ToolType::Intersection);
-}
-
-void MainWindow::actionMeasure()
-{
-    m_toolManager->switchTool(ToolType::Measure);
-}
-
-void MainWindow::actionAngleMeasure()
-{
-    m_toolManager->switchTool(ToolType::AngleMeasure);
 }
 
 void MainWindow::actionToggleAuxLayer()
 {
     if (!m_paramDoc) return;
-    const QUuid cur = m_paramDoc->activeLayer();
-    if (m_paramDoc->isAuxLayer(cur)) {
+    const QUuid cur = m_paramDoc->layersView().activeLayer();
+    if (m_paramDoc->layersView().isAuxLayer(cur)) {
         // 已在辅助层 → 切回最近一次的工作层。首次启动/打开文件时记忆可能为
         // 空或已失效，回退到第一个工作层，避免 H 被“静默无效”。
         QUuid target = m_lastWorkingLayer;
-        if (target.isNull() || !m_paramDoc->layerById(target) ||
-            m_paramDoc->isAuxLayer(target))
-            target = m_paramDoc->firstWorkingLayerId();
+        if (target.isNull() || !m_paramDoc->layersView().byId(target) ||
+            m_paramDoc->layersView().isAuxLayer(target))
+            target = m_paramDoc->layersView().firstWorkingLayerId();
         m_paramDoc->setActiveLayer(target);
     } else {
         // 记住当前工作层，再切到辅助层。
         m_lastWorkingLayer = cur;
-        m_paramDoc->setActiveLayer(m_paramDoc->auxLayerId());
+        m_paramDoc->setActiveLayer(m_paramDoc->layersView().auxLayerId());
     }
 }
 
 void MainWindow::onActiveLayerChanged(const QUuid& layerId)
 {
     // 任何路径切到工作层都更新记忆，H 总能回到最近的工作层。
-    if (m_paramDoc && !m_paramDoc->isAuxLayer(layerId))
+    if (m_paramDoc && !m_paramDoc->layersView().isAuxLayer(layerId))
         m_lastWorkingLayer = layerId;
     if (m_actionToggleAuxLayer)
         m_actionToggleAuxLayer->setChecked(
-            m_paramDoc && m_paramDoc->isAuxLayer(layerId));
+            m_paramDoc && m_paramDoc->layersView().isAuxLayer(layerId));
     refreshLayerChip();
 }
 
@@ -850,10 +971,11 @@ void MainWindow::setupPages()
     // 改用 None（无动画直切），规避 grab。
     setStackSwitchMode(ElaWindowType::StackSwitchMode::None);
 
-    // 变量/图层/组 面板统一进独立悬浮窗 (Qt::Tool): 侧边栏样式的长竖条窗口,
-    // 频繁编辑/复制公式、切图层/组时不再来回切主窗口标签页。初始隐藏,
-    // 点击主窗口顶部 变量/图层/组 标签显示并切到对应大标签页; 窗口可自由
-    // 拖动、缩放, X 关闭即隐藏 (标签可再开)。
+    // 变量/图层/组件 面板统一进独立悬浮窗 (Qt::Tool): 侧边栏样式的长竖条
+    // 窗口, 贴主窗口右缘悬浮 —— 特意不进主窗口布局, 面板永远不占用/裁剪
+    // 画布 (2026-08-28 用户拍板: 悬浮窗定位的本意就是不占画面; 停靠右栏
+    // 形态已否决移除)。悬浮位置经 QSettings 记忆, 初始隐藏, 点击主窗口
+    // 顶部 变量/图层 标签显示并切到对应大标签页。
     m_panelWindow = new QWidget(this, Qt::Tool);
     m_panelWindow->setObjectName(QStringLiteral("panelFloatingWindow"));
     m_panelWindow->setWindowTitle(QString::fromUtf8("面板"));
@@ -864,11 +986,17 @@ void MainWindow::setupPages()
     winLay->setContentsMargins(8, 8, 8, 8);
     winLay->setSpacing(6);
 
-    // 分类大标签: 变量 / 图层, 与主窗口后两个标签一一对应。
-    m_panelBigBar = new ElaTabBar(m_panelWindow);
+    // 头行 = 分类大标签 (变量/图层/组件) + 隐藏 ✕。
+    m_panelHeader = new QWidget(m_panelWindow);
+    auto* headerLay = new QHBoxLayout(m_panelHeader);
+    headerLay->setContentsMargins(0, 0, 0, 0);
+    headerLay->setSpacing(2);
+
+    m_panelBigBar = new ElaTabBar(m_panelHeader);
     m_panelBigBar->addTab(QStringLiteral("变量"));
     m_panelBigBar->addTab(QStringLiteral("图层"));
-    m_panelBigBar->setTabSize(QSize(84, 32));
+    m_panelBigBar->addTab(QStringLiteral("组件"));  // §4.2: 组件升为大标签
+    m_panelBigBar->setTabSize(QSize(76, 32));
     m_panelBigBar->setExpanding(true);
     m_panelBigBar->setUsesScrollButtons(false);
     m_panelBigBar->setElideMode(Qt::ElideNone);
@@ -878,7 +1006,28 @@ void MainWindow::setupPages()
     m_panelBigBar->setAcceptDrops(false);
     m_panelBigBar->setCursor(Qt::PointingHandCursor);
     m_panelBigBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    winLay->addWidget(m_panelBigBar);
+    headerLay->addWidget(m_panelBigBar, 1);
+
+    const auto& tk = cad::ui::Theme::tokens();
+    // 幽灵小按钮 (§5.1 Ghost): 透明底, hover 出 surface2 底 + 描边。
+    const QString ghostBtnQss = QStringLiteral(
+        "QToolButton { background: transparent; border: 1px solid transparent;"
+        "  border-radius: 2px; padding: 1px; }"
+        "QToolButton:hover { background: %1; border: 1px solid %2; }")
+        .arg(tk.surface2.name(), tk.border.name());
+    m_hidePanelBtn = new QToolButton(m_panelHeader);
+    m_hidePanelBtn->setCursor(Qt::PointingHandCursor);
+    m_hidePanelBtn->setFixedSize(24, 24);
+    m_hidePanelBtn->setToolTip(QString::fromUtf8("隐藏面板"));
+    m_hidePanelBtn->setStyleSheet(ghostBtnQss);
+    m_hidePanelBtn->setIcon(cad::ui::IconHelper::iconByName(
+        QStringLiteral("x"), tk.text2));
+    connect(m_hidePanelBtn, &QToolButton::clicked, this, [this]() {
+        m_panelWindow->hide();  // Hide 事件经 eventFilter 同步主标签
+    });
+    headerLay->addWidget(m_hidePanelBtn);
+    refreshPanelChrome();
+    winLay->addWidget(m_panelHeader);
 
     m_panelStack = new QStackedWidget(m_panelWindow);
     m_variablePanel = new cad::ui::VariablePanel(m_paramDoc, m_panelStack);
@@ -889,9 +1038,13 @@ void MainWindow::setupPages()
     auto* layerLay = new QVBoxLayout(layerPage);
     layerLay->setContentsMargins(12, 12, 12, 12);
     m_layerPanel = new LayerPanel(m_paramDoc, layerPage);
-    m_layerPanel->setUndoStack(m_undoStack);
     layerLay->addWidget(m_layerPanel);
     m_panelStack->addWidget(layerPage);
+
+    // 大标签 3: 组件 (从变量面板第 5 子标签升级, §4.2)。
+    m_componentTab = new cad::ui::ComponentTab(m_paramDoc, m_panelStack);
+    m_componentTab->setUndoStack(m_undoStack);
+    m_panelStack->addWidget(m_componentTab);
 
     winLay->addWidget(m_panelStack, 1);
 
@@ -899,7 +1052,7 @@ void MainWindow::setupPages()
     connect(m_panelBigBar, &QTabBar::currentChanged, this, [this](int category) {
         if (m_panelStack && m_panelStack->currentIndex() != category)
             m_panelStack->setCurrentIndex(category);
-        if (!m_tabSyncGuard && m_panelWindow->isVisible())
+        if (!m_tabSyncGuard && panelVisible())
             syncPanelTabs();
     });
 
@@ -928,12 +1081,38 @@ void MainWindow::setupPages()
     connect(m_pageTabs, &QTabBar::currentChanged,
             this, &MainWindow::onPageTabChanged);
 
+    // 编辑条带 (§4.6): SegmentEditBar / 智能笔预输入条从状态栏迁出, 改为
+    // 状态栏上方的独立条带 —— accentTint 底 + accentStrong 描边标识
+    // 「你正处于创建后编辑/预输入态」, 与坐标/缩放/诊断信息视觉分离。
+    m_editBand = new QWidget(this);
+    m_editBand->setObjectName(QStringLiteral("editBand"));
+    m_editBand->setAttribute(Qt::WA_StyledBackground, true);  // QSS 底色/描边生效
+    auto* bandLay = new QHBoxLayout(m_editBand);
+    bandLay->setContentsMargins(6, 4, 10, 4);
+    bandLay->setSpacing(8);
+
+    m_segmentEditBar = new cad::app::SegmentEditBar(m_paramDoc, m_editBand);
+    m_segmentEditBar->setUndoStack(m_undoStack);
+    m_segmentEditBar->hide();
+    bandLay->addWidget(m_segmentEditBar, 1);
+
+    m_preInputBar = new cad::app::SmartPenPreInputBar(m_editBand);
+    m_preInputBar->setCanvasView(m_canvasView);
+    m_preInputBar->hide();
+    bandLay->addWidget(m_preInputBar, 1);
+
+    m_segmentEditBar->installEventFilter(this);   // Show/Hide → updateEditBand
+    m_preInputBar->installEventFilter(this);
+    m_editBand->hide();
+
+    // 画布页独占主区 —— 面板只在悬浮窗里, 永不挤占画布。
     auto* pageHost = new QWidget(this);
     auto* pageLay = new QVBoxLayout(pageHost);
     pageLay->setContentsMargins(8, 6, 8, 0);
     pageLay->setSpacing(6);
     pageLay->addWidget(m_pageTabs);
     pageLay->addWidget(m_pageStack, 1);
+    pageLay->addWidget(m_editBand);
     setCentralCustomWidget(pageHost);
 
     // ElaWindow 中央区在同一个 VBox 里同时放了 pageHost 和它自己那个（空的）
@@ -962,6 +1141,18 @@ void MainWindow::setupPages()
             if (m_pageTabs)
                 m_pageTabs->setCurrentIndex(idx);
         });
+    }
+
+    // 恢复悬浮位置记忆 (§4.1: 关闭后记忆位置; 面板恒为悬浮窗形态)。
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("panel/docked"));  // 清理已否决的停靠形态残留键
+        const QByteArray geo =
+            settings.value(QStringLiteral("panel/geo")).toByteArray();
+        if (!geo.isEmpty()) {
+            m_panelWindow->restoreGeometry(geo);
+            m_panelWindowPositioned = true;  // 已有记忆位置, 不再自动归位
+        }
     }
 
     // Click a linked card → flash the source block red on canvas.
@@ -1047,17 +1238,19 @@ void MainWindow::onPageTabChanged(int index)
 
     if (index == 0) {
         // 画布页: 主区域恒为画布。面板开着时把高亮留在分类按钮上, 避免
-        // 标签条高亮一个与面板状态无关的标签。
-        if (m_panelWindow->isVisible()) {
+        // 标签条高亮一个与面板状态无关的标签 (组件大标签无主窗口开关,
+        // 高亮回画布)。
+        if (panelVisible()) {
+            const int cat = m_panelBigBar->currentIndex();
             m_tabSyncGuard = true;
-            m_pageTabs->setCurrentIndex(1 + m_panelBigBar->currentIndex());
+            m_pageTabs->setCurrentIndex(cat < 2 ? 1 + cat : 0);
             m_tabSyncGuard = false;
         }
         return;
     }
 
     const int category = index - 1;  // 0=变量 1=图层
-    if (m_panelWindow->isVisible() && m_panelBigBar->currentIndex() == category) {
+    if (panelVisible() && m_panelBigBar->currentIndex() == category) {
         // 再点当前分类 = 隐藏面板（开关语义）。Hide 事件经 eventFilter
         // 触发 syncPanelTabs 把主标签同步回画布。
         m_panelWindow->hide();
@@ -1078,9 +1271,11 @@ void MainWindow::syncPanelTabs()
     if (!m_pageTabs || !m_panelWindow || !m_panelBigBar)
         return;
 
-    // 主标签选中态 = 面板状态: 打开 → 当前分类按钮选中; 关闭 → 画布。
-    const bool open = m_panelWindow->isVisible();
-    const int target = open ? 1 + m_panelBigBar->currentIndex() : 0;
+    // 主标签选中态 = 面板状态: 打开 → 当前分类按钮选中 (组件大标签无
+    // 对应主窗口开关, 高亮留在画布); 关闭 → 画布。
+    const bool open = panelVisible();
+    const int cat = m_panelBigBar->currentIndex();
+    const int target = (open && cat < 2) ? 1 + cat : 0;
     if (m_pageTabs->currentIndex() != target) {
         m_tabSyncGuard = true;
         m_pageTabs->setCurrentIndex(target);
@@ -1089,22 +1284,72 @@ void MainWindow::syncPanelTabs()
 
     // 激活指示: 面板打开时当前分类按钮带强调色圆点, 其余清空。
     for (int i = 1; i < m_pageTabs->count(); ++i) {
-        const bool active = open && (i - 1) == m_panelBigBar->currentIndex();
+        const bool active = open && cat < 2 && (i - 1) == cat;
         m_pageTabs->setTabIcon(i,
             active ? panelActiveDot(cad::ui::Theme::tokens().text1) : QIcon());
     }
+}
+
+bool MainWindow::panelVisible() const
+{
+    return m_panelWindow && m_panelWindow->isVisible();
+}
+
+void MainWindow::refreshPanelChrome()
+{
+    if (!m_hidePanelBtn)
+        return;
+    const auto& tk = cad::ui::Theme::tokens();
+    // 幽灵小按钮 QSS 随主题重建 (透明底, hover 出 surface2 底 + 描边)。
+    const QString ghostBtnQss = QStringLiteral(
+        "QToolButton { background: transparent; border: 1px solid transparent;"
+        "  border-radius: 2px; padding: 1px; }"
+        "QToolButton:hover { background: %1; border: 1px solid %2; }")
+        .arg(tk.surface2.name(), tk.border.name());
+    m_hidePanelBtn->setStyleSheet(ghostBtnQss);
+    m_hidePanelBtn->setIcon(cad::ui::IconHelper::iconByName(
+        QStringLiteral("x"), tk.text2));
+}
+
+void MainWindow::updateEditBand()
+{
+    if (!m_editBand || !m_segmentEditBar || !m_preInputBar)
+        return;
+    const bool visible = m_segmentEditBar->isVisible()
+                         || m_preInputBar->isVisible();
+    m_editBand->setVisible(visible);
+}
+
+void MainWindow::flashStatus(const QString& text, const QColor& color, int ms)
+{
+    if (!m_flashLabel || !m_flashTimer)
+        return;
+    m_flashLabel->setText(text);
+    m_flashLabel->setStyleSheet(
+        QStringLiteral("%1 font-weight: 600; color: %2; background: transparent;")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily, color.name()));
+    m_flashLabel->show();
+    m_flashTimer->start(ms);
 }
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* event)
 {
     if (obj == m_panelWindow && event->type() == QEvent::Hide && !m_tabSyncGuard)
         syncPanelTabs();  // X 关闭 / hide() → 主标签回画布、清激活指示
+    if ((obj == m_segmentEditBar || obj == m_preInputBar)
+        && (event->type() == QEvent::Show || event->type() == QEvent::Hide))
+        updateEditBand();  // 编辑条带随两根信息条的显隐整体显隐
+    if (obj == m_toolHintLabel && event->type() == QEvent::Resize)
+        applyToolHintElide();  // M9: 宽度变化重算省略文本 (同值守卫防递归)
     return QObject::eventFilter(obj, event);
 }
 
 void MainWindow::ensurePanelWindowPosition()
 {
     if (!m_panelWindow)
+        return;
+    // 用户拖动 / QSettings 记忆位置后不再自动归位 (§4.1: 记忆位置)。
+    if (m_panelWindowPositioned)
         return;
     m_panelWindowPositioned = true;
 
@@ -1135,6 +1380,10 @@ void MainWindow::ensurePanelWindowPosition()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    // 悬浮位置记忆 (§4.1: 关闭后记忆位置)。
+    QSettings settings;
+    settings.setValue(QStringLiteral("panel/geo"), m_panelWindow->saveGeometry());
+
     if (maybeSave())
         event->accept();
     else
@@ -1177,7 +1426,7 @@ void MainWindow::updateTitle()
 void MainWindow::clearDocument()
 {
     m_paramDoc->clear();   // 内部重置 activeLayer 为第一个工作层，但不发射信号
-    m_lastWorkingLayer = m_paramDoc->firstWorkingLayerId();
+    m_lastWorkingLayer = m_paramDoc->layersView().firstWorkingLayerId();
     if (m_actionToggleAuxLayer)
         m_actionToggleAuxLayer->setChecked(false);
     m_undoStack->clear();
@@ -1215,7 +1464,7 @@ void MainWindow::onOpenDocument()
     addRecentFile(path);
     updateTitle();
     // 文档加载不会发射 activeLayerChanged，手动同步 H 动作的勾选状态。
-    onActiveLayerChanged(m_paramDoc->activeLayer());
+    onActiveLayerChanged(m_paramDoc->layersView().activeLayer());
 }
 
 void MainWindow::onSaveDocument()
@@ -1234,6 +1483,10 @@ void MainWindow::onSaveDocument()
     m_undoStack->setClean();
     addRecentFile(m_currentFilePath);
     updateTitle();
+    // 保存成功反馈 (§6.5): 状态栏 success 对勾 + 文件名, 2s 淡出。
+    flashStatus(QStringLiteral("\u2713 已保存 %1")
+                    .arg(QFileInfo(m_currentFilePath).fileName()),
+                cad::ui::Theme::tokens().success, 2000);
 }
 
 void MainWindow::onSaveAsDocument()
@@ -1257,6 +1510,8 @@ void MainWindow::onSaveAsDocument()
     m_undoStack->setClean();
     addRecentFile(path);
     updateTitle();
+    flashStatus(QStringLiteral("\u2713 已保存 %1").arg(QFileInfo(path).fileName()),
+                cad::ui::Theme::tokens().success, 2000);
 }
 
 void MainWindow::onOpenRecentFile()

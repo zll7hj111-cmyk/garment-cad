@@ -2,7 +2,11 @@
 
 #include <QObject>
 #include <QMetaObject>
+#include <map>
 #include <memory>
+
+#include "ToolRegistry.h"
+#include "canvas/InputDispatcher.h"
 
 class CanvasScene;
 class QGraphicsSceneMouseEvent;
@@ -15,20 +19,19 @@ namespace cad::tools {
 
 class Tool;
 
-/// Tool type identifiers for easy switching.
-enum class ToolType {
-    Select,
-    SmartPen,
-    CurveEdit,
-    Rotate,
-    Break,
-    Intersection,
-    Measure,
-    AngleMeasure,
-};
-
 /// Manages tool lifecycle and dispatches input events to the active tool.
-class ToolManager : public QObject
+///
+/// Implements cad::canvas::InputDispatcher (P1-6) so the canvas can forward
+/// input WITHOUT including any tools/ header: the interface is declared in the
+/// canvas layer and implemented here, inverting what used to be an upward
+/// canvas → tools dependency. Implements cad::tools::ToolHost (P2) so tools
+/// can request switches / report edit targets without knowing the manager.
+///
+/// Lifecycle (TOOL_SYSTEM_AUDIT P2): every tool instance is created once and
+/// kept alive (m_tools). Switching only deactivates the old / activates the
+/// new one; re-clicking the CURRENT tool is a no-op (L5) — sessions survive
+/// an accidental double-click instead of being rebuilt and cleared.
+class ToolManager : public QObject, public cad::canvas::InputDispatcher, public ToolHost
 {
     Q_OBJECT
 
@@ -43,20 +46,24 @@ public:
     void setParamDocument(cad::param::ParamDocument* paramDoc);
     void setUndoStack(QUndoStack* stack);
 
-    /// Switch to a tool by type (creates and activates it).
+    /// Switch to a tool by type. Same-type re-click is a no-op (L5).
     void switchTool(ToolType type);
 
-    void setActiveTool(std::unique_ptr<Tool> tool);
-    [[nodiscard]] Tool* activeTool() const { return m_activeTool.get(); }
+    [[nodiscard]] Tool* activeTool() const { return m_activeTool; }
     [[nodiscard]] ToolType activeToolType() const { return m_activeType; }
 
-    // Event dispatch (called by CanvasView)
-    void dispatchMousePress(QGraphicsSceneMouseEvent* event);
-    void dispatchMouseMove(QGraphicsSceneMouseEvent* event);
-    void dispatchMouseRelease(QGraphicsSceneMouseEvent* event);
-    void dispatchMouseDoubleClick(QGraphicsSceneMouseEvent* event);
-    void dispatchKeyPress(QKeyEvent* event);
-    void dispatchKeyRelease(QKeyEvent* event);
+    // cad::tools::ToolHost
+    void requestToolSwitch(ToolType type) override;
+    void setEditTarget(const QUuid& blockId, const QUuid& segmentId) override;
+    void setHintOverride(const QString& hint) override;
+
+    // Event dispatch (called by CanvasView through InputDispatcher)
+    void dispatchMousePress(QGraphicsSceneMouseEvent* event) override;
+    void dispatchMouseMove(QGraphicsSceneMouseEvent* event) override;
+    void dispatchMouseRelease(QGraphicsSceneMouseEvent* event) override;
+    void dispatchMouseDoubleClick(QGraphicsSceneMouseEvent* event) override;
+    void dispatchKeyPress(QKeyEvent* event) override;
+    void dispatchKeyRelease(QKeyEvent* event) override;
 
     [[nodiscard]] CanvasScene* scene() const { return m_scene; }
 
@@ -67,11 +74,22 @@ signals:
     /// (either blockId+segmentId for one segment, or both null = nothing).
     void editTargetChanged(const QUuid& blockId, const QUuid& segmentId);
 
+    /// 活动工具的运行期提示覆盖 (M5): 非空 = 用这段文案替掉
+    /// ToolDescriptor::hintText; 空 = 恢复默认。切换工具时宿主须自行清掉
+    /// (见 MainWindow::onToolChanged) —— 覆盖不跨工具继承。
+    void hintOverrideChanged(const QString& hint);
+
 private:
+    /// Create the tool instance on first use, then keep it (P2/L5).
+    Tool* ensureTool(ToolType type);
+    /// Bind the current context (scene/doc/undo/host) and activate @p tool.
+    void activateTool(Tool& tool);
+
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
     QUndoStack* m_undoStack = nullptr;
-    std::unique_ptr<Tool> m_activeTool;
+    std::map<ToolType, std::unique_ptr<Tool>> m_tools;  ///< 常驻实例池 (P2/L5).
+    Tool* m_activeTool = nullptr;  ///< 指向 m_tools 中的当前激活实例.
     ToolType m_activeType = ToolType::Select;
     QMetaObject::Connection m_activeLayerConn;  ///< Clears selection on layer switch.
 };

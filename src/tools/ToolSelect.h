@@ -7,11 +7,11 @@
 #include <QRectF>
 #include <QCursor>
 #include <optional>
-#include <functional>
 #include <utility>
 #include <vector>
 
 #include "Tool.h"
+#include "ToolRegistry.h"
 #include "geometry/Vec2.h"
 #include "parametric/Attachment.h"
 #include "tools/SelectState.h"
@@ -20,6 +20,7 @@
 class QGraphicsRectItem;
 class QGraphicsEllipseItem;
 class QGraphicsSimpleTextItem;
+class HudItem;
 
 namespace cad::tools {
 
@@ -46,8 +47,12 @@ class MarqueeGesture;
 class ToolSelect : public Tool
 {
 public:
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    // 无自定义析构: 全部清理都在 onDeactivate() (重叠提示图元 / 三个手势
+    // 协作对象)。ToolManager 析构时会先 deactivate 激活工具, 保证这条路径
+    // 对"退出时仍在激活的那个工具"也成立 (N5)。
+
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
@@ -56,6 +61,8 @@ public:
 
     void keyPress(QKeyEvent* event) override;
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override { return "\xe9\x80\x89\xe6\x8b\xa9"; }
     [[nodiscard]] SelectState state() const { return m_state; }
     [[nodiscard]] const QSet<QUuid>& selection() const { return m_selection; }
@@ -85,13 +92,6 @@ public:
     [[nodiscard]] QString overlapHintText() const { return m_overlapHitText; }
     /// 命令式选中第 @p index 个候选 (W 循环与右键「重叠候选」菜单共用入口).
     void pickOverlapCandidate(int index);
-
-    /// Inject the edit-target callback (status-bar segment editor). Fired
-    /// whenever the single-selection target changes; both ids null = clear.
-    void setEditTargetCallback(std::function<void(const QUuid&, const QUuid&)> cb)
-    {
-        m_editTargetCb = std::move(cb);
-    }
 
 private:
     // ── State transitions ──
@@ -155,8 +155,11 @@ private:
     void quickDetachSelection();
 
     // ── 长按/拖动判定与悬停反馈 (2026-09 取消确认基准) ──
-    /// press 线身后进入待定: 移动超 kDragThresholdPx 由 mouseMove 判定进入
-    /// beginDrag (锚点 = press 位置); release 未触发 = 单击语义.
+    /// press 线身后进入待定: 移动超阈值由 mouseMove 判定进入 beginDrag
+    /// (锚点 = press 位置); release 未触发 = 单击语义.
+    /// @param wasSelected 两重含义 —— ①多选下 release 未拖动 = 减选;
+    ///        ②M6 拖动阈值档位: 已选中的块用更宽的 kDragThresholdSelectedPx
+    ///        (press 已选中 = 意图就是拖, 但误拖会静默改几何, 代价更高)。
     void beginPressPending(const cad::geo::Vec2& pos, const QUuid& blockId,
                            bool wasSelected);
     void cancelPressPending();
@@ -187,14 +190,15 @@ private:
     /// W 循环到下一候选 (剔除已消失的块, 逐位回绕).
     void cycleOverlapCandidate();
     /// 悬停/循环 HUD 刷新: 无上下文 = 集群提示; 有上下文 = 循环状态 (锚定集群).
-    void refreshOverlapHint(const cad::geo::Vec2& worldPos);
+    /// @p precomputed: 调用方已持有同帧命中结果时直接传入 (悬停路径
+    /// 单次扫描, P1/M7); 空则内部现查。
+    void refreshOverlapHint(const cad::geo::Vec2& worldPos,
+                            const QList<OverlapCandidate>* precomputed = nullptr);
     /// HUD 呈现 (同值短路 + 锚点; 惰性创建 pill).
     void showOverlapHint(const QString& text, const cad::geo::Vec2& anchor);
     void hideOverlapHint();
 
     // ── Core state ──
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
     SelectState m_state = SelectState::Idle;
     SelectionMode m_selectionMode = SelectionMode::Single;
 
@@ -203,7 +207,6 @@ private:
 
     /// Last clicked segment (segment-level edit target for the status bar).
     QUuid m_lastHitSegmentId;
-    std::function<void(const QUuid&, const QUuid&)> m_editTargetCb;
 
     // Drag state
     cad::geo::Vec2 m_dragStartPos;             ///< Anchor (blank-space press point).
@@ -247,8 +250,10 @@ private:
     QList<OverlapCandidate> m_overlapCandidates;  ///< 激活时的候选快照 (堆叠序).
     int m_overlapIndex = -1;                      ///< -1 = 未激活循环上下文.
     cad::geo::Vec2 m_overlapAnchor;               ///< HUD 锚点 (用户坐标).
-    QGraphicsRectItem* m_overlapHintBox = nullptr;
-    QGraphicsSimpleTextItem* m_overlapHintLabel = nullptr;
+    /// 重叠提示 = 共享 HudItem (DarkPill, 1/zoom 补偿; TOOL_SYSTEM_AUDIT
+    /// P1/M1 收口 —— 原 QGraphicsRectItem+TextItem 手搭对不补偿缩放且
+    /// 每次切工具泄漏一对, P0 已加析构兜底, 现按需创建/常驻复用).
+    HudItem* m_overlapHint = nullptr;
     QString m_overlapHitText;                     ///< 当前 HUD 文本 (同值短路).
 };
 

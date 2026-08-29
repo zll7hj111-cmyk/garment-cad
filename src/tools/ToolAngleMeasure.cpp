@@ -1,4 +1,4 @@
-﻿#include "ToolAngleMeasure.h"
+#include "ToolAngleMeasure.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -16,7 +16,7 @@
 #include "parametric/Serial.h"
 #include "geometry/Angle.h"
 #include "geometry/Units.h"
-#include "ToolSmartPen.h"  // HudItem
+#include "canvas/HudItem.h"
 #include "document/commands/VariableCommands.h"
 
 namespace cad::tools {
@@ -25,18 +25,35 @@ namespace cad::tools {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-void ToolAngleMeasure::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+ToolDescriptor ToolAngleMeasure::describe()
 {
-    Tool::activate(scene, paramDoc);
-    m_state = State::SelectA;
+    ToolDescriptor d;
+    d.id = ToolType::AngleMeasure;
+    d.displayName = QString::fromUtf8("角度测量(&A)");
+    // M4 (TOOL_SYSTEM_AUDIT): 原用 "rotate" 与旋转工具同图 —— 一个是"改
+    // 几何"一个是"量角度", 菜单里同图是实打实的误读风险。换专用角度图标
+    // (resources/icons/angle.svg)。
+    d.iconName = QStringLiteral("angle");
+    d.shortcut = QKeySequence(Qt::Key_A);
+    d.hintText = QString::fromUtf8("角度测量：点选基准线 | 点选第二条线 → 自动发布角度变量 | 连续测量 | 右键/Esc取消");
+    d.factory = [] { return std::make_unique<ToolAngleMeasure>(); };
+    return d;
 }
 
-void ToolAngleMeasure::deactivate()
+void ToolAngleMeasure::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+{
+    (void)scene;
+    (void)paramDoc;
+    m_state = State::SelectA;
+    // P2/L5 常驻实例: 清上次会话残留的吸附线段。
+    m_snapA.reset();
+    m_hoverSnap.reset();
+}
+
+void ToolAngleMeasure::onDeactivate()
 {
     clearPreview();
-    if (m_highlightA) { m_scene->removeItem(m_highlightA); delete m_highlightA; m_highlightA = nullptr; }
-    if (m_highlightB) { m_scene->removeItem(m_highlightB); delete m_highlightB; m_highlightB = nullptr; }
-    Tool::deactivate();
+    m_managed.clear();   // 统一释放 + 影子指针置空 (P1/L1)
 }
 
 // ---------------------------------------------------------------------------
@@ -55,9 +72,7 @@ void ToolAngleMeasure::mousePress(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     auto snap = m_snapEngine.findSegmentSnap(clickPos, m_paramDoc, zoom);
     if (!snap) return;
@@ -82,9 +97,7 @@ void ToolAngleMeasure::mouseMove(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     updateHover(cursorPos, zoom);
     if (m_state == State::SelectB)
@@ -130,6 +143,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
         m_highlightA->setPen(pen);
         m_highlightA->setZValue(101.0);
         m_scene->addItem(m_highlightA);
+        m_managed.own(m_highlightA, &m_highlightA);
     }
     cad::geo::Vec2 a0, a1;
     if (segmentWorldEndpoints(m_snapA->blockId, m_snapA->segmentId, a0, a1)) {
@@ -150,6 +164,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
         m_highlightB->setPen(pen);
         m_highlightB->setZValue(101.0);
         m_scene->addItem(m_highlightB);
+        m_managed.own(m_highlightB, &m_highlightB);
     }
     if (hasB && segmentWorldEndpoints(m_hoverSnap->blockId, m_hoverSnap->segmentId, a0, a1)) {
         m_highlightB->setLine(QLineF(cad::geo::Coord::toScene(a0),

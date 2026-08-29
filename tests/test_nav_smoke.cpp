@@ -1,4 +1,4 @@
-﻿/// @file test_nav_smoke.cpp
+/// @file test_nav_smoke.cpp
 /// Smoke test: construct MainWindow, switch the web-style tab page stack
 /// (画布) repeatedly to reproduce the reported "点击图层=闪退" crash
 /// (Ela page-switch animation grabs the QOpenGLWidget canvas — now avoided
@@ -17,6 +17,7 @@
 #include <QAbstractButton>
 #include <QPushButton>
 #include <QPointer>
+#include <QDir>
 #include <QRect>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -38,9 +39,27 @@
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasView.h"
 #include "canvas/BlockItem.h"
-#include "tools/LinePropertyDialog.h"
+#include "ui/LinePropertyDialog.h"
 #include "tools/ToolSelect.h"
 #include "TestHelpers.h"
+
+namespace {
+
+/// P2 (TOOL_SYSTEM_AUDIT): 直驱 ToolSelect 时的宿主桩 —— 捕获编辑目标上报
+/// (旧 setEditTargetCallback 回调的等价物, 经 ToolContext.host 注入)。
+struct EditTargetHost : cad::tools::ToolHost {
+    QUuid* block = nullptr;
+    QUuid* seg = nullptr;
+    int* count = nullptr;
+    void requestToolSwitch(cad::tools::ToolType) override {}
+    void setEditTarget(const QUuid& b, const QUuid& s) override {
+        if (block) *block = b;
+        if (seg) *seg = s;
+        if (count) ++*count;
+    }
+};
+
+} // namespace
 
 #ifdef _WIN32
 #include <windows.h>
@@ -89,6 +108,10 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep)
 
 int main(int argc, char* argv[])
 {
+    // P2-2: 调试截图写到临时目录, 不再硬编码 e:/garment-cad/build/...
+    // (机器相关路径 = 换台机器就写不进去, 也污染仓库目录)。
+    const QString dumpDir = QDir::temp().absoluteFilePath(QStringLiteral("gcad_nav_smoke"));
+    QDir().mkpath(dumpDir);
 #ifdef _WIN32
     SetUnhandledExceptionFilter(crashHandler);
 #endif
@@ -132,24 +155,34 @@ int main(int argc, char* argv[])
     //      sample again. Ground truth for "变量/图层/组 没适配白色模式". ----
     QTimer::singleShot(2500, [&]() {
         // 主窗口标签条: 画布/变量/图层 (count==3)。面板窗内还有一条
-        // 大标签条 (count==2), 按 count 区分。注意: 2026-08 浮窗重构后
-        // 组 标签已移除 (组件 = 变量页第 5 子标签)。
+        // 大标签条 (count==3), 按 count 区分。注意: 2026-12 ui-redesign
+        // 方案 A 后组件升级为面板大标签 (大标签 = 变量/图层/组件), 主窗口
+        // 仍只有 画布/变量/图层 3 项开关。
         ElaTabBar* tabs = nullptr;
-        for (auto* tb : window.findChildren<ElaTabBar*>())
-            if (tb->count() == 3) { tabs = tb; break; }  // 画布/变量/图层
+        auto inPanelWindow = [](QObject* o) {
+            for (QObject* p = o->parent(); p; p = p->parent())
+                if (p->objectName() == QStringLiteral("panelFloatingWindow"))
+                    return true;
+            return false;
+        };
+        for (auto* tb : window.findChildren<ElaTabBar*>()) {
+            if (tb->count() != 3) continue;
+            if (inPanelWindow(tb)) continue;  // 面板大标签 (变量/图层/组件) 同为 3
+            tabs = tb;                        // → 主窗口标签条 = 子树外那条
+            break;
+        }
         if (tabs) {
             tabs->setCurrentIndex(1);  // 变量 → 打开面板悬浮窗
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         }
-        // 悬浮窗内部堆栈 (2026-08 浮窗重构): 大标签 变量/图层 = 2 页,
-        // 已不是旧的内嵌 3 页堆栈 —— 从 panelFloatingWindow 子树里按 count==2
-        // 找 (旧搜索在主窗口子树 + count==3 曾返回 null → sample 空解引用崩溃)。
+        // 悬浮窗内部堆栈 (2026-12 大标签重构): 大标签 变量/图层/组件 = 3 页 —
+        // 从 panelFloatingWindow 子树里按 count==3 找。
         QStackedWidget* pageStack = nullptr;
         if (auto* varWin = window.findChild<QWidget*>(
                 QStringLiteral("panelFloatingWindow")))
             for (auto* s : varWin->findChildren<QStackedWidget*>())
-                if (s->count() == 2) { pageStack = s; break; }
+                if (s->count() == 3) { pageStack = s; break; }
         auto sample = [](QStackedWidget* st, int idx, QWidget* win) {
             if (!st || !st->widget(idx)) {   // 越界页 (旧 3 页架构残留) — 防御.
                 std::cout << "  sample(" << idx << ") skipped (page null)"
@@ -180,6 +213,7 @@ int main(int argc, char* argv[])
         } else {
             sample(pageStack, 0, &window);  // 变量页
             sample(pageStack, 1, &window);  // 图层页
+            sample(pageStack, 2, &window);  // 组件页 (大标签 3, 2026-12)
         }
         // 面板悬浮窗: 抓取内容像素作为白色模式证据.
         {
@@ -196,13 +230,14 @@ int main(int argc, char* argv[])
                           << " mid=" << im.pixelColor(im.width() / 2,
                                                       im.height() / 2).name().toStdString()
                           << std::endl;
-                // 窄窗子标签探针: 变量页的五个子标签 (变量/公式/关联/测量/
-                // 组件) 必须整行可见, 不允许滚动裁剪 (大标签条 count==2, 按
-                // count==5 找变量页的子标签条; 2026-08 浮窗重构前是 4 个)。
-                for (auto* subTabs : varWin->findChildren<ElaTabBar*>()) {
-                    if (subTabs->count() != 5)
+                // 窄窗子标签探针: 变量页的四个子标签 (变量/公式/关联/测量)
+                // 必须整行可见, 不允许滚动裁剪 (2026-12 ui-redesign 后组件
+                // 升为面板大标签, 子页签从 5 枚减为 4 枚; PanelSubTabBar 是
+                // QTabBar 子类, 不再是 ElaTabBar)。
+                for (auto* subTabs : varWin->findChildren<QTabBar*>()) {
+                    if (subTabs->count() != 4)
                         continue;
-                    const QRect r3 = subTabs->tabRect(4);   // 最后一枚 (组件)
+                    const QRect r3 = subTabs->tabRect(3);   // 最后一枚 (测量)
                     std::cout << "  subTabs count=" << subTabs->count()
                               << " w=" << subTabs->width()
                               << " expanding=" << subTabs->expanding()
@@ -215,15 +250,15 @@ int main(int argc, char* argv[])
                                   ? 1 : 0)
                               << std::endl;
                 }
-                // 大标签切换探针: 点击 图层 大标签必须切换面板内容页
+                // 大标签切换探针: 点击 图层/组件 大标签必须切换面板内容页
                 // (曾漏接 currentChanged→stack 导致内容永远停在变量页)。
-                // 组件不再是独立大标签 (已并入变量页第 5 子标签)。
+                // 2026-12: 大标签 = 变量/图层/组件 (count==3)。
                 for (auto* bigBar : varWin->findChildren<ElaTabBar*>()) {
-                    if (bigBar->count() != 2)
+                    if (bigBar->count() != 3)
                         continue;
                     QStackedWidget* pstack = nullptr;
                     for (auto* s : varWin->findChildren<QStackedWidget*>())
-                        if (s->count() == 2) { pstack = s; break; }
+                        if (s->count() == 3) { pstack = s; break; }
                     auto switchBig = [&](int idx) {
                         bigBar->setCurrentIndex(idx);
                         for (int i = 0; i < 10; ++i)
@@ -234,6 +269,7 @@ int main(int argc, char* argv[])
                                   << " expect=" << idx << std::endl;
                     };
                     switchBig(1);  // 图层
+                    switchBig(2);  // 组件
                     switchBig(0);  // 回变量页
                 }
             }
@@ -370,7 +406,7 @@ int main(int argc, char* argv[])
                 lay->addWidget(card);
                 for (int i = 0; i < 10; ++i)
                     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-                card->grab().save(QStringLiteral("e:/garment-cad/build/var_card_probe.png"));
+                card->grab().save(dumpDir + QStringLiteral("/var_card_probe.png"));
                 // 分析卡片图像: 统计描边专用色像素与行分布,
                 // 确认名称/引用名两个输入框的描边真实渲染。
                 const QImage cimg = card->grab().toImage();
@@ -402,8 +438,17 @@ int main(int argc, char* argv[])
         // 真实变量卡片, 抓面板窗口扫描描边 (复刻用户实际看到的一切)。
         auto realPanelScan = [&](const QString& expectHex, const char* label) {
             auto* tabs2 = window.findChild<ElaTabBar*>();
-            for (auto* tb : window.findChildren<ElaTabBar*>())
-                if (tb->count() == 3) { tabs2 = tb; break; }  // 画布/变量/图层
+            auto inPanelWindow2 = [](QObject* o) {
+                for (QObject* p = o->parent(); p; p = p->parent())
+                    if (p->objectName() == QStringLiteral("panelFloatingWindow"))
+                        return true;
+                return false;
+            };
+            for (auto* tb : window.findChildren<ElaTabBar*>()) {
+                if (tb->count() != 3 || inPanelWindow2(tb)) continue;
+                tabs2 = tb;  // 主窗口标签条 (面板大标签同为 3 枚, 子树区分)
+                break;
+            }
             auto* varWin = window.findChild<QWidget*>(
                 QStringLiteral("panelFloatingWindow"));
             if (!varWin || !tabs2) {
@@ -416,11 +461,11 @@ int main(int argc, char* argv[])
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             // 先钉回「变量」页再创建变量 (隐藏列表页上插入卡片几何失效).
-            // 浮窗重构后: 面板堆栈 2 页 / 大标签条 2 枚, 旧 count==3 永不命中.
+            // 2026-12 大标签重构: 面板堆栈 3 页 / 大标签 3 枚 (变量/图层/组件).
             for (auto* s : varWin->findChildren<QStackedWidget*>())
-                if (s->count() == 2) s->setCurrentIndex(0);
+                if (s->count() == 3) s->setCurrentIndex(0);
             for (auto* tb : varWin->findChildren<ElaTabBar*>())
-                if (tb->count() == 2) tb->setCurrentIndex(0);
+                if (tb->count() == 3) tb->setCurrentIndex(0);
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             auto* btn = varWin->findChild<QPushButton*>(
@@ -447,11 +492,10 @@ int main(int argc, char* argv[])
                 for (int i = 0; i < 20; ++i)
                     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             }
-            // 抓图前钉回变量页 (双保险) — 浮窗重构后面板堆栈 = 2 页
-            // (0=变量 1=图层), 旧 count==3 永远不命中, 导致亮/暗两次扫描
-            // 落在不同页上 (图层页几乎无描边像素 → 假 MISSING)。
+            // 抓图前钉回变量页 (双保险) — 2026-12 大标签重构后面板堆栈 =
+            // 3 页 (0=变量 1=图层 2=组件), 亮/暗两次扫描必须落在同一页。
             for (auto* s : varWin->findChildren<QStackedWidget*>())
-                if (s->count() == 2) s->setCurrentIndex(0);
+                if (s->count() == 3) s->setCurrentIndex(0);
             const QImage img = varWin->grab().toImage();
             const QColor bc(expectHex);
             const QColor otherBorder =
@@ -471,7 +515,7 @@ int main(int argc, char* argv[])
                         && std::abs(c.blue() - otherBorder.blue()) <= 14)
                         ++otherBorderPx;
                 }
-            img.save(QStringLiteral("e:/garment-cad/build/real_panel_%1.png")
+            img.save(QStringLiteral("%1/real_panel_%2.png").arg(dumpDir)
                          .arg(QLatin1String(label)));
             std::cout << "  realPanel[" << label << "] borderPx=" << borderPx
                       << " otherBorderPx=" << otherBorderPx
@@ -493,7 +537,7 @@ int main(int argc, char* argv[])
                                qRound(vg.width() * dpr),
                                qRound(vg.height() * dpr));
                 const QImage simg = full.copy(dr.intersected(full.rect()));
-                simg.save(QStringLiteral("e:/garment-cad/build/real_screen_%1.png")
+                simg.save(QStringLiteral("%1/real_screen_%2.png").arg(dumpDir)
                               .arg(QLatin1String(label)));
                 int scPx = 0, scOther = 0;
                 for (int y = 0; y < simg.height(); ++y)
@@ -617,9 +661,9 @@ int main(int argc, char* argv[])
             view.show();
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-            auto* dlg = new cad::tools::LinePropertyDialog(
+            auto* dlg = new cad::ui::LinePropertyDialog(
                 line.blockId, line.segId, &doc, &scene, &view);
-            QPointer<cad::tools::LinePropertyDialog> guard(dlg);
+            QPointer<cad::ui::LinePropertyDialog> guard(dlg);
             dlg->setAttribute(Qt::WA_DeleteOnClose);
             std::cout << "lpdialog: created children=" << dlg->children().size()
                       << " guardNull=" << guard.isNull() << std::endl;
@@ -678,10 +722,15 @@ int main(int argc, char* argv[])
             cad::tools::ToolSelect ts;
             QUuid gotBlock, gotSeg;
             int cbCount = 0;
-            ts.setEditTargetCallback([&](const QUuid& b, const QUuid& s) {
-                gotBlock = b; gotSeg = s; ++cbCount;
-            });
-            ts.activate(scene2, &doc2);
+            EditTargetHost host;
+            host.block = &gotBlock;
+            host.seg = &gotSeg;
+            host.count = &cbCount;
+            cad::tools::ToolContext ctx;
+            ctx.scene = &scene2;
+            ctx.paramDoc = &doc2;
+            ctx.host = &host;
+            ts.activate(ctx);
             const int itemCount = scene2.items().size();
             const int hitCount = scene2.items(QPointF(60.0, 0.0)).size();
             QString layerInfo;
@@ -730,14 +779,14 @@ int main(int argc, char* argv[])
 
     // Crash probe: switch DIRECTLY to each page of the panel stack in
     // construction order (no settle phase) to bisect which page crashes.
-    // 2026-08 浮窗重构后: 面板堆栈 = panelFloatingWindow 内的 count==2
-    // (变量/图层), 主页面堆栈只剩画布页 —— 旧 count==3 搜索永远 NO.
+    // 2026-12 大标签重构后: 面板堆栈 = panelFloatingWindow 内的 count==3
+    // (变量/图层/组件), 主页面堆栈只剩画布页。
     QStackedWidget* pageStack = nullptr;
     const auto stacks = window.findChildren<QStackedWidget*>();
     if (auto* varWin = window.findChild<QWidget*>(
             QStringLiteral("panelFloatingWindow")))
         for (auto* s : varWin->findChildren<QStackedWidget*>())
-            if (s->count() == 2) { pageStack = s; break; }
+            if (s->count() == 3) { pageStack = s; break; }
     std::cout << "pageStack found: " << (pageStack ? "yes" : "NO")
               << " (stacks=" << stacks.size() << ")" << std::endl;
 

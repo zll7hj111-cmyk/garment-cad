@@ -53,8 +53,8 @@ std::optional<SnapResult> SnapEngine::findSnap(
         // lifts the aux-active restriction: such tools only REFERENCE points
         // and never create attachments, so grayed aux-layer geometry is a
         // legitimate pick target. Hidden layers stay excluded either way.
-        if (!paramDoc->layerVisible(block.layer)) continue;
-        if (!ignoreLayerFilter && !paramDoc->layerSnappable(block.layer)) continue;
+        if (!paramDoc->layersView().layerVisible(block.layer)) continue;
+        if (!ignoreLayerFilter && !paramDoc->layersView().layerSnappable(block.layer)) continue;
         if (excludeBlockId && block.id == *excludeBlockId) continue;
 
         // World positions come from the per-block cache (validated by epoch +
@@ -127,8 +127,8 @@ std::vector<SnapResult> SnapEngine::findSnapCandidates(
     pruneSnapCaches(paramDoc);
     for (const auto& block : paramDoc->blocks()) {
         // Same target policy as findSnap (see its doc comment).
-        if (!paramDoc->layerVisible(block.layer)) continue;
-        if (!ignoreLayerFilter && !paramDoc->layerSnappable(block.layer)) continue;
+        if (!paramDoc->layersView().layerVisible(block.layer)) continue;
+        if (!ignoreLayerFilter && !paramDoc->layersView().layerSnappable(block.layer)) continue;
         if (excludeBlockId && block.id == *excludeBlockId) continue;
 
         const SnapBlockEntry* e = cachedSnapBlock(block);
@@ -177,7 +177,7 @@ std::optional<SnapResult> SnapEngine::findCurvePointSnap(
 
     pruneSnapCaches(paramDoc);
     for (const auto& block : paramDoc->blocks()) {
-        if (!paramDoc->layerSnappable(block.layer)) continue;
+        if (!paramDoc->layersView().layerSnappable(block.layer)) continue;
 
         // World positions + curve-relevant flags come from the per-block cache
         // (validated by epoch + transform + point count); the old path rebuilt
@@ -232,8 +232,8 @@ std::optional<SegmentSnapResult> SnapEngine::findSegmentSnap(
     pruneSnapCaches(paramDoc);
     for (const auto& block : paramDoc->blocks()) {
         // Same snap-target policy as findSnap (see layerSnappable / ignoreLayerFilter).
-        if (!paramDoc->layerVisible(block.layer)) continue;
-        if (!ignoreLayerFilter && !paramDoc->layerSnappable(block.layer)) continue;
+        if (!paramDoc->layersView().layerVisible(block.layer)) continue;
+        if (!ignoreLayerFilter && !paramDoc->layersView().layerSnappable(block.layer)) continue;
         if (block.segments.empty()) continue;
 
         // Endpoint world positions come from the per-block segment cache
@@ -345,7 +345,7 @@ const SnapEngine::SnapBlockEntry* SnapEngine::cachedSnapBlock(
 {
     auto it = m_snapBlockCache.constFind(block.id);
     if (it != m_snapBlockCache.constEnd()
-        && it->epoch == block.geometryEpoch
+        && it->epoch == block.geometryEpoch()
         && it->ox == block.transform.origin.x
         && it->oy == block.transform.origin.y
         && it->rot == block.transform.rotation
@@ -353,7 +353,7 @@ const SnapEngine::SnapBlockEntry* SnapEngine::cachedSnapBlock(
         return &it.value();
     }
     SnapBlockEntry e;
-    e.epoch = block.geometryEpoch;
+    e.epoch = block.geometryEpoch();
     e.ox = block.transform.origin.x;
     e.oy = block.transform.origin.y;
     e.rot = block.transform.rotation;
@@ -402,7 +402,7 @@ const SnapEngine::SnapSegBlockEntry* SnapEngine::cachedSnapSegBlock(
 {
     auto it = m_snapSegCache.constFind(block.id);
     if (it != m_snapSegCache.constEnd()
-        && it->epoch == block.geometryEpoch
+        && it->epoch == block.geometryEpoch()
         && it->ox == block.transform.origin.x
         && it->oy == block.transform.origin.y
         && it->rot == block.transform.rotation
@@ -410,7 +410,7 @@ const SnapEngine::SnapSegBlockEntry* SnapEngine::cachedSnapSegBlock(
         return &it.value();
     }
     SnapSegBlockEntry e;
-    e.epoch = block.geometryEpoch;
+    e.epoch = block.geometryEpoch();
     e.ox = block.transform.origin.x;
     e.oy = block.transform.origin.y;
     e.rot = block.transform.rotation;

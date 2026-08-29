@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include "Tool.h"
+#include "ToolRegistry.h"
 #include "SnapEngine.h"
 #include "LineFactory.h"
 #include "geometry/Vec2.h"
@@ -9,6 +10,8 @@
 #include <QPainter>
 #include <QPointer>
 #include <optional>
+
+#include "canvas/ManagedItems.h"
 
 class QGraphicsLineItem;
 class QGraphicsEllipseItem;
@@ -19,9 +22,12 @@ class QDialog;
 
 namespace cad::param { class ParamDocument; class Block; struct ParamPoint; struct Segment; }
 
-namespace cad::tools {
+// P2-4: these are QWidget components living in src/ui/ (cad::ui) now —
+// tools/ keeps only gestures and state machines.
+namespace cad::ui { class QuickAuxDialog; }
+class HudItem;
 
-class QuickAuxDialog;
+namespace cad::tools {
 class LeaderCandidatePicker;
 
 /// One-shot pre-input for the NEXT line the smart pen creates (预输入).
@@ -42,22 +48,8 @@ struct LinePreInput
     [[nodiscard]] bool hasAngle() const { return !angleDeg.trimmed().isEmpty(); }
 };
 
-/// Screen-space HUD label that follows the cursor during line drawing.
-class HudItem : public QGraphicsItem
-{
-public:
-    explicit HudItem(QGraphicsItem* parent = nullptr);
-
-    void setText(const QString& text);
-    void moveToPoint(const cad::geo::Vec2& userPos, const QGraphicsView* view);
-
-    QRectF boundingRect() const override;
-    void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override;
-
-private:
-    QString m_text;
-    QRectF  m_rect;
-};
+// HudItem 已收口到 src/canvas/HudItem.h（cad::canvas，TOOL_SYSTEM_AUDIT
+// P1/M1）：1/zoom 缩放补偿全仓唯一实现，toast/重叠提示/跟随标签共用。
 
 /// Smart Pen tool — parametric line creation with snapping.
 ///
@@ -75,8 +67,8 @@ private:
 class ToolSmartPen : public Tool
 {
 public:
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
@@ -89,6 +81,8 @@ public:
     void setPreInput(const LinePreInput& input) { m_preInput = input; }
     [[nodiscard]] const LinePreInput& preInput() const { return m_preInput; }
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override { return "\xe6\x99\xba\xe8\x83\xbd\xe7\xac\x94"; }
 
 private:
@@ -99,6 +93,11 @@ private:
         Line,  ///< Ordinary parametric line (直线).
         Dart,  ///< Dart line: computed end offset from reference point B (省道线).
     };
+
+    /// 状态栏提示 (M5): 直线/省道线 两模式的操作序列完全不同, 提示必须带上
+    /// 当前模式 —— 静态 describe() 用 Line 版做默认文案, cycleMode 切换时经
+    /// ToolHost::setHintOverride 覆盖。两处同源, 避免文案漂移。
+    [[nodiscard]] static QString hintForMode(Mode mode);
 
     void commitLine(const cad::geo::Vec2& end,
                     const std::optional<SnapResult>& endSnap);
@@ -173,6 +172,11 @@ private:
     /// point is created (own undo step) and the stroke starts (@p forStart)
     /// or commits with the end pinned to the new point (bridge).
     void openAuxDialog(const SegmentSnapResult& segSnap, bool forStart);
+    /// M10 (TOOL_SYSTEM_AUDIT): 非模态弹窗打开期间画布不是"卡死" —— 光标
+    /// 置 Forbidden + 一次性 toast 说明原因; 事件早退路径调用以兜底维持。
+    void showDialogBlockedFeedback();
+    /// 弹窗关闭/工具切走时恢复默认画布光标 (M10 配套)。
+    void clearDialogBlockedCursor();
     /// Dialog accepted: create the point and drive the stroke state machine.
     void onAuxDialogAccepted(const cad::param::ParamPoint& pt);
     /// Push AddAuxPointCommand (own undo step — 建点与建线分开撤销) and
@@ -210,8 +214,6 @@ private:
     /// One-shot consumption: clear every field that was actually used.
     void consumePreInput();
 
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::Idle;
     Mode  m_mode  = Mode::Line;  ///< Construction mode (W cycles while Idle).
 
@@ -242,13 +244,15 @@ private:
     LeaderCandidatePicker* m_leaderPicker = nullptr;
 
     // Non-modal quick-aux dialog state (open between click and accept)
-    QPointer<QuickAuxDialog> m_auxDialog;      ///< Open dialog (null when none).
+    QPointer<cad::ui::QuickAuxDialog> m_auxDialog;      ///< Open dialog (null when none).
     bool m_auxDialogForStart = false;          ///< true = start scenario, false = end.
     SegmentSnapResult m_auxDialogSegSnap;      ///< Host segment captured at open time.
 
     // Non-modal dart parameter dialog (省道线弹窗). Kept non-modal so the
     // user can switch to the variable/formula panel and copy while it is open.
     QPointer<QDialog> m_dartDialog;            ///< Open dialog (null when none).
+    /// M10: 上次弹窗阻塞提示文案 (同值守卫 —— mouseMove 每帧早退不刷 toast)。
+    QString m_lastDialogToast;
 
     // Leader candidate state (valid while Drawing with a snapped start)
     std::vector<LeaderCandidate> m_leaderCandidates;
@@ -273,7 +277,10 @@ private:
     QGraphicsEllipseItem* m_startMarker  = nullptr;
     QGraphicsRectItem*    m_snapIndicator = nullptr;
     QGraphicsPathItem*    m_segMarker    = nullptr;  ///< X at the segment projection point.
-    HudItem*              m_hud          = nullptr;
+    // m_hud (canvas/HudItem.h) 现为基类 Tool 的受保护成员 (P2/H4 去遮蔽),
+    // 智能笔在其 stroke 期间 new + ManagedItems 登记, 不再单独声明。
+    /// 临时图元统一登记 (deactivate 统一释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems m_managed;
 };
 
 } // namespace cad::tools

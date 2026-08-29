@@ -1,4 +1,4 @@
-﻿#include "ToolBreak.h"
+#include "ToolBreak.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsEllipseItem>
@@ -17,25 +17,44 @@
 #include "geometry/Units.h"
 #include "document/commands/BreakCommands.h"
 #include "document/commands/BlockCommands.h"
-#include "QuickAuxDialog.h"
+#include "ui/QuickAuxDialog.h"
 
 namespace cad::tools {
 
-void ToolBreak::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+ToolDescriptor ToolBreak::describe()
 {
-    m_scene = &scene;
-    m_paramDoc = paramDoc;
+    ToolDescriptor d;
+    d.id = ToolType::Break;
+    d.displayName = QString::fromUtf8("打断(&B)");
+    d.iconName = QStringLiteral("scissors");
+    d.shortcut = QKeySequence(Qt::Key_B);
+    d.hintText = QString::fromUtf8("打断：点击辅助点打断线段 | 点击线段空白处先建点再打断");
+    d.factory = [] { return std::make_unique<ToolBreak>(); };
+    return d;
 }
 
-void ToolBreak::deactivate()
+void ToolBreak::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+{
+    (void)scene;
+    (void)paramDoc;
+    // N2 (TOOL_SYSTEM_AUDIT 复核 2026-08-29): P2/L5 之后工具实例常驻,
+    // "重进工具 = 状态复位"不再由析构免费提供 —— 其余 7 个工具都在
+    // onActivate 里补了复位, 只有这里空着。残留的 hover 快照虽被
+    // onDeactivate 的 hideMarkers() 遮住、首次移动也会自愈, 但一旦有人
+    // 在首次移动前读这些字段就会拿到上一次会话的陈旧值。显式清掉。
+    m_hoverPoint.reset();
+    m_hoverSeg.reset();
+    m_hoverBreakable = false;
+    m_auxDialogSegSnap = SegmentSnapResult{};
+    // m_auxDialog 是 QPointer: onDeactivate 已 close(), 此处必为空; 不重复清。
+}
+
+void ToolBreak::onDeactivate()
 {
     if (m_auxDialog)
         m_auxDialog->close();
     hideMarkers();
-    if (m_breakCircle) { m_scene->removeItem(m_breakCircle); delete m_breakCircle; m_breakCircle = nullptr; }
-    if (m_segMarker)   { m_scene->removeItem(m_segMarker);   delete m_segMarker;   m_segMarker   = nullptr; }
-    m_scene = nullptr;
-    m_paramDoc = nullptr;
+    m_managed.clear();   // 统一释放 + 影子指针置空 (TOOL_SYSTEM_AUDIT P1/L1)
 }
 
 void ToolBreak::mousePress(QGraphicsSceneMouseEvent* event)
@@ -48,9 +67,7 @@ void ToolBreak::mousePress(QGraphicsSceneMouseEvent* event)
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     // Priority 1: click on a breakable point → break immediately.
     auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
@@ -101,9 +118,7 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
     m_hoverSeg.reset();
     m_hoverBreakable = false;
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     // Try point snap first.
     auto snap = m_snapEngine.findSnap(worldPos, m_paramDoc, zoom);
@@ -122,6 +137,7 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
                 m_breakCircle->setBrush(Qt::NoBrush);
                 m_breakCircle->setZValue(102.0);
                 m_scene->addItem(m_breakCircle);
+                m_managed.own(m_breakCircle, &m_breakCircle);
             }
             m_breakCircle->setPos(cad::geo::Coord::toScene(snap->worldPos));
             m_breakCircle->setVisible(true);
@@ -155,6 +171,7 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
             m_segMarker->setFlag(QGraphicsItem::ItemIgnoresTransformations);
             m_segMarker->setZValue(102.0);
             m_scene->addItem(m_segMarker);
+            m_managed.own(m_segMarker, &m_segMarker);
         }
         m_segMarker->setPos(cad::geo::Coord::toScene(segSnap->worldPos));
         m_segMarker->setVisible(true);
@@ -289,7 +306,7 @@ void ToolBreak::openAuxDialogForBreak(const SegmentSnapResult& segSnap)
 
     QWidget* parentWidget = m_scene && !m_scene->views().isEmpty()
         ? m_scene->views().first() : nullptr;
-    auto* dlg = new QuickAuxDialog(pt, block->findPoint(seg->startPointId),
+    auto* dlg = new cad::ui::QuickAuxDialog(pt, block->findPoint(seg->startPointId),
                                    block->findPoint(seg->endPointId), parentWidget);
     // NOTE: no WA_DeleteOnClose — the dialog schedules its own deleteLater()
     // on close (ElaAppBar's default close path would destroy it mid-call).

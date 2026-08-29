@@ -1,4 +1,4 @@
-#include "LeaderCandidatePicker.h"
+﻿#include "LeaderCandidatePicker.h"
 
 #include <algorithm>
 #include <cmath>
@@ -26,9 +26,7 @@ void LeaderCandidatePicker::collect(const SnapResult& snap)
     clear();
     if (!m_paramDoc || !m_scene) return;
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
     if (std::abs(zoom) < 1e-9) zoom = 1.0;
     // Same reach as the snap itself: what looks like one point may be several
     // coincident points from different blocks stacked on the same spot, and

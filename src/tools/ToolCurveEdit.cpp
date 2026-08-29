@@ -1,4 +1,4 @@
-﻿#include "ToolCurveEdit.h"
+#include "ToolCurveEdit.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -25,29 +25,36 @@ namespace cad::tools {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-void ToolCurveEdit::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+ToolDescriptor ToolCurveEdit::describe()
 {
-    m_scene = &scene;
-    m_paramDoc = paramDoc;
+    ToolDescriptor d;
+    d.id = ToolType::CurveEdit;
+    d.displayName = QString::fromUtf8("曲线(&C)");
+    // M4 (TOOL_SYSTEM_AUDIT): 原用 "pen" 与智能笔同图, 菜单里两个一模一样
+    // 的笔分不清。换成专用贝塞尔曲线图标 (resources/icons/bezier-curve.svg)。
+    d.iconName = QStringLiteral("bezier-curve");
+    d.shortcut = QKeySequence(Qt::Key_C);
+    d.hintText = QString::fromUtf8("曲线：点线身加曲线点 | 拖曲线点弯曲 | 拖手柄调切线 | Ctrl加点 Shift删点 | Esc取消");
+    d.factory = [] { return std::make_unique<ToolCurveEdit>(); };
+    return d;
+}
+
+void ToolCurveEdit::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+{
+    (void)scene;
+    (void)paramDoc;
     m_state = State::Idle;
 }
 
-void ToolCurveEdit::deactivate()
+void ToolCurveEdit::onDeactivate()
 {
     clearGraphics();
-    m_scene = nullptr;
-    m_paramDoc = nullptr;
 }
 
 void ToolCurveEdit::clearGraphics()
 {
     if (m_scene) {
-        if (m_curvePtPreview) { m_scene->removeItem(m_curvePtPreview); delete m_curvePtPreview; }
-        if (m_snapIndicator) { m_scene->removeItem(m_snapIndicator); delete m_snapIndicator; }
-        if (m_hLineIn)  { m_scene->removeItem(m_hLineIn);  delete m_hLineIn; }
-        if (m_hLineOut) { m_scene->removeItem(m_hLineOut); delete m_hLineOut; }
-        if (m_hDotIn)   { m_scene->removeItem(m_hDotIn);   delete m_hDotIn; }
-        if (m_hDotOut)  { m_scene->removeItem(m_hDotOut);  delete m_hDotOut; }
+        m_managed.clear();   // 统一释放 + 影子指针置空 (P1/L1; 原实现竟不置空指针)
     }
     m_curvePtPreview = nullptr;
     m_snapIndicator = nullptr;
@@ -71,14 +78,12 @@ void ToolCurveEdit::mousePress(QGraphicsSceneMouseEvent* event)
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     // 1) Grab a tangent handle of the active curve anchor (highest priority).
     if (!m_handleBlockId.isNull()) {
         const int h = handleHitTest(clickPos, zoom);
-        if (h != 0) { beginHandleDrag(h); return; }
+        if (h != 0) { beginHandleDrag(h, event->modifiers()); return; }
     }
 
     // 2) Click on a curve-relevant point (a CurveAnchor pass-point, or a curve
@@ -178,9 +183,7 @@ void ToolCurveEdit::updateCurvePointPreview(const cad::geo::Vec2& worldPos,
     m_segSnap.reset();
     if (!m_scene || !m_paramDoc) { hideCurvePointPreview(); return; }
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     // Curve-point snap wins: no placement dot while the cursor is over a
     // curve-relevant point (a curve anchor/endpoint under the cursor is grabbed
@@ -216,6 +219,7 @@ void ToolCurveEdit::updateCurvePointPreview(const cad::geo::Vec2& worldPos,
         m_curvePtPreview->setBrush(QColor(0xE9, 0x1E, 0x63));  // ETCAD pink cue
         m_curvePtPreview->setZValue(103.0);
         m_scene->addItem(m_curvePtPreview);
+        m_managed.own(m_curvePtPreview, &m_curvePtPreview);
     }
     m_curvePtPreview->setPos(cad::geo::Coord::toScene(m_segSnap->worldPos));
     m_curvePtPreview->setVisible(true);
@@ -263,7 +267,7 @@ QUuid ToolCurveEdit::placeCurvePoint(const SegmentSnapResult& segSnap)
         block->addPoint(pt);
         seg->passPointIds.push_back(newId);
         seg->type = cad::param::SegmentType::Bezier;
-        ++block->geometryEpoch;  // structure changed → curve cache must rebuild
+        block->touchGeometry();
         m_paramDoc->resolveAll();
     }
     return newId;
@@ -324,9 +328,7 @@ void ToolCurveEdit::dragCurveAnchorTo(const cad::geo::Vec2& worldPos)
     m_paramDoc->resolveForDrag(QList<QUuid>{block->id});
 
     // --- Snap indicator: show green circle when cursor is near another point ---
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
     auto snap = m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, -1.0, m_dragPointId);
     if (snap && snap->pointId != m_dragPointId) {
         if (!m_snapIndicator) {
@@ -338,6 +340,7 @@ void ToolCurveEdit::dragCurveAnchorTo(const cad::geo::Vec2& worldPos)
             m_snapIndicator->setBrush(Qt::NoBrush);
             m_snapIndicator->setZValue(106.0);
             m_scene->addItem(m_snapIndicator);
+            m_managed.own(m_snapIndicator, &m_snapIndicator);
         }
         m_snapIndicator->setPos(cad::geo::Coord::toScene(snap->worldPos));
         m_snapIndicator->setVisible(true);
@@ -358,9 +361,7 @@ void ToolCurveEdit::endCurveAnchorDrag()
             // If so, establish a parametric follow connection so this curve
             // point tracks the target point when it moves.
             if (moved && pt->resolved) {
-                double zoom = 1.0;
-                if (m_scene && !m_scene->views().isEmpty())
-                    zoom = m_scene->views().first()->transform().m11();
+                double zoom = m_scene ? m_scene->currentZoom() : 1.0;
                 // Use the last cursor position (not the resolved point pos)
                 // so snap feels responsive to where the user actually pointed.
                 auto snap = m_snapEngine.findSnap(m_dragLastCursor, m_paramDoc, zoom,
@@ -553,8 +554,14 @@ void ToolCurveEdit::updateHandleGraphics()
     const cad::geo::Vec2 outWorld = block->transform.toWorld(pLocal + tanOut / 3.0);
     const cad::geo::Vec2 pWorld   = block->transform.toWorld(pLocal);
 
-    const QColor kHandleLine(0x00, 0xA8, 0xE1, 120);      // 手柄线: 半透明青色 (不遮曲线)
-    const QColor kHandleTipPen(0x00, 0xA8, 0xE1, 150);    // 控制点描边: 半透明青色
+    // P3-1 (D4): an unlocked point (尖角模式, tangentLocked == false) tints its
+    // handles orange so the user sees the corner state right on the canvas
+    // (locked = cyan; only the colors change — no extra scene items).
+    const bool unlocked = !pt->tangentLocked;
+    const QColor kHandleLine   = unlocked ? QColor(0xE6, 0x8A, 0x00, 120)
+                                          : QColor(0x00, 0xA8, 0xE1, 120);
+    const QColor kHandleTipPen = unlocked ? QColor(0xE6, 0x8A, 0x00, 160)
+                                          : QColor(0x00, 0xA8, 0xE1, 150);
     // 控制点填充 = 完全透明 (NoBrush) — 圈内不遮挡任何几何, 只留淡描边;
     // 圆点比原 r2.0 再缩小 (2026-09 用户两轮反馈: 实心大点不透明/太大 →
     // 纸色填充仍是"不透明补丁"盖住圈下线条 → 真透明 + 更小).
@@ -565,12 +572,14 @@ void ToolCurveEdit::updateHandleGraphics()
         QPen pen(kHandleLine, 1.0); pen.setCosmetic(true);
         m_hLineIn->setPen(pen); m_hLineIn->setZValue(104.0);
         m_scene->addItem(m_hLineIn);
+        m_managed.own(m_hLineIn, &m_hLineIn);
     }
     if (!m_hLineOut) {
         m_hLineOut = new QGraphicsLineItem();
         QPen pen(kHandleLine, 1.0); pen.setCosmetic(true);
         m_hLineOut->setPen(pen); m_hLineOut->setZValue(104.0);
         m_scene->addItem(m_hLineOut);
+        m_managed.own(m_hLineOut, &m_hLineOut);
     }
     if (!m_hDotIn) {
         constexpr double r = 1.6;
@@ -579,6 +588,7 @@ void ToolCurveEdit::updateHandleGraphics()
         m_hDotIn->setPen(tipPen); m_hDotIn->setBrush(kHandleTipFill);
         m_hDotIn->setZValue(105.0);
         m_scene->addItem(m_hDotIn);
+        m_managed.own(m_hDotIn, &m_hDotIn);
     }
     if (!m_hDotOut) {
         constexpr double r = 1.6;
@@ -587,6 +597,7 @@ void ToolCurveEdit::updateHandleGraphics()
         m_hDotOut->setPen(tipPen); m_hDotOut->setBrush(kHandleTipFill);
         m_hDotOut->setZValue(105.0);
         m_scene->addItem(m_hDotOut);
+        m_managed.own(m_hDotOut, &m_hDotOut);
     }
 
     const QPointF pS   = cad::geo::Coord::toScene(pWorld);
@@ -631,7 +642,7 @@ int ToolCurveEdit::handleHitTest(const cad::geo::Vec2& worldPos, double zoom) co
     return 0;
 }
 
-void ToolCurveEdit::beginHandleDrag(int which)
+void ToolCurveEdit::beginHandleDrag(int which, Qt::KeyboardModifiers mods)
 {
     auto* block = m_paramDoc->findBlock(m_handleBlockId);
     auto* pt = block ? block->findPoint(m_handlePointId) : nullptr;
@@ -640,6 +651,7 @@ void ToolCurveEdit::beginHandleDrag(int which)
     m_handleOldTanIn  = pt->tangentIn;
     m_handleOldTanOut = pt->tangentOut;
     m_handleOldAuto   = pt->autoTangent;
+    m_handleOldLocked = pt->tangentLocked;
 
     // First manual edit: materialize the current auto tangents so both handles
     // hold valid values once autoTangent flips to false.
@@ -650,6 +662,16 @@ void ToolCurveEdit::beginHandleDrag(int which)
         pt->tangentOut = to;
         pt->autoTangent = false;
     }
+
+    // P3-1 (D1): Alt+drag = corner mode — break the tangent lock PERSISTENTLY
+    // for this stroke (the pre-drag state is snapshotted for the undo command
+    // and for cancelHandleDrag). Once unlocked, dragHandleTo()'s two
+    // [pt->tangentLocked] branches skip the collinear mirroring, so the
+    // opposite handle keeps its exact pre-drag direction/length — that is the
+    // corner the user asked for. The mods are captured HERE (drag start), not
+    // live during the stroke (D3).
+    if (mods & Qt::AltModifier)
+        pt->tangentLocked = false;
 
     m_dragHandle = which;
     m_state = State::DraggingHandle;
@@ -690,7 +712,7 @@ void ToolCurveEdit::dragHandleTo(const cad::geo::Vec2& worldPos)
     // A tangent change reshapes the curve without moving any point, so the
     // resolve pass won't bump geometryEpoch — bump it here to force the
     // BlockItem cache rebuild (otherwise the curve wouldn't refresh live).
-    ++block->geometryEpoch;
+    block->touchGeometry();
     // Per-frame hot path (切线拖拽每帧): resolve ONLY the host block's dirty
     // subgraph; syncFromBlock rebuilds just the blocks whose epoch changed
     // (the old resolveAll() re-resolved the whole document every frame).
@@ -707,7 +729,8 @@ void ToolCurveEdit::endHandleDrag()
         m_undoStack->push(new cad::cmd::SetCurveTangentCommand(
             m_paramDoc, m_handleBlockId, m_handlePointId,
             m_handleOldTanIn, m_handleOldTanOut, m_handleOldAuto,
-            pt->tangentIn, pt->tangentOut, pt->autoTangent));
+            pt->tangentIn, pt->tangentOut, pt->autoTangent,
+            m_handleOldLocked, pt->tangentLocked));
     }
     // Full document resolve on release to propagate to followers/panels.
     m_paramDoc->resolveAll();
@@ -723,6 +746,7 @@ void ToolCurveEdit::cancelHandleDrag()
         pt->tangentIn = m_handleOldTanIn;
         pt->tangentOut = m_handleOldTanOut;
         pt->autoTangent = m_handleOldAuto;
+        pt->tangentLocked = m_handleOldLocked;  // Alt may have broken it — restore
         m_paramDoc->resolveAll();
         updateHandleGraphics();
     }

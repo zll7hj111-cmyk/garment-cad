@@ -13,6 +13,44 @@
 
 namespace cad::tools {
 
+namespace {
+
+/// D15 确认态两套视觉 (TOOL_SYSTEM_AUDIT H2): 选中未确认 = 虚线弧 + 空心
+/// 锚环 + 减淡配色 ("还差右键/回车一步"); 已确认 = 实线弧 + 实心锚环 +
+/// 全强度配色。幂等 —— 同态重复调用无害。
+void applyConfirmationStyle(QGraphicsEllipseItem* ring,
+                            QGraphicsPathItem* arc, bool confirmed)
+{
+    if (!ring || !arc) return;
+    constexpr QColor kTeal(38, 166, 154);
+    constexpr QColor kAmber(251, 140, 0);
+    if (confirmed) {
+        QPen ringPen(kTeal);
+        ringPen.setWidthF(2.0);
+        ringPen.setCosmetic(true);
+        ring->setPen(ringPen);
+        ring->setBrush(QColor(38, 166, 154, 40));
+        QPen arcPen(kAmber);
+        arcPen.setWidthF(2.0);
+        arcPen.setCosmetic(true);
+        arc->setPen(arcPen);
+    } else {
+        QPen ringPen(kTeal);
+        ringPen.setWidthF(1.5);
+        ringPen.setCosmetic(true);
+        ringPen.setStyle(Qt::DashLine);
+        ring->setPen(ringPen);
+        ring->setBrush(Qt::NoBrush);   // 空心: 一眼区分"未确认"
+        QPen arcPen(QColor(251, 140, 0, 140));  // 减淡琥珀
+        arcPen.setWidthF(2.0);
+        arcPen.setCosmetic(true);
+        arcPen.setStyle(Qt::DashLine);
+        arc->setPen(arcPen);
+    }
+}
+
+} // namespace
+
 RotateGizmo::RotateGizmo(CanvasScene* scene)
     : m_scene(scene)
 {
@@ -67,8 +105,13 @@ void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refWorldRad, do
     m_arc->setZValue(9998);
 
     m_scene->addItem(m_pivotRing);
+    m_managed.own(m_pivotRing, &m_pivotRing);
     m_scene->addItem(m_refLine);
+    m_managed.own(m_refLine, &m_refLine);
     m_scene->addItem(m_arc);
+    m_managed.own(m_arc, &m_arc);
+
+    applyConfirmationStyle(m_pivotRing, m_arc, m_confirmed);
 }
 
 void RotateGizmo::update(double zoom, double dashRad, double arcStartRad, double arcEndRad)
@@ -101,18 +144,22 @@ void RotateGizmo::update(double zoom, double dashRad, double arcStartRad, double
     }
     m_arc->setPath(arcPath);
 
-    QPen arcPen(QColor(251, 140, 0));
-    arcPen.setWidthF(2.0);
-    arcPen.setCosmetic(true);
-    m_arc->setPen(arcPen);
+    // 弧重建后按确认态重上样式 (update 曾无条件写实线琥珀, 会覆盖未确认态).
+    applyConfirmationStyle(m_pivotRing, m_arc, m_confirmed);
+}
+
+void RotateGizmo::setConfirmed(bool confirmed)
+{
+    if (m_confirmed == confirmed) return;
+    m_confirmed = confirmed;
+    applyConfirmationStyle(m_pivotRing, m_arc, m_confirmed);
 }
 
 void RotateGizmo::remove()
 {
-    if (!m_scene) return;
-    if (m_pivotRing) { m_scene->removeItem(m_pivotRing); delete m_pivotRing; m_pivotRing = nullptr; }
-    if (m_refLine)   { m_scene->removeItem(m_refLine);   delete m_refLine;   m_refLine = nullptr; }
-    if (m_arc)       { m_scene->removeItem(m_arc);       delete m_arc;       m_arc = nullptr; }
+    // 统一释放 + 影子置空 (P1/L1); QGraphicsItem 析构自行脱离 scene,
+    // 无 scene 时同样安全 —— 幂等。
+    m_managed.clear();
 }
 
 } // namespace cad::tools

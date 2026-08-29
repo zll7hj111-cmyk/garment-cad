@@ -16,8 +16,8 @@
 #include "parametric/Serial.h"
 #include "geometry/Units.h"
 #include "document/commands/VariableCommands.h"
-#include "MeasureResultDialog.h"
-#include "ToolSmartPen.h"  // HudItem
+#include "ui/MeasureResultDialog.h"
+#include "canvas/HudItem.h"
 
 namespace cad::tools {
 
@@ -32,11 +32,27 @@ constexpr double kAxisZeroEps = 0.05;
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-void ToolMeasure::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+ToolDescriptor ToolMeasure::describe()
 {
-    Tool::activate(scene, paramDoc);
+    ToolDescriptor d;
+    d.id = ToolType::Measure;
+    d.displayName = QString::fromUtf8("测量(&M)");
+    d.iconName = QStringLiteral("ruler");
+    // M 快捷键让给画布长按显示长度 (CanvasView::keyPressEvent), 测量不设快捷键。
+    d.hintText = QString::fromUtf8("测量：点选第一个点 | 点选第二个点 → 自动发布距离变量 | 右键/Esc取消");
+    d.factory = [] { return std::make_unique<ToolMeasure>(); };
+    return d;
+}
+
+void ToolMeasure::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+{
+    (void)scene;
+    (void)paramDoc;
     m_state = State::SelectA;
     m_kind = cad::param::MeasureKind::Distance;
+    // P2/L5 常驻实例: 清上次会话残留的吸附点。
+    m_snapA.reset();
+    m_hoverSnap.reset();
 
     // Persistent mode HUD: tells the user which mode is active even before
     // point A is picked (and after every W cycle).
@@ -44,12 +60,10 @@ void ToolMeasure::activate(CanvasScene& scene, cad::param::ParamDocument* paramD
     m_hud->setVisible(true);
 }
 
-void ToolMeasure::deactivate()
+void ToolMeasure::onDeactivate()
 {
     clearPreview();
-    if (m_previewLine) { m_scene->removeItem(m_previewLine); delete m_previewLine; m_previewLine = nullptr; }
-    if (m_markerA)     { m_scene->removeItem(m_markerA);     delete m_markerA;     m_markerA     = nullptr; }
-    Tool::deactivate();
+    m_managed.clear();   // 统一释放 + 影子指针置空 (P1/L1)
 }
 
 // ---------------------------------------------------------------------------
@@ -68,9 +82,7 @@ void ToolMeasure::mousePress(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
     if (!snap) return;
@@ -90,6 +102,7 @@ void ToolMeasure::mousePress(QGraphicsSceneMouseEvent* event)
             m_markerA->setBrush(Qt::NoBrush);
             m_markerA->setZValue(102.0);
             m_scene->addItem(m_markerA);
+            m_managed.own(m_markerA, &m_markerA);
         }
         m_markerA->setPos(cad::geo::Coord::toScene(snap->worldPos));
         m_markerA->setVisible(true);
@@ -109,9 +122,7 @@ void ToolMeasure::mouseMove(QGraphicsSceneMouseEvent* event)
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
     m_lastCursor = cursorPos;
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     updateHover(cursorPos, zoom);
     if (m_state == State::SelectB)
@@ -241,6 +252,7 @@ void ToolMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
         m_previewLine->setPen(pen);
         m_previewLine->setZValue(101.0);
         m_scene->addItem(m_previewLine);
+        m_managed.own(m_previewLine, &m_previewLine);
     }
     m_previewLine->setLine(QLineF(cad::geo::Coord::toScene(lineStart),
                                   cad::geo::Coord::toScene(endPos)));
@@ -329,7 +341,7 @@ void ToolMeasure::commitMeasure()
     //    初始为空: 用户填了就用用户的 (大写), 留空保留自动生成的 M_xxx。
     QWidget* parent = (m_scene && !m_scene->views().isEmpty())
         ? static_cast<QWidget*>(m_scene->views().first()) : nullptr;
-    MeasureResultDialog dlg(mv.value, mv.refName, QString(), QString(), m_kind, parent);
+    cad::ui::MeasureResultDialog dlg(mv.value, mv.refName, QString(), QString(), m_kind, parent);
     if (dlg.exec() == QDialog::Accepted) {
         const QString newRef     = dlg.enteredRefName();
         const QString newName    = dlg.enteredName();

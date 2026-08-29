@@ -1,9 +1,10 @@
-﻿#include "ConnectGesture.h"
+#include "ConnectGesture.h"
 
 #include <cmath>
 #include <utility>
 
 #include <QKeyEvent>
+#include <QSignalBlocker>
 #include "ElaLineEdit.h"
 #include <QGraphicsView>
 #include <QGraphicsScene>
@@ -21,10 +22,10 @@
 #include "parametric/FollowerAngle.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
-#include "tools/AngleHud.h"
+#include "ui/AngleHud.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasStyle.h"
-#include "tools/LayerFeedback.h"
+#include "ui/LayerFeedback.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"
 #include "document/commands/ComponentCommands.h"
@@ -74,7 +75,7 @@ void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPoi
 
     // 组件级连接: 抓组件成员端点 → 组件整体作为 follower (借用端点连接).
     m_connectComponentId = QUuid();
-    if (const auto* comp = m_paramDoc->componentOfBlock(fromBlockId))
+    if (const auto* comp = m_paramDoc->componentsView().ofBlock(fromBlockId))
         m_connectComponentId = comp->id;
 
     m_connectFromBlock = fromBlockId;
@@ -99,7 +100,7 @@ void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPoi
     // 组件级连接: 记录所有成员拖前 origin (整组跟随光标预览).
     m_connectOrigOrigins.clear();
     if (!m_connectComponentId.isNull()) {
-        if (const auto* comp = m_paramDoc->findComponent(m_connectComponentId))
+        if (const auto* comp = m_paramDoc->componentsView().byId(m_connectComponentId))
             for (const QUuid& mid : comp->memberBlockIds)
                 if (const auto* mb = m_paramDoc->findBlock(mid))
                     m_connectOrigOrigins.insert(mid, mb->transform.origin);
@@ -147,9 +148,7 @@ void ConnectGesture::move(const Vec2& pos)
     auto* blk = m_paramDoc->findBlock(m_connectFromBlock);
     if (!blk) return;
 
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
 
     // Generous radius while connecting: dropping onto a target must feel easy.
     auto snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom, kConnectSnapRadius,
@@ -220,9 +219,7 @@ void ConnectGesture::release(const Vec2& pos)
         // stacked at one position). Ambiguous → ConfirmTarget: the user clicks
         // the intended leader segment (its endpoint on the connection spot is
         // the anchor, its id becomes toSegmentId).
-        double zoom = 1.0;
-        if (m_scene && !m_scene->views().isEmpty())
-            zoom = m_scene->views().first()->transform().m11();
+        double zoom = m_scene ? m_scene->currentZoom() : 1.0;
         const auto allCands = m_snapEngine.findSnapCandidates(
             pos, m_paramDoc, zoom, kConnectSnapRadius, {}, &m_connectFromBlock);
         std::vector<SnapResult> pool;
@@ -278,9 +275,7 @@ void ConnectGesture::release(const Vec2& pos)
 void ConnectGesture::pressConfirmTarget(const Vec2& pos)
 {
     if (!m_paramDoc || !m_scene) { cancel(); return; }
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     const auto segSnap = m_snapEngine.findSegmentSnap(
         pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
@@ -324,9 +319,7 @@ void ConnectGesture::beginSourceConfirm(std::vector<ConfirmCandidate> candidates
 void ConnectGesture::pressConfirmSource(const Vec2& pos)
 {
     if (!m_paramDoc || !m_scene) { cancel(); return; }
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     const auto segSnap = m_snapEngine.findSegmentSnap(
         pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
@@ -458,10 +451,10 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
     if (isComponentConnect()) {
         // ── 组件级连接: 组件整体作为 follower, 借用暴露端点 + 端点线段方向 ──
         const cad::param::Component* comp =
-            m_paramDoc->findComponent(m_connectComponentId);
+            m_paramDoc->componentsView().byId(m_connectComponentId);
         cad::param::Block* exposed = comp
             ? m_paramDoc->findBlock(
-                  m_paramDoc->memberOwningPoint(*comp, m_connectFromPoint))
+                  m_paramDoc->componentsView().memberOwningPoint(*comp, m_connectFromPoint))
             : nullptr;
         if (!comp || !exposed) return false;
         att.fromComponentId = m_connectComponentId;
@@ -488,7 +481,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
         m_paramDoc->resolveAll();
         if (m_scene) {
             m_scene->refreshAllBlockItems();
-            QString toast = crossLayerToast(m_paramDoc, *exposed, *toBlk);
+            QString toast = cad::ui::crossLayerToast(m_paramDoc, *exposed, *toBlk);
             if (!m_componentSwitchCandidates.empty()) {
                 const QString hint = QString::fromUtf8(
                     "连接点有重叠：点击重叠线段可切换跟随基准");
@@ -538,7 +531,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
     m_paramDoc->resolveAll();
     if (m_scene) {
         m_scene->refreshAllBlockItems();
-        if (const QString toast = crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
+        if (const QString toast = cad::ui::crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
             !toast.isEmpty())
             m_showToast(toast);
         const Vec2 anchor = m_connectTarget.has_value()
@@ -607,7 +600,7 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
 {
     if (!m_paramDoc) return false;
     auto* toBlk = m_paramDoc->findBlock(toBlockId);
-    const cad::param::Attachment* att = m_paramDoc->findAttachment(attId);
+    const cad::param::Attachment* att = m_paramDoc->attachmentsView().byId(attId);
     auto* fromBlk = m_paramDoc->findBlock(m_connectFromBlock);
     if (!toBlk || !att || !fromBlk || toBlockId == fromBlk->id) return false;
     const cad::param::ParamPoint* toPt = toBlk->findPoint(toPointId);
@@ -677,13 +670,13 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
         m_reattachOldAtt = oldState;
     }
 
-    const cad::param::Attachment* reatt = m_paramDoc->findAttachment(attId);
+    const cad::param::Attachment* reatt = m_paramDoc->attachmentsView().byId(attId);
     if (!reatt) return false;
     m_editingAttachmentId = attId;
     m_initialAngle = reatt->followerAngle;
     if (m_scene) {
         m_scene->refreshAllBlockItems();
-        if (const QString toast = crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
+        if (const QString toast = cad::ui::crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
             !toast.isEmpty())
             m_showToast(toast);
         showAngleHud(toBlk->worldPos(toPointId));
@@ -737,7 +730,7 @@ std::vector<ConfirmCandidate> ConnectGesture::collectComponentSwitchCandidates(
     for (const auto& block : m_paramDoc->blocks()) {
         // 组件自身成员不能作为基准 (组件跟随自身成员 = 环, addAttachment 会拒).
         if (block.id == m_connectFromBlock) continue;
-        if (const auto* bcomp = m_paramDoc->componentOfBlock(block.id);
+        if (const auto* bcomp = m_paramDoc->componentsView().ofBlock(block.id);
             bcomp && bcomp->id == m_connectComponentId)
             continue;
         const Vec2 local = block.transform.toLocal(connWorldPos);
@@ -761,9 +754,7 @@ std::vector<ConfirmCandidate> ConnectGesture::collectComponentSwitchCandidates(
 void ConnectGesture::pressAngleTarget(const Vec2& pos)
 {
     if (m_componentSwitchCandidates.empty() || !m_paramDoc || !m_scene) return;
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     const auto segSnap = m_snapEngine.findSegmentSnap(
         pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
@@ -787,10 +778,10 @@ bool ConnectGesture::switchComponentTarget(const ConfirmCandidate& cand)
         return false;  // 同一目标: no-op
 
     auto* toBlk = m_paramDoc->findBlock(cand.blockId);
-    const cad::param::Component* comp = m_paramDoc->findComponent(m_connectComponentId);
+    const cad::param::Component* comp = m_paramDoc->componentsView().byId(m_connectComponentId);
     cad::param::Block* exposed = comp
         ? m_paramDoc->findBlock(
-              m_paramDoc->memberOwningPoint(*comp, m_connectFromPoint))
+              m_paramDoc->componentsView().memberOwningPoint(*comp, m_connectFromPoint))
         : nullptr;
     if (!toBlk || !exposed) return false;
 
@@ -837,9 +828,7 @@ void ConnectGesture::updateCandidateHighlight(
     const Vec2& pos, const std::vector<ConfirmCandidate>& candidates)
 {
     if (!m_paramDoc || !m_scene) return;
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     QUuid hitBlock, hitSeg;
     const auto segSnap = m_snapEngine.findSegmentSnap(
@@ -947,7 +936,7 @@ void ConnectGesture::commitConnectMove()
     double curSlideAlong = 0.0, curSlidePerp = 0.0;
     bool slideAlive = false;
     if (!m_connectSlideAttId.isNull()) {
-        if (const auto* a = m_paramDoc->findAttachment(m_connectSlideAttId)) {
+        if (const auto* a = m_paramDoc->attachmentsView().byId(m_connectSlideAttId)) {
             curSlideAlong = a->slideAlongMm;
             curSlidePerp = a->slidePerpMm;
             slideAlive = true;
@@ -992,7 +981,8 @@ void ConnectGesture::showAngleHud(const Vec2& anchorUser)
     QWidget* viewport = view->viewport();
 
     if (!m_angleHud) {
-        m_angleHud = new AngleHud(viewport);
+        // L7: CanvasStyle* 直接注入 (不再沿父链反查)。
+    m_angleHud = new cad::ui::AngleHud(viewport, m_scene ? m_scene->style() : nullptr);
         m_angleHud->onTextChanged = [this](const QString& t) { onAngleTextChanged(t); };
         m_angleHud->onCommit      = [this] { commitAngle(); };
         m_angleHud->onCancel      = [this] { cancelAngle(); };
@@ -1013,11 +1003,12 @@ void ConnectGesture::showAngleHud(const Vec2& anchorUser)
 
     m_angleValid = true;
     m_angleHud->setValid(true);
-    m_angleHud->edit()->blockSignals(true);
-    // Pre-fill with the current angle as 带符号折角 (v3 定稿，与旋转 HUD 一致)。
-    m_angleHud->edit()->setText(
-        cad::geo::Units::formatDegValue(cad::geo::normalizeDeg180(m_initialAngle)));
-    m_angleHud->edit()->blockSignals(false);
+    {
+        const QSignalBlocker signalBlocker(m_angleHud->edit());
+        // Pre-fill with the current angle as 带符号折角 (v3 定稿，与旋转 HUD 一致)。
+        m_angleHud->edit()->setText(
+            cad::geo::Units::formatDegValue(cad::geo::normalizeDeg180(m_initialAngle)));
+    }
     m_angleHud->show();
     m_angleHud->edit()->setFocus();
     m_angleHud->edit()->selectAll();  // typing immediately replaces the value
@@ -1049,18 +1040,18 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
         m_angleMode = cad::param::RotationMode::Angle;
         m_angleValid = true;
     } else {
-        bool isNumber = false;
-        const double numVal = t.toDouble(&isNumber);
-        if (isNumber) {
+        const auto parsed = cad::geo::parseNumberOrFormula(t);
+        if (parsed.isNumber) {
+            const double numVal = parsed.value;
             if (m_angleMode == cad::param::RotationMode::ArcLength) {
                 // 输入 = 带符号折角弧长（v3 定稿）→ 存储 α ∈ [0, 360°) 弧长。
                 const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
                 const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
                 const double foldDeg = (radius > 1e-9)
-                    ? numVal / (M_PI / 180.0 * radius * 0.1) : 0.0;
+                    ? cad::geo::arcMmToDeg(cad::geo::Units::cmToMm(numVal), radius) : 0.0;
                 const double alphaDeg = cad::geo::normalizeDeg360(foldDeg);
                 att->rotationMode = cad::param::RotationMode::ArcLength;
-                att->arcLength = alphaDeg * M_PI / 180.0 * radius;
+                att->arcLength = cad::geo::degToArcMm(alphaDeg, radius);
                 att->arcLengthFormula.clear();
             } else {
                 // 输入 = 带符号折角 → 存储 α（v3 定稿）。
@@ -1071,16 +1062,16 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
             m_angleValid = true;
         } else {
             auto r = cad::param::ConditionEngine::evaluate(
-                t, m_paramDoc->parameters(), {});
+                parsed.formula, m_paramDoc->parameters(), {});
             if (r.ok) {
                 if (m_angleMode == cad::param::RotationMode::ArcLength) {
                     att->rotationMode = cad::param::RotationMode::ArcLength;
                     att->arcLength = geo::Units::cmToMm(r.value);
-                    att->arcLengthFormula = t;
+                    att->arcLengthFormula = parsed.formula;
                 } else {
                     att->rotationMode = cad::param::RotationMode::Angle;
                     att->followerAngle = r.value;
-                    att->followerAngleFormula = t;
+                    att->followerAngleFormula = parsed.formula;
                 }
                 m_angleValid = true;
             } else {
@@ -1099,8 +1090,8 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
         if (!att->fromComponentId.isNull()) {
             // 组件级连接: 整个组件是 follower — 借暴露端点成员作种子
             // (resolveForDrag 的 componentClosure 展开到全组件).
-            if (const auto* comp = m_paramDoc->findComponent(att->fromComponentId)) {
-                const QUuid mb = m_paramDoc->memberOwningPoint(*comp, att->fromPointId);
+            if (const auto* comp = m_paramDoc->componentsView().byId(att->fromComponentId)) {
+                const QUuid mb = m_paramDoc->componentsView().memberOwningPoint(*comp, att->fromPointId);
                 if (!mb.isNull()) seeds.push_back(mb);
             }
         } else if (!att->fromBlockId.isNull()) {
@@ -1134,38 +1125,18 @@ void ConnectGesture::onAngleModeChanged(cad::param::RotationMode mode)
 
     // Geometry-preserving switch: compute current effective angle, then
     // convert to the new mode's value.
-    double curDeg = att->followerAngle;
-    if (att->rotationMode == cad::param::RotationMode::ArcLength) {
-        // Current is arc length → derive angle. 弧长 = 线夹角恒等映射
-        // （2026-08 定稿）：弧长 0 = 0° 折叠、πr = 180° 开平，与 Resolver
-        // 一致，不再反转。
-        const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
-        double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
-        double arcMm = att->arcLength;
-        if (!att->arcLengthFormula.isEmpty()) {
-            auto r = cad::param::ConditionEngine::evaluate(
-                att->arcLengthFormula, m_paramDoc->parameters(), {});
-            if (r.ok) arcMm = geo::Units::cmToMm(r.value);
-        }
-        curDeg = (radius > 1e-9) ? (arcMm / radius) * 180.0 / M_PI : 0.0;
-        curDeg = std::fmod(curDeg, 360.0);
-        if (curDeg < 0.0) curDeg += 360.0;
-    } else if (!att->followerAngleFormula.isEmpty()) {
-        auto r = cad::param::ConditionEngine::evaluate(
-            att->followerAngleFormula, m_paramDoc->parameters(), {});
-        if (r.ok) curDeg = r.value;
-    }
+    const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
+    const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
+    const auto [newAngle, newArc] = cad::param::followerModeSwitchValues(
+        *att, radius, mode, m_paramDoc->parameters(), {});
 
     if (mode == cad::param::RotationMode::ArcLength) {
-        const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
-        double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
         att->rotationMode = cad::param::RotationMode::ArcLength;
-        // 弧长 = 线夹角恒等映射（2026-08 定稿）：弧长角 = 显示角，不再反转。
-        att->arcLength = std::fmod(curDeg, 360.0) * M_PI / 180.0 * radius;
+        att->arcLength = newArc;
         att->arcLengthFormula.clear();
     } else {
         att->rotationMode = cad::param::RotationMode::Angle;
-        att->followerAngle = curDeg;
+        att->followerAngle = newAngle;
         att->followerAngleFormula.clear();
     }
     m_angleMode = mode;
@@ -1174,20 +1145,19 @@ void ConnectGesture::onAngleModeChanged(cad::param::RotationMode mode)
 
     // Refresh HUD text to show the converted value (带符号折角，v3 定稿)。
     if (m_angleHud) {
-        m_angleHud->edit()->blockSignals(true);
+        const QSignalBlocker signalBlocker(m_angleHud->edit());
         if (mode == cad::param::RotationMode::ArcLength) {
             const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
             const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
             const double alphaDeg = (radius > 1e-9)
-                ? (att->arcLength / radius) * 180.0 / M_PI : 0.0;
+                ? cad::geo::arcMmToDeg(att->arcLength, radius) : 0.0;
             const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
             m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(
-                foldDeg * M_PI / 180.0 * radius * 0.1));
+                cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius))));
         } else {
             m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(
                 cad::geo::normalizeDeg180(att->followerAngle)));
         }
-        m_angleHud->edit()->blockSignals(false);
     }
 }
 
@@ -1287,9 +1257,7 @@ void ConnectGesture::updateConnectMarker()
         return;
     }
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
     if (zoom < 1e-9) zoom = 1.0;
     // The ring is the SAME size as the snap radius — the magnet's reach made
     // visible: releasing anywhere inside this ring connects to this point.
@@ -1331,9 +1299,7 @@ void ConnectGesture::updateConnectHalo()
     auto* blk = m_paramDoc->findBlock(m_connectFromBlock);
     if (!blk) return;
 
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
     if (zoom < 1e-9) zoom = 1.0;
     const double r = kConnectSnapRadius / zoom;  // halo == connect reach
 
@@ -1367,9 +1333,7 @@ void ConnectGesture::removeConnectHalo()
 std::optional<SnapResult> ConnectGesture::hitPoint(const Vec2& worldPos) const
 {
     if (!m_paramDoc) return std::nullopt;
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
     // Source-grab radius (kConnectGrabRadius) is deliberately more generous
     // than the drop radius: grabbing must feel easy, dropping stays precise.
     return m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, kConnectGrabRadius);
@@ -1378,9 +1342,7 @@ std::optional<SnapResult> ConnectGesture::hitPoint(const Vec2& worldPos) const
 std::vector<SnapResult> ConnectGesture::hitPointCandidates(const Vec2& worldPos) const
 {
     if (!m_paramDoc) return {};
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
     return m_snapEngine.findSnapCandidates(worldPos, m_paramDoc, zoom, kConnectGrabRadius);
 }
 

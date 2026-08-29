@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Tool.h"
+#include "ToolRegistry.h"
 #include "SnapEngine.h"
 #include "geometry/Vec2.h"
 
@@ -9,6 +10,7 @@
 
 class QGraphicsLineItem;
 class QGraphicsEllipseItem;
+#include "canvas/ManagedItems.h"
 
 namespace cad::param { class ParamDocument; class Block; struct ParamPoint; struct Segment; }
 
@@ -30,14 +32,16 @@ namespace cad::tools {
 class ToolCurveEdit : public Tool
 {
 public:
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
     void mouseRelease(QGraphicsSceneMouseEvent* event) override;
     void keyPress(QKeyEvent* event) override;
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override { return "\xe6\x9b\xb2\xe7\xba\xbf"; }  // "曲线"
 
 private:
@@ -74,7 +78,12 @@ private:
     void hideHandles();
     /// Which handle (if any) is under worldPos: 0=none, 1=in, 2=out.
     [[nodiscard]] int handleHitTest(const cad::geo::Vec2& worldPos, double zoom) const;
-    void beginHandleDrag(int which);
+    /// Begin dragging a tangent handle. @p mods are captured at drag START (D3):
+    /// Alt = corner mode — breaks the tangent lock (tangentLocked = false)
+    /// PERSISTENTLY for this drag stroke (D1, Illustrator anchor-convert
+    /// semantics); the relock entrance stays the property-panel checkbox (D2).
+    /// Alt pressed/released mid-drag is ignored (D3, no state jumps).
+    void beginHandleDrag(int which, Qt::KeyboardModifiers mods);
     void dragHandleTo(const cad::geo::Vec2& worldPos);
     void endHandleDrag();
     void cancelHandleDrag();
@@ -89,8 +98,6 @@ private:
     /// Release all transient graphics (preview dot + handles).
     void clearGraphics();
 
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
     State m_state = State::Idle;
 
     SnapEngine m_snapEngine;
@@ -116,6 +123,7 @@ private:
     cad::geo::Vec2 m_handleOldTanIn;
     cad::geo::Vec2 m_handleOldTanOut;
     bool   m_handleOldAuto = true;
+    bool   m_handleOldLocked = true;  ///< tangentLocked at drag start (Alt can break it)
 
     // Transient graphics
     QGraphicsEllipseItem* m_curvePtPreview = nullptr;  ///< Placement dot.
@@ -124,6 +132,8 @@ private:
     QGraphicsLineItem*    m_hLineOut = nullptr;
     QGraphicsEllipseItem* m_hDotIn   = nullptr;
     QGraphicsEllipseItem* m_hDotOut  = nullptr;
+    /// 临时图元统一登记 (deactivate 统一释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems m_managed;
 };
 
 } // namespace cad::tools

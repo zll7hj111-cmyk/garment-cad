@@ -7,6 +7,8 @@
 class QGraphicsEllipseItem;
 class QGraphicsPathItem;
 
+#include "canvas/ManagedItems.h"
+
 class CanvasScene;
 
 namespace cad::tools {
@@ -34,6 +36,14 @@ public:
     /// the original line's direction).
     void update(double zoom, double dashRad, double arcStartRad, double arcEndRad);
 
+    /// D15 确认门可视区分 (TOOL_SYSTEM_AUDIT H2): 未确认 = 虚线弧 + 空心
+    /// 锚环 (半透明, 提示"还差一步确认"); 确认 = 实线弧 + 实心锚环。幂等,
+    /// 同值调用零重绘。无图元时安全 no-op。
+    void setConfirmed(bool confirmed);
+
+    /// 当前确认态视觉 (测试/诊断用)。
+    [[nodiscard]] bool confirmed() const { return m_confirmed; }
+
     /// Detach and destroy all items (idempotent).
     void remove();
 
@@ -46,8 +56,12 @@ private:
     QGraphicsPathItem*       m_refLine = nullptr;    ///< Reference dash (grey).
     QGraphicsPathItem*       m_arc = nullptr;        ///< Angle arc (amber).
 
+    /// 图元统一登记 (remove() 一次性释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems             m_managed;
+
     QPointF m_pivotScene;     ///< Pivot in scene coords (cached at build).
     double  m_refWorldRad = 0.0;  ///< Reference direction (rad), cached at build.
+    bool    m_confirmed = false;  ///< D15 确认态视觉 (实线弧/空心环切换).
 };
 
 } // namespace cad::tools

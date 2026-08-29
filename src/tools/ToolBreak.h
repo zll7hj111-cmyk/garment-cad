@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include "Tool.h"
+#include "ToolRegistry.h"
 #include "SnapEngine.h"
 #include "geometry/Vec2.h"
 
@@ -10,12 +11,15 @@
 class QGraphicsPathItem;
 class QGraphicsEllipseItem;
 
+#include "canvas/ManagedItems.h"
+
 namespace cad::param { class ParamDocument; struct ParamPoint; }
 
+// P2-4: these are QWidget components living in src/ui/ (cad::ui) now —
+// tools/ keeps only gestures and state machines.
+namespace cad::ui { class QuickAuxDialog; }
+
 namespace cad::tools {
-
-class QuickAuxDialog;
-
 /// Break tool — splits a segment at an auxiliary point into two independent
 /// blocks connected by an Attachment (follower angle 0°).
 ///
@@ -29,13 +33,15 @@ class QuickAuxDialog;
 class ToolBreak : public Tool
 {
 public:
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
     void mouseRelease(QGraphicsSceneMouseEvent* event) override;
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
     { return "\xe6\x89\x93\xe6\x96\xad"; }  // "打断"
 
@@ -57,9 +63,6 @@ private:
     [[nodiscard]] bool isBreakable(const QUuid& blockId,
                                    const QUuid& pointId) const;
 
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
-
     SnapEngine m_snapEngine;
 
     // Hover state
@@ -69,10 +72,12 @@ private:
 
     // Graphics markers
     QGraphicsEllipseItem* m_breakCircle = nullptr;  ///< Green circle on breakable point.
+    /// 临时图元统一登记 (deactivate 统一释放, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems m_managed;
     QGraphicsPathItem*    m_segMarker   = nullptr;  ///< X marker on segment body.
 
     // Non-modal quick-aux dialog
-    QPointer<QuickAuxDialog> m_auxDialog;
+    QPointer<cad::ui::QuickAuxDialog> m_auxDialog;
     SegmentSnapResult m_auxDialogSegSnap;
 };
 

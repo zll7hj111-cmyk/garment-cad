@@ -1,13 +1,15 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QString>
 #include <QPointer>
 #include <QHash>
+#include <QMetaObject>
+#include <optional>
 #include <vector>
 
 #include "Tool.h"
-#include "document/commands/ComponentCommands.h"
+#include "ToolRegistry.h"
 #include "geometry/Vec2.h"
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
@@ -17,12 +19,15 @@ class QGraphicsEllipseItem;
 class QGraphicsPathItem;
 class QGraphicsSimpleTextItem;
 class QGraphicsRectItem;
+#include "canvas/ManagedItems.h"
 
 namespace cad::param { struct Attachment; }
 
-namespace cad::tools {
+// P2-4: these are QWidget components living in src/ui/ (cad::ui) now —
+// tools/ keeps only gestures and state machines.
+namespace cad::ui { class AngleHud; }
 
-class AngleHud;
+namespace cad::tools {
 class RotateCopyGesture;
 class RotateGizmo;
 
@@ -67,8 +72,28 @@ public:
     /// this tool on every switch, so without this each switch would leak one).
     ~ToolRotate() override;
 
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
+
+    /// 选区继承 (D9, 旋转重设计 2026-08-27): 选择工具里框好的选集 → 按 R /
+    /// 右键菜单「旋转」进入, 跳过拾取直接进入选集锚点阶段。空选集 no-op。
+    void adoptSelection(const QList<QUuid>& blockIds);
+    /// True when an adopted/collected selection set is active (multi-block
+    /// rigid rotation; single-line sessions still use the classic fields).
+    [[nodiscard]] bool hasSelectionSet() const { return !m_selIds.isEmpty(); }
+    /// 单线确认流 (D15, 用户拍板 2026-08-27): 选中态 ⇄ 确定态之门。
+    /// false = 已选未确认 (点空白取消/点端点切换锚向/不可拖动);
+    /// true  = 已确认 (可拖动; 拖动提交后自动回落 false, 再拖需再确认)。
+    [[nodiscard]] bool selectionConfirmed() const { return m_selectionConfirmed; }
+    /// 当前 gizmo 的确认态视觉 (测试/诊断用; 无 gizmo = false)。RotateGizmo
+    /// 此处仅前向声明, 实现落 ToolRotate.cpp。
+    [[nodiscard]] bool gizmoConfirmed() const;
+    /// 旋转会话中 (有单线/选集目标且非 Idle): CanvasView 借此屏蔽右键
+    /// 上下文菜单 —— 确认手势独占该按键 (D15 与发布菜单互斥)。
+    [[nodiscard]] bool hasSessionTarget() const
+    { return m_state == RotateState::Ready || m_state == RotateState::Rotating; }
+    /// 当前锚心所在点 id (测试/诊断用; null = 无会话)。
+    [[nodiscard]] QUuid anchorPointId() const { return m_anchorPointId; }
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
@@ -77,16 +102,21 @@ public:
 
     void keyPress(QKeyEvent* event) override;
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
     { return "\xe6\x97\x8b\xe8\xbd\xac"; }  // 旋转
     [[nodiscard]] RotateState state() const { return m_state; }
-    /// W 键组件整组旋转模式 (2026-12 用户拍板): true = 目标组件整组绕任意
-    /// 锚点旋转 (仅当目标线属于某组件时可切换).
-    [[nodiscard]] bool groupMode() const { return m_groupMode; }
+    /// 影子会话诊断 (测试/面板提示用): 当前收集的"基准在 S 外"连接数.
+    [[nodiscard]] int shadowCount() const { return static_cast<int>(m_shadowAtts.size()); }
 
 private:
     // ── Target selection ──
-    void selectTarget(const QUuid& blockId);
+    /// Select a rotation target. @p clickWorld (可选): 本次选中的点击位置 ——
+    /// 锚心初值跟随点击端 (自由线取近端; 连接线恒取挂连接端; 中段/无位置
+    /// 保持起点默认)。
+    void selectTarget(const QUuid& blockId,
+                      const std::optional<cad::geo::Vec2>& clickWorld = std::nullopt);
     void clearTarget();
     /// Non-pin follower attachment whose follower is the target block
     /// (nullptr when the block is free).
@@ -152,6 +182,9 @@ private:
     // ── Angle HUD ──
     void showHud();
     void hideHud();
+    /// 视图缩放/平移时把 HUD 移回锚心旁 (M8): 旧实现只在 showHud 时 move
+    /// 一次, 滚轮缩放/空格平移后悬浮框停在旧屏幕位置与锚心脱节。
+    void repositionHud();
     void onHudTextChanged(const QString& text);   ///< Live preview.
     void onHudCommit();                            ///< Enter.
     void onHudCancel();                            ///< Esc.
@@ -163,6 +196,10 @@ private:
     void buildGizmo();    ///< Pivot ring + reference dash + arc.
     void updateGizmo();   ///< Refresh arc/dash for the current angle.
     void removeGizmo();
+    /// D15 确认门可视同步 (TOOL_SYSTEM_AUDIT H2): 确认态翻转统一入口 ——
+    /// 写标志 + gizmo 确认态样式 + HUD caption 确认提示, 三者缺一就是
+    /// "无视觉表达的隐藏状态"。幂等 (同值 no-op)。
+    void applySelectionConfirmed(bool confirmed);
     /// Original line's current world direction (deg) about the pivot — the
     /// rotate-copy base: the clone's relative 0° = overlap with the original.
     [[nodiscard]] double originalWorldRotDeg() const;
@@ -182,55 +219,48 @@ private:
     /// Clear the aim-candidate highlight and forget the pending target.
     void clearAimCandidate();
 
-    // ── W 键组件整组旋转 (2026-12 用户拍板, ROTATE_COMPONENT_DESIGN.md) ──
-    /// W 切换: 进入/退出整组旋转模式 (仅目标属组件).
-    void toggleGroupMode();
-    void enterGroupMode();
-    /// 退出整组模式回单线 (保留目标; 若释放未提交先恢复).
-    void exitGroupMode();
-    /// 第一击: 设锚点 (吸附最近 8px/zoom 内 resolved 点, 否则自由位置).
-    void beginGroupPivot(const cad::geo::Vec2& pos);
-    /// 第二击按下: 起手整组旋转 (收集 + 释放外部约束, D7).
-    void beginGroupRotation(const cad::geo::Vec2& pos);
-    void updateGroupRotation(const cad::geo::Vec2& pos, bool snap);
-    /// 提交 (restore-then-replay → RotateComponentCommand, 一步 undo).
-    void commitGroupRotation();
-    void cancelGroupRotation();
-    /// 施加增量角 (全体成员绕锚点刚体变换, resolveForDrag 热路径).
-    void applyGroupDelta(double deltaDeg);
-    /// 收集并释放组件全部外部约束 (D7 判定表); 幂等 (已释放则 no-op).
-    void collectAndReleaseComponentExternal();
-    /// 恢复被释放的外部约束 + resolveAll (Esc/cancel 路径).
-    void restoreComponentExternal();
+    // ── 选集旋转 (选区继承 adoptSelection, 2026-08-27 泛化) ──
+    /// 两段式: 第一击设锚点 (吸附最近 8px/zoom 内 resolved 点, 否则自由位置).
+    void beginSelPivot(const cad::geo::Vec2& pos);
+    /// 第二击按下: 起手选集旋转 (收集影子会话, §2.6).
+    void beginSelRotation(const cad::geo::Vec2& pos);
+    void updateSelRotation(const cad::geo::Vec2& pos, bool snap);
+    /// 提交 (restore-then-replay → RotateBlocksCommand, 一步 undo).
+    void commitSelRotation();
+    void cancelSelRotation();
+    /// 施加增量角 (S = m_selIds 全体绕锚点刚体变换 + 影子偏转回写,
+    /// resolveForDrag 热路径).
+    void applySelDelta(double deltaDeg);
+    /// 影子会话收集 (§2.6): 找出 S 内块作为 follower、角度基准方向在 S 外
+    /// 的活跃连接, 快照旧 offset 进 m_shadowBase。随 beginSelRotation 调用.
+    void collectShadowAttachments();
     /// 任意可捕捉点吸附 (8px/zoom): 返回命中点 id, 失败返回 null.
     [[nodiscard]] QUuid snapAnyPoint(const cad::geo::Vec2& worldPos) const;
-    /// 组件虚线包围盒高亮 (防呆: 转的是整组; 随旋转逐帧更新).
-    void updateGroupHighlightBox();
-    void removeGroupHighlightBox();
+    /// 选集虚线包围盒高亮 (随旋转逐帧更新).
+    void updateSelHighlightBox();
+    void removeSelHighlightBox();
 
-    // ── W 键组件整组旋转状态 (2026-12) ──
-    QUuid m_compId;                  ///< 当前目标的所属组件 (null = 非组件线).
-    bool  m_groupMode = false;       ///< W 切换的整组旋转模式.
-    bool  m_groupPivotSet = false;   ///< 第一击已设锚点.
-    cad::geo::Vec2 m_groupPivot;     ///< 整组旋转锚点 (world mm).
-    QUuid m_groupPivotPointId;       ///< 吸附到的点 id (null = 自由锚点).
-    double m_groupDelta = 0.0;       ///< 当前增量角 (deg, 带符号; 0 = 原始位姿).
-    double m_groupBaselineRad = 0.0; ///< 拖起始方向 (pivot → 按下点, rad).
-    QHash<QUuid, cad::param::Transform2D> m_groupBaseTf;  ///< 成员位姿基准.
-    std::vector<cad::cmd::AimRelease>  m_groupReleasedTargets; ///< 外部 endTarget 快照.
-    std::vector<cad::cmd::DartRelease> m_groupReleasedDarts;   ///< 外部省道快照.
-    std::vector<cad::param::Attachment> m_groupReleasedAtts;   ///< 外部 attachment 快照.
-    bool m_groupReleasedHeld = false;  ///< 释放已执行未提交/未恢复.
-    QGraphicsRectItem* m_groupHighlightBox = nullptr; ///< 组件虚线包围盒.
+    // ── 选集旋转状态 (选区继承; 组件"W 键整组旋转"模态已删除, 2026-08-29) ──
+    bool  m_selectionRotate = false; ///< 选集旋转会话激活 (adoptSelection 置位).
+    QList<QUuid> m_selIds;           ///< 旋转选集 S (刚体变换对象全体).
+    QHash<QUuid, double> m_shadowBase; ///< 受影响连接的 baselineOffsetDeg 基准.
+    QList<QUuid> m_shadowAtts;       ///< 影子会话附件 id (基准在 S 外的活跃连接).
+    bool  m_selPivotSet = false;     ///< 第一击已设锚点.
+    cad::geo::Vec2 m_selPivot;       ///< 选集旋转锚点 (world mm).
+    QUuid m_selPivotPointId;         ///< 吸附到的点 id (null = 自由锚点).
+    double m_selDelta = 0.0;         ///< 当前增量角 (deg, 带符号; 0 = 原始位姿).
+    double m_selBaselineRad = 0.0;   ///< 拖起始方向 (pivot → 按下点, rad).
+    QHash<QUuid, cad::param::Transform2D> m_selBaseTf;  ///< 成员位姿基准.
+    QGraphicsRectItem* m_selHighlightBox = nullptr; ///< 选集虚线包围盒.
 
     // ── Core state ──
-    CanvasScene* m_scene = nullptr;
-    cad::param::ParamDocument* m_paramDoc = nullptr;
     RotateState m_state = RotateState::Idle;
 
     QUuid m_blockId;               ///< Rotation target.
     bool  m_connected = false;     ///< true = connected (followerAngle), false = free (transform).
     QUuid m_attId;                 ///< Follower attachment id (connected mode).
+    /// 单线确认门标志 (D15): 见 selectionConfirmed()。选集会话不使用。
+    bool m_selectionConfirmed = false;
     cad::geo::Vec2 m_pivot;        ///< Rotation centre (world, mm).
     double m_refWorldRad = 0.0;    ///< Reference direction (rad): leader exit dir (connected) or 0 (free).
 
@@ -268,14 +298,22 @@ private:
     // Gizmo (extracted: RotateGizmo owns the items).
     RotateGizmo* m_gizmo = nullptr;
 
-    // Angle HUD.
-    QPointer<AngleHud> m_hud;
+    // Angle HUD. 命名 m_angleHud 避免遮蔽基类 HudItem* m_hud (P2/H4)。
+    QPointer<cad::ui::AngleHud> m_angleHud;
     bool m_hudValid = true;
+    /// 最近一次公式解析错误 (M8): 无效时经 AngleHud::setError 展示原因。
+    QString m_hudError;
+    /// 视图变换 → HUD 重定位的连接 (M8; onDeactivate 断开, 防悬垂 lambda)。
+    QMetaObject::Connection m_viewZoomConn;
+    QMetaObject::Connection m_viewHScrollConn;
+    QMetaObject::Connection m_viewVScrollConn;
 
     // Endpoint aim snap state.
     QUuid m_aimBlockId;              ///< Candidate target block (null = none).
     QUuid m_aimPointId;              ///< Candidate target point.
     QGraphicsEllipseItem* m_aimRing = nullptr;  ///< Highlight ring on the candidate.
+    /// 临时图元统一登记 (deactivate 统一释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems m_managed;
 
     friend class RotateCopyGesture;
 };

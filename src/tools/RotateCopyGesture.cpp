@@ -1,4 +1,4 @@
-﻿#include "RotateCopyGesture.h"
+#include "RotateCopyGesture.h"
 
 #include <cmath>
 
@@ -7,7 +7,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "geometry/Angle.h"
-#include "tools/AngleHud.h"
+#include "ui/AngleHud.h"
 #include "tools/ToolRotate.h"
 #include "canvas/CanvasScene.h"
 #include "document/commands/BlockCommands.h"
@@ -104,7 +104,7 @@ void RotateCopyGesture::begin(const Vec2& pos)
     // 恢复 HUD 编辑（连续复制：上次提交后已隐藏；此处重新显示，目标明确
     // 是副本相对角度）。
     o.showHud();
-    if (o.m_hud) o.m_hud->setMode(cad::param::RotationMode::Angle);
+    if (o.m_angleHud) o.m_angleHud->setMode(cad::param::RotationMode::Angle);
     o.refreshHudText();
     if (o.m_scene) o.m_scene->refreshAllBlockItems();
 }
@@ -207,7 +207,7 @@ void RotateCopyGesture::convert(const Vec2& pos)
     m_copyMode = true;
     // 恢复 HUD 编辑（连续复制场景同上）。
     o.showHud();
-    if (o.m_hud) o.m_hud->setMode(cad::param::RotationMode::Angle);
+    if (o.m_angleHud) o.m_angleHud->setMode(cad::param::RotationMode::Angle);
     o.refreshHudText();
     if (o.m_scene) o.m_scene->refreshAllBlockItems();
 }
@@ -256,8 +256,7 @@ double RotateCopyGesture::currentRelativeAngle() const
     const auto& atts = o.m_paramDoc->attachments();
     for (const auto& a : atts) {
         if (a.id != m_cloneAttId) continue;
-        double deg = std::fmod(180.0 - m_baseOffsetDeg - a.followerAngle, 360.0);
-        if (deg < 0.0) deg += 360.0;
+        double deg = cad::geo::normalizeDeg360(180.0 - m_baseOffsetDeg - a.followerAngle);
         return deg;
     }
     return 0.0;
@@ -305,9 +304,7 @@ void RotateCopyGesture::commit()
     // Normalise to (-180, 180] so a full 360° swing back counts as "no
     // rotation" (转回原位 = 不复制). Pivot-relative 0° = stored angle
     // 180° − offset（闭合基准存储 2026-08）。
-    double n = std::fmod(180.0 - m_baseOffsetDeg - finalAngle, 360.0);
-    if (n < 0.0) n += 360.0;
-    if (n > 180.0) n -= 360.0;
+    double n = cad::geo::normalizeDeg180(180.0 - m_baseOffsetDeg - finalAngle);
     const bool zeroAngle = std::abs(n) < 1e-6 && finalFormula.isEmpty();
 
     removeCopyPreview();   // drop the live clone (original untouched)

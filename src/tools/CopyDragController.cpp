@@ -5,6 +5,7 @@
 #include "parametric/ParamDocument.h"
 #include "canvas/CanvasScene.h"
 #include "document/commands/BlockCommands.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::tools {
 
@@ -43,7 +44,7 @@ void CopyDragController::begin(const QSet<QUuid>& selection,
     for (const auto& b : m_copyResult.blocks)
         m_paramDoc->addBlock(b);
     // Verbatim: cloned connections keep the ORIGINAL's isLocked (复制语义).
-    m_paramDoc->addAttachmentsRaw(m_copyResult.attachments);
+    cad::param::RawModelAccess::addAttachmentsRaw(*m_paramDoc, m_copyResult.attachments);
 
     // Anchor the drag on the LIVE origins (followers were just resolver-placed).
     m_copyStartPos = pos;

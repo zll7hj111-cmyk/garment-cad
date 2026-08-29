@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Tool.h"
+#include "ToolRegistry.h"
 #include "SnapEngine.h"
 #include "geometry/Vec2.h"
 #include "parametric/MeasureVariable.h"  // MeasureKind
@@ -9,12 +10,13 @@
 
 class QGraphicsLineItem;
 class QGraphicsEllipseItem;
+#include "canvas/ManagedItems.h"
 
 namespace cad::param { class ParamDocument; }
 
-namespace cad::tools {
-
 class HudItem;
+
+namespace cad::tools {
 
 /// Measure tool — publish a two-point measurement as a MeasureVariable.
 ///
@@ -32,14 +34,16 @@ class HudItem;
 class ToolMeasure : public Tool
 {
 public:
-    void activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
-    void deactivate() override;
+    void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
+    void onDeactivate() override;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
     void mouseRelease(QGraphicsSceneMouseEvent* event) override;
     void keyPress(QKeyEvent* event) override;
 
+    /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
+    static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
     { return "\xe6\xb5\x8b\xe9\x87\x8f"; }  // "测量"
 
@@ -80,6 +84,8 @@ private:
     // Preview graphics
     QGraphicsLineItem*    m_previewLine = nullptr;  ///< Dashed A→cursor line.
     QGraphicsEllipseItem* m_markerA     = nullptr;  ///< Circle at point A.
+    /// 临时图元统一登记 (deactivate 统一释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
+    ManagedItems m_managed;
 };
 
 } // namespace cad::tools

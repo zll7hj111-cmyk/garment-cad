@@ -21,7 +21,9 @@
 #include <functional>
 
 #include "canvas/CanvasScene.h"
+#include "HitTester.h"
 #include "canvas/BlockItem.h"
+#include "canvas/HudItem.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/AttachmentGraph.h"
@@ -31,7 +33,7 @@
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
 #include "parametric/FollowerAngle.h"
-#include "LinePropertyDialog.h"
+#include "ui/LinePropertyDialog.h"
 #include "ConnectGesture.h"
 #include "CopyDragController.h"
 #include "MarqueeGesture.h"
@@ -40,7 +42,7 @@
 #include "document/commands/DocumentCommands.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/AttachmentCommands.h"
-#include "document/DeleteImpactConfirm.h"
+#include "ui/DeleteImpactConfirm.h"
 
 namespace cad::tools {
 
@@ -48,7 +50,23 @@ namespace {
 
 /// 长按拖动判定阈值 (2026-09 取消确认基准): press 线身后移动超过该像素数
 /// → 进入拖动 (锚点 = press 位置, 与旧"press 即拖"位移语义一致).
-constexpr double kDragThresholdPx = 5.0;
+///
+/// M6 (TOOL_SYSTEM_AUDIT): 原为单一 5.0px。5px 在触控板/高 DPI 屏上约等于
+/// 一次手抖, 而"选中即操作"意味着抖一下就把几何整体平移了 (虽然可 undo,
+/// 但用户往往事后才发现)。分档处理:
+///   · press 未选中的块 —— 这次 press 本来就是"选中"动作, 拖动是次要意图,
+///     5px 保持灵敏;
+///   · press **已选中**的块 —— 选集已经建立, press 的唯一意图就是拖, 而
+///     误拖的代价是静默改几何。放宽到 10px, 让"点一下保持选中"不会被抖成
+///     一次移动。
+constexpr double kDragThresholdPx = 5.0;         ///< press 未选中块
+constexpr double kDragThresholdSelectedPx = 10.0; ///< press 已选中块 (M6)
+
+/// 本次 press 的拖动阈值: 已选中的块用更宽的一档 (见 kDragThresholdPx 注释)。
+[[nodiscard]] constexpr double dragThresholdPxFor(bool pressWasSelected)
+{
+    return pressWasSelected ? kDragThresholdSelectedPx : kDragThresholdPx;
+}
 
 /// 线段角色 → 界面文案 (与 LinePropertyDialog 的角色下拉一致).
 QString segmentRoleText(cad::param::SegmentRole role)
@@ -62,13 +80,6 @@ QString segmentRoleText(cad::param::SegmentRole role)
     return QString::fromUtf8("轮廓线");
 }
 
-/// 重叠提示 HUD 的共用字体 (每帧创建 QFont 代价高).
-const QFont& overlapHintFont()
-{
-    static QFont f = [] { QFont fnt; fnt.setPixelSize(11); return fnt; }();
-    return f;
-}
-
 /// True if segment [p1,p2] intersects (or is contained in) rect r.
 /// Liang-Barsky clipping; also counts either endpoint inside the rect.
 } // namespace
@@ -77,11 +88,25 @@ const QFont& overlapHintFont()
 // Lifecycle
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void ToolSelect::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+ToolDescriptor ToolSelect::describe()
 {
-    m_scene = &scene;
-    m_paramDoc = paramDoc;
+    ToolDescriptor d;
+    d.id = ToolType::Select;
+    d.displayName = QString::fromUtf8("选择(&V)");
+    d.iconName = QStringLiteral("cursor-click");
+    d.shortcut = QKeySequence(Qt::Key_V);
+    d.hintText = QString::fromUtf8("选择：点击选取实体（单选即操作）| W切换单选/多选 | 右键取消/确认 | 空白右键→智能笔 | 双击编辑 | Del删除");
+    d.factory = [] { return std::make_unique<ToolSelect>(); };
+    return d;
+}
+
+void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+{
+    (void)scene;
+    (void)paramDoc;
     m_state = SelectState::Idle;
+    // P2/L5 常驻实例: 每次进入回到单选模式 (旧"销毁重建"即此语义)。
+    m_selectionMode = SelectionMode::Single;
 
     // (Re)create the extracted gestures with the current context. The tools
     // forward their state transitions / selection queries through callbacks.
@@ -108,7 +133,7 @@ void ToolSelect::activate(CanvasScene& scene, cad::param::ParamDocument* paramDo
     m_marqueeGesture = new MarqueeGesture(m_scene, m_paramDoc);
 }
 
-void ToolSelect::deactivate()
+void ToolSelect::onDeactivate()
 {
     if (m_copyDrag && m_copyDrag->active())
         m_copyDrag->cancel();       // tool switch mid-copy: drop the clones
@@ -131,8 +156,16 @@ void ToolSelect::deactivate()
     if (m_scene && !m_scene->views().isEmpty())
         m_scene->views().first()->viewport()->setCursor(Qt::ArrowCursor);
 
-    m_scene = nullptr;
-    m_paramDoc = nullptr;
+    // M2/N5 (TOOL_SYSTEM_AUDIT 复核 2026-08-29): 重叠提示图元在此销毁,
+    // 而不是留给析构函数。P2/L5 之后工具实例常驻, 析构只在程序退出时跑 ——
+    // 靠析构"清理"的话, 图元在整个会话里都会挂在场景图和 BSP 索引中
+    // (被 hide 但没删)。累积泄漏虽然被"只有一个实例"顺带消除了, 但那是
+    // 常驻实例的副产品, 不是这行代码的功劳: 一旦将来改回销毁重建,
+    // 放析构的写法会立刻重新漏。放在 onDeactivate 才是真正的清理点
+    // (基类清空 m_scene 之前, 此处 m_scene 仍有效)。
+    delete m_overlapHint;   // QGraphicsItem 析构自行脱离 scene
+    m_overlapHint = nullptr;
+
     m_state = SelectState::Idle;
 }
 
@@ -333,8 +366,9 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
                 act->setProperty("overlapPick", i);
             }
         }
-        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr
-            && cands.size() < 2) {
+        // L6 (TOOL_SYSTEM_AUDIT): 末项 cands.size() < 2 与首项 overlapMenu
+        // == nullptr 等价 (overlapMenu 仅在候选 ≥2 时创建), 冗余 —— 删。
+        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr) {
             // 既有行为: 无选中 + 空白右键 = 切智能笔.
             if (m_selection.isEmpty() && hitBlock(pos).isNull())
                 requestToolSwitch(ToolType::SmartPen);
@@ -387,12 +421,15 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
             // Single mode: press selects, holding moves (no right-click step).
             // 点击空白清选; 无框选.
             if (!blockHit.isNull()) {
+                // M6: "press 前是否已选中"必须在覆写 m_selection 之前取 ——
+                // 它决定本次 press 的拖动阈值档位 (已选中的块误拖代价更高)。
+                const bool wasSelected = m_selection.contains(blockHit);
                 m_lastHitSegmentId = hitSegmentAt(pos);
                 m_selection = {blockHit};
                 syncSelectionVisual();
                 setState(SelectState::Selecting);
                 notifyEditTarget();
-                beginPressPending(pos, blockHit, /*wasSelected=*/false);
+                beginPressPending(pos, blockHit, wasSelected);
                 // 重叠线段消歧 (2026-10): 单击集群 ≥2 候选 → 激活 W 循环上下文
                 // (HUD 显示第 i/N + 候选名); 单条 / 异处点击 → 退出循环态.
                 const auto cands = collectOverlapCandidates(pos);
@@ -458,10 +495,10 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
     // 不依赖 event->buttons() — 测试注入的 move 事件 buttons 可能为空,
     // 真实拖动中 press→release 期间的任意 move 都算拖动意图.
     if (m_pressPending) {
-        double zoom = 1.0;
-        if (!m_scene->views().isEmpty())
-            zoom = m_scene->views().first()->transform().m11();
-        const double thresh = kDragThresholdPx / (zoom > 1e-9 ? zoom : 1.0);
+        double zoom = m_scene->currentZoom();
+        // M6: 已选中的块用更宽的阈值 (抖动 5px 不该把几何拖走)。
+        const double thresh =
+            dragThresholdPxFor(m_pressWasSelected) / (zoom > 1e-9 ? zoom : 1.0);
         if (pos.distanceTo(m_pressPos) > thresh) {
             cancelPressPending();
             beginDrag(m_pressPos);
@@ -566,9 +603,7 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     if (blockId.isNull()) return;
     cad::param::Block* block = m_paramDoc->findBlock(blockId);
     if (!block || block->segments.empty()) return;
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
     if (zoom < 1e-9) zoom = 1.0;
     constexpr double kTolerancePx = 8.0;
     const double tolerance = kTolerancePx / zoom;
@@ -585,21 +620,8 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
             // Curve: distance to the actual Bézier path, not the chord — a bent
             // curve sits far from its chord, so a chord-only test would fail to
             // open the dialog when double-clicking the visible curve.
-            std::vector<cad::geo::Vec2> pts;
-            std::vector<cad::geo::Vec2> tIn, tOut;
-            std::vector<bool> autoTan;
-            pts.push_back(sp->resolvedPos);
-            tIn.push_back(sp->tangentIn); tOut.push_back(sp->tangentOut); autoTan.push_back(sp->autoTangent);
-            for (const auto& ppId : seg.passPointIds) {
-                const auto* pp = block->findPoint(ppId);
-                if (!pp || !pp->resolved) continue;
-                pts.push_back(pp->resolvedPos);
-                tIn.push_back(pp->tangentIn); tOut.push_back(pp->tangentOut); autoTan.push_back(pp->autoTangent);
-            }
-            pts.push_back(ep->resolvedPos);
-            tIn.push_back(ep->tangentIn); tOut.push_back(ep->tangentOut); autoTan.push_back(ep->autoTangent);
-            auto spans = cad::geo::buildBezierSpans(pts, tIn, tOut, autoTan, seg.tension,
-                                                   cad::geo::AutoCurveMode::Hobby);
+            // Spans via the unified entry (memoized: reuses the frame solve).
+            const auto spans = block->spansForSegment(seg, /*skipUnresolvedPassPoints=*/true);
             if (spans.empty()) continue;
             auto proj = cad::geo::projectPointOnCurve(
                 block->transform.toLocal(clickPos), spans);
@@ -614,7 +636,7 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     if (bestSegId.isNull() || bestDist > tolerance) return;
 
     QWidget* parentWidget = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    auto* dlg = new LinePropertyDialog(blockId, bestSegId, m_paramDoc,
+    auto* dlg = new cad::ui::LinePropertyDialog(blockId, bestSegId, m_paramDoc,
                                        m_scene, parentWidget);
     // NOTE: no WA_DeleteOnClose — the dialog schedules its own deleteLater()
     // on accept/reject (ElaAppBar's default-close path would delete it while
@@ -695,11 +717,11 @@ void ToolSelect::beginDrag(const cad::geo::Vec2& pos)
     // then expanded to full rigid components (dragging any member moves the
     // whole component — 刚体组件整体拖动).
     const QSet<QUuid> dragSet =
-        m_paramDoc->componentClosure(m_paramDoc->lockedClosure(m_selection));
+        m_paramDoc->componentsView().closure(m_paramDoc->attachmentsView().lockedClosure(m_selection));
     m_dragBlockIds = dragSet.values();
     m_dragOrigins.clear();
     for (const QUuid& id : m_dragBlockIds) {
-        if (const auto* b = m_paramDoc->findBlock(id))
+        if (const auto* b = m_paramDoc->blocksView().byId(id))
             m_dragOrigins.insert(id, b->transform.origin);
     }
 
@@ -718,7 +740,7 @@ void ToolSelect::beginDrag(const cad::geo::Vec2& pos)
     // (与"拖 follower 拆散"语义一致 — 组件整体被拖走, 不再跟随外部线).
     for (const auto& att : m_paramDoc->attachments()) {
         if (att.fromComponentId.isNull()) continue;
-        const cad::param::Component* c = m_paramDoc->findComponent(att.fromComponentId);
+        const cad::param::Component* c = m_paramDoc->componentsView().byId(att.fromComponentId);
         if (!c) continue;
         bool memberIn = false;
         for (const QUuid& mid : c->memberBlockIds)
@@ -784,20 +806,18 @@ bool ToolSelect::tryReattachOnDragEnd(const cad::geo::Vec2& pos)
     if (m_detachedAttachments.size() != 1 || m_dragBlockIds.size() != 1)
         return false;
 
-    const cad::param::Attachment* att = m_paramDoc->findAttachment(m_detachedAttachments.first());
+    const cad::param::Attachment* att = m_paramDoc->attachmentsView().byId(m_detachedAttachments.first());
     if (!att || att->isPin || !att->fromComponentId.isNull())
         return false;
 
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
 
     const auto snap = m_snapEngine.findSnap(
         pos, m_paramDoc, zoom, kConnectSnapRadius, {}, &att->fromBlockId);
     if (!snap || snap->blockId == att->fromBlockId)
         return false;
 
-    const auto* leader = m_paramDoc->findBlock(snap->blockId);
+    const auto* leader = m_paramDoc->blocksView().byId(snap->blockId);
     const QUuid segId = leader ? leader->exitSegmentAtPoint(snap->pointId) : QUuid();
     if (segId.isNull()) return false;
 
@@ -832,7 +852,7 @@ void ToolSelect::endDrag(const cad::geo::Vec2& pos)
         m_undoStack->beginMacro(QStringLiteral(
             "\xe7\xa7\xbb\xe5\x8a\xa8 %1 \xe4\xb8\xaa\xe5\xaf\xb9\xe8\xb1\xa1").arg(m_dragBlockIds.size()));
         for (const QUuid& attId : m_detachedAttachments) {
-            const cad::param::Attachment* att = m_paramDoc->findAttachment(attId);
+            const cad::param::Attachment* att = m_paramDoc->attachmentsView().byId(attId);
             if (att && !att->isPin && att->fromComponentId.isNull())
                 // 拆开保留角度 (用户拍板 2026-08): 只解除位置吸附, 角度跟随
                 // 保留; 桥 pin / 组件级连接 无角度语义, 仍走彻底删除.
@@ -846,7 +866,7 @@ void ToolSelect::endDrag(const cad::geo::Vec2& pos)
         // 移动一起入栈 (undo 整体回到拖前滑轨位置).
         for (auto it = m_dragOldSlideOffsets.cbegin();
              it != m_dragOldSlideOffsets.cend(); ++it) {
-            const cad::param::Attachment* att = m_paramDoc->findAttachment(it.key());
+            const cad::param::Attachment* att = m_paramDoc->attachmentsView().byId(it.key());
             if (!att) continue;
             const auto [oldAlong, oldPerp] = it.value();
             if (std::abs(att->slideAlongMm - oldAlong) <= 1e-9
@@ -870,9 +890,7 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
     if (m_selection.isEmpty()) return false;
 
     // Curve anchor first: press near a pass point of any SELECTED curve.
-    double zoom = 1.0;
-    if (m_scene && !m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
     const auto anchorHit = hitCurveAnchor(pos, zoom);
     if (anchorHit) {
         beginAnchorDrag(anchorHit->first, anchorHit->second);
@@ -893,9 +911,9 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
     for (const auto& c : cands) {
         if (!m_selection.contains(c.blockId))
             continue;
-        const auto* blk = m_paramDoc->findBlock(c.blockId);
+        const auto* blk = m_paramDoc->blocksView().byId(c.blockId);
         if (!blk || blk->isBridge) continue;
-        if (blk->layer != m_paramDoc->activeLayer()) continue;
+        if (blk->layer != m_paramDoc->layersView().activeLayer()) continue;
 
         // 组件成员: 抓端点 = 组件级连接 (整组跟随, 借用端点), 不占用线级
         // follower 名额 —— 放行 (内部关系保持活性). 非组件成员: 线级连接
@@ -903,7 +921,7 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
         // **例外**: 仅角度 angleOnly 跟随线位置自由 — 放行, 让它能拖端点
         // 重新建立位置连接, 用户报告: 使用了引用线段但没有连接线段的线,
         // 拖动端点没有任何吸附反应)。
-        if (!m_paramDoc->componentOfBlock(c.blockId)) {
+        if (!m_paramDoc->componentsView().ofBlock(c.blockId)) {
             bool externalWelded = false;
             for (const auto& att : m_paramDoc->attachments()) {
                 if (!att.isLocked) continue;
@@ -942,7 +960,7 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
         if (overlap.size() > 1) {
             std::vector<ConfirmCandidate> sourceCandidates;
             for (const auto& c : overlap) {
-                const auto* blk = m_paramDoc->findBlock(c.blockId);
+                const auto* blk = m_paramDoc->blocksView().byId(c.blockId);
                 if (!blk) continue;
                 for (const auto& seg : blk->segments) {
                     if (seg.startPointId == c.pointId || seg.endPointId == c.pointId)
@@ -975,50 +993,35 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
 
 QUuid ToolSelect::hitBlock(const cad::geo::Vec2& worldPos) const
 {
-    if (!m_scene) return QUuid();
+    if (!m_scene || !m_paramDoc) return QUuid();
+    // 统一命中 (P1/M7+L2): 一次扫描, 活动层规则唯一源 (HitTester)。
     const QPointF scenePt = cad::geo::Coord::toScene(worldPos.x, worldPos.y);
-    const QList<QGraphicsItem*> hits = m_scene->items(scenePt);
-    for (QGraphicsItem* item : hits) {
-        // Curve children belong to their block — walk up to the BlockItem.
-        if (auto* bi = BlockItem::containingItem(item)) {
-            // Only blocks on the active layer are selectable.
-            if (const auto* blk = m_paramDoc ? m_paramDoc->findBlock(bi->blockId()) : nullptr;
-                blk && blk->layer == m_paramDoc->activeLayer())
-                return bi->blockId();
-        }
-    }
-    return QUuid();
+    const auto hits = blockHitsAtScene(*m_scene, *m_paramDoc, scenePt);
+    return hits.empty() ? QUuid() : hits.front().blockId;
 }
 
 QUuid ToolSelect::hitSegmentAt(const cad::geo::Vec2& worldPos) const
 {
-    if (!m_scene) return QUuid();
+    if (!m_scene || !m_paramDoc) return QUuid();
     const QPointF scenePt = cad::geo::Coord::toScene(worldPos.x, worldPos.y);
-    const QList<QGraphicsItem*> hits = m_scene->items(scenePt);
-    for (QGraphicsItem* item : hits) {
-        if (auto* bi = BlockItem::containingItem(item)) {
-            if (const auto* blk = m_paramDoc ? m_paramDoc->findBlock(bi->blockId()) : nullptr;
-                blk && blk->layer == m_paramDoc->activeLayer())
-                return bi->hitSegmentAtScene(scenePt);
-        }
-    }
-    return QUuid();
+    const auto hits = blockHitsAtScene(*m_scene, *m_paramDoc, scenePt);
+    return hits.empty() ? QUuid() : hits.front().segmentId;
 }
 
 void ToolSelect::notifyEditTarget()
 {
-    if (!m_editTargetCb) return;
+    if (!m_host) return;
     QUuid blockId, segId;
     if (m_selection.size() == 1) {
         blockId = *m_selection.begin();
         segId = m_lastHitSegmentId;
         if (segId.isNull() && m_paramDoc) {
             // Fallback: first segment of the block (e.g. external selection).
-            if (const auto* blk = m_paramDoc->findBlock(blockId); blk && !blk->segments.empty())
+            if (const auto* blk = m_paramDoc->blocksView().byId(blockId); blk && !blk->segments.empty())
                 segId = blk->segments.front().id;
         }
     }
-    m_editTargetCb(blockId, segId);
+    m_host->setEditTarget(blockId, segId);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1141,19 +1144,26 @@ void ToolSelect::cancelPressPending()
 void ToolSelect::updateHoverCursor(const cad::geo::Vec2& pos)
 {
     Qt::CursorShape cur = Qt::ArrowCursor;
+    QList<OverlapCandidate> hoverCands;
     if (m_scene && m_paramDoc) {
-        const QUuid blockHit = hitBlock(pos);
+        // 单次扫描 (P1/M7): 光标与重叠提示共用一份命中结果 —— 悬停每帧
+        // 曾做 2~3 遍全场景 items()。
+        const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
+        const auto hits = blockHitsAtScene(*m_scene, *m_paramDoc, scenePt);
+        const QUuid blockHit = hits.empty() ? QUuid() : hits.front().blockId;
         if (!blockHit.isNull() && m_selection.contains(blockHit)) {
             // 已选块的端点 (抓取半径内) → 十字 (提示可连接);
             // 否则线身 → 抓手 (提示可拖动).
-            double zoom = 1.0;
-            if (!m_scene->views().isEmpty())
-                zoom = m_scene->views().first()->transform().m11();
+            double zoom = m_scene->currentZoom();
             const double worldR = kConnectGrabRadius / (zoom > 1e-9 ? zoom : 1.0);
             if (blockHasEndpointNear(blockHit, pos, worldR))
                 cur = Qt::CrossCursor;
             else
                 cur = Qt::OpenHandCursor;
+        }
+        for (const auto& h : hits) {
+            if (const auto* blk = m_paramDoc->blocksView().byId(h.blockId))
+                hoverCands.append(makeOverlapCandidate(*blk, h.segmentId));
         }
     }
     if (cur != m_hoverCursor) {
@@ -1162,14 +1172,14 @@ void ToolSelect::updateHoverCursor(const cad::geo::Vec2& pos)
             m_scene->views().first()->viewport()->setCursor(cur);
     }
     // 重叠提示 HUD: 无按钮悬停时跟随 (集群 ≥2 条才显示; 同值短路).
-    refreshOverlapHint(pos);
+    refreshOverlapHint(pos, &hoverCands);
 }
 
 bool ToolSelect::blockHasEndpointNear(const QUuid& blockId,
                                       const cad::geo::Vec2& pos,
                                       double worldRadius) const
 {
-    const auto* blk = m_paramDoc ? m_paramDoc->findBlock(blockId) : nullptr;
+    const auto* blk = m_paramDoc ? m_paramDoc->blocksView().byId(blockId) : nullptr;
     if (!blk) return false;
     const double rSq = worldRadius * worldRadius;
     for (const auto& pt : blk->points) {
@@ -1191,21 +1201,11 @@ QList<ToolSelect::OverlapCandidate> ToolSelect::collectOverlapCandidates(
     if (!m_scene || !m_paramDoc) return out;
 
     const QPointF scenePt = cad::geo::Coord::toScene(worldPos.x, worldPos.y);
-    // 场景命中返回全部包含该点的 item (堆叠降序): 完全重合的多条线都会出现,
-    // 与 hitBlock 取首项的顺序一致 (顶部/后建者在前).
-    const QList<QGraphicsItem*> hits = m_scene->items(scenePt);
-    QSet<QUuid> seen;
-    for (QGraphicsItem* item : hits) {
-        auto* bi = BlockItem::containingItem(item);
-        if (!bi) continue;
-        const QUuid bid = bi->blockId();
-        if (seen.contains(bid)) continue;
-        seen.insert(bid);
-        const auto* blk = m_paramDoc->findBlock(bid);
+    // 统一命中 (P1/M7+L2): 堆叠降序 + 去重 + 活动层过滤都在 HitTester 一处。
+    for (const auto& h : blockHitsAtScene(*m_scene, *m_paramDoc, scenePt)) {
+        const auto* blk = m_paramDoc->blocksView().byId(h.blockId);
         if (!blk) continue;
-        // 与 hitBlock 同规: 只有活动层可选中 (跨层重叠靠图层过滤区分).
-        if (blk->layer != m_paramDoc->activeLayer()) continue;
-        out.append(makeOverlapCandidate(*blk, bi->hitSegmentAtScene(scenePt)));
+        out.append(makeOverlapCandidate(*blk, h.segmentId));
     }
     return out;
 }
@@ -1283,7 +1283,7 @@ void ToolSelect::cycleOverlapCandidate()
     // 剔除已消失的块 (拖走/删除后名单失效), 实时重取身份信息.
     QList<OverlapCandidate> live;
     for (const auto& c : m_overlapCandidates) {
-        const auto* blk = m_paramDoc->findBlock(c.blockId);
+        const auto* blk = m_paramDoc->blocksView().byId(c.blockId);
         if (!blk) continue;
         live.append(makeOverlapCandidate(*blk, c.segmentId));
     }
@@ -1330,7 +1330,8 @@ void ToolSelect::pickOverlapCandidate(int index)
                     m_overlapAnchor);
 }
 
-void ToolSelect::refreshOverlapHint(const cad::geo::Vec2& worldPos)
+void ToolSelect::refreshOverlapHint(const cad::geo::Vec2& worldPos,
+                                    const QList<OverlapCandidate>* precomputed)
 {
     if (m_overlapIndex >= 0 && !m_overlapCandidates.isEmpty()) {
         // 循环上下文已存在: HUD 锚定集群位置, 不随光标移动; 同值短路由
@@ -1346,7 +1347,8 @@ void ToolSelect::refreshOverlapHint(const cad::geo::Vec2& worldPos)
         return;
     }
 
-    const auto cands = collectOverlapCandidates(worldPos);
+    const QList<OverlapCandidate> cands =
+        precomputed ? *precomputed : collectOverlapCandidates(worldPos);
     if (cands.size() >= 2) {
         QString text = QString::fromUtf8("此处重叠 %1 条 ｜").arg(cands.size());
         for (int i = 0; i < cands.size(); ++i) {
@@ -1363,37 +1365,28 @@ void ToolSelect::refreshOverlapHint(const cad::geo::Vec2& worldPos)
 void ToolSelect::showOverlapHint(const QString& text, const cad::geo::Vec2& anchor)
 {
     if (!m_scene) return;
-    if (text == m_overlapHitText && m_overlapHintBox && m_overlapHintBox->isVisible())
+    if (text == m_overlapHitText && m_overlapHint && m_overlapHint->isVisible())
         return;  // 同值短路: 悬停/拖帧路径不重构 HUD
 
-    if (!m_overlapHintBox) {
-        m_overlapHintBox = new QGraphicsRectItem();
-        m_overlapHintBox->setZValue(9990.0);
-        m_scene->addItem(m_overlapHintBox);
-        m_overlapHintLabel = new QGraphicsSimpleTextItem(m_overlapHintBox);
-        m_overlapHintLabel->setBrush(QColor(255, 255, 255));
-        m_overlapHintLabel->setFont(overlapHintFont());
+    if (!m_overlapHint) {
+        m_overlapHint = new HudItem();
+        m_overlapHint->setLook(HudItem::Look::DarkPill);
+        m_overlapHint->setZValue(9990.0);
+        m_scene->addItem(m_overlapHint);
     }
     m_overlapHitText = text;
-    m_overlapHintLabel->setText(text);
-
-    const QFontMetrics fm(overlapHintFont());
-    const QRectF tr = fm.boundingRect(text);
-    const double w = tr.width() + 16.0, h = tr.height() + 8.0;
-    const QPointF sp = cad::geo::Coord::toScene(anchor);
-    // 锚点右下 12px, 保持恒定 (避免挡在光标正下方).
-    m_overlapHintBox->setRect(sp.x() + 12.0, sp.y() + 12.0, w, h);
-    m_overlapHintBox->setPen(QPen(QColor(0, 0, 0, 40)));
-    m_overlapHintBox->setBrush(QColor(38, 50, 56, 225));
-    m_overlapHintLabel->setPos(sp.x() + 12.0 + (w - tr.width()) / 2.0,
-                               sp.y() + 12.0 + (h - tr.height()) / 2.0);
-    m_overlapHintBox->show();
+    m_overlapHint->setText(text);
+    // 锚点右下 12px 屏幕常量 (HudItem 内部除以 zoom; 原实现写 12 场景单位,
+    // 缩放下与光标忽远忽近 —— M1)。
+    QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
+    m_overlapHint->moveToPoint(anchor, view, QPointF(12.0, 12.0));
+    m_overlapHint->show();
 }
 
 void ToolSelect::hideOverlapHint()
 {
-    if (m_overlapHintLabel) m_overlapHintLabel->setText(QString());
-    if (m_overlapHintBox) m_overlapHintBox->hide();
+    if (m_overlapHint) m_overlapHint->setText(QString());
+    if (m_overlapHint) m_overlapHint->hide();
     // 清缓存重触发: 每次都重新隐现
     m_overlapHitText.clear();
 }
@@ -1411,7 +1404,7 @@ std::optional<std::pair<QUuid, QUuid>> ToolSelect::hitCurveAnchor(
     const double rSq = radius * radius;
 
     for (const QUuid& blockId : m_selection) {
-        const auto* block = m_paramDoc->findBlock(blockId);
+        const auto* block = m_paramDoc->blocksView().byId(blockId);
         if (!block) continue;
 
         for (const auto& seg : block->segments) {

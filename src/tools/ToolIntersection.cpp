@@ -1,4 +1,4 @@
-﻿#include "ToolIntersection.h"
+#include "ToolIntersection.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -19,7 +19,7 @@
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
 #include "document/commands/BlockCommands.h"
-#include "ToolSmartPen.h"  // HudItem
+#include "canvas/HudItem.h"
 
 namespace cad::tools {
 
@@ -27,23 +27,31 @@ namespace cad::tools {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-void ToolIntersection::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+ToolDescriptor ToolIntersection::describe()
 {
-    Tool::activate(scene, paramDoc);
-    m_state = State::SelectLine;
+    ToolDescriptor d;
+    d.id = ToolType::Intersection;
+    d.displayName = QString::fromUtf8("交点(&I)");
+    d.iconName = QStringLiteral("crosshair");
+    d.shortcut = QKeySequence(Qt::Key_I);
+    d.hintText = QString::fromUtf8("交点：点选目标线段 | 点选射线起点 | 点击借用点直接创建交点 | 悬停点预览指向 | W切换跟随角度/绝对角度 | 右键/Esc取消");
+    d.factory = [] { return std::make_unique<ToolIntersection>(); };
+    return d;
 }
 
-void ToolIntersection::deactivate()
+void ToolIntersection::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
+{
+    (void)scene;
+    (void)paramDoc;
+    // P2/L5 常驻实例: 全量复位会话字段 (旧实例即毁重建即此语义)。
+    resetState();
+}
+
+void ToolIntersection::onDeactivate()
 {
     clearPreview();
     clearHoverMarkers();
-    if (m_previewRay)   { m_scene->removeItem(m_previewRay);   delete m_previewRay;   m_previewRay   = nullptr; }
-    if (m_intersectDot) { m_scene->removeItem(m_intersectDot); delete m_intersectDot; m_intersectDot = nullptr; }
-    if (m_noHitMarker)  { m_scene->removeItem(m_noHitMarker);  delete m_noHitMarker;  m_noHitMarker  = nullptr; }
-    if (m_originMarker) { m_scene->removeItem(m_originMarker); delete m_originMarker; m_originMarker = nullptr; }
-    if (m_segHighlight) { m_scene->removeItem(m_segHighlight); delete m_segHighlight; m_segHighlight = nullptr; }
-    if (m_aimMarker)    { m_scene->removeItem(m_aimMarker);    delete m_aimMarker;    m_aimMarker    = nullptr; }
-    Tool::deactivate();
+    m_managed.clear();   // 统一释放 + 影子指针置空 (P1/L1)
 }
 
 // ---------------------------------------------------------------------------
@@ -76,9 +84,7 @@ void ToolIntersection::mousePress(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
 
     switch (m_state) {
     case State::SelectLine:  handleSelectLinePress(clickPos, zoom);  break;
@@ -94,9 +100,7 @@ void ToolIntersection::mouseMove(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
-    double zoom = 1.0;
-    if (!m_scene->views().isEmpty())
-        zoom = m_scene->views().first()->transform().m11();
+    double zoom = m_scene->currentZoom();
     m_lastZoom = zoom;
 
     switch (m_state) {
@@ -252,6 +256,7 @@ void ToolIntersection::handleSelectPointPress(const cad::geo::Vec2& pos, double 
         m_originMarker->setBrush(Qt::NoBrush);
         m_originMarker->setZValue(102.0);
         m_scene->addItem(m_originMarker);
+        m_managed.own(m_originMarker, &m_originMarker);
     }
     m_originMarker->setPos(cad::geo::Coord::toScene(m_originPos));
     m_originMarker->setVisible(true);
@@ -431,6 +436,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
         m_previewRay->setPen(pen);
         m_previewRay->setZValue(101.0);
         m_scene->addItem(m_previewRay);
+        m_managed.own(m_previewRay, &m_previewRay);
     }
 
     if (hit) {
@@ -446,6 +452,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
             m_intersectDot->setBrush(m_scene->style()->snapIndicatorColor);
             m_intersectDot->setZValue(103.0);
             m_scene->addItem(m_intersectDot);
+            m_managed.own(m_intersectDot, &m_intersectDot);
         }
         m_intersectDot->setPos(cad::geo::Coord::toScene(*hit));
         m_intersectDot->setVisible(true);
@@ -473,6 +480,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
             m_noHitMarker->setFlag(QGraphicsItem::ItemIgnoresTransformations);
             m_noHitMarker->setZValue(103.0);
             m_scene->addItem(m_noHitMarker);
+            m_managed.own(m_noHitMarker, &m_noHitMarker);
         }
         m_noHitMarker->setPos(cad::geo::Coord::toScene(rayEnd));
         m_noHitMarker->setVisible(true);
@@ -489,6 +497,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
             m_aimMarker->setBrush(Qt::NoBrush);
             m_aimMarker->setZValue(102.0);
             m_scene->addItem(m_aimMarker);
+            m_managed.own(m_aimMarker, &m_aimMarker);
         }
         m_aimMarker->setPos(cad::geo::Coord::toScene(*aimPos));
         m_aimMarker->setVisible(true);
@@ -688,6 +697,7 @@ void ToolIntersection::ensureSegHighlight(bool hover)
     m_segHighlight->setPen(pen);
     m_segHighlight->setZValue(100.0);
     m_scene->addItem(m_segHighlight);
+    m_managed.own(m_segHighlight, &m_segHighlight);
 }
 
 void ToolIntersection::clearAim()
@@ -750,6 +760,7 @@ void ToolIntersection::resetState()
     m_currentAngleDeg = 90.0;
     m_displayAngleDeg = 90.0;
     m_worldAngleMode  = false;
+    m_bidirectional   = false;
     m_state = State::SelectLine;
 }
 

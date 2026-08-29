@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QGraphicsScene>
 #include <QHash>
@@ -15,6 +15,9 @@ class QTimer;
 namespace cad::param { class ParamDocument; }
 
 class BlockItem;
+
+/// Screen-constant HUD label (toast / 重叠提示共用, TOOL_SYSTEM_AUDIT P1).
+class HudItem;
 
 /// The scene that holds all entity items and the origin crosshair.
 /// Owns the CanvasStyle (design tokens) and CanvasAnimator (transition engine).
@@ -36,6 +39,10 @@ public:
 
     /// Replace the active theme (triggers full scene repaint).
     void setStyle(const CanvasStyle& s);
+
+    /// Current view zoom (scale factor of the first view's transform).
+    /// Returns 1.0 when there are no views — safe for headless tests.
+    [[nodiscard]] double currentZoom() const;
 
     /// Create and add a BlockItem for the given block ID.
     void addBlockItem(const QUuid& blockId);
@@ -131,7 +138,7 @@ private:
     CanvasAnimator m_animator;
 
     // Toast overlay (owned by the scene, lazily created).
-    QGraphicsRectItem* m_toastItem = nullptr;
+    HudItem* m_toastItem = nullptr;
     QTimer* m_toastTimer = nullptr;
 
     // Hold-to-show overrides (N/L keys): transient view state, never written
