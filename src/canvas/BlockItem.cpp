@@ -91,8 +91,8 @@ QPainterPath BlockItem::shape() const
         style = cs->style();
 
     double pxToLocal = 1.0;
-    if (scene() && !scene()->views().isEmpty()) {
-        const qreal m11 = scene()->views().first()->transform().m11();
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+        const qreal m11 = cs->currentZoom();
         if (std::abs(m11) > 1e-9)
             pxToLocal = 1.0 / std::abs(m11);
     }
@@ -352,7 +352,7 @@ void BlockItem::syncFromBlock()
     // Pure translation keeps all local coordinates identical: just slide the
     // item (O(1), no alloc).
     if (std::abs(block->transform.rotation - m_lastRotation) > 1e-9 ||
-        block->geometryEpoch != m_lastGeometryEpoch ||
+        block->geometryEpoch() != m_lastGeometryEpoch ||
         block->points.size() != m_lastPointCount) {
         updateFromBlock();
         return;
@@ -468,7 +468,7 @@ void BlockItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event)
         return;
     }
     const auto* block = m_doc ? m_doc->findBlock(m_blockId) : nullptr;
-    if (!block || !m_doc->layerSnappable(block->layer)) {
+    if (!block || !m_doc->layersView().layerSnappable(block->layer)) {
         event->accept();
         return;
     }
@@ -516,10 +516,9 @@ void BlockItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event)
 double BlockItem::hoverThreshold() const
 {
     double threshold = 8.0;  // default
-    if (auto* cs = qobject_cast<CanvasScene*>(scene()))
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
         threshold = cs->style()->hoverRadiusPx();
-    if (scene() && !scene()->views().isEmpty()) {
-        const qreal m11 = scene()->views().first()->transform().m11();
+        const qreal m11 = cs->currentZoom();
         if (std::abs(m11) > 1e-9)
             threshold /= std::abs(m11);
     }
@@ -727,7 +726,7 @@ void BlockItem::rebuildCache()
 
     // Track rotation so syncFromBlock() can detect rigid-body rotation.
     m_lastRotation = block->transform.rotation;
-    m_lastGeometryEpoch = block->geometryEpoch;
+    m_lastGeometryEpoch = block->geometryEpoch();
     m_lastPointCount = block->points.size();
 
     // Item position = block origin in scene coords.
@@ -898,14 +897,14 @@ void BlockItem::rebuildCache()
     // (layerSnappable): grayed WORKING layers stay hoverable so connections
     // can be aimed from the auxiliary layer; a grayed auxiliary layer is
     // reference-only (never a hover/snap target).
-    if (!m_doc->layerVisible(block->layer)) {
+    if (!m_doc->layersView().layerVisible(block->layer)) {
         m_layerMode = LayerMode::Hidden;
-    } else if (block->layer != m_doc->activeLayer()) {
+    } else if (block->layer != m_doc->layersView().activeLayer()) {
         m_layerMode = LayerMode::Grayed;
     } else {
         m_layerMode = LayerMode::Normal;
     }
-    const bool snapEligible = m_doc->layerSnappable(block->layer);
+    const bool snapEligible = m_doc->layersView().layerSnappable(block->layer);
     setVisible(m_layerMode != LayerMode::Hidden);
     setAcceptHoverEvents(snapEligible);
     // A layer-mode flip may leave a stale hover highlight behind — drop it.

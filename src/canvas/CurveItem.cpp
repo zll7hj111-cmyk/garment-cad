@@ -99,8 +99,8 @@ QPainterPath CurveItem::shape() const
     // Pick tolerance in scene units: screen px ÷ view zoom (same conversion
     // as the parent's hover threshold, so picking and hover agree).
     double pxToLocal = 1.0;
-    if (scene() && !scene()->views().isEmpty()) {
-        const qreal m11 = scene()->views().first()->transform().m11();
+    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
+        const qreal m11 = cs->currentZoom();
         if (std::abs(m11) > 1e-9)
             pxToLocal = 1.0 / std::abs(m11);
     }
