@@ -42,7 +42,7 @@ public:
 
     /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
     static ToolDescriptor describe();
-    [[nodiscard]] const char* name() const override { return "\xe6\x9b\xb2\xe7\xba\xbf"; }  // "曲线"
+    [[nodiscard]] const char* name() const override { return reinterpret_cast<const char*>(u8"曲线"); }
 
 private:
     enum class State { Idle, DraggingCurvePoint, DraggingHandle };

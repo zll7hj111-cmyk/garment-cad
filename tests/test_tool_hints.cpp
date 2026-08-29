@@ -21,6 +21,11 @@ using cad::tools::toolHintText;
 
 namespace {
 
+/// u8 字面量 → const char* (L4): 全局数组初始化不能直接用 reinterpret_cast
+/// (非常量表达式), 经普通函数运行时求值。u8 保证 UTF-8 字节, 与工具
+/// describe().hintText 的编码一致。
+[[nodiscard]] const char* u8c(const char8_t* s) { return reinterpret_cast<const char*>(s); }
+
 /// 8 个 ToolType 全集。
 ///
 /// N6 (TOOL_SYSTEM_AUDIT 复核 2026-08-29): 这个文件手写 8 项, 光靠它
@@ -84,14 +89,14 @@ void TestToolHints::hintsAreDistinctAndSelfNamed()
 {
     QSet<QString> seen;
     const struct { ToolType type; const char* prefix; } expect[] = {
-        { ToolType::Select,       "\xe9\x80\x89\xe6\x8b\xa9" },        // 选择
-        { ToolType::SmartPen,     "\xe6\x99\xba\xe8\x83\xbd\xe7\xac\x94" },  // 智能笔
-        { ToolType::CurveEdit,    "\xe6\x9b\xb2\xe7\xba\xbf" },        // 曲线
-        { ToolType::Rotate,       "\xe6\x97\x8b\xe8\xbd\xac" },        // 旋转
-        { ToolType::Break,        "\xe6\x89\x93\xe6\x96\xad" },        // 打断
-        { ToolType::Intersection, "\xe4\xba\xa4\xe7\x82\xb9" },        // 交点
-        { ToolType::Measure,      "\xe6\xb5\x8b\xe9\x87\x8f" },        // 测量
-        { ToolType::AngleMeasure, "\xe8\xa7\x92\xe5\xba\xa6\xe6\xb5\x8b\xe9\x87\x8f" },  // 角度测量
+        { ToolType::Select,       u8c(u8"选择") },
+        { ToolType::SmartPen,     u8c(u8"智能笔") },
+        { ToolType::CurveEdit,    u8c(u8"曲线") },
+        { ToolType::Rotate,       u8c(u8"旋转") },
+        { ToolType::Break,        u8c(u8"打断") },
+        { ToolType::Intersection, u8c(u8"交点") },
+        { ToolType::Measure,      u8c(u8"测量") },
+        { ToolType::AngleMeasure, u8c(u8"角度测量") },
     };
     for (const auto& e : expect) {
         const QString hint = toolHintText(e.type);

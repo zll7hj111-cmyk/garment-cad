@@ -63,7 +63,7 @@ public:
 
     /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
     static ToolDescriptor describe();
-    [[nodiscard]] const char* name() const override { return "\xe9\x80\x89\xe6\x8b\xa9"; }
+    [[nodiscard]] const char* name() const override { return reinterpret_cast<const char*>(u8"选择"); }
     [[nodiscard]] SelectState state() const { return m_state; }
     [[nodiscard]] const QSet<QUuid>& selection() const { return m_selection; }
 

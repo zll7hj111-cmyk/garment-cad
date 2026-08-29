@@ -43,7 +43,7 @@ public:
     /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
     static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
-    { return "\xe8\xa7\x92\xe5\xba\xa6\xe6\xb5\x8b\xe9\x87\x8f"; }  // "角度测量"
+    { return reinterpret_cast<const char*>(u8"角度测量"); }
 
 private:
     enum class State { SelectA, SelectB };

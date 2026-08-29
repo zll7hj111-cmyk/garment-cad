@@ -43,7 +43,7 @@ public:
     /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
     static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
-    { return "\xe6\x89\x93\xe6\x96\xad"; }  // "打断"
+    { return reinterpret_cast<const char*>(u8"打断"); }
 
 private:
     /// Update hover markers: breakable-point circle or segment X.

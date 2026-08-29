@@ -105,7 +105,7 @@ public:
     /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
     static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
-    { return "\xe6\x97\x8b\xe8\xbd\xac"; }  // 旋转
+    { return reinterpret_cast<const char*>(u8"旋转"); }
     [[nodiscard]] RotateState state() const { return m_state; }
     /// 影子会话诊断 (测试/面板提示用): 当前收集的"基准在 S 外"连接数.
     [[nodiscard]] int shadowCount() const { return static_cast<int>(m_shadowAtts.size()); }

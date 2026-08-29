@@ -50,7 +50,7 @@ public:
     /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
     static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override
-    { return "\xe4\xba\xa4\xe7\x82\xb9"; }  // "交点"
+    { return reinterpret_cast<const char*>(u8"交点"); }
 
 private:
     enum class State { SelectLine, SelectPoint, AimAngle, BorrowAim };
