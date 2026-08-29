@@ -304,8 +304,8 @@ private:
 
 /// 基准影子偏转角独立设置 (用户拍板 2026-08-27, ROTATE_REDESIGN_DESIGN.md
 /// §2.6): records a baselineOffsetDeg change (old → new) on one attachment.
-/// Used by the connection card's「归零」button; RotateBlocksCommand performs
-/// its own shadow snapshot and does NOT route through this command.
+/// Used by the connection card's「归零」button —— 选集旋转（原 §2.6 的影子
+/// 偏转批量回写）已于 2026-08-29 删除，本命令是该字段目前唯一的写入方。
 class SetAttachmentBaselineOffsetCommand : public QUndoCommand
 {
 public:

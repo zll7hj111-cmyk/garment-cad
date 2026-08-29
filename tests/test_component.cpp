@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QList>
 #include <QUuid>
 #include <QApplication>
@@ -20,7 +20,6 @@
 #include "canvas/CanvasView.h"
 #include "tools/ToolManager.h"
 #include "tools/ToolSelect.h"
-#include "ui/AngleHud.h"
 #include "TestHelpers.h"
 
 using namespace cad::param;
@@ -504,6 +503,15 @@ void TestComponent::junctionComponentConnectGesture()
     // NOTE: ConnectGesture pushes its undo macro to m_paramDoc->undoStack()
     // (ToolSelect::activate), not the injected tool stack — undo via the doc.
 
+    // 连接角度会话记录器 (二期): 手势经 ToolHost 上报会话开始/结束。
+    QUuid sessBlock, sessSeg, sessAtt;
+    bool sessStarted = false, sessEnded = false;
+    connect(&tm, &cad::tools::ToolManager::connectAngleSessionChanged,
+            &tm, [&](const QUuid& bid, const QUuid& sid, const QUuid& aid, double) {
+                if (!aid.isNull()) { sessBlock = bid; sessSeg = sid; sessAtt = aid; sessStarted = true; }
+                else sessEnded = true;
+            });
+
     auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
     auto sendMouse = [&](QEvent::Type type, const QPoint& pos,
                          Qt::MouseButton btn, Qt::KeyboardModifiers mods) {
@@ -536,24 +544,21 @@ void TestComponent::junctionComponentConnectGesture()
     auto* ts = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
     QVERIFY(ts);
     QCOMPARE(ts->state(), cad::tools::SelectState::AngleInput);
-    // 组件级连接必须弹出角度 HUD (对接角设置入口).
-    auto* hudCheck = view.viewport()->findChild<cad::ui::AngleHud*>();
-    QVERIFY(hudCheck);
-    QVERIFY(hudCheck->isVisible());
+    // 二期: 组件级连接同样进入连接角度会话 (跟随线段 = 借用的暴露成员块线段)。
+    QVERIFY2(sessStarted, "组件级连接必须上报连接角度会话");
+    QVERIFY(!sessAtt.isNull());
+    QCOMPARE(sessBlock, b.blockId);
+    QVERIFY(!sessSeg.isNull());
     // 2 条 attachment: 内部 B→A 保留 + 组件级连接 (组件 → X).
     QCOMPARE(static_cast<int>(doc.attachments().size()), 2);
 
-    // 3) Esc → 提交 (保留连接).
-    auto* hud = view.viewport()->findChild<cad::ui::AngleHud*>();
-    QVERIFY(hud);
-    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-    QApplication::sendEvent(hud, &esc);
-    // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
-    // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
+    // 3) Esc → 提交 (保留连接)。
+    ts->connectAngleCancelled();   // 条带 Esc → 工具 → 手势
     QTest::qWait(30);
 
     QCOMPARE(ts->state(), cad::tools::SelectState::Idle);
     QCOMPARE(static_cast<int>(doc.attachments().size()), 2);
+    QVERIFY2(sessEnded, "收尾后必须上报会话结束 (全 null)");
 
     // 内部 B→A 保留; 新增的是组件级连接 (fromComponentId = 组件).
     bool foundInternal = false, foundComp = false;
@@ -674,8 +679,7 @@ void TestComponent::componentConnectOverlapSwitchTarget()
     QVERIFY(ts);
     QCOMPARE(ts->state(), cad::tools::SelectState::AngleInput);
     QCOMPARE(static_cast<int>(doc.attachments().size()), 2);
-    auto* hud = view.viewport()->findChild<cad::ui::AngleHud*>();
-    QVERIFY(hud && hud->isVisible());
+    // 二期: 会话经 ToolHost 上报 (无浮动 HUD 可查, 会话即角度输入入口)。
 
     // 初始 leader = 最近候选 (X 或 Y, 顺序不承诺 — 读出来再切到另一个).
     const cad::param::Attachment* compAtt0 = findCompAtt();
@@ -713,10 +717,7 @@ void TestComponent::componentConnectOverlapSwitchTarget()
     QCOMPARE(findCompAtt()->toBlockId, other.blockId);
 
     // 6) Esc → 提交 (带符号折角保持初始角): 连接保留、基准为 other.
-    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-    QApplication::sendEvent(hud, &esc);
-    // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
-    // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
+    ts->connectAngleCancelled();   // 条带 Esc → 工具 → 手势
     QTest::qWait(30);
     QCOMPARE(ts->state(), cad::tools::SelectState::Idle);
     QCOMPARE(static_cast<int>(doc.attachments().size()), 2);

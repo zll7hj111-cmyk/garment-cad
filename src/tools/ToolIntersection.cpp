@@ -34,7 +34,9 @@ ToolDescriptor ToolIntersection::describe()
     d.displayName = QString::fromUtf8("交点(&I)");
     d.iconName = QStringLiteral("crosshair");
     d.shortcut = QKeySequence(Qt::Key_I);
-    d.hintText = QString::fromUtf8("交点：点选目标线段 | 点选射线起点 | 点击借用点直接创建交点 | 悬停点预览指向 | W切换跟随角度/绝对角度 | 右键/Esc取消");
+    // 静态默认文案与运行期覆盖同源 (默认态 = 跟随角度 + 点选线段), 防漂移。
+    d.hintText = modeIndicatorFor(false, State::SelectLine)
+                     .hint(reinterpret_cast<const char*>(u8"交点"));
     d.factory = [] { return std::make_unique<ToolIntersection>(); };
     return d;
 }
@@ -66,14 +68,14 @@ void ToolIntersection::mousePress(QGraphicsSceneMouseEvent* event)
         // Backtrack one state.
         if (m_state == State::BorrowAim) {
             clearAim();
-            m_state = State::AimAngle;
+            setState(State::AimAngle);
         } else if (m_state == State::AimAngle) {
             clearPreview();
-            m_state = State::SelectPoint;
+            setState(State::SelectPoint);
         } else if (m_state == State::SelectPoint) {
             clearHoverMarkers();
             if (m_segHighlight) m_segHighlight->setVisible(false);
-            m_state = State::SelectLine;
+            setState(State::SelectLine);
         } else {
             resetState();
         }
@@ -106,8 +108,8 @@ void ToolIntersection::mouseMove(QGraphicsSceneMouseEvent* event)
     switch (m_state) {
     case State::SelectLine:  updateLineHover(cursorPos, zoom);  break;
     case State::SelectPoint: updatePointHover(cursorPos, zoom); break;
-    case State::AimAngle:    updateAimPreview(cursorPos, zoom); break;
-    case State::BorrowAim:   updateAimPreview(cursorPos, zoom); break;
+    case State::AimAngle:    updateAimPreview(cursorPos, zoom); reportHoverTarget(QUuid(), QUuid()); break;
+    case State::BorrowAim:   updateAimPreview(cursorPos, zoom); reportHoverTarget(QUuid(), QUuid()); break;
     }
 }
 
@@ -121,14 +123,14 @@ void ToolIntersection::keyPress(QKeyEvent* event)
     if (event->key() == Qt::Key_Escape) {
         if (m_state == State::BorrowAim) {
             clearAim();
-            m_state = State::AimAngle;
+            setState(State::AimAngle);
         } else if (m_state == State::AimAngle) {
             clearPreview();
-            m_state = State::SelectPoint;
+            setState(State::SelectPoint);
         } else if (m_state == State::SelectPoint) {
             clearHoverMarkers();
             if (m_segHighlight) m_segHighlight->setVisible(false);
-            m_state = State::SelectLine;
+            setState(State::SelectLine);
         } else {
             resetState();
         }
@@ -145,6 +147,9 @@ void ToolIntersection::keyPress(QKeyEvent* event)
     if (event->key() == Qt::Key_W
         && (m_state == State::AimAngle || m_state == State::BorrowAim)) {
         m_worldAngleMode = !m_worldAngleMode;
+        // 单一出口: toast 讲"刚切成什么了", 状态栏常驻讲"现在是什么"
+        // (离开瞄准态 HUD 就消失, 只有状态栏还在, 这是加它的理由)。
+        announceModeChange();
         updateAimPreview(m_lastCursorPos, m_lastZoom);  // refresh HUD/preview immediately
     }
 }
@@ -192,7 +197,7 @@ void ToolIntersection::handleSelectLinePress(const cad::geo::Vec2& pos, double z
     m_segHighlight->setVisible(true);
 
     clearHoverMarkers();
-    m_state = State::SelectPoint;
+    setState(State::SelectPoint);
     updateStepHud(pos, QString::fromUtf8("\u2461 \u70b9\u51fb\u5c04\u7ebf\u8d77\u70b9"));  // ② 点击射线起点
 }
 
@@ -226,6 +231,10 @@ void ToolIntersection::updateLineHover(const cad::geo::Vec2& pos, double zoom)
         if (!m_scene->views().isEmpty())
             m_scene->views().first()->unsetCursor();
     }
+
+    // 三期: 只读悬停上报 (扫过即看) — 悬停的目标线段进上下文属性条。
+    reportHoverTarget(m_hoverSeg ? m_hoverSeg->blockId : QUuid(),
+                      m_hoverSeg ? m_hoverSeg->segmentId : QUuid());
 
     // Step guidance: always visible, so a failed click is self-explanatory.
     updateStepHud(pos, QString::fromUtf8("\u2460 \u70b9\u51fb\u76ee\u6807\u7ebf\u6bb5"));  // ① 点击目标线段
@@ -262,7 +271,7 @@ void ToolIntersection::handleSelectPointPress(const cad::geo::Vec2& pos, double 
     m_originMarker->setVisible(true);
 
     clearHoverMarkers();
-    m_state = State::AimAngle;
+    setState(State::AimAngle);
 
     // Show the aim preview immediately (no need to wait for the next mouse
     // move) — the HUD switches from the step hint to the live angle readout.
@@ -282,6 +291,15 @@ void ToolIntersection::updatePointHover(const cad::geo::Vec2& pos, double zoom)
         if (!m_scene->views().isEmpty())
             m_scene->views().first()->unsetCursor();
     }
+
+    // 三期: 只读悬停上报 — 悬停点所在线段进上下文属性条 (游离点 = 空)。
+    QUuid hoverSeg;
+    if (m_hoverPoint) {
+        if (const auto* blk = m_paramDoc->findBlock(m_hoverPoint->blockId))
+            hoverSeg = blk->exitSegmentAtPoint(m_hoverPoint->pointId);
+    }
+    reportHoverTarget(m_hoverPoint && !hoverSeg.isNull()
+                          ? m_hoverPoint->blockId : QUuid(), hoverSeg);
 
     // Step guidance: keeps telling the user what to pick next.
     updateStepHud(pos, QString::fromUtf8("\u2461 \u70b9\u51fb\u5c04\u7ebf\u8d77\u70b9"));  // ② 点击射线起点
@@ -315,7 +333,7 @@ void ToolIntersection::handleAimAnglePress(const cad::geo::Vec2& pos, double zoo
             m_aimBlockId = snap->blockId;
             // Lock the direction first (the BorrowAim preview branch keeps
             // m_aimPointId instead of re-snapping with the hover radius).
-            m_state = State::BorrowAim;
+            setState(State::BorrowAim);
             updateAimPreview(pos, zoom);
             auto hit = computeIntersection(m_currentAngleDeg);
             if (hit)
@@ -761,7 +779,56 @@ void ToolIntersection::resetState()
     m_displayAngleDeg = 90.0;
     m_worldAngleMode  = false;
     m_bidirectional   = false;
-    m_state = State::SelectLine;
+    setState(State::SelectLine);
+}
+
+void ToolIntersection::setState(State s)
+{
+    m_state = s;
+    // 状态决定"此刻按 W 会发生什么" (W 只在瞄准态能切角度基准), 所以刷新
+    // 提示挂在状态迁移上 —— 10 个赋值点各记一次迟早漏一处。
+    refreshModeIndicator();
+}
+
+ModeIndicator ToolIntersection::modeIndicator() const
+{
+    return modeIndicatorFor(m_worldAngleMode, m_state);
+}
+
+ModeIndicator ToolIntersection::modeIndicatorFor(bool worldAngleMode, State s)
+{
+    const bool aiming = (s == State::AimAngle || s == State::BorrowAim);
+
+    ModeIndicator mi;
+    mi.modeName = worldAngleMode ? QString::fromUtf8("绝对角度")
+                                 : QString::fromUtf8("跟随角度");
+    // W 只在瞄准态能切基准: 非瞄准态按 W 什么都不发生, 提示必须说清这一点
+    // (否则用户以为键坏了) —— 这正是"W 的语义随状态变化"的场合。
+    mi.wAction = aiming
+        ? QString::fromUtf8("W 切%1").arg(worldAngleMode ? QString::fromUtf8("跟随角度")
+                                                         : QString::fromUtf8("绝对角度"))
+        : QString::fromUtf8("瞄准中 W 切角度基准");
+    // 跟随角度是默认态 → 画布角标不显示; 切到绝对角度才挂上。
+    mi.isDefault = !worldAngleMode;
+
+    switch (s) {
+        case State::SelectLine:
+            mi.detail = QString::fromUtf8("点选目标线段 | 右键/Esc取消");
+            break;
+        case State::SelectPoint:
+            mi.detail = QString::fromUtf8("点选射线起点 | 右键/Esc取消");
+            break;
+        case State::AimAngle:
+            mi.detail = QString::fromUtf8("悬停点预览指向 | 点击借用点直接创建 | 空白点击确认方向");
+            break;
+        case State::BorrowAim:
+            mi.detail = QString::fromUtf8("⚠ 射线未穿过线段 | 点击锁定方向创建 | 右键/Esc解锁");
+            break;
+    }
+    mi.toast = worldAngleMode
+        ? QString::fromUtf8("绝对角度模式：角度相对世界坐标系")
+        : QString::fromUtf8("跟随角度模式：角度相对目标线段");
+    return mi;
 }
 
 } // namespace cad::tools

@@ -9,6 +9,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QGraphicsSceneMouseEvent>
 #include <QImage>
 #include <QWidget>
 
@@ -21,6 +22,7 @@
 #include "parametric/Segment.h"
 #include "parametric/Attachment.h"
 #include "geometry/Vec2.h"
+#include "tools/Tool.h"
 
 namespace cad::test {
 
@@ -219,6 +221,42 @@ inline QImage grabStable(QWidget& widget, int timeoutMs = 5000)
         prev = cur;
     }
     return prev;        // timeout: return the last frame rather than failing
+}
+
+/// 记录型 ToolHost 桩 (三期只读悬停测试): 记录工具最后一次上报的悬停/锁定目标。
+/// 直驱工具 (activate 注入 ToolContext.host) 时用于断言"扫过即看"的悬停上报。
+struct RecordingToolHost : cad::tools::ToolHost {
+    QUuid hoverBlock;
+    QUuid hoverSeg;
+    QUuid pinnedBlock;
+    QUuid pinnedSeg;
+    int hoverCount = 0;
+    int pinnedCount = 0;
+
+    void requestToolSwitch(cad::tools::ToolType) override {}
+    void setHoverTarget(const QUuid& blockId, const QUuid& segmentId) override
+    {
+        hoverBlock = blockId;
+        hoverSeg = segmentId;
+        ++hoverCount;
+    }
+    void setPinnedTarget(const QUuid& blockId, const QUuid& segmentId) override
+    {
+        pinnedBlock = blockId;
+        pinnedSeg = segmentId;
+        ++pinnedCount;
+    }
+};
+
+/// 向工具投递一次画布鼠标移动 (scene 坐标, mm)。悬停上报由工具在 mouseMove
+/// 内同步调用, 返回后断言 RecordingToolHost 即可。
+inline void sendToolMouseMove(cad::tools::Tool& tool, const QPointF& scenePos)
+{
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(scenePos);
+    move.setButton(Qt::NoButton);
+    move.setButtons(Qt::NoButton);
+    tool.mouseMove(&move);
 }
 
 } // namespace cad::test

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QObject>
 #include <QMetaObject>
@@ -13,7 +13,7 @@ class QGraphicsSceneMouseEvent;
 class QKeyEvent;
 class QUndoStack;
 
-namespace cad::param { class ParamDocument; }
+namespace cad::param { class ParamDocument; enum class RotationMode; }
 
 namespace cad::tools {
 
@@ -54,8 +54,25 @@ public:
 
     // cad::tools::ToolHost
     void requestToolSwitch(ToolType type) override;
-    void setEditTarget(const QUuid& blockId, const QUuid& segmentId) override;
     void setHintOverride(const QString& hint) override;
+    void setHoverTarget(const QUuid& blockId, const QUuid& segmentId) override;
+    void setPinnedTarget(const QUuid& blockId, const QUuid& segmentId) override;
+    void setConnectAngleSession(const QUuid& blockId, const QUuid& segmentId,
+                                const QUuid& attachmentId, double initialAngle) override;
+    void setConnectAngleValidity(bool valid) override;
+    void setRotateAnchorState(bool active, bool anchorIsEnd, bool canToggle,
+                              const QString& reason) override;
+
+    // ── 连接角度会话输入转发 (二期): MainWindow 接条带信号后调用, 转给激活
+    //    工具 (选择工具 → ConnectGesture)。无激活工具时 no-op。 ──
+    void forwardConnectAngleText(const QString& text);
+    void forwardConnectAngleMode(cad::param::RotationMode mode);
+    void forwardConnectAngleCommit();
+    void forwardConnectAngleCancel();
+
+    // ── 旋转会话换向转发 (2026-12): 条带换向点击 (旋转会话内) → 激活工具
+    //    (ToolRotate 切锚心)。无激活工具时 no-op。 ──
+    void forwardReverseRequest(const QUuid& blockId, const QUuid& segmentId);
 
     // Event dispatch (called by CanvasView through InputDispatcher)
     void dispatchMousePress(QGraphicsSceneMouseEvent* event) override;
@@ -70,14 +87,30 @@ public:
 signals:
     void activeToolChanged(ToolType type, const char* toolName);
 
-    /// Select tool picked a single segment to edit in the status-bar strip
-    /// (either blockId+segmentId for one segment, or both null = nothing).
-    void editTargetChanged(const QUuid& blockId, const QUuid& segmentId);
-
     /// 活动工具的运行期提示覆盖 (M5): 非空 = 用这段文案替掉
     /// ToolDescriptor::hintText; 空 = 恢复默认。切换工具时宿主须自行清掉
     /// (见 MainWindow::onToolChanged) —— 覆盖不跨工具继承。
     void hintOverrideChanged(const QString& hint);
+
+    /// 上下文属性条焦点 (CONTEXT_STRIP_DESIGN.md): 工具经 ToolHost 上报后
+    /// 转发成真实信号。hover = 悬停候选 (只读预览), pinned = 锁定 (可编辑);
+    /// 两者 id 均为 null = 清除。
+    void hoverTargetChanged(const QUuid& blockId, const QUuid& segmentId);
+    void pinnedTargetChanged(const QUuid& blockId, const QUuid& segmentId);
+
+    /// 连接角度会话 (CONTEXT_STRIP_DESIGN.md 二期): 非空 attachmentId =
+    /// 会话开始 (条带进入连接角度编辑), 全 null = 会话结束。宿主编排
+    /// ContextStrip::beginConnectAngleSession / endConnectAngleSession。
+    void connectAngleSessionChanged(const QUuid& blockId, const QUuid& segmentId,
+                                    const QUuid& attachmentId, double initialAngle);
+    /// 连接角度输入的合法性 (红边提示)。
+    void connectAngleValidityChanged(bool valid);
+
+    /// 旋转工具锚心状态 (2026-12): 见 ToolHost::setRotateAnchorState。宿主
+    /// 编排 ContextStrip::setRotateAnchorState (基准读数锚心端在前 + 换向
+    /// 按钮转义为切锚心)。
+    void rotateAnchorStateChanged(bool active, bool anchorIsEnd, bool canToggle,
+                                  const QString& reason);
 
 private:
     /// Create the tool instance on first use, then keep it (P2/L5).

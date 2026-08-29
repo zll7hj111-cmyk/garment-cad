@@ -4,9 +4,6 @@
 #include <utility>
 
 #include <QKeyEvent>
-#include <QSignalBlocker>
-#include "ElaLineEdit.h"
-#include <QGraphicsView>
 #include <QGraphicsScene>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
@@ -22,7 +19,6 @@
 #include "parametric/FollowerAngle.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
-#include "ui/AngleHud.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasStyle.h"
 #include "ui/LayerFeedback.h"
@@ -46,7 +42,10 @@ ConnectGesture::ConnectGesture(CanvasScene* scene, cad::param::ParamDocument* do
                                const std::function<void(SelectState)>& setState,
                                const std::function<void(const QString&)>& showToast,
                                const std::function<void()>& clearSelectionAndIdle,
-                               const std::function<bool()>& selectionEmpty)
+                               const std::function<bool()>& selectionEmpty,
+                               const std::function<void(const QUuid&, const QUuid&,
+                                                        const QUuid&, double)>& beginAngleSession,
+                               const std::function<void(bool)>& angleValidity)
     : m_scene(scene)
     , m_paramDoc(doc)
     , m_undoStack(undoStack)
@@ -54,17 +53,12 @@ ConnectGesture::ConnectGesture(CanvasScene* scene, cad::param::ParamDocument* do
     , m_showToast(showToast)
     , m_clearSelectionAndIdle(clearSelectionAndIdle)
     , m_selectionEmpty(selectionEmpty)
+    , m_beginAngleSession(beginAngleSession)
+    , m_angleValidity(angleValidity)
 {
 }
 
-ConnectGesture::~ConnectGesture()
-{
-    // The HUD is parented to the viewport (which outlives this gesture); the
-    // QPointer turns null if the viewport was already torn down, so deleting
-    // it here is always safe. Without this the HUD would accumulate on the
-    // viewport across tool activations (ToolSelect rebuilds the gesture).
-    delete m_angleHud;
-}
+ConnectGesture::~ConnectGesture() = default;
 
 void ConnectGesture::beginConnect(const QUuid& fromBlockId, const QUuid& fromPointId,
                                   const Vec2& pos)
@@ -409,7 +403,7 @@ void ConnectGesture::cancel()
     m_connectFromBlock = QUuid();
     m_connectFromPoint = QUuid();
     m_connectTarget.reset();
-    if (m_angleHud) hideAngleHud();
+    endAngleSession();
     setState(SelectState::Confirmed);
 }
 
@@ -489,9 +483,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
             }
             if (!toast.isEmpty())
                 m_showToast(toast);
-            const Vec2 anchor = m_connectTarget.has_value()
-                ? m_connectTarget->worldPos : toBlk->worldPos(toPointId);
-            showAngleHud(anchor);
+            beginAngleSession(att.id, angleDeg);
         }
         setState(SelectState::AngleInput);
         return true;
@@ -534,9 +526,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
         if (const QString toast = cad::ui::crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
             !toast.isEmpty())
             m_showToast(toast);
-        const Vec2 anchor = m_connectTarget.has_value()
-            ? m_connectTarget->worldPos : toBlk->worldPos(toPointId);
-        showAngleHud(anchor);
+        beginAngleSession(att.id, angleDeg);
     }
     setState(SelectState::AngleInput);
     return true;
@@ -679,7 +669,7 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
         if (const QString toast = cad::ui::crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
             !toast.isEmpty())
             m_showToast(toast);
-        showAngleHud(toBlk->worldPos(toPointId));
+        beginAngleSession(attId, m_initialAngle);
     }
     setState(SelectState::AngleInput);
     return true;
@@ -819,7 +809,7 @@ bool ConnectGesture::switchComponentTarget(const ConfirmCandidate& cand)
         toBlk->worldPos(cand.pointId), cand.blockId, cand.segId);
     if (m_scene) {
         m_scene->refreshAllBlockItems();
-        showAngleHud(toBlk->worldPos(cand.pointId));
+        beginAngleSession(att.id, angleDeg);
     }
     return true;
 }
@@ -972,55 +962,39 @@ void ConnectGesture::commitConnectMove()
     setState(m_selectionEmpty() ? SelectState::Idle : SelectState::Confirmed);
 }
 
-// ── Angle HUD ──
+// ── 连接角度会话 (二期: 输入面 = 上下文属性条) ──
+// 旧浮动 AngleHud (viewport overlay) 整体退场: 条带显示跟随线段的名称/长度,
+// 角度框可编辑, 击键经 ToolHost 回传 onAngleTextChanged 实时预览, Enter/Esc
+// 回传 commitAngle/cancelAngle 收尾。tools 层不再持有任何 QWidget。
 
-void ConnectGesture::showAngleHud(const Vec2& anchorUser)
+void ConnectGesture::beginAngleSession(const QUuid& attachmentId, double initialAngle)
 {
-    if (!m_scene || m_scene->views().isEmpty()) return;
-    QGraphicsView* view = m_scene->views().first();
-    QWidget* viewport = view->viewport();
+    if (!m_beginAngleSession || !m_paramDoc) return;
 
-    if (!m_angleHud) {
-        // L7: CanvasStyle* 直接注入 (不再沿父链反查)。
-    m_angleHud = new cad::ui::AngleHud(viewport, m_scene ? m_scene->style() : nullptr);
-        m_angleHud->onTextChanged = [this](const QString& t) { onAngleTextChanged(t); };
-        m_angleHud->onCommit      = [this] { commitAngle(); };
-        m_angleHud->onCancel      = [this] { cancelAngle(); };
-        m_angleHud->onModeChanged = [this](cad::param::RotationMode m) { onAngleModeChanged(m); };
-    } else {
-        m_angleHud->setParent(viewport);
-    }
-
-    // Start in angle mode (fresh connection always begins as angle).
-    m_angleMode = cad::param::RotationMode::Angle;
-    m_angleHud->setMode(m_angleMode);
-
-    // Position near the connection point (user → scene → viewport pixels).
-    const QPointF scenePt = cad::geo::Coord::toScene(anchorUser.x, anchorUser.y);
-    const QPoint vpPt = view->mapFromScene(scenePt);
-    m_angleHud->move(vpPt + QPoint(16, 16));
-    m_angleHud->adjustSize();
-
+    // 会话开始即复位输入状态 (旧 showAngleHud 同款): 上一会话残留的
+    // 无效标记/弧长模式不得带入 —— commitAngle 靠 m_angleValid 放行,
+    // onAngleTextChanged 靠 m_angleMode 分流角度/弧长, 残留会让新会话
+    // Enter 失效或把数值写进错误的存储域。
     m_angleValid = true;
-    m_angleHud->setValid(true);
-    {
-        const QSignalBlocker signalBlocker(m_angleHud->edit());
-        // Pre-fill with the current angle as 带符号折角 (v3 定稿，与旋转 HUD 一致)。
-        m_angleHud->edit()->setText(
-            cad::geo::Units::formatDegValue(cad::geo::normalizeDeg180(m_initialAngle)));
+    m_angleMode = cad::param::RotationMode::Angle;
+
+    // 跟随线段 = 源端点所在线段 (exitSegmentAtPoint: 该点为端点的第一段)。
+    // 组件级连接同样成立: m_connectFromBlock = 被抓住的成员块。
+    QUuid segId;
+    if (const auto* blk = m_paramDoc->findBlock(m_connectFromBlock))
+        segId = blk->exitSegmentAtPoint(m_connectFromPoint);
+    if (segId.isNull()) {
+        // 端点不属于任何线段 (理论不可达): 会话无显示目标, 直接结束。
+        m_beginAngleSession(QUuid(), QUuid(), QUuid(), 0.0);
+        return;
     }
-    m_angleHud->show();
-    m_angleHud->edit()->setFocus();
-    m_angleHud->edit()->selectAll();  // typing immediately replaces the value
+    m_beginAngleSession(m_connectFromBlock, segId, attachmentId, initialAngle);
 }
 
-void ConnectGesture::hideAngleHud()
+void ConnectGesture::endAngleSession()
 {
-    if (m_angleHud) {
-        m_angleHud->hide();
-        if (m_scene && !m_scene->views().isEmpty())
-            m_scene->views().first()->setFocus();
-    }
+    if (m_beginAngleSession)
+        m_beginAngleSession(QUuid(), QUuid(), QUuid(), 0.0);
 }
 
 void ConnectGesture::onAngleTextChanged(const QString& text)
@@ -1080,7 +1054,7 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
         }
     }
 
-    if (m_angleHud) m_angleHud->setValid(m_angleValid);
+    if (m_angleValidity) m_angleValidity(m_angleValid);
     if (m_angleValid) {
         // Per-frame preview (角度 HUD 击键): resolve ONLY the connected
         // subgraph and sync cheaply — the old resolveAll() +
@@ -1119,7 +1093,8 @@ void ConnectGesture::onAngleModeChanged(cad::param::RotationMode mode)
             ? !att->arcLengthFormula.isEmpty()
             : !att->followerAngleFormula.isEmpty();
     if (hasFormula && mode != att->rotationMode) {
-        if (m_angleHud) m_angleHud->setMode(att->rotationMode);   // 弹回
+        // 拒绝切换: 条带的单位按钮由宿主经 resolved/refreshChrome 弹回原模式
+        // (条带 onUnitToggled 在 emit 后立即 refreshChrome 兜底)。
         return;
     }
 
@@ -1143,22 +1118,9 @@ void ConnectGesture::onAngleModeChanged(cad::param::RotationMode mode)
     m_paramDoc->resolveAll();
     if (m_scene) m_scene->refreshAllBlockItems();
 
-    // Refresh HUD text to show the converted value (带符号折角，v3 定稿)。
-    if (m_angleHud) {
-        const QSignalBlocker signalBlocker(m_angleHud->edit());
-        if (mode == cad::param::RotationMode::ArcLength) {
-            const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
-            const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
-            const double alphaDeg = (radius > 1e-9)
-                ? cad::geo::arcMmToDeg(att->arcLength, radius) : 0.0;
-            const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
-            m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(
-                cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius))));
-        } else {
-            m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(
-                cad::geo::normalizeDeg180(att->followerAngle)));
-        }
-    }
+    // 模式切换后条带角度框回显换算值由条带自身的 resolved 处理 (refreshFields
+    // 焦点保护: 用户点击 °/⌒ 时角度框已失焦, 回填生效)。旧 HUD 的直写文本
+    // 已随 AngleHud 退场。
 }
 
 void ConnectGesture::commitAngle()
@@ -1186,7 +1148,7 @@ void ConnectGesture::cancelAngle()
 
 void ConnectGesture::finalizeConnection()
 {
-    hideAngleHud();
+    endAngleSession();
     // Connection committed: remove the persistent source-selection highlight.
     removeConfirmHighlight();
     removeSourcePortMarker();

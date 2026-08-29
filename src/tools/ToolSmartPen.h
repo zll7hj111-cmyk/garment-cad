@@ -94,10 +94,19 @@ private:
         Dart,  ///< Dart line: computed end offset from reference point B (省道线).
     };
 
-    /// 状态栏提示 (M5): 直线/省道线 两模式的操作序列完全不同, 提示必须带上
-    /// 当前模式 —— 静态 describe() 用 Line 版做默认文案, cycleMode 切换时经
-    /// ToolHost::setHintOverride 覆盖。两处同源, 避免文案漂移。
-    [[nodiscard]] static QString hintForMode(Mode mode);
+    /// 状态迁移入口: 状态决定"此刻按 W 会发生什么" (Drawing 态 W = 循环
+    /// leader 候选, 不是切模式), 所以刷新提示挂在这里, 而不是散在赋值点。
+    void setState(State s);
+
+    /// 运行期模式指示 (状态栏 L1 + toast L3)。由 {模式, 状态, leader 候选数}
+    /// 共同决定 —— 见 modeIndicatorFor 的注释。
+    [[nodiscard]] ModeIndicator modeIndicator() const override;
+
+    /// 纯函数版: 静态 describe() (默认 = 直线 + Idle) 与运行期覆盖共用这一处,
+    /// 替代原 hintForMode(Mode) —— 两处文案不可能漂移。
+    /// @param leaderCount Drawing 态的 leader 候选数; >1 时 W = 循环候选。
+    [[nodiscard]] static ModeIndicator modeIndicatorFor(Mode mode, State state,
+                                                        int leaderCount);
 
     void commitLine(const cad::geo::Vec2& end,
                     const std::optional<SnapResult>& endSnap);

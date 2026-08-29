@@ -1,4 +1,4 @@
-#include "ToolRotate.h"
+﻿#include "ToolRotate.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
@@ -7,10 +7,7 @@
 #include <QSignalBlocker>
 #include <QUndoStack>
 #include <QPen>
-#include "ElaLineEdit.h"
 #include <QWidget>
-#include <QScrollBar>
-#include <QObject>   // connect/disconnect (M8 视图变换重定位连接)
 
 #include <cmath>
 #include <limits>
@@ -24,9 +21,9 @@
 #include "parametric/Attachment.h"
 #include "parametric/Duplicate.h"
 #include "parametric/ConditionEngine.h"
+#include "parametric/Serial.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
-#include "ui/AngleHud.h"
 #include "RotateCopyGesture.h"
 #include "RotateGizmo.h"
 #include "ui/LinePropertyDialog.h"
@@ -49,14 +46,7 @@ namespace cad::tools {
 // Lifecycle
 // ═══════════════════════════════════════════════════════════════════════════════
 
-ToolRotate::~ToolRotate()
-{
-    // The HUD is parented to the viewport (which outlives this tool); the
-    // QPointer turns null if the viewport was already torn down, so deleting
-    // it here is always safe. Without this each tool switch (ToolManager
-    // rebuilds the tool) would leak a hidden AngleHud on the viewport.
-    delete m_angleHud;
-}
+ToolRotate::~ToolRotate() = default;
 
 ToolDescriptor ToolRotate::describe()
 {
@@ -104,28 +94,20 @@ void ToolRotate::onDeactivate()
         m_releaseAttHeld = false;
     }
     removeGizmo();
-    removeSelHighlightBox();
-    // M8: 断开视图变换 → HUD 重定位连接 (ToolRotate 常驻, 防悬垂 lambda)。
-    // ToolRotate 非 QObject, 裸 connect/disconnect 不可用 —— 用限定名。
-    QObject::disconnect(m_viewZoomConn);
-    QObject::disconnect(m_viewHScrollConn);
-    QObject::disconnect(m_viewVScrollConn);
-    if (m_angleHud) { m_angleHud->hide(); delete m_angleHud; m_angleHud = nullptr; }
+    // 上下文属性条: 工具退出 = 焦点清空 (锁定与悬停都不跨工具继承)。
+    reportPinnedTarget(QUuid(), QUuid());
+    reportHoverTarget(QUuid(), QUuid());
+    reportHintOverride(QString());
     m_managed.release(m_aimRing);   // 释放 + 影子置空 + 撤销登记 (P1/L1)
     m_blockId = QUuid();
     m_attId = QUuid();
     m_connected = false;
     m_anchorPointId = QUuid();
     m_state = RotateState::Idle;
-    // 选集旋转会话重置 (无未提交残差: 提交外的一切出口都当场回滚).
-    m_selectionRotate = false;
-    m_selIds.clear();
-    m_shadowAtts.clear();
-    m_shadowBase.clear();
-    m_selPivotSet = false;
-    m_selPivotPointId = QUuid();
-    m_selDelta = 0.0;
-    m_selBaseTf.clear();
+    // 会话结束上报必须放在 m_blockId/m_state 清空之后 —— reportRotateAnchorState
+    // 用 m_state != Idle 判定会话激活, 提前调用会上报 active=true 的陈旧会话,
+    // 条带残留旋转会话标志 (换向按钮错走切锚心语义)。
+    reportRotateAnchorState();   // 条带: 旋转会话结束 (2026-12)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -143,7 +125,7 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
             applySelectionConfirmed(false);  // 拖中取消 = 回位并退出确定态 (D15)
         }
         // 单线确认门 (D15): 选中态右键 = 确认; 确定态右键 = 反悔回选中态。
-        // 选集旋转会话 / 空闲路径 = 清目标 (选集会话的 m_blockId 恒为空)。
+        // 空闲路径 (m_blockId 为空) = 清目标。
         if (m_state == RotateState::Ready && !m_blockId.isNull())
             applySelectionConfirmed(!m_selectionConfirmed);
         else
@@ -166,15 +148,6 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
         break;
     }
     case RotateState::Ready: {
-        // ── 选集旋转 (选区继承): 一切按压 = 锚点/旋转, 不切换目标
-        // (点别的线只是锚点所在地, 主流 CAD 语义).
-        if (m_selectionRotate) {
-            if (!m_selPivotSet)
-                beginSelPivot(pos);
-            else
-                beginSelRotation(pos);
-            break;
-        }
         // ── 单线确认门 (D15, 用户拍板 2026-08-27): 已选未确认 = 不可拖动.
         if (!m_selectionConfirmed) {
             // 端点优先判定 (距离法, 同旧注释: BlockItem::shape() 对线段
@@ -198,10 +171,11 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
                         m_anchorIsEnd = (hitEnd == blk->segments.front().endPointId);
                     }
                     rebuildAnchorState();
+                    reportRotateAnchorState();   // 条带: 基准读数锚心端在前
+                    updateStatusHint();          // 状态栏: 锚心端确定提示
                     removeGizmo();
                     buildGizmo();
                     updateGizmo();
-                    showHud();
                     endpointSwitched = true;
                 }
             }
@@ -244,16 +218,20 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
 
 void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
 {
-    // 选集旋转: 拖动帧直通选集分支 (单线的 Ctrl 转换/吸附逻辑不适用).
-    if (m_selectionRotate) {
-        if (m_state == RotateState::Rotating) {
-            const cad::geo::Vec2 gp(event->scenePos().x(), event->scenePos().y());
-            updateSelRotation(gp, event->modifiers() & Qt::ShiftModifier);
+    const cad::geo::Vec2 pos(event->scenePos().x(), event->scenePos().y());
+    // 非拖动帧: 上报悬停候选给上下文属性条 (只读预览; 节流与焦点保护在
+    // 条带内部)。拖动中不改焦点 —— 焦点始终是被旋转的那条线。
+    if (m_state != RotateState::Rotating) {
+        const QUuid hover = hitBlock(pos);
+        if (hover.isNull()) {
+            reportHoverTarget(QUuid(), QUuid());
+        } else if (m_paramDoc) {
+            const auto* blk = m_paramDoc->findBlock(hover);
+            reportHoverTarget(hover, (blk && !blk->segments.empty())
+                                         ? blk->segments.front().id : QUuid());
         }
         return;
     }
-    if (m_state != RotateState::Rotating) return;
-    const cad::geo::Vec2 pos(event->scenePos().x(), event->scenePos().y());
     // 普通旋转拖动中途按下 Ctrl：转为旋转复制（原块回弹 + 副本接手当前角度）。
     // 判定放在 press 时刻之外，用户先按下鼠标再按 Ctrl 也能得到复制语义。
     // (Rotating 状态下的 move 必然在拖动中，无需再查 buttons()。)
@@ -270,7 +248,6 @@ void ToolRotate::mouseRelease(QGraphicsSceneMouseEvent* event)
     if (event->button() != Qt::LeftButton) return;
     if (m_state != RotateState::Rotating) return;
     if (m_copyGesture->active()) m_copyGesture->commit();
-    else if (m_selectionRotate)    commitSelRotation();
     else                           commitRotation();
     // 拖动提交 = 结束确定态 (D15): 回落选中态, 再次拖动需重新确认.
     applySelectionConfirmed(false);
@@ -284,10 +261,8 @@ void ToolRotate::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     // A double-click is preceded by two press/release pairs; the second press
     // may have started a rotation — cancel it and drop the target before
     // opening the property dialog.
-    if (m_state == RotateState::Rotating) {
-        if (m_selectionRotate) cancelSelRotation();
-        else                   cancelRotation();
-    }
+    if (m_state == RotateState::Rotating)
+        cancelRotation();
     clearTarget();
 
     const cad::geo::Vec2 clickPos(event->scenePos().x(), event->scenePos().y());
@@ -322,30 +297,29 @@ void ToolRotate::keyPress(QKeyEvent* event)
     // Fallback path: the key reached the view instead of the HUD widget.
     if (event->key() == Qt::Key_Escape) {
         // D15 Esc 分层: 确定态反悔 = 退回选中态 (轻一步可反悔);
-        // 其余 (拖动中取消 / 选中态清目标 / HUD 放弃编辑) 走既有链.
-        if (m_state == RotateState::Ready && m_selectionConfirmed) {
+        // 拖动中 = 取消回位; 选中态 = 清目标。
+        // (原"HUD 放弃编辑"那层已随 AngleHud 退场 —— 精确输入归上下文属性条。)
+        if (m_state == RotateState::Rotating) {
+            cancelRotation();
             applySelectionConfirmed(false);
-            event->accept();
-            return;
+        } else if (m_state == RotateState::Ready && m_selectionConfirmed) {
+            applySelectionConfirmed(false);
+        } else {
+            restoreBase();
+            clearTarget();
         }
-        onHudCancel();
         event->accept();
     } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-        // D15 回车双重身份仲裁: 焦点在输入框 = 应用角度值; 否则选中态 =
-        // 确认选择. (确定态回车 no-op —— 无未提交内容时不重复确认.)
-        const bool hudFocused = m_angleHud && m_angleHud->edit() && m_angleHud->edit()->hasFocus();
-        if (!hudFocused && m_state == RotateState::Ready
-            && !m_selectionRotate && !m_selectionConfirmed) {
+        // D15: 选中态回车 = 确认选择。确定态回车 no-op (无未提交内容不重复
+        // 确认)。角度的键盘精确输入已归上下文属性条 —— 不再需要"焦点在
+        // 输入框 → 应用数值 / 否则 → 确认"的双重身份仲裁。
+        if (m_state == RotateState::Ready && !m_selectionConfirmed)
             applySelectionConfirmed(true);
-            event->accept();
-            return;
-        }
-        onHudCommit();
         event->accept();
     } else if (event->key() == Qt::Key_X) {
         // X: toggle the anchor between the start and end points (锚心切换).
-        // 选集旋转会话与确定态下不适用 —— 锚向切换是选中态专属动作.
-        if (!m_selectionRotate && !m_selectionConfirmed) toggleAnchor();
+        // 确定态下不适用 —— 锚向切换是选中态专属动作.
+        if (!m_selectionConfirmed) toggleAnchor();
         event->accept();
     }
 }
@@ -397,14 +371,15 @@ void ToolRotate::toggleAnchor()
         || attachmentAtPoint(blk->segments.front().endPointId))
         return;
 
-    commitCurrent();                 // commit any uncommitted HUD edit first
+    commitCurrent();                 // commit any uncommitted strip edit first
     m_anchorIsEnd = !m_anchorIsEnd;
     rebuildAnchorState();
+    reportRotateAnchorState();       // 条带: 基准读数锚心端在前 (2026-12)
+    updateStatusHint();              // 状态栏: 锚心端确定提示 (2026-12)
 
     removeGizmo();
     buildGizmo();
     updateGizmo();
-    showHud();                       // HUD follows the new pivot
     if (m_scene) m_scene->refreshAllBlockItems();
 }
 
@@ -502,10 +477,8 @@ void ToolRotate::selectTarget(const QUuid& blockId,
     if (blk->isBridge) return;   // bridge geometry is passive — refuse.
 
     // Clean up any previous target's chrome.
-    if (m_state != RotateState::Idle) {
+    if (m_state != RotateState::Idle)
         removeGizmo();
-        hideHud();
-    }
 
     m_blockId = blockId;
     // 锚心初值 (用户拍板 2026-08-27): 跟随点击端 ——
@@ -534,362 +507,45 @@ void ToolRotate::selectTarget(const QUuid& blockId,
         }
     }
     // N3 (TOOL_SYSTEM_AUDIT 复核 2026-08-29): 改走统一翻转入口 —— 标志 +
-    // gizmo 样式 + HUD caption 三同步, 不让"确认态视觉"在任何路径上残留。
-    // (此处 m_gizmo 可能是上一会话残留 / 尚未 buildGizmo, updateGizmo 与
-    //  refreshHudText 都有空守卫; 后面的 buildGizmo→updateGizmo→showHud
-    //  会再刷一次, 结果一致。)
+    // gizmo 样式 + 状态栏提示三同步, 不让"确认态视觉"在任何路径上残留。
     applySelectionConfirmed(false);   // D15: 新目标从选中态起步, 需确认才可拖
     m_releaseAttId = QUuid();
     m_releaseAttHeld = false;
-    // 选集旋转会话防漏清 (selectTarget 只会从 Idle/单线会话进入, 此处兜底).
-    m_selectionRotate = false;
-    m_selIds.clear();
-    m_shadowAtts.clear();
-    m_shadowBase.clear();
-    m_selPivotSet = false;
-    m_selPivotPointId = QUuid();
-    m_selDelta = 0.0;
-    m_selBaseTf.clear();
-    removeSelHighlightBox();
     rebuildAnchorState();
     if (m_blockId.isNull()) return;   // rebuild cleared an invalid target
 
     m_state = RotateState::Ready;
+    // 条带: 旋转会话激活, 锚心端在前 (2026-12)。必须放在 m_state=Ready 之后
+    // —— reportRotateAnchorState 用 m_state != Idle 判定会话激活, 提前调用会
+    // 上报 active=false, 条带不进入旋转会话, 换向按钮将走命令路径而非切锚心。
+    reportRotateAnchorState();
     buildGizmo();
     updateGizmo();
-    showHud();
+    // 上下文属性条: 锁定到目标线段 (角度格随之可编辑, 并跟随拖动实时刷新)。
+    reportStripTarget();
+    updateStatusHint();
     m_scene->refreshAllBlockItems();
 }
 
 void ToolRotate::clearTarget()
 {
     removeGizmo();
-    hideHud();
     clearAimCandidate();
-    removeSelHighlightBox();
     m_blockId = QUuid();
     m_attId = QUuid();
     m_connected = false;
     m_anchorPointId = QUuid();
-    // N3: 同 selectTarget —— 走统一翻转入口 (gizmo 已 remove 但未销毁,
-    // HUD 已 hide 但未销毁, 两处刷新都有空守卫且对隐藏对象无害)。
+    // N3: 同 selectTarget —— 走统一翻转入口。
     applySelectionConfirmed(false);   // D15
     m_releaseAttId = QUuid();
     m_releaseAttHeld = false;
-    // 选集旋转会话重置.
-    m_selectionRotate = false;
-    m_selIds.clear();
-    m_shadowAtts.clear();
-    m_shadowBase.clear();
-    m_selPivotSet = false;
-    m_selPivotPointId = QUuid();
-    m_selDelta = 0.0;
-    m_selBaseTf.clear();
     m_state = RotateState::Idle;
+    reportStripTarget();     // 焦点清空 (null = 解除锁定)
+    reportRotateAnchorState();   // 条带: 旋转会话结束 (2026-12)
+    updateStatusHint();
     if (m_scene) m_scene->refreshAllBlockItems();
 }
 
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 选集旋转 (选区继承 adoptSelection, 2026-08-27 泛化)
-// 原「W 键组件整组旋转」模态已删除 (2026-08-29 用户拍板, 执行
-// ROTATE_REDESIGN_DESIGN.md D1) —— 组件整体旋转改由 多选 → R 选区继承承担。
-// 设计要点: 目标 = 选集 S; 锚点 = 任意点 (第一击设锚, 第二击起手拖动);
-// S 全体绕锚点刚体变换; 影子偏转 (§2.6) 逐帧回写; 锚点不存储 (会话态).
-// ═══════════════════════════════════════════════════════════════════════════════
-
-void ToolRotate::adoptSelection(const QList<QUuid>& blockIds)
-{
-    // 选区继承 (D9): 选择工具框好的集合直接成为旋转选集, 跳过拾取进入锚点
-    // 阶段。
-    if (!m_paramDoc) return;
-    QList<QUuid> ids;
-    QHash<QUuid, cad::param::Transform2D> base;
-    for (const QUuid& id : blockIds) {
-        if (const auto* b = m_paramDoc->findBlock(id)) {
-            if (b->isBridge) continue;            // 桥线拒入 (D10)
-            base.insert(id, b->transform);
-            ids << id;
-        }
-    }
-    if (ids.isEmpty()) {
-        if (m_scene)
-            m_scene->showToast(QString::fromUtf8("选区为空，无法旋转"));
-        return;
-    }
-    clearTarget();                   // 继承路径不拾取单线目标
-    hideHud();
-    m_selectionRotate = true;        // 选集会话: 两段式锚点/拖动交互
-    m_selPivotSet = false;
-    m_selPivotPointId = QUuid();
-    m_selDelta = 0.0;
-    m_selBaselineRad = 0.0;
-    m_shadowAtts.clear();
-    m_shadowBase.clear();
-    m_selIds = ids;
-    m_selBaseTf = base;
-    m_state = RotateState::Ready;   // 选集 = 已确认目标, 直接进锚点阶段
-    removeGizmo();
-    updateSelHighlightBox();
-    showHud();
-}
-
-void ToolRotate::collectShadowAttachments()
-{
-    // 影子会话收集 (§2.6, 用户拍板 2026-08-27): 凡 follower ∈ S、而角度基准
-    // 方向在 S 外的活跃连接 —— 含 angleRef 显式外指 (B-C-A 场景) 与已拆开
-    // 保留角 (angleOnly) 的跨界跟随 —— 记录 id 并快照旧 offset。提交时
-    // new offset = base + δ 进命令; Esc 回写 base; 组内互连不收 (基准随组转,
-    // 刚体平账)。滑轨连接照常收: 影子只影响驱动旋转的 refWorld。
-    m_shadowAtts.clear();
-    m_shadowBase.clear();
-    if (!m_paramDoc) return;
-    const QSet<QUuid> inS(m_selIds.cbegin(), m_selIds.cend());
-    for (const auto& a : m_paramDoc->attachments()) {
-        if (!inS.contains(a.fromBlockId)) continue;
-        if (a.rotationMode != cad::param::RotationMode::Angle
-            && a.rotationMode != cad::param::RotationMode::ArcLength)
-            continue;
-        if (a.angleIndependent) continue;       // 角度独立: 不被基准驱动
-        if (a.isPin) continue;                  // 纯位置钉: 无角度驱动
-        const QUuid refBlk = !a.angleRefBlockId.isNull() ? a.angleRefBlockId : a.toBlockId;
-        if (refBlk.isNull() || inS.contains(refBlk)) continue;
-        m_shadowAtts << a.id;
-        m_shadowBase.insert(a.id, a.baselineOffsetDeg);
-    }
-}
-
-void ToolRotate::beginSelPivot(const cad::geo::Vec2& pos)
-{
-    if (m_state != RotateState::Ready || !m_selectionRotate || !m_paramDoc) return;
-    m_selPivotPointId = snapAnyPoint(pos);
-    if (!m_selPivotPointId.isNull()) {
-        // 吸附: 世界位置 = 命中点当前解析位.
-        bool found = false;
-        for (const auto& blk : m_paramDoc->blocks()) {
-            for (const auto& pt : blk.points) {
-                if (pt.id == m_selPivotPointId && pt.resolved) {
-                    m_selPivot = blk.transform.toWorld(pt.resolvedPos);
-                    found = true;
-                    break;
-                }
-            }
-            if (found) break;
-        }
-        if (!found) m_selPivot = pos;   // 命中点在拖动间已消失: 回退自由锚点
-    } else {
-        m_selPivot = pos;               // 自由锚点 (任意位置)
-    }
-    m_selPivotSet = true;
-    m_selDelta = 0.0;
-    // 锚心环就位 (gizmo 复用单线态 pivot/ref 字段 — 选集模式不触碰单线逻辑).
-    m_pivot = m_selPivot;
-    m_refWorldRad = 0.0;
-    removeGizmo();
-    buildGizmo();
-    updateGizmo();
-    showHud();                           // HUD 移到锚点附近
-}
-
-void ToolRotate::beginSelRotation(const cad::geo::Vec2& pos)
-{
-    if (m_state != RotateState::Ready || !m_selectionRotate || !m_selPivotSet) return;
-    // 影子会话 (§2.6): 收集"基准在 S 外"的连接, 逐帧回写 base+δ.
-    collectShadowAttachments();
-    m_state = RotateState::Rotating;
-    const cad::geo::Vec2 d = pos - m_selPivot;
-    m_selBaselineRad = (d.lengthSquared() > 1e-12) ? std::atan2(d.y, d.x) : 0.0;
-    m_selDelta = 0.0;
-    showHud();
-}
-
-void ToolRotate::updateSelRotation(const cad::geo::Vec2& pos, bool snap)
-{
-    if (m_state != RotateState::Rotating || !m_selectionRotate) return;
-    const cad::geo::Vec2 d = pos - m_selPivot;
-    const double theta = std::atan2(d.y, d.x);
-    double delta = cad::geo::normalizeRad(theta - m_selBaselineRad);
-    double deg = cad::geo::radToDeg(delta);
-    if (snap) deg = std::round(deg / 15.0) * 15.0;
-    applySelDelta(deg);
-    updateGizmo();
-    refreshHudText();
-}
-
-void ToolRotate::applySelDelta(double deg)
-{
-    if (!m_paramDoc || m_selIds.isEmpty()) return;
-    const double deltaRad = deg * M_PI / 180.0;
-    m_selDelta = deg;
-    // 每帧热路径铁律 (2026-09 收敛): resolveForDrag + syncBlockPositions,
-    // 禁止 resolveAll/refreshAllBlockItems. seeds = 选集 S 全体.
-    QList<QUuid> seeds;
-    for (const QUuid& mid : m_selIds) {
-        auto* b = m_paramDoc->findBlock(mid);
-        if (!b) continue;
-        const auto it = m_selBaseTf.constFind(mid);
-        if (it == m_selBaseTf.constEnd()) continue;
-        cad::param::Transform2D nf = it.value();
-        nf.rotation += deltaRad;
-        nf.origin = m_selPivot + (nf.origin - m_selPivot).rotated(deltaRad);
-        b->transform = nf;
-        seeds << mid;
-        m_paramDoc->invalidateLayer(b->layer);
-    }
-    // 影子偏转逐帧回写 (base+δ 非累加, 防浮点漂移; §2.6 实现要点):
-    // 与 transform 同帧写入, 否则拖动中基准在外面的跟随线被解算器拽住抽搐.
-    if (!m_shadowAtts.isEmpty()) {
-        QHash<QUuid, double> offsets;
-        for (const QUuid& attId : m_shadowAtts)
-            offsets.insert(attId, m_shadowBase.value(attId) + deg);
-        m_paramDoc->updateBaselineOffsets(offsets);
-    }
-    if (seeds.isEmpty()) return;
-    m_paramDoc->resolveForDrag(seeds);
-    if (m_scene) m_scene->syncBlockPositions();
-    updateSelHighlightBox();
-}
-
-void ToolRotate::commitSelRotation()
-{
-    // 选集旋转提交 (2026-08-27 泛化): S = 任意块集, 影子偏转 + 位姿一步 undo.
-    if (!m_paramDoc || !m_undoStack || m_selIds.isEmpty()) {
-        if (m_state == RotateState::Rotating) m_state = RotateState::Ready;
-        return;
-    }
-    // 1) 捕获终态位姿 + 影子终值 (恢复前!).
-    QHash<QUuid, cad::param::Transform2D> newTf;
-    bool moved = false;
-    for (const QUuid& mid : m_selIds) {
-        const auto* b = m_paramDoc->findBlock(mid);
-        const auto it = m_selBaseTf.constFind(mid);
-        if (!b || it == m_selBaseTf.constEnd()) continue;
-        newTf.insert(mid, b->transform);
-        const double dRot = std::abs(b->transform.rotation - it.value().rotation);
-        const double dOrg = b->transform.origin.distanceTo(it.value().origin);
-        if (dRot > 1e-9 || dOrg > 1e-6) moved = true;
-    }
-    for (const QUuid& attId : m_shadowAtts)
-        moved = moved
-            || std::abs(m_selDelta) > 1e-9;   // 影子会话只有伴随真实增量才计
-    // (选集路径无结构释放; 空手势在此即被吞掉, 不产生空命令.)
-
-    // 2) Restore-then-replay: 回基准现场 (位姿 + offset=base), 推命令重放.
-    for (auto it = m_selBaseTf.cbegin(); it != m_selBaseTf.cend(); ++it) {
-        if (auto* b = m_paramDoc->findBlock(it.key()))
-            b->transform = it.value();
-    }
-    if (!m_shadowAtts.isEmpty()) {
-        QHash<QUuid, double> baseOffsets;
-        for (const QUuid& attId : m_shadowAtts)
-            baseOffsets.insert(attId, m_shadowBase.value(attId));
-        m_paramDoc->updateBaselineOffsets(baseOffsets);
-    }
-    m_state = RotateState::Ready;
-    if (!moved) {
-        m_selDelta = 0.0;
-        updateGizmo();
-        refreshHudText();
-        return;
-    }
-    std::vector<cad::cmd::RotateBlocksCommand::ShadowAtt> shadows;
-    for (const QUuid& attId : m_shadowAtts) {
-        const auto* a = m_paramDoc->attachmentsView().byId(attId);
-        if (!a) continue;
-        cad::cmd::RotateBlocksCommand::ShadowAtt s;
-        s.attId = attId;
-        s.demoted = *a;                          // 基准现场 = 旋转前的原样连接
-        s.oldOffset = m_shadowBase.value(attId);
-        s.newOffset = s.oldOffset + m_selDelta;
-        shadows.push_back(s);
-    }
-    m_undoStack->push(new cad::cmd::RotateBlocksCommand(
-        m_paramDoc, m_selBaseTf, newTf, shadows,
-        {}, {}, {}));
-    m_selBaseTf = newTf;
-    m_selDelta = 0.0;
-    updateGizmo();
-    refreshHudText();
-}
-
-void ToolRotate::cancelSelRotation()
-{
-    if (m_state != RotateState::Rotating || !m_selectionRotate) return;
-    m_state = RotateState::Ready;
-    for (auto it = m_selBaseTf.cbegin(); it != m_selBaseTf.cend(); ++it) {
-        if (auto* b = m_paramDoc->findBlock(it.key()))
-            b->transform = it.value();
-    }
-    // Esc: 影子偏转回基准值 (§2.6 边界 — 会话取消零残留).
-    if (!m_shadowAtts.isEmpty() && m_paramDoc) {
-        QHash<QUuid, double> baseOffsets;
-        for (const QUuid& attId : m_shadowAtts)
-            baseOffsets.insert(attId, m_shadowBase.value(attId));
-        m_paramDoc->updateBaselineOffsets(baseOffsets);
-        m_paramDoc->resolveAll();
-    }
-    m_shadowAtts.clear();
-    m_shadowBase.clear();
-    m_selDelta = 0.0;
-    updateGizmo();
-    refreshHudText();
-    if (m_scene) m_scene->refreshAllBlockItems();
-}
-
-QUuid ToolRotate::snapAnyPoint(const cad::geo::Vec2& worldPos) const
-{
-    if (!m_paramDoc) return QUuid();
-    const double tol = 8.0 / currentZoom();
-    QUuid best;
-    double bestDist = tol;
-    for (const auto& blk : m_paramDoc->blocks()) {
-        for (const auto& pt : blk.points) {
-            if (!pt.resolved || !pt.selectable) continue;
-            const cad::geo::Vec2 w = blk.transform.toWorld(pt.resolvedPos);
-            const double d = w.distanceTo(worldPos);
-            if (d <= bestDist) { bestDist = d; best = pt.id; }
-        }
-    }
-    return best;
-}
-
-void ToolRotate::updateSelHighlightBox()
-{
-    if (!m_selectionRotate || !m_scene || !m_paramDoc) return;
-    // 选集包围盒 = 成员几何并集.
-    const cad::param::BBox box =
-        m_paramDoc->componentsView().boundingBoxOfBlocks(m_selIds);
-    if (!m_selHighlightBox) {
-        m_selHighlightBox = new QGraphicsRectItem();
-        QPen pen(QColor(72, 141, 255, 230));   // 选中色系 (与 CanvasStyle 同 token 来源)
-        pen.setWidthF(1.5);
-        pen.setCosmetic(true);
-        pen.setStyle(Qt::DashLine);
-        m_selHighlightBox->setPen(pen);
-        m_selHighlightBox->setBrush(Qt::NoBrush);
-        m_selHighlightBox->setZValue(90.0);
-        m_selHighlightBox->setFlag(QGraphicsItem::ItemIsSelectable, false);
-        m_selHighlightBox->setFlag(QGraphicsItem::ItemIsFocusable, false);
-        m_scene->addItem(m_selHighlightBox);
-        m_managed.own(m_selHighlightBox, &m_selHighlightBox);
-    }
-    if (box.valid) {
-        double zoom = currentZoom();
-        if (zoom < 1e-9) zoom = 1.0;
-        const double pad = 5.0 / zoom;
-        m_selHighlightBox->setRect(QRectF(
-            QPointF(box.min.x - pad, -box.max.y - pad),
-            QPointF(box.max.x + pad, -box.min.y + pad)));
-        m_selHighlightBox->show();
-    } else {
-        m_selHighlightBox->hide();
-    }
-}
-
-void ToolRotate::removeSelHighlightBox()
-{
-    m_managed.release(m_selHighlightBox);   // 释放 + 影子置空 + 撤销登记 (P1/L1)
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Rotate-copy gesture (Ctrl+drag 旋转复制)
@@ -998,7 +654,6 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
 
     applyAngleDeg(target);
     updateGizmo();
-    refreshHudText();
 }
 
 void ToolRotate::applyAngleDeg(double deg)
@@ -1122,7 +777,6 @@ void ToolRotate::cancelRotation()
     restoreBase();
     clearAimCandidate();
     updateGizmo();
-    refreshHudText();
 }
 
 void ToolRotate::commitCurrent()
@@ -1145,7 +799,7 @@ void ToolRotate::commitCurrent()
                           || curMode != m_rotationMode
                           || std::abs(curArc - m_baseArcLength) > 1e-6
                           || curArcFormula != m_baseArcFormula;
-        if (!changed) { updateGizmo(); refreshHudText(); return; }
+        if (!changed) { updateGizmo(); return; }
 
         // Restore-then-replay: put the base state back, then push a command
         // whose redo() re-applies the current state (single undo step).
@@ -1174,7 +828,7 @@ void ToolRotate::commitCurrent()
                           || curEndBlock != m_baseEndTargetBlock
                           || curEndPoint != m_baseEndTargetPoint
                           || m_releaseAttHeld;
-        if (!changed) { updateGizmo(); refreshHudText(); return; }
+        if (!changed) { updateGizmo(); return; }
 
         blk->transform = m_baseTf;
             blk->endTargetBlockId = m_baseEndTargetBlock;
@@ -1197,7 +851,6 @@ void ToolRotate::commitCurrent()
     }
 
     updateGizmo();
-    refreshHudText();
 }
 
 void ToolRotate::restoreBase()
@@ -1287,346 +940,111 @@ bool ToolRotate::isAngleLocked() const
     // one into the HUD mid-gesture) — never lock the copy gesture.
     if (m_copyGesture && m_copyGesture->active()) return false;
     // A follower angle/arc driven by a formula/variable is locked against
-    // free-hand editing. Based on the committed base formula so transient HUD
-    // edits never flip the lock mid-session. Free lines are never locked.
+    // free-hand editing. Based on the committed base formula so transient
+    // strip edits never flip the lock mid-session. Free lines are never locked.
     if (!m_connected) return false;
     if (m_rotationMode == cad::param::RotationMode::ArcLength)
         return !m_baseArcFormula.isEmpty();
     return !m_baseFormula.isEmpty();
 }
 
-void ToolRotate::onHudModeChanged(cad::param::RotationMode newMode)
-{
-    // 选集旋转恒为角度语义 (增量角) — 模式切换忽略并弹回 Angle.
-    if (m_selectionRotate) {
-        if (m_angleHud) m_angleHud->setMode(cad::param::RotationMode::Angle);
-        return;
-    }
-    if (m_copyGesture && m_copyGesture->active()) {
-        // Rotate-copy is always angle semantics (relative angle) — a mode
-        // switch mid-gesture is ignored and the HUD snaps back to Angle.
-        if (m_angleHud) m_angleHud->setMode(cad::param::RotationMode::Angle);
-        return;
-    }
-    if (!m_paramDoc || !m_connected) return;
-    // 公式驱动（角度/弧长表达式）：模式切换只是显示单位变化，绝不换算
-    // 烘焙公式——表达式必须原样保留（用户要求）。公式存在时拒绝切换。
-    const auto* a = editableAttachment();
-    if (a) {
-        const bool hasFormula =
-            (m_rotationMode == cad::param::RotationMode::ArcLength)
-                ? !a->arcLengthFormula.isEmpty()
-                : !a->followerAngleFormula.isEmpty();
-        if (hasFormula && newMode != m_rotationMode) {
-            if (m_angleHud) m_angleHud->setMode(m_rotationMode);   // 弹回原模式
-            return;
-        }
-    }
-    // Geometry-preserving switch: convert current angle ↔ arc length.
-    // 换算必须走存储域 α（显示 = 带符号折角，2026-08 v3 定稿）——否则
-    // α > 180° 时会把负数折角烘焙进存储，几何静默翻转。
-    const double deg = cad::geo::normalizeDeg360(currentAngleDeg());
-    const double radius = segmentRadius();
-
-    if (auto* a = editableAttachment()) {
-        if (newMode == cad::param::RotationMode::ArcLength) {
-            // Angle → ArcLength: preserve geometry. 弧长 = 线夹角恒等映射
-            // （2026-08 定稿）：弧长角 = 显示角，不再反转。归一化 [0, 360°)。
-            a->rotationMode = cad::param::RotationMode::ArcLength;
-            a->arcLength = cad::geo::degToArcMm(deg, radius);
-            a->arcLengthFormula.clear();
-        } else {
-            // ArcLength → Angle: preserve geometry.
-            a->rotationMode = cad::param::RotationMode::Angle;
-            a->followerAngle = deg;
-            a->followerAngleFormula.clear();
-        }
-    }
-    m_rotationMode = newMode;
-    m_paramDoc->resolveAll();
-    if (m_scene) m_scene->refreshAllBlockItems();
-    refreshHudText();
-    updateGizmo();
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// Angle HUD
+// 状态提示与焦点上报 (上下文属性条, CONTEXT_STRIP_DESIGN.md 一期)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void ToolRotate::showHud()
+void ToolRotate::reportStripTarget()
 {
-    if (!m_scene || m_scene->views().isEmpty()) return;
-    QGraphicsView* view = m_scene->views().first();
-    QWidget* viewport = view->viewport();
-
-    if (!m_angleHud) {
-        // L7: CanvasStyle* 直接注入 (不再沿父链反查); M8: 挂视图变换重定位。
-        m_angleHud = new cad::ui::AngleHud(viewport, m_scene->style());
-        m_angleHud->onTextChanged = [this](const QString& t) { onHudTextChanged(t); };
-        m_angleHud->onCommit      = [this] { onHudCommit(); };
-        m_angleHud->onCancel      = [this] { onHudCancel(); };
-        m_angleHud->onModeChanged = [this](cad::param::RotationMode m) { onHudModeChanged(m); };
-        // 视图变换变化 (滚轮缩放 / 滚动条平移) → HUD 跟随锚心重定位。
-        // context 用 view: 视图销毁即自动断连; ToolRotate 常驻于 ToolManager,
-        // 关闭时由 onDeactivate 显式 disconnect, 双保险防悬垂。
-        QObject::disconnect(m_viewZoomConn);
-        QObject::disconnect(m_viewHScrollConn);
-        QObject::disconnect(m_viewVScrollConn);
-        // sender 必须是 CanvasView* 才能匹配 CanvasView 的成员信号 (QGraphicsView*
-        // 下行转换不隐式, 故 static_cast)。
-        auto* canvasView = static_cast<CanvasView*>(view);
-        m_viewZoomConn = QObject::connect(canvasView, &CanvasView::zoomFactorChanged, view,
-            [this] { repositionHud(); });
-        m_viewHScrollConn = QObject::connect(view->horizontalScrollBar(), &QScrollBar::valueChanged, view,
-            [this] { repositionHud(); });
-        m_viewVScrollConn = QObject::connect(view->verticalScrollBar(), &QScrollBar::valueChanged, view,
-            [this] { repositionHud(); });
-    } else {
-        m_angleHud->setParent(viewport);
-    }
-
-    // Sync HUD mode with the attachment's rotation mode (connected only).
-    if (m_connected)
-        m_angleHud->setMode(m_rotationMode);
-
-    // Position near the pivot (user → scene → viewport pixels).
-    repositionHud();
-    m_angleHud->adjustSize();
-
-    m_hudValid = true;
-    m_angleHud->setValid(true);
-    refreshHudText();
-    m_angleHud->show();
-    m_angleHud->edit()->setFocus();
-    m_angleHud->edit()->selectAll();   // typing immediately replaces the value
-}
-
-void ToolRotate::hideHud()
-{
-    if (m_angleHud) {
-        m_angleHud->hide();
-        if (m_scene && !m_scene->views().isEmpty())
-            m_scene->views().first()->setFocus();
-    }
-}
-
-void ToolRotate::repositionHud()
-{
-    if (!m_angleHud || !m_angleHud->isVisible()) return;
-    if (!m_scene || m_scene->views().isEmpty()) return;
-    QGraphicsView* view = m_scene->views().first();
-    const QPointF scenePt = cad::geo::Coord::toScene(m_pivot.x, m_pivot.y);
-    const QPoint vpPt = view->mapFromScene(scenePt);
-    m_angleHud->move(vpPt + QPoint(16, 16));
-}
-
-void ToolRotate::refreshHudText()
-{
-    if (!m_angleHud) return;
-    const QSignalBlocker signalBlocker(m_angleHud->edit());
-    // ── 选集旋转: caption「选集旋转」, 值 = 绕锚点增量角 (0 = 原始位姿) ──
-    if (m_selectionRotate) {
-        m_angleHud->setCaption(QString::fromUtf8("选集旋转"));
-        m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(m_selDelta));
+    // 锁定到当前旋转目标 (null = 解除锁定)。条带的角度格随后可编辑, 并订阅
+    // resolved 自动跟随拖动刷新 —— 工具不需要把角度值推给它。
+    if (m_blockId.isNull() || !m_paramDoc) {
+        reportPinnedTarget(QUuid(), QUuid());
         return;
     }
-    // D15 确认提示 (H2 ②): 单线已选未确认 = caption 追加确认方式 ——
-    // 拖动被门禁拦截却毫无解释, 是审查报告点名的"功能被感知为 bug"。
-    const bool confirmHint = m_state == RotateState::Ready
-                          && !m_blockId.isNull() && !m_selectionConfirmed
-                          && !(m_copyGesture && m_copyGesture->active());
-    // Caption follows the ACTIVE angle semantics (术语统一: 跟随角度 /
-    // 绝对角度 / 相对角度): 跟随线 = 跟随角度/弧长(默认); 自由线 = 绝对角度;
-    // 旋转复制 = 相对角度。setMode 只在模式切换时刷新标签，锚心切换
-    // (Connected↔Free) 不切模式，所以这里每帧显式同步。
-    if (m_copyGesture && m_copyGesture->active())
-        m_angleHud->setCaption(QString::fromUtf8("旋转角度"));  // 绕锚心角, 0° = 重叠
-    else if (!m_connected)
-        m_angleHud->setCaption(QString::fromUtf8("绝对角度")
-                          + (confirmHint ? QString::fromUtf8("（右键/回车确认）")
-                                         : QString()));
-    else if (confirmHint)
-        // 默认标签随模式 (跟随角度/弧长); 带后缀时需显式拼出, setCaption
-        // 的空串语义是"恢复默认", 追加不了后缀。
-        m_angleHud->setCaption(QString::fromUtf8("%1（右键/回车确认）").arg(
-            m_rotationMode == cad::param::RotationMode::ArcLength
-                ? QString::fromUtf8("弧长") : QString::fromUtf8("跟随角度")));
-    else
-        m_angleHud->setCaption(QString());   // 默认: 跟随角度 / 弧长
-    if (m_copyGesture && m_copyGesture->active()) {
-        // Rotate-copy: pivot-relative angle (方案 B, 用户拍板 2026-08) —
-        // 0° = 副本与父线重叠, 拖多少度 = 转多少度, 起点/终点锚心一致。
-        m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(
-            m_copyGesture->currentRelativeAngle()));
-    } else if (m_rotationMode == cad::param::RotationMode::ArcLength && m_connected) {
-        // Arc-length mode: show the value in cm (formula-driven values are
-        // evaluated live — the HUD always shows a plain editable number).
-        m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(currentModeValue()));
-    } else {
-        // Angle mode: degrees (formula evaluated live, same idea).
-        m_angleHud->edit()->setText(cad::geo::Units::formatDegValue(currentAngleDeg()));
-    }
-}
-
-void ToolRotate::onHudTextChanged(const QString& text)
-{
-    if (!m_paramDoc) return;
-    // 旋转复制提交/取消后 HUD 已隐藏（副本编辑语义终结）；隐藏期间忽略
-    // 任何输入——防止输入框目标悄然切回原线角度造成“幽灵编辑”。
-    if (!m_angleHud || !m_angleHud->isVisible()) return;
-    const QString t = text.trimmed();
-
-    // ── 选集旋转 HUD: 数值 = 绕锚点增量角 (键入即预览, Enter 提交) ──
-    if (m_selectionRotate) {
-        if (t.isEmpty()) {
-            // 空 = 回到基准位姿 (影子偏转一并回 base).
-            for (auto it = m_selBaseTf.cbegin(); it != m_selBaseTf.cend(); ++it) {
-                if (auto* b = m_paramDoc->findBlock(it.key()))
-                    b->transform = it.value();
-            }
-            if (!m_shadowAtts.isEmpty()) {
-                QHash<QUuid, double> baseOffsets;
-                for (const QUuid& attId : m_shadowAtts)
-                    baseOffsets.insert(attId, m_shadowBase.value(attId));
-                m_paramDoc->updateBaselineOffsets(baseOffsets);
-                m_paramDoc->resolveAll();
-            }
-            m_selDelta = 0.0;
-            m_hudValid = true;
-            if (m_scene) m_scene->refreshAllBlockItems();
-        } else {
-            bool isNumber = false;
-            const double v = t.toDouble(&isNumber);
-            if (isNumber) {
-                m_hudValid = true;
-                m_hudError.clear();
-                applySelDelta(v);
-            } else {
-                auto r = cad::param::ConditionEngine::evaluate(
-                    t, m_paramDoc->parameters(), m_paramDoc->conditions());
-                if (r.ok) {
-                    m_hudValid = true;
-                    m_hudError.clear();
-                    applySelDelta(r.value);
-                } else {
-                    m_hudValid = false;   // 保留最后一次有效几何
-                    m_hudError = r.error; // M8: 无效原因短文
-                }
-            }
-        }
-        if (m_angleHud) {
-            m_angleHud->setValid(m_hudValid);
-            m_angleHud->setError(m_hudValid ? QString() : m_hudError);
-        }
-        if (m_hudValid) updateGizmo();
+    const auto* blk = m_paramDoc->findBlock(m_blockId);
+    if (!blk || blk->segments.empty()) {
+        reportPinnedTarget(QUuid(), QUuid());
         return;
     }
+    reportPinnedTarget(m_blockId, blk->segments.front().id);
+}
 
-    if (t.isEmpty()) {
-        if (m_copyGesture && m_copyGesture->active()) {
-            m_copyGesture->applyAngle(0.0);   // empty = revert the clone onto the original
-        } else {
-            restoreBase();        // empty = revert to the session base
-        }
-        m_hudValid = true;
-        m_hudError.clear();
-    } else {
-        bool isNumber = false;
-        const double numVal = t.toDouble(&isNumber);
-        if (isNumber) {
-            // Rotate-copy: HUD value IS the pivot-relative angle (方案 B),
-            // applied directly (副本自动去公式同规则).
-            if (m_copyGesture && m_copyGesture->active())
-                m_copyGesture->applyAngle(numVal);
-            else
-                applyModeValue(numVal);
-            m_hudValid = true;
-            m_hudError.clear();
-        } else {
-            auto r = cad::param::ConditionEngine::evaluate(
-                t, m_paramDoc->parameters(), {});
-            if (r.ok) {
-                if (m_copyGesture && m_copyGesture->active()) {
-                    // Formula typed into the copy HUD: the clone never keeps
-                    // a formula (用户拍板: 副本自动去公式) — apply the value
-                    // as a pivot-relative angle.
-                    m_copyGesture->applyFormulaValue(r.value);
-                } else if (m_connected) {
-                    // Persist the formula (the resolver lets the formula win).
-                    if (auto* a = editableAttachment()) {
-                        if (m_rotationMode == cad::param::RotationMode::ArcLength) {
-                            a->arcLength = geo::Units::cmToMm(r.value);
-                            a->arcLengthFormula = t;
-                        } else {
-                            a->followerAngle = r.value;
-                            a->followerAngleFormula = t;
-                        }
-                    }
-                    m_paramDoc->resolveAll();
-                    if (m_scene) m_scene->refreshAllBlockItems();
-                } else {
-                    applyAngleDeg(r.value);   // free block: one-shot numeric apply
-                }
-                m_hudValid = true;
-                m_hudError.clear();
-            } else {
-                m_hudValid = false;           // keep the last valid geometry
-                m_hudError = r.error;         // M8: 无效原因短文
+void ToolRotate::reportRotateAnchorState()
+{
+    if (!m_host) return;
+    // 旋转会话 = 有目标 (Ready/Rotating)。锚心切换资格 = Ready 且两端都无
+    // 连接 (与 toggleAnchor 的守卫同源, 用户拍板 2026-08: 连接线禁切锚心)。
+    const bool active = !m_blockId.isNull() && m_state != RotateState::Idle;
+    bool canToggle = active && m_state == RotateState::Ready;
+    QString reason;
+    if (canToggle && m_paramDoc) {
+        if (const auto* blk = m_paramDoc->findBlock(m_blockId);
+            blk && !blk->segments.empty()) {
+            const auto& seg = blk->segments.front();
+            if (attachmentAtPoint(seg.startPointId)
+                || attachmentAtPoint(seg.endPointId)) {
+                canToggle = false;
+                reason = QString::fromUtf8("已连接线段禁止切换锚心（先断开连接）");
             }
         }
     }
-
-    if (m_angleHud) {
-        m_angleHud->setValid(m_hudValid);
-        m_angleHud->setError(m_hudValid ? QString() : m_hudError);
-    }
-    if (m_hudValid) updateGizmo();
+    m_host->setRotateAnchorState(active, m_anchorIsEnd, canToggle, reason);
 }
 
-void ToolRotate::onHudCommit()
+/// 条带「换向」点击 (旋转会话内): 转义为切换锚心。toggleAnchor 自带全部守卫
+/// (Ready 状态 + 连接线禁切 + commitCurrent), 转发即可 —— 条带侧按钮资格已
+/// 由 reportRotateAnchorState 的 canToggle 预判, 这里只是兜底。
+void ToolRotate::onReverseRequested(const QUuid& /*blockId*/, const QUuid& /*segmentId*/)
 {
-    if (!m_hudValid) return;   // ignore Enter on an invalid formula
-    if (m_copyGesture && m_copyGesture->active()) {
-        m_copyGesture->commit();
-    } else if (m_selectionRotate) {
-        if (!m_selPivotSet) {
-            if (m_scene)
-                m_scene->showToast(QString::fromUtf8("请先在画布上点一下设定锚点"));
-            return;
-        }
-        commitSelRotation();
-    } else {
-        commitCurrent();
-        // D15 选中态数值提交后保持输入框可用 (精确输入是慎重动作,
-        // 不占用确认门): 仅当选中会话仍在时回显 HUD.
-        if (m_state == RotateState::Ready && !m_blockId.isNull())
-            showHud();
-    }
+    toggleAnchor();
 }
 
-void ToolRotate::onHudCancel()
+void ToolRotate::updateStatusHint()
 {
+    // 角度**数值**读数归上下文属性条 (订阅 resolved, 拖动时自动跟着变);
+    // 这里只报"现在处于什么状态、该按什么"的离散提示。
+    //
+    // 唯一例外是旋转复制: 条带按拍板在复制态不显示角度, 相对角只能落在
+    // 状态栏 —— Ctrl+拖动是低频精确操作, 每帧刷一次文本可接受 (普通旋转
+    // 拖动时文本是常量, QLabel::setText 相同文本直接返回, 零开销)。
     if (m_copyGesture && m_copyGesture->active()) {
-        m_copyGesture->cancel();    // drop the preview clone, keep the target
-    } else if (m_selectionRotate && m_state == RotateState::Rotating) {
-        cancelSelRotation();        // 中止选集拖动, 恢复基准位姿 + 影子基准
-    } else if (m_selectionRotate && m_state == RotateState::Ready) {
-        // 第一击设锚点"点错了"：Esc 先清锚点重选 (仍留选集会话);
-        // 无锚点按下 Esc = 结束选集会话回 Idle.
-        if (m_selPivotSet) {
-            m_selPivotSet = false;
-            m_selDelta = 0.0;
-            m_selPivotPointId = QUuid();
-            removeGizmo();
-            refreshHudText();
-        } else {
-            clearTarget();
+        reportHintOverride(QString::fromUtf8("旋转复制 %1°").arg(
+            cad::geo::Units::formatDegValue(m_copyGesture->currentRelativeAngle())));
+        return;
+    }
+    switch (m_state) {
+    case RotateState::Idle:
+        reportHintOverride(QString());       // 恢复 ToolDescriptor::hintText
+        return;
+    case RotateState::Rotating:
+        reportHintOverride(QString::fromUtf8("旋转中 · 松手提交 · Esc 回位"));
+        return;
+    case RotateState::Ready: {
+        // D15 确认门的文字表达 (H2 第三条) —— 原挂在 HUD caption 后缀。
+        // 2026-12: 附带锚心端 (确定提示) —— 锚心 = 旋转基准端, 换向/点端点
+        // 切换后提示同步刷新, 让"基准在哪端"常驻可见。
+        QString anchorTag = QStringLiteral("?");
+        if (m_paramDoc) {
+            if (const auto* blk = m_paramDoc->findBlock(m_blockId);
+                blk && !blk->segments.empty()) {
+                const auto& seg = blk->segments.front();
+                const auto* ap = blk->findPoint(m_anchorPointId);
+                if (ap)
+                    anchorTag = cad::param::Serial::tag(ap->serial);
+                else
+                    anchorTag = m_anchorIsEnd
+                        ? cad::param::Serial::tag(
+                              blk->findPoint(seg.endPointId)->serial)
+                        : cad::param::Serial::tag(
+                              blk->findPoint(seg.startPointId)->serial);
+            }
         }
-    } else if (m_state == RotateState::Rotating) {
-        cancelRotation();       // abort the drag, keep the target
-    } else {
-        restoreBase();          // drop any uncommitted HUD preview
-        clearTarget();          // back to Idle
+        reportHintOverride(m_selectionConfirmed
+            ? QString::fromUtf8("旋转：锚心 %1 · 拖动旋转（Shift 吸附 15°）")
+                  .arg(anchorTag)
+            : QString::fromUtf8("旋转：锚心 %1 · 右键或回车确认后拖动")
+                  .arg(anchorTag));
+        return;
+    }
     }
 }
 
@@ -1840,7 +1258,7 @@ void ToolRotate::applySelectionConfirmed(bool confirmed)
     if (m_selectionConfirmed == confirmed) return;
     m_selectionConfirmed = confirmed;
     updateGizmo();      // gizmo 虚线/空心 ↔ 实线/实心 (H2 ①)
-    refreshHudText();   // caption 确认提示后缀 (H2 ②)
+    updateStatusHint();   // 状态栏确认提示 (H2 第三条, 原挂在 HUD caption)
 }
 
 bool ToolRotate::gizmoConfirmed() const
@@ -1851,23 +1269,11 @@ bool ToolRotate::gizmoConfirmed() const
 void ToolRotate::updateGizmo()
 {
     if (!m_gizmo) return;
-    // D15 确认门可视 (H2): 单线选中未确认 = 虚线/空心; 确认态 (含选集会话
-    // 与复制手势 —— 两者本就是"无需再确认"的活跃会话) = 实线/实心。每次
-    // 刷新同步一次, 翻转点另经 applySelectionConfirmed 推样式+caption。
-    m_gizmo->setConfirmed(m_selectionConfirmed || m_selectionRotate
+    // D15 确认门可视 (H2): 单线选中未确认 = 虚线/空心; 确认态 (含复制手势 ——
+    // 它本就是"无需再确认"的活跃会话) = 实线/实心。每次刷新同步一次, 翻转点
+    // 另经 applySelectionConfirmed 推样式+caption。
+    m_gizmo->setConfirmed(m_selectionConfirmed
                           || (m_copyGesture && m_copyGesture->active()));
-    // ── 选集旋转: 基准 = 拖起始方向 (pivot→按下点), 弧 = 0 → delta ──
-    if (m_selectionRotate) {
-        if (!m_selPivotSet) return;   // 锚点未定: 不画弧
-        const double dashRad = m_selBaselineRad;
-        double arcEnd = dashRad + m_selDelta * M_PI / 180.0;
-        double span = arcEnd - dashRad;
-        while (span >  M_PI) span -= 2.0 * M_PI;
-        while (span < -M_PI) span += 2.0 * M_PI;
-        arcEnd = dashRad + span;
-        m_gizmo->update(currentZoom(), dashRad, dashRad, arcEnd);
-        return;
-    }
     const double deg = currentAngleDeg();
     // 黄弧永远画“真实夹角”（2026-08 用户拍板，可去掉黄弧上的角度文字）：
     // 连接线 = 折线 → 直行延续方向（跨度 = 折角 α，含 α > 180° 的 CW 侧）；
@@ -1898,6 +1304,9 @@ void ToolRotate::updateGizmo()
         arcEnd = deg * M_PI / 180.0;
     }
     m_gizmo->update(currentZoom(), dashRad, arcStart, arcEnd);
+    // 状态栏提示随 gizmo 同步 (拖动每帧都刷一次; 普通旋转的文案是常量,
+    // QLabel 相同文本直接返回, 只有旋转复制的相对角会真正逐帧更新)。
+    updateStatusHint();
 }
 
 void ToolRotate::removeGizmo()

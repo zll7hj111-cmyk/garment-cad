@@ -8,7 +8,6 @@
 #include "parametric/Duplicate.h"
 #include "parametric/LinkedVariable.h"
 #include "parametric/MeasureVariable.h"
-#include "document/commands/ComponentCommands.h"  // AimRelease/DartRelease (RotateBlocksCommand)
 #include "document/commands/CommandIds.h"         // central merge-id enum (P0-2)
 #include "geometry/Vec2.h"
 
@@ -108,49 +107,6 @@ private:
     QUuid m_newEndTargetPoint;
     QUuid m_releasedAttId;                      ///< Attachment detached by redo().
     cad::param::Attachment m_releasedAttBackup; ///< Snapshot restored by undo().
-};
-
-/// Rotate a SELECTION SET S of blocks as one rigid transform about an
-/// arbitrary pivot (旋转重设计 2026-08-27, ROTATE_REDESIGN_DESIGN.md §2.6):
-///
-///   - Every block in S: newTf = rigid rotation of oldTf by deltaRad.
-///   - Cross-boundary follower attachments (from ∈ S, to ∉ S): DEMOTED to
-///     angleOnly (拆开保留位置跟随) instead of deleted, and their SHADOW
-///     baseline offset accumulates the delta — the dragged pose is preserved,
-///     the leader itself untouched, formulas stay alive. Undo restores the
-///     full welded attachment verbatim + baselineOffsetDeg = old.
-///   - Released endTargets / dart references pointing OUTSIDE S: cleared in
-///     redo, restored verbatim in undo (原「组件整组旋转」D7 快照语义;
-///     该模态已删除 2026-08-29, 释放快照通道由本命令保留).
-class RotateBlocksCommand : public QUndoCommand
-{
-public:
-    struct ShadowAtt {
-        QUuid attId;
-        cad::param::Attachment demoted; ///< Full pre-demotion attachment snapshot.
-        double oldOffset = 0.0;         ///< baselineOffsetDeg before / after.
-        double newOffset = 0.0;
-    };
-
-    RotateBlocksCommand(cad::param::ParamDocument* doc,
-                        const QHash<QUuid, cad::param::Transform2D>& oldTf,
-                        const QHash<QUuid, cad::param::Transform2D>& newTf,
-                        std::vector<ShadowAtt> shadowAtts,
-                        std::vector<cad::param::Attachment> releasedAtts,
-                        std::vector<cad::cmd::AimRelease> releasedTargets,
-                        std::vector<cad::cmd::DartRelease> releasedDarts,
-                        QUndoCommand* parent = nullptr);
-    void redo() override;
-    void undo() override;
-
-private:
-    cad::param::ParamDocument* m_doc;
-    QHash<QUuid, cad::param::Transform2D> m_oldTf;
-    QHash<QUuid, cad::param::Transform2D> m_newTf;
-    std::vector<ShadowAtt> m_shadowAtts;
-    std::vector<cad::param::Attachment> m_releasedAtts;
-    std::vector<cad::cmd::AimRelease> m_releasedTargets;
-    std::vector<cad::cmd::DartRelease> m_releasedDarts;
 };
 
 /// Add the clones produced by a Ctrl+drag quick copy (快捷复制) as ONE

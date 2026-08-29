@@ -1,4 +1,4 @@
-﻿/// @file test_tool_intersection.cpp
+/// @file test_tool_intersection.cpp
 /// Drives the ToolIntersection interaction flow end-to-end:
 ///   select target segment → select ray origin → hover an aim point (指向点)
 ///   → click commits an Intersection point whose ray points at the aim point.
@@ -17,6 +17,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "geometry/Vec2.h"
+#include "TestHelpers.h"
 
 using namespace cad::param;
 using cad::geo::Vec2;
@@ -116,6 +117,9 @@ private slots:
     /// created IMMEDIATELY (one-step borrow).
     void aimPointCreatesIntersection();
 
+    /// 三期: 只读悬停上报 (扫过即看) — 悬停目标线段进上下文属性条; 移出 → 空。
+    void hoverReportsTargetLine();
+
     /// Regression: plain angle aiming (no borrowed point) still commits.
     void angleModeStillWorks();
 
@@ -187,6 +191,29 @@ void TestToolIntersection::aimPointCreatesIntersection()
     QVERIFY(ix->resolved);
     QVERIFY(std::abs(ix->resolvedPos.x - 52.0) < 1e-6);
     QVERIFY(std::abs(ix->resolvedPos.y - 0.0) < 1e-6);
+}
+
+void TestToolIntersection::hoverReportsTargetLine()
+{
+    Setup s;
+    cad::test::RecordingToolHost host;
+    cad::tools::ToolIntersection tool;
+    cad::tools::ToolContext ctx;
+    ctx.scene = &s.scene;
+    ctx.paramDoc = &s.doc;
+    ctx.host = &host;
+    tool.activate(ctx);
+
+    // SelectLine 态: 悬停线身 → 上报目标线段 (条带只读预览)。
+    cad::test::sendToolMouseMove(tool, QPointF(50.0, 0.0));
+    QCOMPARE(host.hoverBlock, s.blockId);
+    QCOMPARE(host.hoverSeg, s.segId);
+
+    // 移出 → 上报空 (条带收起)。
+    cad::test::sendToolMouseMove(tool, QPointF(300.0, 300.0));
+    QVERIFY(host.hoverBlock.isNull());
+    QVERIFY(host.hoverSeg.isNull());
+    tool.deactivate();
 }
 
 void TestToolIntersection::angleModeStillWorks()

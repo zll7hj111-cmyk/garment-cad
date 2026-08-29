@@ -1,4 +1,4 @@
-﻿/// @file test_measure.cpp
+/// @file test_measure.cpp
 /// Measure tool regression:
 ///   - default mode measures the Euclidean two-point distance;
 ///   - W cycles 距离 → 水平 → 垂直 → 距离, and each committed
@@ -18,10 +18,12 @@
 
 #include "canvas/CanvasScene.h"
 #include "tools/ToolMeasure.h"
+#include "tools/ToolAngleMeasure.h"
 #include "ui/MeasureResultDialog.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/MeasureVariable.h"
 #include "geometry/Vec2.h"
+#include "TestHelpers.h"
 
 using namespace cad::param;
 using cad::geo::Vec2;
@@ -95,6 +97,9 @@ private slots:
     void distanceModeIsEuclidean();
     void wCyclesModesAndValues();
     void axisCoincidenceRejected();
+    // ── 三期: 只读悬停上报 (扫过即看, CONTEXT_STRIP_DESIGN.md §3) ──
+    void hoverReportsSegmentToStrip();
+    void angleMeasureHoverReportsSegment();
 };
 
 void TestMeasure::distanceModeIsEuclidean()
@@ -184,6 +189,62 @@ void TestMeasure::axisCoincidenceRejected()
     const MeasureVariable& mv = doc.measureVars().front();
     QCOMPARE(mv.kind, MeasureKind::Horizontal);
     QVERIFY(std::abs(mv.value - 30.0) < 1e-9);
+    tool.deactivate();
+}
+
+// ── 三期: 只读悬停上报 (扫过即看, CONTEXT_STRIP_DESIGN.md §3) ──
+// 测量工具悬停线段 → 经 ToolHost 上报悬停点所在线段, 条带只读预览; 移出 → 空。
+
+void TestMeasure::hoverReportsSegmentToStrip()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    const auto line = cad::test::makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    cad::test::RecordingToolHost host;
+    cad::tools::ToolMeasure tool;
+    cad::tools::ToolContext ctx;
+    ctx.scene = &scene;
+    ctx.paramDoc = &doc;
+    ctx.host = &host;
+    tool.activate(ctx);
+
+    // 悬停近端点 → 点吸附 → 上报该点所在线段。
+    cad::test::sendToolMouseMove(tool, QPointF(5.0, 0.0));
+    QCOMPARE(host.hoverBlock, line.blockId);
+    QCOMPARE(host.hoverSeg, line.segId);
+
+    // 移出 → 上报空 (条带收起)。
+    cad::test::sendToolMouseMove(tool, QPointF(300.0, 300.0));
+    QVERIFY(host.hoverBlock.isNull());
+    QVERIFY(host.hoverSeg.isNull());
+    tool.deactivate();
+}
+
+void TestMeasure::angleMeasureHoverReportsSegment()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    const auto line = cad::test::makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    cad::test::RecordingToolHost host;
+    cad::tools::ToolAngleMeasure tool;
+    cad::tools::ToolContext ctx;
+    ctx.scene = &scene;
+    ctx.paramDoc = &doc;
+    ctx.host = &host;
+    tool.activate(ctx);
+
+    // 线身中点 → 线段吸附 → 上报。
+    cad::test::sendToolMouseMove(tool, QPointF(50.0, 0.0));
+    QCOMPARE(host.hoverBlock, line.blockId);
+    QCOMPARE(host.hoverSeg, line.segId);
+
+    cad::test::sendToolMouseMove(tool, QPointF(300.0, 300.0));
+    QVERIFY(host.hoverBlock.isNull());
+    QVERIFY(host.hoverSeg.isNull());
     tool.deactivate();
 }
 

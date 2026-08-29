@@ -146,6 +146,11 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
             // Scissors cursor would require a custom cursor; use cross for now.
             if (!m_scene->views().isEmpty())
                 m_scene->views().first()->setCursor(Qt::CrossCursor);
+            // 三期: 只读悬停上报 (扫过即看) — 断点所在线段进上下文属性条。
+            QUuid hoverSeg;
+            if (const auto* blk = m_paramDoc->findBlock(snap->blockId))
+                hoverSeg = blk->exitSegmentAtPoint(snap->pointId);
+            reportHoverTarget(!hoverSeg.isNull() ? snap->blockId : QUuid(), hoverSeg);
             return;
         }
     }
@@ -178,6 +183,8 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
 
         if (!m_scene->views().isEmpty())
             m_scene->views().first()->setCursor(Qt::CrossCursor);
+        // 三期: 只读悬停上报 — 线身吸附线段进上下文属性条。
+        reportHoverTarget(segSnap->blockId, segSnap->segmentId);
         return;
     }
 
@@ -185,6 +192,7 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
     hideMarkers();
     if (!m_scene->views().isEmpty())
         m_scene->views().first()->unsetCursor();
+    reportHoverTarget(QUuid(), QUuid());   // 移出 → 条带收起
 }
 
 void ToolBreak::hideMarkers()

@@ -7,7 +7,6 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "geometry/Angle.h"
-#include "ui/AngleHud.h"
 #include "tools/ToolRotate.h"
 #include "canvas/CanvasScene.h"
 #include "document/commands/BlockCommands.h"
@@ -101,11 +100,10 @@ void RotateCopyGesture::begin(const Vec2& pos)
 
     m_copyMode = true;
     o.m_state = RotateState::Rotating;
-    // 恢复 HUD 编辑（连续复制：上次提交后已隐藏；此处重新显示，目标明确
-    // 是副本相对角度）。
-    o.showHud();
-    if (o.m_angleHud) o.m_angleHud->setMode(cad::param::RotationMode::Angle);
-    o.refreshHudText();
+    // 复制态: 条带解除锁定 (拍板 —— 复制显示的是"绕锚心相对角", 与跟随角/
+    // 绝对角是三套语义, 塞进同一个角度框必然出错; 相对角读数走状态栏)。
+    o.reportPinnedTarget(QUuid(), QUuid());
+    o.updateGizmo();   // 内含 updateStatusHint → 状态栏显示相对角
     if (o.m_scene) o.m_scene->refreshAllBlockItems();
 }
 
@@ -205,10 +203,9 @@ void RotateCopyGesture::convert(const Vec2& pos)
     o.m_dragAngle0 = relDeg;
 
     m_copyMode = true;
-    // 恢复 HUD 编辑（连续复制场景同上）。
-    o.showHud();
-    if (o.m_angleHud) o.m_angleHud->setMode(cad::param::RotationMode::Angle);
-    o.refreshHudText();
+    // 复制态: 条带解除锁定 (同上 —— 相对角不与跟随角/绝对角共用一个框)。
+    o.reportPinnedTarget(QUuid(), QUuid());
+    o.updateGizmo();
     if (o.m_scene) o.m_scene->refreshAllBlockItems();
 }
 
@@ -311,11 +308,11 @@ void RotateCopyGesture::commit()
 
     if (zeroAngle || !o.m_undoStack) {
         reset();   // discard: back to Ready, nothing created
-        // 复制语义已终结：隐藏 HUD，避免输入框悄然切回“原线角度”目标
-        // （用户刚完成复制、误以为还在编辑副本，输入会作用到原线段上）。
-        o.hideHud();
+        // 复制语义终结: 条带重新锁定回原线段 (复制期间它是解除锁定的)。
+        // 旧的 hideHud 是为了防止输入框目标悄然切回原线角度; 现在精确输入
+        // 归条带, 只要把焦点锁回原线段即可, 条带显示的就是原线的角度。
+        o.reportStripTarget();
         o.updateGizmo();
-        o.refreshHudText();
         return;
     }
 
@@ -325,10 +322,9 @@ void RotateCopyGesture::commit()
         o.m_paramDoc, std::move(m_copyResult), o.m_blockId, m_pivotPointId,
         m_clonePivotPointId, m_leaderSegmentId, finalAngle, finalFormula));
     reset();
-    // 同上：副本已落地，HUD 的相对角度语义结束，隐藏防止误作用原线。
-    o.hideHud();
+    // 同上: 副本已落地, 相对角语义结束 —— 条带锁定回原线段。
+    o.reportStripTarget();
     o.updateGizmo();
-    o.refreshHudText();
 }
 
 void RotateCopyGesture::cancel()
@@ -337,10 +333,9 @@ void RotateCopyGesture::cancel()
     removeCopyPreview();
     reset();
     o.clearAimCandidate();
-    // 复制已放弃：隐藏 HUD（防止输入框目标悄然切回原线角度）。
-    o.hideHud();
+    // 复制已放弃: 条带锁定回原线段。
+    o.reportStripTarget();
     o.updateGizmo();
-    o.refreshHudText();
 }
 
 void RotateCopyGesture::removeCopyPreview()

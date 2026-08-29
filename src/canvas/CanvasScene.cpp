@@ -8,12 +8,14 @@
 #include <QGraphicsPathItem>
 #include <QPainterPath>
 #include <QGraphicsView>
+#include <QScrollBar>
 #include <QPen>
 #include <QTimer>
 #include <cmath>
 #include <utility>
 #include <bit>
 
+#include "CanvasView.h"
 #include "OriginCrosshair.h"
 #include "BlockItem.h"
 #include "HudItem.h"
@@ -306,6 +308,68 @@ void CanvasScene::showToast(const QString& text)
     m_toastItem->show();
 
     m_toastTimer->start(1400);
+}
+
+void CanvasScene::setModeBadge(const QString& text)
+{
+    if (text.isEmpty()) {                       // 撤下 (默认态 / 切工具)
+        if (m_modeBadge) m_modeBadge->hide();
+        return;
+    }
+    // 无头场合 (单测直连 scene) 没有视口可锚定, 角标无从谈起 —— 但不算错,
+    // 状态栏 L1 照常工作。
+    if (views().isEmpty()) return;
+
+    if (!m_modeBadge) {
+        m_modeBadge = new HudItem();
+        m_modeBadge->setLook(HudItem::Look::DarkPill);
+        m_modeBadge->setZValue(9999.0);   // 低于 toast (10000): 角标不该盖住提示
+        addItem(m_modeBadge);
+        connectModeBadgeViewSignals();
+    }
+    m_modeBadge->setText(text);
+    repositionModeBadge();
+    m_modeBadge->show();
+}
+
+QString CanvasScene::modeBadgeText() const
+{
+    return (m_modeBadge && m_modeBadge->isVisible()) ? m_modeBadge->text() : QString();
+}
+
+QPointF CanvasScene::modeBadgeScenePos() const
+{
+    return m_modeBadge ? m_modeBadge->pos() : QPointF();
+}
+
+void CanvasScene::repositionModeBadge()
+{
+    if (!m_modeBadge || views().isEmpty()) return;
+    QGraphicsView* view = views().first();
+    // 与 toast 同一套锚定: 先取"当前视口矩形"的场景坐标, 再用 HudItem 的
+    // 屏幕像素偏移 (÷zoom 落地, 缩放下位置恒定)。
+    const QRectF viewScene = view->mapToScene(view->viewport()->rect()).boundingRect();
+    m_modeBadge->placeAtScene(viewScene.topLeft(), view, QPointF(14.0, 14.0));
+}
+
+void CanvasScene::connectModeBadgeViewSignals()
+{
+    // 角标是"钉在视口左上角"的, 而它实际是场景图元 —— 视口一滚动/缩放,
+    // 同一屏幕位置对应的场景坐标就变了, 必须显式重定位 (toast 是 1.4 秒就
+    // 消失的瞬态, 漂移无所谓; 常驻的不行)。
+    //
+    // 不用 QWidget 覆盖层省掉这件事: QGraphicsView 的 viewport 是 OpenGL
+    // widget, 上面叠普通 QWidget 会碰合成刷新问题。
+    QGraphicsView* view = views().isEmpty() ? nullptr : views().first();
+    if (!view) return;
+
+    if (QScrollBar* h = view->horizontalScrollBar())
+        connect(h, &QScrollBar::valueChanged, this, [this] { repositionModeBadge(); });
+    if (QScrollBar* v = view->verticalScrollBar())
+        connect(v, &QScrollBar::valueChanged, this, [this] { repositionModeBadge(); });
+    // 缩放时滚动条 value 不一定变 (缩放中心不变), 所以必须单独接。
+    if (auto* cv = qobject_cast<CanvasView*>(view))
+        connect(cv, &CanvasView::zoomFactorChanged, this, [this] { repositionModeBadge(); });
 }
 
 bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,

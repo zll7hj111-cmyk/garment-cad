@@ -95,7 +95,10 @@ ToolDescriptor ToolSelect::describe()
     d.displayName = QString::fromUtf8("选择(&V)");
     d.iconName = QStringLiteral("cursor-click");
     d.shortcut = QKeySequence(Qt::Key_V);
-    d.hintText = QString::fromUtf8("选择：点击选取实体（单选即操作）| W切换单选/多选 | 右键取消/确认 | 空白右键→智能笔 | 双击编辑 | Del删除");
+    // 静态默认文案与运行期覆盖同源 (modeIndicatorFor 的默认态 = 单选、无
+    // 循环上下文), 避免"静态文案改了、状态栏没跟着改"的漂移。
+    d.hintText = modeIndicatorFor(SelectionMode::Single, -1, 0)
+                     .hint(reinterpret_cast<const char*>(u8"选择"));
     d.factory = [] { return std::make_unique<ToolSelect>(); };
     return d;
 }
@@ -120,7 +123,12 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
         [this](SelectState s) { setState(s); },
         [this](const QString& t) { showToast(t); },
         [this]() { clearSelectionAndIdle(); },
-        [this]() { return m_selection.isEmpty(); });
+        [this]() { return m_selection.isEmpty(); },
+        // 二期: 连接角度会话 → 上下文属性条 (经 ToolHost 上报, 全 null = 结束)。
+        [this](const QUuid& bid, const QUuid& sid, const QUuid& attId, double initial) {
+            reportConnectAngleSession(bid, sid, attId, initial);
+        },
+        [this](bool valid) { reportConnectAngleValidity(valid); });
     m_copyDrag = new CopyDragController(
         m_scene, m_paramDoc, undo,
         [this](SelectState s) { setState(s); },
@@ -131,6 +139,9 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
         },
         [this]() { clearSelectionAndIdle(); });
     m_marqueeGesture = new MarqueeGesture(m_scene, m_paramDoc);
+    // 常驻实例下每次进入都要把状态栏刷回单选 —— 上次会话可能停在多选,
+    // 而模式在画布上没有任何持久标识, 不刷就是"看着像单选其实不是"。
+    refreshModeIndicator();
 }
 
 void ToolSelect::onDeactivate()
@@ -179,6 +190,30 @@ void ToolSelect::setState(SelectState s)
     // Confirmed (选中可操作态), 归一化为 Selecting — 选中即就绪, 无需右键.
     if (s == SelectState::Confirmed) s = SelectState::Selecting;
     m_state = s;
+}
+
+// ── 连接角度会话输入 (二期: 上下文属性条 → ConnectGesture) ──
+// 条带是纯输入面, 连接语义全部留在手势里; 无会话时 (手势被取消/工具已切换)
+// 这些调用是 no-op —— ConnectGesture 的 onAngleX 都会先查附件是否存在。
+
+void ToolSelect::connectAngleTextChanged(const QString& text)
+{
+    if (m_connectGesture) m_connectGesture->onAngleTextChanged(text);
+}
+
+void ToolSelect::connectAngleModeChanged(cad::param::RotationMode mode)
+{
+    if (m_connectGesture) m_connectGesture->onAngleModeChanged(mode);
+}
+
+void ToolSelect::connectAngleCommitted()
+{
+    if (m_connectGesture) m_connectGesture->commitAngle();
+}
+
+void ToolSelect::connectAngleCancelled()
+{
+    if (m_connectGesture) m_connectGesture->cancelAngle();
 }
 
 void ToolSelect::clearSelectionAndIdle()
@@ -235,24 +270,56 @@ void ToolSelect::toggleSelectionMode()
     // semantics would leave stale highlights the next click cannot undo.
     if (!switchingToMulti)
         clearSelectionAndIdle();
-    showModeToast();
+    // 单一出口: toast 讲"刚刚变成什么了" (1.4s 后消失), 状态栏常驻讲
+    // "现在是什么、W 会切到哪"。两者都来自下面同一份 ModeIndicator。
+    announceModeChange();
 }
 
-void ToolSelect::showModeToast()
+ModeIndicator ToolSelect::modeIndicator() const
 {
-    // 2026-09 取消确认基准: 单击选中 / 按住拖动 / 端点按住连接 / 悬停提示.
-    const QString text = (m_selectionMode == SelectionMode::Single)
-        ? QString::fromUtf8("\xe5\x8d\x95\xe9\x80\x89\xe6\xa8\xa1\xe5\xbc\x8f\xef\xbc\x9a"
-                            "\xe7\x82\xb9\xe5\x87\xbb\xe9\x80\x89\xe4\xb8\xad"
-                            " | \xe6\x8c\x89\xe4\xbd\x8f\xe6\x8b\x96\xe5\x8a\xa8"
-                            " | \xe7\xab\xaf\xe7\x82\xb9\xe6\x8c\x89\xe4\xbd\x8f\xe8\xbf\x9e\xe6\x8e\xa5")
-                            // 单选模式：点击选中 | 按住拖动 | 端点按住连接
-        : QString::fromUtf8("\xe5\xa4\x9a\xe9\x80\x89\xe6\xa8\xa1\xe5\xbc\x8f\xef\xbc\x9a"
-                            "\xe7\x82\xb9\xe5\x87\xbb\xe5\x8a\xa0\xe5\x87\x8f\xe9\x80\x89"
-                            " | \xe6\xa1\x86\xe9\x80\x89"
-                            " | \xe5\xb7\xb2\xe9\x80\x89\xe6\x8c\x89\xe4\xbd\x8f\xe6\x8b\x96\xe5\x8a\xa8");
-                            // 多选模式：点击加减选 | 框选 | 已选按住拖动
-    showToast(text);
+    return modeIndicatorFor(m_selectionMode, m_overlapIndex,
+                            m_overlapCandidates.size());
+}
+
+ModeIndicator ToolSelect::modeIndicatorFor(SelectionMode mode, int overlapIndex,
+                                           int overlapCount)
+{
+    // 循环上下文激活时 W = 循环候选, **不是**切模式 —— 整句都要换掉, 否则
+    // 状态栏会给出「W 切多选」这种此刻根本不成立的指引。
+    if (overlapIndex >= 0) {
+        ModeIndicator mi;
+        mi.modeName = QString::fromUtf8("重叠候选");
+        mi.detail   = QString::fromUtf8("第 %1/%2 项 | 点击确认 | Esc/空白取消")
+                          .arg(overlapIndex + 1).arg(overlapCount);
+        mi.wAction  = QString::fromUtf8("W 循环候选");
+        // 不设 toast: 循环状态由画布常驻 HUD 表达 (「重叠 N 条 ｜ 第 x/y」),
+        // 再弹一句 toast 纯属重复打扰。
+        // 角标同理 —— 画布上已经有更详细的常驻 HUD 了, 再挂一个「重叠候选」
+        // 胶囊是重复占像素。状态栏仍会显示这一态 (L1 与 HUD 不冲突)。
+        mi.isDefault = true;
+        return mi;
+    }
+
+    // 2026-09 取消确认基准: 单击选中 / 按住拖动 / 端点按住连接 / 悬停提示。
+    // 模式无关的固定操作 (双击编辑 / Del / 空白右键) 两个模式都要带, 否则
+    // 换模式就等于丢提示。
+    ModeIndicator mi;
+    if (mode == SelectionMode::Multi) {
+        mi.modeName = QString::fromUtf8("多选");
+        mi.detail   = QString::fromUtf8("点击加减选 | 框选 | 已选按住拖动 | 双击编辑 | Del删除 | 空白右键→智能笔");
+        mi.wAction  = QString::fromUtf8("W 切单选");
+        mi.toast    = QString::fromUtf8("多选模式：点击加减选 | 框选 | 已选按住拖动");
+    } else {
+        mi.modeName = QString::fromUtf8("单选");
+        mi.detail   = QString::fromUtf8("点击选中 | 按住拖动 | 端点按住连接 | 双击编辑 | Del删除 | 空白右键→智能笔");
+        mi.wAction  = QString::fromUtf8("W 切多选");
+        mi.toast    = QString::fromUtf8("单选模式：点击选中 | 按住拖动 | 端点按住连接");
+        // 单选是默认态 → 画布角标不显示。四个工具里只有选择工具的模式
+        // 错了会直接误操作 (多选点空白=加选 / 单选=清选), 所以它是唯一
+        // 拿到 L2 角标的那一个 —— 而角标只在切到多选时才出现。
+        mi.isDefault = true;
+    }
+    return mi;
 }
 
 void ToolSelect::showToast(const QString& text)
@@ -1021,7 +1088,9 @@ void ToolSelect::notifyEditTarget()
                 segId = blk->segments.front().id;
         }
     }
-    m_host->setEditTarget(blockId, segId);
+    // 上下文属性条 (CONTEXT_STRIP_DESIGN.md): 单选 = 锁定焦点 (条带可编辑);
+    // 多选/取消选择 = 解除锁定 (两个 id 均 null)。
+    reportPinnedTarget(blockId, segId);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1165,6 +1234,12 @@ void ToolSelect::updateHoverCursor(const cad::geo::Vec2& pos)
             if (const auto* blk = m_paramDoc->blocksView().byId(h.blockId))
                 hoverCands.append(makeOverlapCandidate(*blk, h.segmentId));
         }
+        // 上下文属性条: 上报悬停候选 (只读预览)。节流与焦点保护在条带内部;
+        // 已锁定的线段不会被悬停抢走 (条带 Pinned 优先于 Hover)。
+        if (hits.empty())
+            reportHoverTarget(QUuid(), QUuid());
+        else
+            reportHoverTarget(hits.front().blockId, hits.front().segmentId);
     }
     if (cur != m_hoverCursor) {
         m_hoverCursor = cur;
@@ -1264,6 +1339,8 @@ void ToolSelect::activateOverlapContext(const QList<OverlapCandidate>& cands,
                         .arg(c.roleText)
                         .arg(c.name),
                     m_overlapAnchor);
+    // 进入循环上下文: W 的语义从"切模式"变成"循环候选", 状态栏整句要跟着换。
+    refreshModeIndicator();
 }
 
 void ToolSelect::deactivateOverlapContext()
@@ -1271,6 +1348,8 @@ void ToolSelect::deactivateOverlapContext()
     m_overlapIndex = -1;
     m_overlapCandidates.clear();
     hideOverlapHint();
+    // 状态没变但"此刻按 W 会发生什么"变了 (从循环候选回到切模式)。
+    refreshModeIndicator();
 }
 
 void ToolSelect::cycleOverlapCandidate()
@@ -1302,6 +1381,9 @@ void ToolSelect::cycleOverlapCandidate()
                         .arg(c.roleText)
                         .arg(c.name),
                     m_overlapAnchor);
+    // 循环后状态栏的「第 x/y 项」要跟着走 —— 这是持久层相对 HUD 的价值:
+    // HUD 锚在集群上可能被遮挡, 状态栏永远在读同一份索引。
+    refreshModeIndicator();
 }
 
 void ToolSelect::applyOverlapPick(int index)

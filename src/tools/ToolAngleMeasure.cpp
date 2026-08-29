@@ -123,6 +123,9 @@ void ToolAngleMeasure::updateHover(const cad::geo::Vec2& pos, double zoom)
 {
     auto snap = m_snapEngine.findSegmentSnap(pos, m_paramDoc, zoom);
     m_hoverSnap = snap;
+    // 三期: 只读悬停上报 (扫过即看) — 线身吸附线段进上下文属性条。
+    reportHoverTarget(snap ? snap->blockId : QUuid(),
+                      snap ? snap->segmentId : QUuid());
     if (!m_scene->views().isEmpty()) {
         if (snap)
             m_scene->views().first()->setCursor(Qt::CrossCursor);

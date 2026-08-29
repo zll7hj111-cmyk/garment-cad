@@ -85,6 +85,19 @@ public:
     /// (工具守卫提示, auto-hides after ~1.4 s). Shared by every tool.
     void showToast(const QString& text);
 
+    /// 常驻模式角标 (W 键模式指示 L2): 钉在视口**左上角**的深色小胶囊,
+    /// 只显示非默认模式的短名 ("多选" / "水平" / "省道线")。
+    ///
+    /// 与 toast 的分工: toast 讲"刚刚变成什么了" (1.4s 后消失), 角标讲
+    /// "下一次点击的语义" (常驻, 且在视线里 —— 状态栏还要低头看)。
+    /// 传空串 = 撤下 (默认态 / 切工具), 默认态因此零像素成本。
+    void setModeBadge(const QString& text);
+    /// 当前角标文本 (空 = 未显示)。供同值短路与测试断言。
+    [[nodiscard]] QString modeBadgeText() const;
+    /// 角标当前所在的**场景坐标**。它是"钉在视口左上角"的, 所以视口一滚动
+    /// 这个值就该变 —— 断言它不变就是重定位漏了。
+    [[nodiscard]] QPointF modeBadgeScenePos() const;
+
     /// Flash the two source points of a measurement: amber rings on both
     /// points plus an amber dashed connector (ToolMeasure preview style).
     /// The transient graphics self-destruct after ~1.5 s. Returns false when
@@ -140,6 +153,13 @@ private:
     // Toast overlay (owned by the scene, lazily created).
     HudItem* m_toastItem = nullptr;
     QTimer* m_toastTimer = nullptr;
+
+    /// 常驻模式角标 (owned by the scene, lazily created) —— 见 setModeBadge。
+    HudItem* m_modeBadge = nullptr;
+    /// 角标重定位 + 视口信号接线 (滚动/缩放会让"视口左上角"对应的场景坐标
+    /// 变化, 常驻图元必须跟着走)。
+    void repositionModeBadge();
+    void connectModeBadgeViewSignals();
 
     // Hold-to-show overrides (N/L keys): transient view state, never written
     // to the model.

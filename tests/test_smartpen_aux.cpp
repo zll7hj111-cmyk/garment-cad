@@ -18,7 +18,6 @@
 #include "tools/ToolSelect.h"
 #include "tools/ToolManager.h"
 #include "ui/QuickAuxDialog.h"
-#include "app/SmartPenPreInputBar.h"
 #include "ElaLineEdit.h"
 #include "parametric/ParamDocument.h"
 #include "geometry/Vec2.h"
@@ -33,7 +32,7 @@ namespace {
 struct SwitchHost : cad::tools::ToolHost {
     std::function<void(cad::tools::ToolType)> onSwitch;
     void requestToolSwitch(cad::tools::ToolType type) override { if (onSwitch) onSwitch(type); }
-    void setEditTarget(const QUuid&, const QUuid&) override {}
+    void setPinnedTarget(const QUuid&, const QUuid&) override {}
 };
 
 /// Test convenience: stable id of the display layer at @p row.
@@ -130,7 +129,9 @@ private slots:
     /// free line with no attachment (拖动保护失效).
     void auxPointEndFlipsAndCreatesLockedConnection();  // 名称保持 (默认焊接)
 
-    // ── 预输入 (status-bar pre-input): 名称/长度/角度一次性构造 ──
+    // ── 预输入 (tool-level LinePreInput, 一次性构造) ──
+    // (预输入条 SmartPenPreInputBar 随 CONTEXT_STRIP_DESIGN 一期删除:
+    //  输入包含/键流转已迁 test_context_strip —— 条带取代了它。)
     void preInputLengthAngleCreatesLineInOneClick();
     void preInputLengthOnlyLocksDistance();
     void preInputAngleOnlyLocksDirection();
@@ -139,10 +140,6 @@ private slots:
     void preInputAttachedAngleUsesFollowerConvention();
     void preInputInvalidLengthIsIgnored();
     void preInputSurvivesCancelledStroke();
-    void preInputBarShortcutContainment();
-    void preInputBarKeyNavigation();
-    void preInputBarEscClearsAndReturnsFocus();
-    void preInputBarFullTypingWithShortcutLetters();
 
     // ── 落点确认 (stacked-point disambiguation, 2026-08) ──
     // Aux layer ACTIVE: an exact stack of aux + working start points.
@@ -847,126 +844,7 @@ void TestSmartPenAux::preInputSurvivesCancelledStroke()
     pen.deactivate();
 }
 
-void TestSmartPenAux::preInputBarShortcutContainment()
-{
-    cad::app::SmartPenPreInputBar bar;
-    bar.focusFirstNameField();
-
-    // Verify all tool shortcut keys ('V', 'L', 'C', 'R', 'B', 'I', 'A', 'H', 'W', 'N', 'M')
-    // are accepted by ShortcutOverride inside SmartPenPreInputBar so they never leak to window actions.
-    const QVector<int> shortcutKeys = {
-        Qt::Key_V, Qt::Key_L, Qt::Key_C, Qt::Key_R, Qt::Key_B,
-        Qt::Key_I, Qt::Key_A, Qt::Key_H, Qt::Key_W, Qt::Key_N, Qt::Key_M
-    };
-
-    for (int key : shortcutKeys) {
-        QKeyEvent scEvent(QEvent::ShortcutOverride, key, Qt::NoModifier);
-        scEvent.ignore();
-        QCoreApplication::sendEvent(bar.nameEdit(), &scEvent);
-        QVERIFY2(scEvent.isAccepted(), QString("ShortcutOverride for key %1 must be accepted").arg(key).toUtf8().constData());
-    }
-
-    // Also with Ctrl modifier (Ctrl+Z, Ctrl+Y, Ctrl+D, Ctrl+S, etc.):
-    const QVector<int> ctrlKeys = { Qt::Key_Z, Qt::Key_Y, Qt::Key_D, Qt::Key_S, Qt::Key_1, Qt::Key_2 };
-    for (int key : ctrlKeys) {
-        QKeyEvent scEvent(QEvent::ShortcutOverride, key, Qt::ControlModifier);
-        scEvent.ignore();
-        QCoreApplication::sendEvent(bar.lengthEdit(), &scEvent);
-        QVERIFY2(scEvent.isAccepted(), QString("ShortcutOverride for Ctrl+%1 must be accepted").arg(key).toUtf8().constData());
-    }
-}
-
-void TestSmartPenAux::preInputBarKeyNavigation()
-{
-    QWidget dummyCanvas;
-    cad::app::SmartPenPreInputBar bar;
-    bar.setCanvasView(&dummyCanvas);
-
-    // Focus first field:
-    bar.focusFirstNameField();
-    QCOMPARE(bar.focusWidget(), bar.nameEdit());
-
-    // Tab -> lengthEdit
-    QKeyEvent tab1(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.nameEdit(), &tab1);
-    QCOMPARE(bar.focusWidget(), bar.lengthEdit());
-
-    // Tab -> angleEdit
-    QKeyEvent tab2(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.lengthEdit(), &tab2);
-    QCOMPARE(bar.focusWidget(), bar.angleEdit());
-
-    // Tab -> nameEdit (cycle)
-    QKeyEvent tab3(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.angleEdit(), &tab3);
-    QCOMPARE(bar.focusWidget(), bar.nameEdit());
-
-    // Backtab -> angleEdit
-    QKeyEvent btab1(QEvent::KeyPress, Qt::Key_Backtab, Qt::ShiftModifier);
-    QCoreApplication::sendEvent(bar.nameEdit(), &btab1);
-    QCOMPARE(bar.focusWidget(), bar.angleEdit());
-
-    // Return in nameEdit -> lengthEdit
-    bar.focusFirstNameField();
-    QKeyEvent ret1(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.nameEdit(), &ret1);
-    QCOMPARE(bar.focusWidget(), bar.lengthEdit());
-
-    // Return in lengthEdit -> angleEdit
-    QKeyEvent ret2(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.lengthEdit(), &ret2);
-    QCOMPARE(bar.focusWidget(), bar.angleEdit());
-
-    // Return in angleEdit -> canvasView
-    QKeyEvent ret3(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.angleEdit(), &ret3);
-}
-
-void TestSmartPenAux::preInputBarEscClearsAndReturnsFocus()
-{
-    QWidget dummyCanvas;
-    cad::app::SmartPenPreInputBar bar;
-    bar.setCanvasView(&dummyCanvas);
-
-    bar.nameEdit()->setText("test_line");
-    bar.lengthEdit()->setText("10");
-    bar.focusFirstNameField();
-    QCOMPARE(bar.focusWidget(), bar.nameEdit());
-
-    // First Esc clears nameEdit text
-    QKeyEvent esc1(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.nameEdit(), &esc1);
-    QCOMPARE(bar.nameText().isEmpty(), true);
-
-    // Esc on empty field clears all fields
-    bar.focusFirstNameField();
-    QKeyEvent esc2(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-    QCoreApplication::sendEvent(bar.nameEdit(), &esc2);
-    QCOMPARE(bar.lengthText().isEmpty(), true);
-}
-
-void TestSmartPenAux::preInputBarFullTypingWithShortcutLetters()
-{
-    cad::app::SmartPenPreInputBar bar;
-    bar.show();
-
-    bar.focusFirstNameField();
-    // Simulate typing "V_collar_L1" which has V and L (tool shortcuts)
-    QTest::keyClicks(bar.nameEdit(), "V_collar_L1");
-    QCOMPARE(bar.nameText(), QStringLiteral("V_collar_L1"));
-
-    bar.focusLengthField();
-    // Simulate typing formula "C+R/2" which has C and R
-    QTest::keyClicks(bar.lengthEdit(), "C+R/2");
-    QCOMPARE(bar.lengthText(), QStringLiteral("C+R/2"));
-
-    bar.focusAngleField();
-    // Simulate typing formula "A_angle-90" which has A
-    QTest::keyClicks(bar.angleEdit(), "A_angle-90");
-    QCOMPARE(bar.angleText(), QStringLiteral("A_angle-90"));
-}
-
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 // 落点确认 (stacked-point disambiguation, 2026-08): 辅助层激活时工作层点
 // 仍是合法捕捉目标（单向参照契约），但同点堆叠时默认取活动层点；不满意
 // 可点选候选线段切换落点。终点的多候选堆叠进入 ConfirmEnd 确认态。

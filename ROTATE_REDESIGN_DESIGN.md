@@ -21,6 +21,13 @@
 > `RotateComponentCommand` 全部移除；保留机制统一更名 Sel（m_selectionRotate / applySelDelta /
 > commitSelRotation 等）。**组件整体旋转 = 多选 → R 选区继承**（选集旋转）。影子偏转 §2.6 与
 > D9 选区继承不受影响；选集路径无结构释放（跨界连接以影子偏转保姿态）。W=框选切换仍属 §1 四段式未落范围。
+>
+> **2026-08-29 追加（选集旋转整体删除，用户拍板）**：多块旋转的**交互没设计好**——两段式锚点
+> （第一击设锚、第二击起手）+ 影子偏转对用户不可解释，属历史包袱。**先删，日后重新设计**：
+> 选区继承（D9 / `ToolRotate::adoptSelection` / ToolManager 接线）、Sel 系方法、`RotateBlocksCommand`、
+> `AimRelease`/`DartRelease`、选集/影子八用例全部移除；当前多选后按 R = 普通单线旋转，产品内无整组
+> 旋转入口。**`baselineOffsetDeg` 字段与 §2.6 机制保留**（连接卡「基准偏转/归零」仍唯一写入方），
+> 重新设计时 §2.5/§2.6 的判定表与影子机制可直接取用（缺的只是工具入口）。
 
 ---
 

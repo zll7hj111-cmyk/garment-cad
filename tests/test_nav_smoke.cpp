@@ -45,14 +45,15 @@
 
 namespace {
 
-/// P2 (TOOL_SYSTEM_AUDIT): 直驱 ToolSelect 时的宿主桩 —— 捕获编辑目标上报
-/// (旧 setEditTargetCallback 回调的等价物, 经 ToolContext.host 注入)。
+/// P2 (TOOL_SYSTEM_AUDIT): 直驱 ToolSelect 时的宿主桩 —— 捕获焦点上报
+/// (CONTEXT_STRIP: 原 setEditTarget 通道已并入 setPinnedTarget,
+///  经 ToolContext.host 注入)。
 struct EditTargetHost : cad::tools::ToolHost {
     QUuid* block = nullptr;
     QUuid* seg = nullptr;
     int* count = nullptr;
     void requestToolSwitch(cad::tools::ToolType) override {}
-    void setEditTarget(const QUuid& b, const QUuid& s) override {
+    void setPinnedTarget(const QUuid& b, const QUuid& s) override {
         if (block) *block = b;
         if (seg) *seg = s;
         if (count) ++*count;

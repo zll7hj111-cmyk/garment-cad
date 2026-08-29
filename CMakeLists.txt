@@ -273,8 +273,7 @@ add_library(gcad_ui STATIC
     src/ui/DeleteImpactConfirm.h
     src/ui/DeleteImpactConfirm.cpp
     # ── P2-4: 线段属性对话框及其卡片 （原在 src/tools/，QWidget 归位 ui/）──
-    src/ui/AngleHud.h
-    src/ui/AngleHud.cpp
+    # (AngleHud 已随 CONTEXT_STRIP 二期退场, 连接手势角度输入并入 ContextStrip)
     src/ui/LayerFeedback.h
     src/ui/AuxPointForm.h
     src/ui/AuxPointForm.cpp
@@ -364,10 +363,8 @@ target_link_libraries(gcad_tools PUBLIC
 add_library(gcad_app STATIC
     src/app/MainWindow.h
     src/app/MainWindow.cpp
-    src/app/SegmentEditBar.h
-    src/app/SegmentEditBar.cpp
-    src/app/SmartPenPreInputBar.h
-    src/app/SmartPenPreInputBar.cpp
+    src/app/ContextStrip.h
+    src/app/ContextStrip.cpp
 )
 target_include_directories(gcad_app PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_app PUBLIC
@@ -394,6 +391,16 @@ add_executable(test_tool_hints tests/test_tool_hints.cpp)
 target_include_directories(test_tool_hints PRIVATE ${GCAD_SRC})
 target_link_libraries(test_tool_hints PRIVATE gcad_tools Qt6::Core Qt6::Test)
 add_test(NAME test_tool_hints COMMAND test_tool_hints)
+
+# ── Test: W 键模式切换的持久化显示标识 (2026-08-29) ──
+# 锁四条契约: 状态栏持久层存在 / 静态与运行期文案同源 / 三态带位置 /
+# W 语义随工具状态变化。链接与 test_measure 同 (需要真实 CanvasScene)。
+add_executable(test_mode_indicator tests/test_mode_indicator.cpp)
+target_include_directories(test_mode_indicator PRIVATE ${GCAD_SRC})
+target_link_libraries(test_mode_indicator PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
+add_test(NAME test_mode_indicator COMMAND test_mode_indicator)
 
 # ── Test: ExpressionEvaluator ──
 add_executable(test_expression tests/test_expression.cpp)
@@ -527,13 +534,13 @@ target_link_libraries(test_measure PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg Qt6::Test ElaWidgetTools)
 add_test(NAME test_measure COMMAND test_measure)
 
-# ── Test: SegmentEditBar (创建后内嵌编辑条) ──
-add_executable(test_segment_edit_bar tests/test_segment_edit_bar.cpp)
-target_include_directories(test_segment_edit_bar PRIVATE ${GCAD_SRC})
-target_link_libraries(test_segment_edit_bar PRIVATE
+# ── Test: ContextStrip (上下文属性条, CONTEXT_STRIP_DESIGN.md 一期) ──
+add_executable(test_context_strip tests/test_context_strip.cpp)
+target_include_directories(test_context_strip PRIVATE ${GCAD_SRC})
+target_link_libraries(test_context_strip PRIVATE
     gcad_app gcad_document gcad_parametric
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
-add_test(NAME test_segment_edit_bar COMMAND test_segment_edit_bar)
+add_test(NAME test_context_strip COMMAND test_context_strip)
 
 # ── Test: formula-tab grouping (VirtualCardList stale-rebind regression) ──
 add_executable(test_formula_groups
@@ -587,7 +594,7 @@ add_executable(test_rotate_copy
 )
 target_include_directories(test_rotate_copy PRIVATE ${GCAD_SRC})
 target_link_libraries(test_rotate_copy PRIVATE
-    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
     Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_rotate_copy COMMAND test_rotate_copy)
 
@@ -660,7 +667,7 @@ add_test(NAME test_log_probe COMMAND test_log_probe)
 # 重链为全量链接（慢几秒）。主程序 WildWindPattern 保留增量（日常调试迭代）。
 foreach(_t IN ITEMS
         test_realdoc_full test_nav_smoke test_aux_layer test_smartpen_aux
-        test_measure test_segment_edit_bar test_tool_intersection
+        test_measure test_context_strip test_tool_intersection
         test_select_wkey test_curve_edit test_rotate_copy test_dialog_tabs
         test_component)
     target_link_options(${_t} PRIVATE /INCREMENTAL:NO)

@@ -15,7 +15,7 @@
 | 状态机分布 | 7 套各自独立的内部枚举（`SelectState` 9 态 / `RotateState` 3 态 / 智能笔 `State{Idle,Drawing,ConfirmEnd}` + `Mode{Line,Dart}` / 交点 4 态 / 曲线 3 态 / 两个测量工具各 2 态） |
 | 注册机制 | **无**。`ToolType` 枚举 + `switchTool` 的 8 分支 switch（`src/tools/ToolManager.cpp:61-103`） |
 | 工具显示元数据 | **分散在 MainWindow**：action 文本（:251-313）+ 图标（refreshToolIcons :129-142）+ 按钮序（specs[] :399-408）+ 提示文本（:863-884）+ 按钮高亮索引（:846-858），共 5 处手工对齐 |
-| 生命周期 | 每次切换**销毁重建**（`ToolManager.cpp:105-128`），跨工具状态靠特例搬运（选区继承 :75-89） |
+| 生命周期 | 每次切换**销毁重建**（`ToolManager.cpp:105-128`），跨工具状态靠特例搬运（选区继承 :75-89，**2026-08-29 随选集旋转删除**） |
 | 分层 | 良好：`InputDispatcher` 在 canvas 层声明、tools 层实现（`src/canvas/InputDispatcher.h:23-46`），由 `tools/check_layering.py` 把关 |
 | HUD/提示实现 | **3 套并存**：`HudItem`（`ToolSmartPen.h:47-62`）、`AngleHud` QWidget（`src/ui/AngleHud.cpp`）、重叠提示手搭图元（`ToolSelect.cpp:1340-1368`），另加画布 toast（`CanvasScene.cpp:275-332`） |
 
@@ -250,6 +250,7 @@
 ### 4.4 生命周期：销毁重建是补丁的温床
 
 每次 `switchTool` 都 `std::move` 销毁旧实例、new 一个新实例（`ToolManager.cpp:105-128`）。好处是状态默认干净；代价是所有"跨工具继承状态"的需求都只能打补丁：选区继承那段（`ToolManager.cpp:75-89`）要在 switch 前先 `dynamic_cast<ToolSelect*>` 抢出选集、new 完之后再 `adoptSelection` 塞回去，注释里还得解释"必须在 activate 之后因为需要 doc/scene"——这正是"每次都重建"这个决策在反噬。同理还有 L5（重复切换丢失状态）。
+（**2026-08-29 后记**：该补丁随选集旋转一并删除，现在 `switchTool` 里没有跨工具状态搬运；本节的论点依然成立——这类需求一出现就必然长成补丁。）
 
 ### 4.5 可测试性
 
@@ -308,7 +309,7 @@ ToolDescriptor（id / 名称 / 图标 / 快捷键 / 提示 / 光标 / 工厂）
 
 1. 删除 5 处成员遮蔽（H4），`activate/deactivate` 改为非虚模板方法 + `onActivate/onDeactivate` 虚钩子——**让"必须调基类"由编译器保证，而不是靠注释**。
 2. 引入 `struct ToolContext { CanvasScene*; ParamDocument*; QUndoStack*; ToolHost*; }`，替代现在逐个注入的 `setUndoStack` / `setToolSwitchRequest` / `setEditTargetCallback`（三处 setter 分散在 `ToolManager.cpp:116-124`）。
-3. 工具切换从"销毁重建"改为"保留实例 + `reset(ToolContext)`"（L5）：实例常驻后，`ToolManager.cpp:75-89` 那段选区继承补丁可以删掉，改为 `reset` 时传入继承参数。
+3. 工具切换从"销毁重建"改为"保留实例 + `reset(ToolContext)`"（L5）：实例常驻后，`ToolManager.cpp:75-89` 那段选区继承补丁可以删掉，改为 `reset` 时传入继承参数。（**2026-08-29 注**：该补丁已随选集旋转直接删除，并非本条建议落地——若日后重做整组旋转，继承方式应按本条设计。）
 
 改动量约 300 行，触碰 8 个工具的 activate/deactivate 签名。**建议先拿 Measure / AngleMeasure / Break 三个小工具做样板，验证模式后再铺开**。
 

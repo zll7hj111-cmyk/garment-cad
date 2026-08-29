@@ -1,4 +1,4 @@
-﻿#include "Theme.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QFont>
@@ -129,6 +129,11 @@ QWidget#editBand {
 /* ── 串号徽章 (§5.3): 墨底 + accent 黄字, 图纸编号感 ── */
 QLabel#serialBadge {
     background-color: @text1; color: @accent; font-weight: 600; padding: 0 6px;
+}
+
+/* ── 上下文属性条连接角度会话 (二期): 公式解析失败 → 角度框红边提示 ── */
+QLineEdit#angleEdit[angleInvalid="true"] {
+    border: 1px solid @danger;
 }
 
 /* ── 分组头: 悬停 + 拖放目标高亮 ─────────────── */

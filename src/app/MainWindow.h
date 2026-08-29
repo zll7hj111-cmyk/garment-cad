@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QHash>
 #include <QList>
@@ -32,7 +32,7 @@ namespace cad::ui { class VariablePanel; class ComponentTab; }
 
 namespace cad::param { class ParamDocument; }
 namespace cad::tools { class ToolManager; }
-namespace cad::app { class SegmentEditBar; class SmartPenPreInputBar; }
+namespace cad::app { class ContextStrip; }
 class MainWindow : public ElaWindow
 {
     Q_OBJECT
@@ -68,11 +68,20 @@ private slots:
     void onLinePreview(double lenCm, double angleDeg);
     /// Esc in the edit strip = 撤销创建 (delete the line) + hide the strip.
     void onEditStripCancel();
-    /// Smart-pen pre-input strip values changed — push them to the active tool.
-    void onPreInputChanged();
-    /// Selection tool's single-segment pick → edit strip (both ids null =
-    /// clear, e.g. multi-select or deselection).
-    void onEditTargetChanged(const QUuid& blockId, const QUuid& segmentId);
+    /// 上下文属性条焦点 (CONTEXT_STRIP_DESIGN.md): 工具点击锁定 → 条带可编辑。
+    /// 两个 id 均为 null = 解除锁定 (取消选择 / 多选 / 点空白)。
+    void onPinnedTargetChanged(const QUuid& blockId, const QUuid& segmentId);
+    /// 光标悬停候选 → 条带只读预览。两个 id 均为 null = 移出所有线段。
+    void onHoverTargetChanged(const QUuid& blockId, const QUuid& segmentId);
+    /// 连接角度会话 (CONTEXT_STRIP_DESIGN.md 二期): 连接手势的角度输入并入
+    /// 条带 —— 会话开始/结束 (attachmentId 空 = 结束) 与合法性 (红边提示)。
+    void onConnectAngleSessionChanged(const QUuid& blockId, const QUuid& segmentId,
+                                      const QUuid& attachmentId, double initialAngle);
+    void onConnectAngleValidityChanged(bool valid);
+    /// 旋转工具锚心状态 (2026-12): 旋转会话内条带换向 = 切换锚心 —— 基准
+    /// 读数锚心端在前 + 换向按钮资格/原因。
+    void onRotateAnchorStateChanged(bool active, bool anchorIsEnd, bool canToggle,
+                                    const QString& reason);
     /// Hold-to-show (N/L keys) changed on canvas — keep open
     /// LinePropertyDialogs' display toggles in sync.
     void onForceShowChanged(bool showNames, bool showLengths);
@@ -106,7 +115,7 @@ private:
 
     /// 面板当前是否可见 (恒为悬浮窗形态)。
     [[nodiscard]] bool panelVisible() const;
-    /// 编辑条带可见性同步 (SegmentEditBar / 预输入条 任一可见即显示条带)。
+    /// 编辑条带可见性同步 (上下文属性条可见即显示条带)。
     void updateEditBand();
     /// 状态栏瞬时反馈 (§6.5): 保存成功 / 撤销重做, @p ms 后自动消失。
     void flashStatus(const QString& text, const QColor& color, int ms);
@@ -190,11 +199,11 @@ private:
     ElaText* m_flashLabel = nullptr;
     QTimer*  m_flashTimer = nullptr;
     int      m_lastUndoIndex = 0;   ///< undo/redo 方向判定基准 (flashStatus).
-    /// 编辑条带 (§4.6): 状态栏上方的独立「创建后编辑/预输入」条带,
-    /// accentTint 底 + accentStrong 描边, 与坐标/缩放信息视觉分离。
+    /// 编辑条带 (§4.6): 画布下方的独立条带, accentTint 底 + accentStrong
+    /// 描边, 与坐标/缩放/诊断信息视觉分离。宿主上下文属性条 (CONTEXT_STRIP)。
     QWidget* m_editBand = nullptr;
-    cad::app::SegmentEditBar* m_segmentEditBar = nullptr;  ///< 创建后内嵌编辑条.
-    cad::app::SmartPenPreInputBar* m_preInputBar = nullptr;  ///< 智能笔预输入条.
+    /// 上下文属性条: 显示"当前关注的线段" (悬停只读 / 锁定可编辑)。
+    cad::app::ContextStrip* m_contextStrip = nullptr;
 
     cad::ui::VariablePanel* m_variablePanel = nullptr;
     /// 面板悬浮窗 (Qt::Tool, 侧边栏样式长竖条): 恒为悬浮形态 —— 贴主窗口

@@ -3,6 +3,7 @@
 #include "CanvasAnimator.h"
 #include "CanvasStyle.h"
 #include "CurveItem.h"
+#include "DirectionMarker.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -202,6 +203,19 @@ void BlockItem::paint(QPainter* painter,
         }
         painter->setPen(linePen);
         painter->drawLine(lc.p1, lc.p2);
+
+        // 方向指示 (2026-12): 起点 → 终点 小箭头, 换向 (ReverseSegmentCommand)
+        // 后 start/end 互换 → 缓存重算 → 箭头自动翻转 —— 换向几何零跳变,
+        // 这是画布上唯一的"换向可见反馈"。灰显层不画 (同标签)。
+        if (!grayed) {
+            QColor dirColor = pp.labelColor;
+            if (ghost) dirColor.setAlpha(kGhostAlpha);
+            const double ang = std::atan2(lc.p2.y() - lc.p1.y(),
+                                          lc.p2.x() - lc.p1.x());
+            const QPointF mid((lc.p1.x() + lc.p2.x()) / 2.0,
+                              (lc.p1.y() + lc.p2.y()) / 2.0);
+            drawDirectionChevron(painter, mid, ang, dirColor);
+        }
 
         // Draw segment name if enabled (suppressed on grayed reference layers).
         if ((lc.showName || forceName) && !lc.name.isEmpty() && !grayed) {
@@ -842,6 +856,8 @@ void BlockItem::rebuildCache()
 
         QRectF lineBounds = QRectF(p1, p2).normalized();
         QPointF mid((p1.x() + p2.x()) / 2.0, (p1.y() + p2.y()) / 2.0);
+        // 方向指示箭头预算入 bounds (中点半偏移臂长+离线距), 防出界裁剪。
+        lineBounds |= QRectF(mid.x() - 10, mid.y() - 10, 20, 20);
         if (seg.showName && !seg.name.isEmpty()) {
             lineBounds |= QRectF(mid + QPointF(4, -14), mid + QPointF(4 + seg.name.length() * 7, 4));
         }

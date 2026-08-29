@@ -11,6 +11,7 @@
 #include "BlockItem.h"
 #include "CanvasScene.h"
 #include "CanvasAnimator.h"
+#include "DirectionMarker.h"
 
 namespace {
 
@@ -182,6 +183,14 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
     painter->setPen(curvePen);
     painter->setBrush(Qt::NoBrush);
     painter->drawPath(m_data.path);
+
+    // 方向指示 (2026-12): 弧长中点处的起点→终点箭头, 换向后缓存重算自动翻转
+    // (曲线保形换向, 几何零跳变 —— 这是画布上唯一的换向可见反馈)。
+    if (!m_grayed) {
+        QColor dirColor = pp.labelColor;
+        if (ghost) dirColor.setAlpha(kGhostAlpha);
+        drawDirectionChevron(painter, m_data.labelPos, m_data.labelAngle, dirColor);
+    }
 
     // Labels at the cached arc-length midpoint (suppressed on grayed layers).
     if ((m_data.showName || forceName) && !m_data.name.isEmpty() && !m_grayed) {

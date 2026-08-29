@@ -1,12 +1,12 @@
-#include "ToolManager.h"
+﻿#include "ToolManager.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QKeyEvent>
 
 #include "Tool.h"
-#include "ToolSelect.h"   // dynamic_cast: 选区继承 / 活动层切换清选集
-#include "ToolRotate.h"   // dynamic_cast: adoptSelection
+#include "ToolSelect.h"   // dynamic_cast: 活动层切换清选集
 #include "canvas/CanvasScene.h"
+#include "parametric/Attachment.h"   // RotationMode (forwardConnectAngleMode)
 #include "parametric/ParamDocument.h"
 
 namespace cad::tools {
@@ -30,6 +30,16 @@ ToolManager::~ToolManager()
     //
     // 安全前提: ToolManager 是 MainWindow 的子对象, 且创建晚于 CanvasScene,
     // 子对象反序析构 ⇒ 此处 m_scene 仍然存活。
+    //
+    // 2026-12 追加: **析构期禁止再向外界发信号**。deactivate 链路可能 emit
+    // hintOverrideChanged (ToolSelect::onDeactivate → deactivateOverlapContext
+    // → refreshModeIndicator → reportHintOverride → setHintOverride), 而本
+    // 对象是 MainWindow 的子对象, 反序析构时 MainWindow 已过 ~MainWindow
+    // 函数体 —— 信号会落在半销毁的接收者上, Qt 6.11 Debug 构建直接断言
+    // (assertObjectType: "class destructor may have already run",
+    // qobjectdefs_impl.h:107)。先断开全部出向连接再清理工具: 接收者名单
+    // 随 MainWindow 的连接表走, 这里断开 = 关闭期所有 emit 变 no-op。
+    disconnect(this, nullptr, nullptr, nullptr);
     if (m_activeTool)
         m_activeTool->deactivate();
     m_activeTool = nullptr;
@@ -72,16 +82,6 @@ void ToolManager::switchTool(ToolType type)
     if (m_activeType == type && m_activeTool)
         return;
 
-    // 选区继承 (D9, 旋转重设计): Select → Rotate 快照选集。Select 实例常驻
-    // 但其 deactivate 会清空选集, 故必须在 deactivate 之前抓取。
-    QList<QUuid> adopted;
-    if (type == ToolType::Rotate) {
-        if (auto* prev = dynamic_cast<ToolSelect*>(m_activeTool)) {
-            for (const QUuid& id : prev->selection())
-                adopted << id;
-        }
-    }
-
     if (m_activeTool)
         m_activeTool->deactivate();
 
@@ -90,10 +90,6 @@ void ToolManager::switchTool(ToolType type)
     m_activeTool = next;
     activateTool(*next);
 
-    if (!adopted.isEmpty()) {
-        if (auto* rot = dynamic_cast<ToolRotate*>(next))
-            rot->adoptSelection(adopted);
-    }
     emit activeToolChanged(m_activeType, next->name());
 }
 
@@ -131,16 +127,68 @@ void ToolManager::requestToolSwitch(ToolType type)
     switchTool(type);
 }
 
-void ToolManager::setEditTarget(const QUuid& blockId, const QUuid& segmentId)
-{
-    // ToolSelect 经 ToolHost 上报编辑目标 → 转发成真实信号 (状态栏条带)。
-    emit editTargetChanged(blockId, segmentId);
-}
-
 void ToolManager::setHintOverride(const QString& hint)
 {
     // M5: 工具的运行期状态 (智能笔 直线/省道线) → 转发给宿主覆盖状态栏文案。
     emit hintOverrideChanged(hint);
+}
+
+void ToolManager::setHoverTarget(const QUuid& blockId, const QUuid& segmentId)
+{
+    // 上下文属性条: 悬停候选 → 条带只读预览 (节流在条带侧)。
+    emit hoverTargetChanged(blockId, segmentId);
+}
+
+void ToolManager::setPinnedTarget(const QUuid& blockId, const QUuid& segmentId)
+{
+    // 上下文属性条: 锁定焦点 → 条带可编辑 (均 null = 解除锁定)。
+    emit pinnedTargetChanged(blockId, segmentId);
+}
+
+void ToolManager::setConnectAngleSession(const QUuid& blockId, const QUuid& segmentId,
+                                         const QUuid& attachmentId, double initialAngle)
+{
+    // 上下文属性条 (二期): 连接手势角度会话开始/结束 (全 null = 结束)。
+    emit connectAngleSessionChanged(blockId, segmentId, attachmentId, initialAngle);
+}
+
+void ToolManager::setConnectAngleValidity(bool valid)
+{
+    emit connectAngleValidityChanged(valid);
+}
+
+void ToolManager::setRotateAnchorState(bool active, bool anchorIsEnd,
+                                       bool canToggle, const QString& reason)
+{
+    // 上下文属性条 (2026-12): 旋转工具锚心状态 → 条带基准读数锚心端在前 +
+    // 换向按钮转义为切锚心。
+    emit rotateAnchorStateChanged(active, anchorIsEnd, canToggle, reason);
+}
+
+void ToolManager::forwardConnectAngleText(const QString& text)
+{
+    if (m_activeTool) m_activeTool->connectAngleTextChanged(text);
+}
+
+void ToolManager::forwardConnectAngleMode(cad::param::RotationMode mode)
+{
+    if (m_activeTool) m_activeTool->connectAngleModeChanged(mode);
+}
+
+void ToolManager::forwardConnectAngleCommit()
+{
+    if (m_activeTool) m_activeTool->connectAngleCommitted();
+}
+
+void ToolManager::forwardConnectAngleCancel()
+{
+    if (m_activeTool) m_activeTool->connectAngleCancelled();
+}
+
+void ToolManager::forwardReverseRequest(const QUuid& blockId, const QUuid& segmentId)
+{
+    // 旋转会话换向 (2026-12): 条带换向点击 → 激活工具 (ToolRotate 切锚心)。
+    if (m_activeTool) m_activeTool->onReverseRequested(blockId, segmentId);
 }
 
 void ToolManager::dispatchMousePress(QGraphicsSceneMouseEvent* event)

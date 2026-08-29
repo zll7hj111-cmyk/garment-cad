@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QUuid>
 #include <QUndoStack>
 
@@ -13,6 +13,10 @@
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
+#include "canvas/CanvasScene.h"
+#include "canvas/CanvasView.h"
+#include "tools/ToolBreak.h"
+#include "TestHelpers.h"
 
 using namespace cad::param;
 using cad::geo::Vec2;
@@ -222,6 +226,8 @@ private slots:
     void breakFollowerAtOriginalEnd();
     void curveBreakFollowerKeepsDirection();
     void polarEndpointAnchorCycleResolves();
+    // ── 三期: 只读悬停上报 (扫过即看, CONTEXT_STRIP_DESIGN.md §3) ──
+    void hoverReportsSegment();
 };
 
 // ---------------------------------------------------------------------------
@@ -1467,6 +1473,42 @@ void TestBreak::polarEndpointAnchorCycleResolves()
     QVERIFY2(ep->resolvedPos.distanceTo(Vec2(22.5, 0.0)) < 0.01,
              "endpoint must converge to the fixed point");
     (void)sp;
+}
+
+// ── 三期: 只读悬停上报 (扫过即看) — 打断工具悬停线段 → 上报线段;
+//    悬停可断点 → 上报断点所在线段; 移出 → 空。 ──
+
+void TestBreak::hoverReportsSegment()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    const LineSetup line = makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    cad::test::RecordingToolHost host;
+    cad::tools::ToolBreak tool;
+    cad::tools::ToolContext ctx;
+    ctx.scene = &scene;
+    ctx.paramDoc = &doc;
+    ctx.host = &host;
+    tool.activate(ctx);
+
+    // 线身中点 → 线段吸附 → 上报。
+    cad::test::sendToolMouseMove(tool, QPointF(50.0, 0.0));
+    QCOMPARE(host.hoverBlock, line.blockId);
+    QCOMPARE(host.hoverSeg, line.segId);
+
+    // 移出 → 上报空 (条带收起)。
+    cad::test::sendToolMouseMove(tool, QPointF(300.0, 300.0));
+    QVERIFY(host.hoverBlock.isNull());
+    QVERIFY(host.hoverSeg.isNull());
+    tool.deactivate();
 }
 
 QTEST_MAIN(TestBreak)

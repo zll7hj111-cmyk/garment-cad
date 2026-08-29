@@ -61,6 +61,12 @@ public:
 
     void keyPress(QKeyEvent* event) override;
 
+    // ── 连接角度会话输入 (二期: 上下文属性条 → ConnectGesture) ──
+    void connectAngleTextChanged(const QString& text) override;
+    void connectAngleModeChanged(cad::param::RotationMode mode) override;
+    void connectAngleCommitted() override;
+    void connectAngleCancelled() override;
+
     /// 静态元数据 (TOOL_SYSTEM_AUDIT P3): id/显示名/图标/快捷键/提示/工厂。
     static ToolDescriptor describe();
     [[nodiscard]] const char* name() const override { return reinterpret_cast<const char*>(u8"选择"); }
@@ -100,8 +106,18 @@ private:
 
     // ── Selection mode (W toggle) ──
     void toggleSelectionMode();
-    void showModeToast();   ///< Transient canvas toast showing the active mode.
     void showToast(const QString& text);  ///< Generic transient canvas toast.
+
+    /// 运行期模式指示 (状态栏 L1 + toast L3)。由 {模式, 重叠上下文} 共同决定:
+    /// 循环上下文激活时 W = 循环候选而非切模式, 文案必须整体换掉。
+    [[nodiscard]] ModeIndicator modeIndicator() const override;
+
+    /// 纯函数版: 给定 (模式, 循环索引/候选数) 组装显示描述。运行期覆盖与
+    /// 静态 describe() 共用 —— 两处文案不可能漂移。
+    /// @param overlapIndex 当前循环索引; -1 = 未激活循环上下文。
+    [[nodiscard]] static ModeIndicator modeIndicatorFor(SelectionMode mode,
+                                                       int overlapIndex,
+                                                       int overlapCount);
 
     // ── Selection management (add/remove, red highlight) ──
     void toggleBlock(const QUuid& blockId);

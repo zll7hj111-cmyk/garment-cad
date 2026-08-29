@@ -53,6 +53,17 @@ private:
     /// Cycle 距离 → 水平 → 垂直 → 距离 (W key).
     void cycleKind();
 
+    /// 运行期模式指示 (状态栏 L1 + toast L3)。模式名与静态 describe() 同源。
+    [[nodiscard]] ModeIndicator modeIndicator() const override;
+
+    /// 纯函数版: 给定测量类型组装显示描述 (运行期覆盖与 describe() 共用)。
+    /// detail 默认按 SelectA 写; SelectB 由 modeIndicator() 覆盖。
+    [[nodiscard]] static ModeIndicator modeIndicatorFor(cad::param::MeasureKind kind);
+
+    /// 三态序列中的位置文本 ("1/3")。二态按错了再按一次就回来, 三态按错了
+    /// 要按两次且不知道停在第几个 —— 所以位置必须显式给出。
+    [[nodiscard]] static QString positionText(cad::param::MeasureKind kind);
+
     /// Mode name + pending-action hint shown in the HUD before point A.
     [[nodiscard]] QString modeHint() const;
 

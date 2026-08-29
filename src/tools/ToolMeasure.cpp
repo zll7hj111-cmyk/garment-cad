@@ -39,7 +39,9 @@ ToolDescriptor ToolMeasure::describe()
     d.displayName = QString::fromUtf8("测量(&M)");
     d.iconName = QStringLiteral("ruler");
     // M 快捷键让给画布长按显示长度 (CanvasView::keyPressEvent), 测量不设快捷键。
-    d.hintText = QString::fromUtf8("测量：点选第一个点 | 点选第二个点 → 自动发布距离变量 | 右键/Esc取消");
+    // 静态默认文案与运行期覆盖同源 (默认态 = 距离测量), 防漂移。
+    d.hintText = modeIndicatorFor(cad::param::MeasureKind::Distance)
+                     .hint(reinterpret_cast<const char*>(u8"测量"));
     d.factory = [] { return std::make_unique<ToolMeasure>(); };
     return d;
 }
@@ -58,6 +60,9 @@ void ToolMeasure::onActivate(CanvasScene& scene, cad::param::ParamDocument* para
     // point A is picked (and after every W cycle).
     ensureHud()->setText(modeHint());
     m_hud->setVisible(true);
+    // 常驻实例下每次进入都要把状态栏刷回距离模式 —— 和画布 HUD 同理,
+    // 否则上次会话停在「水平」而状态栏还写着距离。
+    refreshModeIndicator();
 }
 
 void ToolMeasure::onDeactivate()
@@ -91,6 +96,9 @@ void ToolMeasure::mousePress(QGraphicsSceneMouseEvent* event)
         // Commit first point.
         m_snapA = snap;
         m_state = State::SelectB;
+        // 模式没变但"当前该做什么"变了 —— 状态栏要从"点第一个点"翻成
+        // "点第二个点"。
+        refreshModeIndicator();
 
         // Marker at A.
         if (!m_markerA) {
@@ -158,6 +166,11 @@ void ToolMeasure::cycleKind()
         case cad::param::MeasureKind::Horizontal: m_kind = cad::param::MeasureKind::Vertical;   break;
         case cad::param::MeasureKind::Vertical:   m_kind = cad::param::MeasureKind::Distance;   break;
     }
+    // 单一出口: toast 讲"刚跳到第几个" (三态循环的关键, 持久层表达不了),
+    // 状态栏常驻讲"现在是什么、W 会切到哪"。必须先于下面的 m_hud 早退 ——
+    // 状态栏不依赖 HUD。
+    announceModeChange();
+
     if (!m_hud) return;
     if (m_state == State::SelectA) {
         // Before point A: only the mode hint matters (position follows the
@@ -169,17 +182,52 @@ void ToolMeasure::cycleKind()
     }
 }
 
+ModeIndicator ToolMeasure::modeIndicator() const
+{
+    ModeIndicator mi = modeIndicatorFor(m_kind);
+    // detail 跟状态走: 已经点了 A 就该教"点第二个点", 不是"点第一个点"。
+    if (m_state == State::SelectB)
+        mi.detail = QString::fromUtf8("%1 | 点选第二个点").arg(positionText(m_kind));
+    return mi;
+}
+
+ModeIndicator ToolMeasure::modeIndicatorFor(cad::param::MeasureKind kind)
+{
+    QString name;   // 模式短名 (状态栏方括号与 P2 画布角标共用)
+    QString next;   // 按 W 会切到哪
+    switch (kind) {
+        case cad::param::MeasureKind::Distance:   name = QString::fromUtf8("距离"); next = QString::fromUtf8("水平"); break;
+        case cad::param::MeasureKind::Horizontal: name = QString::fromUtf8("水平"); next = QString::fromUtf8("垂直"); break;
+        case cad::param::MeasureKind::Vertical:   name = QString::fromUtf8("垂直"); next = QString::fromUtf8("距离"); break;
+    }
+
+    ModeIndicator mi;
+    mi.modeName = name;
+    mi.detail   = QString::fromUtf8("%1 | 点选第一个点").arg(positionText(kind));
+    mi.wAction  = QString::fromUtf8("W 切%1").arg(next);
+    mi.toast    = QString::fromUtf8("测量模式 %1：%2").arg(positionText(kind), name);
+    // 距离是默认态 → 画布角标不显示; 切到水平/垂直才挂上。量错了重来一次
+    // 即可, 不像选择工具那样会直接误操作, 所以角标对它是"锦上添花"。
+    mi.isDefault = (kind == cad::param::MeasureKind::Distance);
+    return mi;
+}
+
+QString ToolMeasure::positionText(cad::param::MeasureKind kind)
+{
+    switch (kind) {
+        case cad::param::MeasureKind::Distance:   return QString::fromUtf8("1/3");
+        case cad::param::MeasureKind::Horizontal: return QString::fromUtf8("2/3");
+        case cad::param::MeasureKind::Vertical:   return QString::fromUtf8("3/3");
+    }
+    return QString::fromUtf8("1/3");
+}
+
 QString ToolMeasure::modeHint() const
 {
-    switch (m_kind) {
-        case cad::param::MeasureKind::Horizontal:
-            return QStringLiteral("\u6c34\u5e73\u6d4b\u91cf\uff1a\u70b9\u9009\u7b2c\u4e00\u4e2a\u70b9");  // 水平测量：点选第一个点
-        case cad::param::MeasureKind::Vertical:
-            return QStringLiteral("\u5782\u76f4\u6d4b\u91cf\uff1a\u70b9\u9009\u7b2c\u4e00\u4e2a\u70b9");  // 垂直测量：点选第一个点
-        case cad::param::MeasureKind::Distance:
-            break;
-    }
-    return QStringLiteral("\u8ddd\u79bb\u6d4b\u91cf\uff1a\u70b9\u9009\u7b2c\u4e00\u4e2a\u70b9");  // 距离测量：点选第一个点
+    // HUD 空间比状态栏小: 只带模式名 + 当前该做的事, 不带序号和 W 指引。
+    // 模式名取自 modeIndicatorFor —— 与状态栏同源, 不会各说各话。
+    return QString::fromUtf8("%1测量：点选第一个点")
+        .arg(modeIndicatorFor(m_kind).modeName);
 }
 
 double ToolMeasure::spanValue(const cad::geo::Vec2& a, const cad::geo::Vec2& b) const
@@ -210,6 +258,15 @@ void ToolMeasure::updateHover(const cad::geo::Vec2& pos, double zoom)
 {
     auto snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom);
     m_hoverSnap = snap;
+    // 三期: 只读悬停上报 (扫过即看, CONTEXT_STRIP_DESIGN.md §3) — 悬停点
+    // 所在线段进上下文属性条 (exitSegmentAtPoint: 该点为端点的第一段; 无
+    // 线段 = 游离点, 上报空 → 条带收起)。
+    QUuid hoverSeg;
+    if (snap) {
+        if (const auto* blk = m_paramDoc->findBlock(snap->blockId))
+            hoverSeg = blk->exitSegmentAtPoint(snap->pointId);
+    }
+    reportHoverTarget(snap && !hoverSeg.isNull() ? snap->blockId : QUuid(), hoverSeg);
     if (!m_scene->views().isEmpty()) {
         if (snap)
             m_scene->views().first()->setCursor(Qt::CrossCursor);
@@ -290,6 +347,7 @@ void ToolMeasure::resetToSelectA()
     clearPreview();
     m_snapA.reset();
     m_state = State::SelectA;
+    refreshModeIndicator();
 }
 
 // ---------------------------------------------------------------------------

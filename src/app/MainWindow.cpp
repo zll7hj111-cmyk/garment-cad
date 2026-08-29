@@ -1,5 +1,4 @@
-#include "SegmentEditBar.h"
-#include "SmartPenPreInputBar.h"
+﻿#include "ContextStrip.h"
 #include "ToolDockStyle.h"
 
 #include "MainWindow.h"
@@ -197,11 +196,17 @@ MainWindow::~MainWindow()
     // members are already gone. QUndoStack emits cleanChanged/indexChanged
     // while clearing its commands on destruction; a live connection would
     // then invoke a slot on this half-destroyed window (Debug assert, UB in
-    // Release). Drop every child→window connection before that happens.
+    // Release). Drop EVERY child→window connection before that happens.
     // P0-1: m_undoStack now aliases m_paramDoc->undoStack() (non-owning) —
     // the stack itself dies with the document, so disconnect before that.
+    // 2026-12: 通扫全部子对象而非点名 undoStack/paramDoc —— ~ToolManager
+    // 的 deactivate 链路同样会在子对象析构期 emit hintOverrideChanged,
+    // 命中半销毁窗口的 onToolHintOverride (assertObjectType 断言, 见
+    // TROUBLESHOOTING 第 3 组); 未来任何子对象析构期发信号都会踩同一个坑。
     if (m_undoStack) disconnect(m_undoStack, nullptr, this, nullptr);
-    if (m_paramDoc)  disconnect(m_paramDoc,  nullptr, this, nullptr);
+    const auto childObjs = children();
+    for (QObject* child : childObjs)
+        disconnect(child, nullptr, this, nullptr);
 }
 
 void MainWindow::setupUi()
@@ -633,17 +638,38 @@ void MainWindow::connectSignals()
             this, &MainWindow::onLineCreated);
     connect(m_canvasScene, &CanvasScene::linePreviewChanged,
             this, &MainWindow::onLinePreview);
-    connect(m_segmentEditBar, &cad::app::SegmentEditBar::cancelRequested,
+    connect(m_contextStrip, &cad::app::ContextStrip::cancelRequested,
             this, &MainWindow::onEditStripCancel);
 
-    // 预输入条 → 活动智能笔: 每次编辑都同步 (含清空), 工具在起笔时快照。
-    connect(m_preInputBar, &cad::app::SmartPenPreInputBar::valuesChanged,
-            this, &MainWindow::onPreInputChanged);
+    // 上下文属性条焦点 (CONTEXT_STRIP_DESIGN.md): 工具经 ToolHost 上报,
+    // 条带只负责显示/编辑 —— 悬停 = 只读预览, 锁定 = 可编辑。
+    connect(m_toolManager, &ToolManager::pinnedTargetChanged,
+            this, &MainWindow::onPinnedTargetChanged);
+    connect(m_toolManager, &ToolManager::hoverTargetChanged,
+            this, &MainWindow::onHoverTargetChanged);
 
-    // Selection tool picked a single segment → show it in the edit strip.
-    // Both ids null = clear (multi-select / deselection).
-    connect(m_toolManager, &ToolManager::editTargetChanged,
-            this, &MainWindow::onEditTargetChanged);
+    // 连接角度会话 (二期): 手势 → 条带 (会话/合法性); 条带输入 → 手势
+    // (击键/单位/Enter/Esc)。条带是纯输入面, 连接语义全部在工具侧。
+    connect(m_toolManager, &ToolManager::connectAngleSessionChanged,
+            this, &MainWindow::onConnectAngleSessionChanged);
+    connect(m_toolManager, &ToolManager::connectAngleValidityChanged,
+            this, &MainWindow::onConnectAngleValidityChanged);
+    connect(m_contextStrip, &cad::app::ContextStrip::connectAngleTextChanged,
+            m_toolManager, &ToolManager::forwardConnectAngleText);
+    connect(m_contextStrip, &cad::app::ContextStrip::connectAngleModeChanged,
+            m_toolManager, &ToolManager::forwardConnectAngleMode);
+    connect(m_contextStrip, &cad::app::ContextStrip::connectAngleCommitted,
+            m_toolManager, &ToolManager::forwardConnectAngleCommit);
+    connect(m_contextStrip, &cad::app::ContextStrip::connectAngleCancelled,
+            m_toolManager, &ToolManager::forwardConnectAngleCancel);
+
+    // 旋转会话换向 (2026-12): 条带「换向」在旋转工具激活时 = 切换锚心 ——
+    // 条带转发点击给激活工具 (ToolRotate 切锚心 + gizmo pivot 环移动);
+    // 工具经 ToolHost 上报锚心状态给条带 (基准读数锚心端在前 + 按钮资格)。
+    connect(m_toolManager, &ToolManager::rotateAnchorStateChanged,
+            this, &MainWindow::onRotateAnchorStateChanged);
+    connect(m_contextStrip, &cad::app::ContextStrip::reverseRequested,
+            m_toolManager, &ToolManager::forwardReverseRequest);
 
     // 撤销/重做瞬时反馈 (§6.5): 「已撤销：创建线段」1.5s 还原。
     // 编辑条可见时跳过 (条带编辑的 SegmentEditBarCommand 高频提交不刷屏);
@@ -654,7 +680,7 @@ void MainWindow::connectSignals()
         m_lastUndoIndex = idx;
         if (idx == prev || m_undoStack->count() == 0)
             return;
-        if (m_segmentEditBar && m_segmentEditBar->isVisible())
+        if (m_contextStrip && m_contextStrip->isVisible())
             return;
         const auto& tk = cad::ui::Theme::tokens();
         if (idx < prev) {
@@ -847,9 +873,6 @@ void MainWindow::onToolChanged(ToolType type, const char* name)
     for (int i = 0; i < m_toolButtons.size(); ++i)
         m_toolButtons.at(i)->setIsSelected(i == toolIndex);
 
-    const bool smartPenActive =
-        m_toolManager->activeToolType() == ToolType::SmartPen;
-
     // H3 (TOOL_SYSTEM_AUDIT): 提示文本 = 各工具 ToolDescriptor::describe()
     // 的 hintText (经 cad::tools::toolHintText 查 registry), 8 个 ToolType
     // 一一对应。原 if/else 链没有 AngleMeasure 分支, else 兜底让角度测量
@@ -858,70 +881,96 @@ void MainWindow::onToolChanged(ToolType type, const char* name)
     // 串台 —— 覆盖的唯一落点就是 m_toolHintFull。
     setToolHint(cad::tools::toolHintText(type));
 
-    // 创建后编辑条只在智能笔创建场景有意义; 切换工具即隐藏.
-    if (m_segmentEditBar)
-        m_segmentEditBar->hideBar();
-
-    // 智能笔预输入条: 仅智能笔激活时显示 (替换长提示文本, 状态栏给输入框
-    // 让位); 切回时把已输入的值推给新创建的工具实例。
-    if (m_preInputBar) {
-        m_preInputBar->setVisible(smartPenActive);
-        if (smartPenActive)
-            onPreInputChanged();
-    }
+    // 切换工具 = 焦点清空: 条带的锁定/悬停都不跨工具继承。
+    if (m_contextStrip)
+        m_contextStrip->hideBar();
+    // 2026-12 修复: editBand 初始 hide, 父链隐藏时 setVisible/hide 都不触发
+    // Show/Hide 事件 → updateEditBand 永远不跑, 静默消失。这里在每次工具
+    // 切换后主动同步一次 (updateEditBand 已改用 !isHidden() 判显隐意图),
+    // 不依赖事件驱动。
+    updateEditBand();
     if (m_toolHintLabel)
-        m_toolHintLabel->setVisible(!smartPenActive);
+        m_toolHintLabel->setVisible(true);
 }
 
 void MainWindow::onLineCreated(const QUuid& blockId, const QUuid& segmentId)
 {
-    // 预输入一次性语义：内容已被本次创建使用 → 清空, 恢复空白的预输入状态。
-    if (m_preInputBar)
-        m_preInputBar->clearAll();
-    if (!m_segmentEditBar) return;
-    m_segmentEditBar->showForLine(blockId, segmentId);
-}
-
-void MainWindow::onPreInputChanged()
-{
-    if (!m_preInputBar || !m_toolManager) return;
-    if (auto* pen = dynamic_cast<cad::tools::ToolSmartPen*>(
-            m_toolManager->activeTool())) {
-        pen->setPreInput({
-            m_preInputBar->nameText(),
-            m_preInputBar->lengthText(),
-            m_preInputBar->angleText()
-        });
-    }
+    // 智能笔创建完成 → 锁定到新线段 (创建后编辑; Esc = 撤销创建)。
+    if (!m_contextStrip) return;
+    m_contextStrip->pinCreatedLine(blockId, segmentId);
+    updateEditBand();  // 显隐收口: 父链隐藏时 show() 不触发 Show 事件
 }
 
 void MainWindow::onLinePreview(double lenCm, double angleDeg)
 {
-    if (!m_segmentEditBar) return;
-    m_segmentEditBar->showPreview(lenCm, angleDeg);
+    if (!m_contextStrip) return;
+    // 画线中显示"正在画的那条线"的实时读数 (不是悬停到的线)。
+    m_contextStrip->showStrokePreview(lenCm, angleDeg);
+    updateEditBand();  // 显隐收口: 父链隐藏时 show() 不触发 Show 事件
 }
 
 void MainWindow::onEditStripCancel()
 {
     // 创建模式 Esc = 删除: rewind the undo stack to the creation point — this
     // drops the creation command AND any strip edits pushed since (strip
-    // edits now commit through SegmentEditBarCommand, so one rewind removes
-    // them all). Selection mode: rewinds only edits made since the pick.
-    if (m_segmentEditBar)
-        m_segmentEditBar->cancelCreation();
+    // edits commit through SegmentEditBarCommand, so one rewind removes them
+    // all).
+    if (m_contextStrip)
+        m_contextStrip->cancelCreation();
+    updateEditBand();  // 显隐收口 (取消创建会隐藏条带)
 }
 
-void MainWindow::onEditTargetChanged(const QUuid& blockId, const QUuid& segmentId)
+void MainWindow::onPinnedTargetChanged(const QUuid& blockId, const QUuid& segmentId)
 {
-    if (!m_segmentEditBar) return;
+    if (!m_contextStrip) return;
     if (segmentId.isNull()) {
-        // Multi-select, deselection or blank click — nothing to edit.
-        m_segmentEditBar->hideBar();
+        // 取消选择 / 多选 / 点空白 —— 解除锁定。
+        m_contextStrip->clearPinned();
+        updateEditBand();
         return;
     }
-    // Selection-mode pick: show without stealing keyboard focus (the canvas
-    // keeps focus for W-toggle / Del / marquee interactions).
-    m_segmentEditBar->showForLine(blockId, segmentId, false);
+    // 工具点击锁定: 不抢键盘焦点 (画布保留 W 切换 / Del / 框选等交互)。
+    m_contextStrip->setPinnedTarget(blockId, segmentId, /*grabFocus=*/false);
+    updateEditBand();
+}
+
+void MainWindow::onHoverTargetChanged(const QUuid& blockId, const QUuid& segmentId)
+{
+    if (!m_contextStrip) return;
+    // 节流与焦点保护在条带内部 (CONTEXT_STRIP_DESIGN.md §4.2 / 实现铁律)。
+    if (segmentId.isNull())
+        m_contextStrip->clearHover();
+    else
+        m_contextStrip->setHoverTarget(blockId, segmentId);
+    updateEditBand();
+}
+
+void MainWindow::onConnectAngleSessionChanged(const QUuid& blockId, const QUuid& segmentId,
+                                              const QUuid& attachmentId, double initialAngle)
+{
+    // 二期: 连接手势进入/退出角度会话 —— 条带显示跟随线段并进入角度编辑。
+    if (!m_contextStrip) return;
+    if (attachmentId.isNull())
+        m_contextStrip->endConnectAngleSession();
+    else
+        m_contextStrip->beginConnectAngleSession(blockId, segmentId,
+                                                 attachmentId, initialAngle);
+    updateEditBand();
+}
+
+void MainWindow::onConnectAngleValidityChanged(bool valid)
+{
+    if (m_contextStrip)
+        m_contextStrip->setConnectAngleValid(valid);
+}
+
+void MainWindow::onRotateAnchorStateChanged(bool active, bool anchorIsEnd,
+                                            bool canToggle, const QString& reason)
+{
+    // 旋转会话 (2026-12): 锚心端在前 + 换向按钮转义为切锚心。active=false =
+    // 会话结束, 条带恢复普通换向语义。
+    if (m_contextStrip)
+        m_contextStrip->setRotateAnchorState(active, anchorIsEnd, canToggle, reason);
 }
 
 void MainWindow::onForceShowChanged(bool showNames, bool showLengths)
@@ -1081,9 +1130,9 @@ void MainWindow::setupPages()
     connect(m_pageTabs, &QTabBar::currentChanged,
             this, &MainWindow::onPageTabChanged);
 
-    // 编辑条带 (§4.6): SegmentEditBar / 智能笔预输入条从状态栏迁出, 改为
-    // 状态栏上方的独立条带 —— accentTint 底 + accentStrong 描边标识
-    // 「你正处于创建后编辑/预输入态」, 与坐标/缩放/诊断信息视觉分离。
+    // 编辑条带 (§4.6): 画布下方的独立条带 —— accentTint 底 + accentStrong
+    // 描边, 与坐标/缩放/诊断信息视觉分离。宿主上下文属性条 (CONTEXT_STRIP):
+    // 悬停线段 = 只读预览, 点击锁定 = 可编辑 (选择/智能笔/旋转三工具共用)。
     m_editBand = new QWidget(this);
     m_editBand->setObjectName(QStringLiteral("editBand"));
     m_editBand->setAttribute(Qt::WA_StyledBackground, true);  // QSS 底色/描边生效
@@ -1091,18 +1140,12 @@ void MainWindow::setupPages()
     bandLay->setContentsMargins(6, 4, 10, 4);
     bandLay->setSpacing(8);
 
-    m_segmentEditBar = new cad::app::SegmentEditBar(m_paramDoc, m_editBand);
-    m_segmentEditBar->setUndoStack(m_undoStack);
-    m_segmentEditBar->hide();
-    bandLay->addWidget(m_segmentEditBar, 1);
-
-    m_preInputBar = new cad::app::SmartPenPreInputBar(m_editBand);
-    m_preInputBar->setCanvasView(m_canvasView);
-    m_preInputBar->hide();
-    bandLay->addWidget(m_preInputBar, 1);
-
-    m_segmentEditBar->installEventFilter(this);   // Show/Hide → updateEditBand
-    m_preInputBar->installEventFilter(this);
+    m_contextStrip = new cad::app::ContextStrip(m_paramDoc, m_editBand);
+    m_contextStrip->setUndoStack(m_undoStack);
+    m_contextStrip->setCanvasView(m_canvasView);
+    m_contextStrip->hide();
+    bandLay->addWidget(m_contextStrip, 1);
+    m_contextStrip->installEventFilter(this);   // Show/Hide → updateEditBand
     m_editBand->hide();
 
     // 画布页独占主区 —— 面板只在悬浮窗里, 永不挤占画布。
@@ -1313,11 +1356,12 @@ void MainWindow::refreshPanelChrome()
 
 void MainWindow::updateEditBand()
 {
-    if (!m_editBand || !m_segmentEditBar || !m_preInputBar)
+    if (!m_editBand || !m_contextStrip)
         return;
-    const bool visible = m_segmentEditBar->isVisible()
-                         || m_preInputBar->isVisible();
-    m_editBand->setVisible(visible);
+    // 2026-12 修复: 判**显隐意图** (!isHidden) 而非实际可见 (isVisible) ——
+    // isVisible 受父链影响: editBand 自身隐藏时子条 isVisible 恒 false,
+    // 死锁 (条带静默消失)。初始 editBand->hide() 时条带隐藏 = 意图隐藏。
+    m_editBand->setVisible(!m_contextStrip->isHidden());
 }
 
 void MainWindow::flashStatus(const QString& text, const QColor& color, int ms)
@@ -1336,9 +1380,9 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
 {
     if (obj == m_panelWindow && event->type() == QEvent::Hide && !m_tabSyncGuard)
         syncPanelTabs();  // X 关闭 / hide() → 主标签回画布、清激活指示
-    if ((obj == m_segmentEditBar || obj == m_preInputBar)
+    if (obj == m_contextStrip
         && (event->type() == QEvent::Show || event->type() == QEvent::Hide))
-        updateEditBand();  // 编辑条带随两根信息条的显隐整体显隐
+        updateEditBand();  // 编辑条带随上下文属性条的显隐整体显隐
     if (obj == m_toolHintLabel && event->type() == QEvent::Resize)
         applyToolHintElide();  // M9: 宽度变化重算省略文本 (同值守卫防递归)
     return QObject::eventFilter(obj, event);

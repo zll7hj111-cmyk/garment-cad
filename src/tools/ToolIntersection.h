@@ -55,6 +55,17 @@ public:
 private:
     enum class State { SelectLine, SelectPoint, AimAngle, BorrowAim };
 
+    /// 状态迁移的统一入口: 状态决定"此刻按 W 会发生什么" (W 只在瞄准态
+    /// 能切角度基准), 所以刷新提示必须挂在这里 —— 10 个赋值点各记一次
+    /// 迟早漏掉一处。
+    void setState(State s);
+
+    /// 运行期模式指示 (状态栏 L1 + toast L3)。由 {角度基准, 状态} 共同决定。
+    [[nodiscard]] ModeIndicator modeIndicator() const override;
+
+    /// 纯函数版 (静态 describe() 用默认态: 跟随角度 + 点选线段)。
+    [[nodiscard]] static ModeIndicator modeIndicatorFor(bool worldAngleMode, State s);
+
     // --- State handlers ---
     void handleSelectLinePress(const cad::geo::Vec2& pos, double zoom);
     void handleSelectPointPress(const cad::geo::Vec2& pos, double zoom);

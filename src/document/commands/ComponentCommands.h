@@ -116,33 +116,4 @@ private:
     QHash<QUuid, cad::param::Transform2D> m_newTransforms;
 };
 
- 
-/// 选集旋转 (RotateBlocksCommand) 释放快照字段：被释放的外部 endTarget
-/// （块指向选集 S 外的点）。原「组件整组旋转」(2026-12, W 键) 模态已删除
-/// (2026-08-29)，快照结构由泛化的 RotateBlocksCommand 沿用。
-struct AimRelease
-{
-    QUuid blockId;
-    QUuid endTargetBlockId;
-    QUuid endTargetPointId;
-    double endTargetOffset = 0.0;
-    QString endTargetOffsetFormula;
-};
-
-/// 选集旋转 (RotateBlocksCommand) 释放快照字段：被降级/释放的省道线
-/// （start/ref 引用选集 S 外的点）。
-struct DartRelease
-{
-    QUuid blockId;
-    QUuid dartStartBlockId;
-    QUuid dartStartPointId;
-    QUuid dartRefBlockId;
-    QUuid dartRefPointId;
-    QUuid dartRefSegmentId;
-    double dartOffsetMm = 0.0;
-    QString dartOffsetFormula;
-    double dartAngleDeg = 90.0;
-    QString dartAngleFormula;
-};
-
 } // namespace cad::cmd

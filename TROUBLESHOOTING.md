@@ -1,4 +1,4 @@
-﻿# TROUBLESHOOTING —— 踩坑经验库
+# TROUBLESHOOTING —— 踩坑经验库
 
 按需查阅（不注入会话）：修改 bug 前先 grep 本文件相关关键词；修复了本清单之外的 bug 后，把根因 + 修复追加到对应主题分组。
 
@@ -29,7 +29,7 @@
 ### 工具内部按键
 | 键 | 功能 | 位置 |
 |----|------|------|
-| W | 选择工具：单选/多选切换（Tab 禁用） | ToolSelect 等 |
+| W | **模式切换 leader key**（Tab 是焦点导航键，禁用）。四个工具各有模式：选择=单选↔多选；测量=距离→水平→垂直；智能笔=直线↔省道线（**仅 Idle**）；交点=跟随角↔绝对角（**仅瞄准态**）。**W 的语义随工具状态变化**——选择工具在重叠候选激活时、智能笔在 Drawing 态时，W = 循环候选而**不是**切模式 | 见下方「W 键模式指示」 |
 | D | 选择工具：**快拆**（拆开保留角度——解除选中线连接的位置吸附、角度仍跟随基准线，经 undo 栈；2026-09 用户拍板） | ToolSelect.cpp quickDetachSelection |
 | X | 旋转工具：锚心切换（起点 ↔ 终点） | ToolRotate.cpp keyPress |
 | ~~W~~ | 旋转工具：组件整组旋转模式切换（2026-12 拍板）——**已删除**（2026-08-29 用户拍板执行 ROTATE_REDESIGN_DESIGN.md D1：模态被多选选区继承覆盖）；旋转工具现无 W 键绑定 | （原 ToolRotate.cpp keyPress） |
@@ -38,6 +38,42 @@
 | Shift | 修饰键（多选/正交等） | 各工具 |
 
 > 注意：QAction 快捷键（WindowShortcut）在 ShortcutOverride 阶段先于 widget keyPressEvent 生效——**画布内工具按键如果与 QAction 快捷键同名，QAction 先抢**（本次 L 冲突教训：MainWindow.cpp:212 智能笔 L 曾吞掉画布长按 L）。新增画布按键前先 grep `setShortcut` 确认 QAction 层无同名键；新增 QAction 快捷键前先查本表。
+
+### W 键模式指示（2026-08-29 落地：显示标识统一走 ModeIndicator）
+
+**背景**：W 切完模式后画布上没有任何常驻标识，旧实现只有一句 1.4 秒就消失的 toast —— 用户按完就再也看不出自己在哪个模式（选择工具尤其致命：多选下点空白是加选、单选下是清选，模式错了直接就是误操作）。
+
+**三层显示，各管一段、不可互相替代**：
+| 层 | 载体 | 存活 | 回答什么 |
+|----|------|------|---------|
+| L1 | 状态栏 `工具[模式]：…` | 工具激活期内常驻 | 现在是什么 + 此刻按 W 会发生什么 |
+| L2 | 画布角标（P2，未落地） | 常驻，仅非默认模式 | 下一次点击的语义 |
+| L3 | toast | 1.4 秒 | 刚刚变成什么了 |
+
+持久层答不了"三态循环跳到第几个"，瞬时层答不了"现在是哪个模式"——所以都要。
+
+**改模式文案/加模式时必守三条**：
+1. **单一出口**：工具只实现 `modeIndicator() const`（或静态 `modeIndicatorFor(...)`），
+   切换时调 `Tool::announceModeChange()`（发 toast + 刷状态栏），状态变了但模式没变时调
+   `Tool::refreshModeIndicator()`。禁止各自手拼 toast + `reportHintOverride` 两条路。
+2. **静态与运行期同源**：`describe().hintText` 必须调同一个 `modeIndicatorFor(默认态).hint(u8"工具名")`——
+   `test_mode_indicator` 的 `staticHintMatchesRuntimeHintOnActivate` 逐字比对两者，一红就是漂移。
+   注意 `test_tool_hints` 另锁"提示以自己工具名开头"，`hint()` 的 `工具名[模式]：` 格式天然满足。
+3. **W 语义随状态变化**：`modeIndicatorFor` 必须由 **{mode, state}** 共同决定。选择工具重叠候选
+   激活、智能笔 Drawing 态时 W 是循环候选，此时写「W 切多选」就是**错误指引**。为让这条结构性
+   成立，`ToolIntersection` / `ToolSmartPen` 都把状态迁移收进了 `setState()`（`m_state` 已无直接
+   赋值点），刷新挂在迁移上而不是靠 10 个赋值点各记一次。
+
+**L2 画布角标（同日落地）**：`CanvasScene::setModeBadge(text)` 拥有常驻 `HudItem`（DarkPill，
+zValue 9999 低于 toast），形态 = **视口左上角深色小胶囊**，只在非默认模式出现。三条实现约束：
+①**必须显式重定位** —— 它是场景图元却要"钉在视口左上角"，视口一滚动/缩放，同一屏幕位置对应的
+场景坐标就变了；`connectModeBadgeViewSignals()` 监听 scrollbar `valueChanged` +
+`CanvasView::zoomFactorChanged`（缩放时滚动条 value 不一定变，两条都要）。②**不要**用 QWidget
+覆盖层省这件事：`CanvasView` 的 viewport 是 `QOpenGLWidget`（CanvasView.cpp:50），上面叠普通
+QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景而非工具所有，`Tool::deactivate()` 显式
+`setModeBadge(QString())`，否则上一个工具的「多选」会一直挂着（m_scene 随后即空）。
+回归：`test_mode_indicator::canvasBadgeShowsOnlyForNonDefaultMode` /
+`canvasBadgeFollowsViewportScroll`。
 
 ## 1. 构建与工具链
 
@@ -99,6 +135,24 @@
 
 
 - **辅助点/交点的显示名称勾选对空名称点无效（2026-08-24 修复）**：BlockItem 点标签原先只用 pt.name，辅助点/交点默认名称为空，勾选显示名称后无可见变化。修复：点标签按列表/连接卡同规则回退到 serial（有名称显示名称，无名称显示编号）。现有 test_intersection_update 继续覆盖交点随胸围/肩褶E变量更新。
+- **关闭程序弹「Microsoft Visual C++ Runtime Library - Debug Error!」断言（2026-12 修复，用户报告"关闭时弹 debug 报错"）**：关窗时 `QtPrivate::assertObjectType<MainWindow>` 断言失败（`"Called object is not of the correct type (class destructor may have already run)"`，qobjectdefs_impl.h:107）。**栈**：`~MainWindow → ~ElaWindow → ~QObject 子对象析构 → ~ToolManager → m_activeTool->deactivate()（ToolManager.cpp:34，N5 设计）→ ToolSelect::onDeactivate → deactivateOverlapContext → Tool::refreshModeIndicator → reportHintOverride → ToolManager::setHintOverride → emit hintOverrideChanged → 命中 MainWindow::onToolHintOverride（半销毁窗口）`。**根因**：`ToolManager` 是 MainWindow 的子对象，子对象在 `~MainWindow` 函数体**之后**才析构；`~ToolManager` 按 N5 约定 deactivate 当前工具，其链路 emit `hintOverrideChanged`，而接收者 MainWindow 已过析构函数体 → Qt 6.11 Debug 构建断言（Release 是 UB）。`~MainWindow` 原来只点名断开 m_undoStack/m_paramDoc，漏了 m_toolManager。**修复（双保险）**：①根因——`~ToolManager` 开头 `disconnect(this, nullptr, nullptr, nullptr)` 断掉全部出向连接（关闭期所有 emit 变 no-op，未来任何子对象析构期发信号都不再踩坑）；②`~MainWindow` 通扫 `children()` 逐个 `disconnect(child, nullptr, this, nullptr)`（落实注释里「Drop every child→window connection」的承诺，m_undoStack 非直属子对象仍需显式断开）。**教训：析构期不得向外界发信号；凡是"析构时会 deactivate/清栈/清列表"的子对象，其出向连接必须在自身析构或父窗口析构体里先断开。**验证：连续 8 次关窗零弹窗（修复前约半数触发）；ctest 31 例仅剩 2 条文档化基线红（serializer bridgeAuxPoint / component dragComponentLeaderCurveFollowStable 31.4798mm），无新增回归。
+- **智能笔预输入条消失（2026-12 修复，用户报告"切智能笔时状态栏底部输入窗口没有了"）**：**不是删除，是位置迁移 + 显隐死锁**。2026-08-28 重设计把预输入条（SmartPenPreInputBar）从状态栏迁到**状态栏上方的独立编辑条带 `m_editBand`**（accentTint 底 + accentStrong 描边，§4.6）。但 editBand 初始 `hide()` 后，**父链隐藏时 `setVisible(true)`/`show()` 不会真正显示子控件、也不发 Show 事件** → `updateEditBand()`（只靠 eventFilter 的 Show/Hide 事件驱动）永远不跑 → editBand 保持隐藏 → 预输入条静默消失（探针实测：`preVisible=0 bandVisible=0 bandGeo=(0,0 100x30)`，updateEditBand 零调用）。**修复（双保险）**：①`updateEditBand()` 判**显隐意图**（`!isHidden()`）而非实际可见（`isVisible()`）——isVisible 受父链影响，editBand 隐藏时子条 isVisible 恒 false，是死锁第二环；②所有会改变两根信息条（preInputBar/segmentEditBar）可见性的路径主动调 `updateEditBand()`：onToolChanged（切工具）、onLineCreated、onLinePreview、onEditTargetChanged（选择工具点线段）、onEditStripCancel——不依赖事件。**教训：凡"父控件初始隐藏 + 子控件显隐靠事件驱动父控件显隐"的组合必然是死锁；父链隐藏时 setVisible/show/hide 都不发事件，必须主动同步或改用显隐意图判断。**验证：探针确认修复后 `bandVisible=1 bandIsHidden=0 bandGeo=(8,725 1259x32)`（画布下方、状态栏上方）；7 个 GUI 套件全绿；3 次关窗零弹窗（上一条修复无回归）。
+- **数值显示统一去尾零 + 旋转 HUD 公式原文（2026-12 修复，用户报告"预输入默认加 .00 / 旋转 HUD 显示换算值而非变量"）**：①**SegmentEditBar（预输入/编辑条带）数值回显去尾零**——showPreview 与 refreshFields 原来用 `QString::number(x, 'f', 2)`/`'f', 1` 硬编码，显示 `12.00`/`45.0`，违反 2026-12 已拍板「数值回显不要 .00」约定（AGENTS.md「数值回显去尾零」条目只收口了卡片，编辑条带漏网）。修复 = 改用 `Units::formatNumberTrimmed`/`formatCmTrimmed`/`formatDegValue`（SegmentEditBar.cpp showPreview/refreshFields 全部数值回显点；公式原文仍优先显示，与卡片同规则）。②**旋转 HUD 公式驱动时显示公式原文**——ToolRotate::refreshHudText 原来恒显示换算数值（`formatDegValue(currentAngleDeg())`），用户输入变量/公式（followerAngleFormula/arcLengthFormula）后 HUD 回显的是算出来的度数/cm 而非表达式，误导（像在说"值是 22.5"但其实由 b/4+5 驱动）。修复 = 连接线角度/弧长分支先查 `editableAttachment()` 的公式字段，非空则 `setText(公式原文)`，否则才回显换算值（与 SegmentAngleCard「公式优先显示原文」同约定；复制/选集旋转无公式语义保持数值）。**教训：公式驱动字段的显示端必须"公式原文优先，数值兜底"，否则用户看不到自己输入的表达式。**验证：新增 test_rotate_copy 两例（hudShowsFormulaForFormulaDrivenAngle/Arc，断言 HUD 文本 == "45"/"10"），rotate_copy 37/37 过；smartpen_aux/segment_edit_bar/commands/duplicate/aux_layer/dialog_tabs/measure 全绿；全量 ctest 31 例仅剩 2 条文档化基线红，无新增回归。
+- **上下文属性条 ContextStrip 一期收尾（CONTEXT_STRIP_DESIGN.md，2026-12 交付）**：旋转/选择/智能笔三工具共用一条常驻条带（悬停只读预览 / 点击锁定可编辑），替代原 SegmentEditBar + SmartPenPreInputBar 两条互斥 bar + 旋转 AngleHud 三套输入。旧类已删（src/app/SegmentEditBar.*、SmartPenPreInputBar.*），测试迁入 `tests/test_context_strip.cpp`（15 例，含输入包含/键流转/桥线只读/Esc 语义）。本期踩的三个坑（迁移 test_rotate_copy 时暴露）：
+  - **条带弧长模式显示必须走"带符号折角弧长"**（ContextStrip::foldedArcDisplay）——多圈弧长（3 圈 ≡ 0° 折叠）直显原值会爆表（113.1cm 应显示 0）。换算 = `mmToCm(degToArcMm(normalizeDeg180(arcMmToDeg(arcMm, radius)), radius))`，radius = `block->segmentLengthAtPoint(att->fromPointId)`；角度模式显示 = `normalizeDeg180(followerAngle)`（带符号折角，同旧 HUD currentAngleDeg），自由线仍世界角 normalizeDeg360。
+  - **单位切换（°/⌒）必须几何保持换算，不能只翻 rotationMode**——旧 HUD onHudModeChanged 同解：切换时按存储域 α（normalizeDeg360 当前折角）换算另一单位，否则弧长 3 圈切角度后显示错值；公式驱动仍拒绝切换（绝不烘焙公式）。
+  - **测试点击坐标必须落在目标线段上**——迁移前 modeSwitchKeepsFormula 点 vp(270,0) 实际落在基准线 B 线身（B 跨 x∈[200,300]），旧测试靠"HUD 存在即过"侥幸全绿；迁移后断言条带锁定到 follower A，必须从模型解析 A 中段再点击（与 stripShowsFormulaForFormulaDrivenAngle 同范式）。教训：**迁移 UI 测试时，旧用例的"软断言"（只验证组件存在）可能在错误几何上侥幸通过，迁移必须把断言升级到真实状态（锁定了哪条线）并让点击坐标可溯源**。
+  - 回归：test_context_strip 15/15、test_rotate_copy 37/37、test_smartpen_aux 26/26（preInputBar* 4 例迁入 test_context_strip）；全量 ctest 31 例仅剩 2 条文档化基线红（serializer bridgeAuxPoint / component dragComponentLeaderCurveFollowStable 31.4798mm），无新增回归。
+- **上下文属性条二期：连接手势角度输入并入条带，AngleHud 整体退场（CONTEXT_STRIP_DESIGN.md 二期，2026-12 交付）**：`src/ui/AngleHud.h/.cpp` 已删除（CMakeLists gcad_ui 源列表同步移除），tools 层再无 QWidget。通道 = 依赖倒置四条：①手势→条带：`ConnectGesture` 注入 `m_beginAngleSession` 回调（ToolSelect::onActivate 接线）→ `Tool::reportConnectAngleSession` → `ToolHost::setConnectAngleSession`（ToolManager emit `connectAngleSessionChanged`）→ MainWindow → `ContextStrip::beginConnectAngleSession(blockId, segId, attId, initialAngle)`；全 null = 会话结束。②合法性：`ToolHost::setConnectAngleValidity` → 条带角度框 `angleInvalid` 属性 + Theme QSS 红边。③条带→手势：`ContextStrip` 四个信号（connectAngleTextChanged/ModeChanged/Committed/Cancelled）→ ToolManager `forward*` → `Tool` 虚钩子（connectAngleTextChanged/ModeChanged/Committed/Cancelled，默认 no-op）→ ToolSelect override → ConnectGesture::onAngleTextChanged/onAngleModeChanged/commitAngle/cancelAngle（已移为 public）。**踩的坑**：
+  - **会话内条带绝不 push 命令**：连接在 finalizeConnection 前是"飞行中"附件（不入 undo 栈），条带的 applyName/applyLength/applyAngle/onUnitToggled/onReverseClicked 全部要 `m_connectSession` 守卫（否则 SegmentEditBarCommand/ReverseSegmentCommand 会插进手势整步 undo 宏之间，undo 顺序错乱）；refreshChrome 会话分支强制 名称/长度只读 + 角度可编辑（普通 Pinned 分支按 isBridge 设只读会把手动置为可编辑的角度框又锁回去）。
+  - **组件级连接的附件匹配**：组件级连接 fromBlockId 为空（借暴露端点），条带 `findEditAttachment` 的"端点匹配"找不到 —— 会话内改按 `attachmentsView().byId(m_connectAttId)` 直取（findEditAttachment 顶部会话分支）。
+  - **公式驱动拒绝 °/⌒ 切换的按钮弹回**：手势 onAngleModeChanged 拒绝时**不触发 resolved**（早退无 resolveAll），条带 onUnitToggled 会话分支在 emit connectAngleModeChanged 后**必须自己 refreshChrome() 兜底**把按钮弹回原模式（接受路径由 resolved 再刷，幂等）。
+  - **会话 Esc/Enter 不得走普通锁定路径**：eventFilter 会话分支在最前 —— Esc → emit connectAngleCancelled、Enter → emit connectAngleCommitted，绝不 clearPinned/cancelRequested（否则会误删刚建的连接 / 误撤销创建）。条带保持会话态直到宿主 endConnectAngleSession（测试断言会话不自行退出）。
+  - **会话上报的跟随线段 = 源端点所在线段**：`ConnectGesture::beginAngleSession` 用 `blk->exitSegmentAtPoint(m_connectFromPoint)`（m_connectFromBlock = 被抓的成员块，组件级同解）；segId 为空（端点不属于任何线段）直接上报全 null 结束会话。
+  - **会话期间普通锁定上报必须忽略**：setPinnedTarget 顶部 `if (m_connectSession) return;` —— 工具在 AngleInput 态不发 pinned，但防御性隔离防未来回归。
+  - **hideBar 也要清会话标志**：工具切换路径 ToolSelect::onDeactivate → cancel() → endAngleSession（经宿主）与 MainWindow::onToolChanged → hideBar 谁先到都幂等。
+  - 回归：test_context_strip 新增 6 例（会话形态/信号出口/Enter-Esc/单位切换/合法性属性/结束恢复）、test_select_wkey 新增 angleSessionStripInputDrivesConnection（击键预览+°⌒+Enter 收尾整步 undo）+ 两处 HUD 断言改会话上报断言、test_component 两处同改、test_rotate_copy 删除 angleHudShortcutOverrideContainment（输入包含由 test_context_strip::shortcutOverrideContainment 覆盖）。
+- **上下文属性条三期：测量/角度测量/交点/打断的只读悬停接入（CONTEXT_STRIP_DESIGN.md 三期，2026-12 交付）**：四工具统一"扫过即看"——各自 hover 更新处上报 `reportHoverTarget`，条带 Hover 态（一期已有）只读显示。挂接点：ToolMeasure/ToolAngleMeasure 的 `updateHover`、ToolIntersection 的 `updateLineHover`/`updatePointHover`（AimAngle/BorrowAim 报空）、ToolBreak::updateHover（断点优先、线身兜底、移出报空）。**坑**：①点吸附的 SnapResult 没有 segmentId——悬停点所在线段必须 `block->exitSegmentAtPoint(pointId)` 现查（游离点 → 报空，条带收起）；线身吸附（SegmentSnapResult）才有 segmentId 直取。②**hideBar() 必须把 Hover 焦点归一化为 Empty**——原实现只清 Pinned 焦点，悬停隐藏后 focusState() 残留 Hover（"Hover" 语义 = 条带可见的只读预览，隐藏后不得残留；三期 hoverShowsReadOnlyPreview 测试暴露）。③工具直驱测试的宿主桩必须实现纯虚 `requestToolSwitch`（ToolHost 唯一纯虚，漏实现 = C2259 抽象类）。回归：test_measure +2、test_tool_intersection +1、test_break +1、test_context_strip +1；全量 ctest 31 例仅剩 2 条文档化基线红。
 ## 4. 数据 / 引擎
 
 - **addAttachment 拒绝跨层**（isAuxBlock 不一致）：测试构造桥 pin 前必须先设工作层。
@@ -146,6 +200,15 @@
 - **滑轨面板流三坑（2026-12 用户反馈"滑轨功能好像是坏的，没有生效的痕迹"）**：①**只填一轴被静默拒绝**——`SegmentConnectionCard::onSlideOffsetEdited` 原要求两轴都能解析（`if (!okA || !okP) { refreshCard(); return; }`），只填「水平」留空「垂直」（tooltip 承诺"留空/0 表示不偏移"）时直接 return + refreshCard 清空输入 → 输入被悄悄丢弃、无任何生效痕迹；修复 = 空串按 0 解析（SegmentConnectionCardConn.cpp:474-481；留空/0 + 另一轴非 0 自动选 AlongLeader/PerpLeader，双轴 0 或空 = 退回全连接）。②**任意 ElaLineEdit 按回车会悄悄关闭整个属性对话框**——ElaLineEdit 未覆盖 keyPressEvent，回车事件沿父链传播到 QDialog 的 default-button/accept 路径 → 对话框瞬间关闭（输入内容看似被丢弃）；修复 = `LinePropertyDialog::keyPressEvent` 吞掉 Return/Enter（提交语义由 editingFinished 承担；Esc 照旧走 reject()/撤销全部，LinePropertyDialog.cpp）。③**滑轨输入回车后关闭对话框触发 Qt 6.11 析构断言**——`emit changed(SlideModeChanged)` 的信号发放本身（空槽也复现，几经二分定位）令对话框析构期 `QtPrivate::assertObjectType` 断言（"class destructor may have already run"，qobjectdefs_impl.h:107，QTest qFatal）；修复 = 滑轨路径不再 emit changed（画布刷新经 `m_doc->resolveAll()` → `ParamDocument::resolved` → CanvasScene 观察者链自动完成；onConnCardChanged 对 SlideModeChanged 本就 default no-op）。验证：test_dialog_tabs 9/9 + test_rotate_copy::propertyDialogShowsFollowValue + test_select_wkey::connectionCardNewSemantics + test_commands::slideMode_alongAndPerpConstraints/slideMode_dragOffsetsUndoRedo 全绿；probeSlideFlow 临时探针（面板滑轨流 = 只填水平 2 → AlongLeader/along=20mm/字段保留/对话框不关/析构无断言）用后已移除。提示：滑轨"沿线"方向 = 基准线在吸附点的出口方向（起点锚点 = end→start、终点锚点 = start→end，与折叠角参考系一致）。
 <!-- [2026-12-15 恢复标注] 原工作副本第 118 行之后约 1.4KB 内容缺失：当日会话日志未捕获，未能重建；git HEAD 为旧组织结构（154 行），需要旧条目可用 git cat-file HEAD:TROUBLESHOOTING.md 取回。 -->
 - **线段换向三个 UI 联动 bug（2026-08 用户报告「换向会把点的名称覆盖，且世界角度显示消失」）**：①**端点名称被覆盖（数据损坏级）**——`LinePropertyDialog::populateFromModel` 逐字段 setText 无 QSignalBlocker，端点名称/备注输入框的 textChanged 均接 `onLiveUpdate → applyToModel`（把输入框内容写回**当前角色**端点）；换向后端点角色互换，回填起点卡 → 回波把"终点输入框里的旧起点名"写进新终点 → 回填终点卡时读到已污染值 → 原名永久丢失。修复 = populateFromModel 全字段 QSignalBlocker（名称/类型/长度/显示/端点 13 个控件）。**教训：任何"角色互换"的模型变更后做表单回填，必须整段静音信号——回波写入用的是旧角色映射**。回归 test_commands `reverseSegment_namesSurviveUndoRoundTrip`。②**世界角度标签消失**——`SegmentAngleCard::onDocResolved` 的自由线分支直接 `setVisible(false)`（原语义"非 follower 无绝对角读数"），但自由线的世界角是纯几何读数；换向命令 push 内含 resolveAll → resolved 信号到达 → 标签被藏。修复 = 自由线/独立角分支重算 start→end 世界方向刷新标签（同值短路）。③**延长卡滞留旧值（潜在误编辑）**——换向把 extendStart↔extendEnd 随端点角色互换，但 SegmentExtendCard 不监听 resolved，两输入框仍显示旧角色数值，用户拿错基线编辑。修复 = 延长卡 connect resolved 刷新（hasFocus 跳过，refresh 内已有 QSignalBlocker）。排查确认无缺口：SegmentEditBar（创建态工具条，showForLine 显式驱动）、SegmentAnchorTab（已监听 resolved 且直线禁用）、角度卡输入框（换向后 populateAngleField 重填，编辑即接管语义不变）。回归：test_commands 13 个 reverse 用例全绿；ctest 22/26（4 红 = 既有基线）。
+- **换向/旋转锚心反馈缺失（2026-12 用户报告「上下文属性条换向部分一直显示 p1、p2，和点名称完全无关，点击切换也不调转；旋转工具选旋转端点，条带没有任何变化；应该点击换向画布就切到另一头」）**：三个独立问题一起收口——
+  ①**条带基准读数硬编码 P1/P2 兜底**（ContextStrip.cpp refreshChrome，旧 `sp->name.isEmpty()? "P1" : sp->name`）：普通画线端点**无名**（LineFactory 不设 pt.name，只有辅助点/交点表单命名）→ 兜底恒命中 → 按钮永远显示「P1 → P2」、与端点真实串号无关、换向后 start/end 互换但兜底不变 → 读数纹丝不动。修复 = 显示真实 `Serial::tag(serial)`（与属性对话框 `SegmentAngleCard::refreshBasisRow` 同口径），换向后随端点身份互换翻转；按钮宽 96→110（三位数串号防裁切）。
+  ②**换向几何零跳变 = 画布无可见变化**（设计如此，非 bug）：ReverseSegmentCommand 物理换身、点标签按身份绑定不移动、画布无方向指示 → 用户感知"点了没反应"。修复 = 画布加**方向指示箭头**（新头文件 `src/canvas/DirectionMarker.h` `drawDirectionChevron`：中点旁垂向偏移 5px、两臂 ±25° 回开 4px 的 chevron；直线 = atan2(p2−p1)、曲线 = CurveItem::labelAngle 弧长中点切线，均 scene 坐标 Y 向下；灰显层不画、ghost 降 alpha）。换向后 start/end 互换 → BlockItem rebuildCache 重算 p1/p2、曲线 spans 反向 + 切线镜像 → 箭头自动翻转。
+  ③**旋转会话内条带换向 ≠ 切锚心**（用户拍板：旋转工具的换向意思是换选择的锚点）：原条带换向在旋转会话内也 push ReverseSegmentCommand（持久换驱动端），旋转工具自己的锚心（m_anchorIsEnd，X 键/点端点切）是工具临时态，条带无感知。修复 = 双通道（仿连接角度会话四通道）：工具→条带 = `ToolRotate::reportRotateAnchorState` → `ToolHost::setRotateAnchorState(active, anchorIsEnd, canToggle, reason)` → ToolManager emit `rotateAnchorStateChanged` → MainWindow → `ContextStrip::setRotateAnchorState`（基准读数锚心端在前 + 换向按钮资格 = Ready 且两端无连接，禁用原因 tooltip）；条带→工具 = `ContextStrip::reverseRequested(blockId, segId)`（仅旋转会话内发）→ `ToolManager::forwardReverseRequest` → `Tool::onReverseRequested`（默认 no-op）→ ToolRotate override = `toggleAnchor()`（gizmo pivot 环移动，自带全部守卫，**不 push 命令**）；普通（非旋转）会话换向仍由条带直接 push ReverseSegmentCommand。上报点 = selectTarget/toggleAnchor/点端点切换/clearTarget/onDeactivate 五处；hideBar 清会话标志（工具切换两路幂等）。坑：条带 basis/tooltip 措辞改「起点/终点」「锚心」；showStrokePreview 占位改「起点 → 终点」。回归：test_context_strip +2（`basisShowsSerialTagsAndReverseFlips` / `rotateAnchorStateFlipsBasisAndRoutesReverse`，前者断言串号 tag + 换向点击翻转 + undo 复原，后者断言锚心端在前 + reverseRequested 转发不 push + 会话结束恢复普通换向可 push）、test_rotate_copy +1（`stripReverseTogglesAnchor`：自由线换向 = 锚心 start↔end 翻转、连接线换向 = no-op 且挂接不释放）。
+- **换向/锚心第二轮（2026-12 用户复核报告「旋转工具换向逻辑不对：换向不改变环形显示；点端点角度不随基准变；缺确定提示」）**：第一轮落地后真实链路上还有三个洞，逐一修复——
+  ①**`selectTarget` 上报时序 bug（换向走错路径，环形/gizmo 不动的根因）**：`reportRotateAnchorState()` 原放在 `m_state = RotateState::Ready` **之前**调用，而它的会话激活判定是 `m_state != Idle` → 首次选中上报 `active=false` → 条带 m_rotateSession 恒 false → 点「换向」走 `ReverseSegmentCommand`（几何零跳变、gizmo 纹丝不动）而非切锚心。修复 = 上报移到 m_state=Ready 之后（ToolRotate.cpp selectTarget）。**同批修 onDeactivate 时序**：`reportRotateAnchorState()` 原在 m_blockId/m_state 清空**之前**调用 → 上报 active=true 的陈旧会话 → 条带残留旋转会话标志（换向按钮错走切锚心语义、基准读数错位）。修复 = 状态清空后再上报。
+  ②**条带角度字段不随锚心基准（点端点/换向切锚心后角度不 ±180°）**：条带角度字段（自由线）= `ep->angle + rotDeg`（模型 P1→P2 世界角），而旋转工具的显示语义（currentAngleDeg）= 锚心基准角（锚=终点时 +180°，v3 定稿「线总是指向光标」）——锚心切换后字段不翻。修复 = 旋转会话内显示带锚心偏移（ContextStrip.cpp refreshFields 自由线分支 `+180 if m_rotateSession && m_rotateAnchorIsEnd`），**输入回写同步减回偏移**（applyAngle 自由线分支 `st.endAngle = (targetDeg − anchorOffset) − rotDeg`，否则用户按条带读数输入线会偏 180°）；`setRotateAnchorState` 追加 refreshFields（锚心切换也要刷角度字段，原只刷 chrome）。
+  ③**缺确定提示**：锚心切换（换向/点端点）后状态栏提示不刷新，pivot 环移动是唯一反馈。修复 = `updateStatusHint` 的 Ready 分支附带锚心串号 tag（「旋转：锚心 P2 · 右键或回车确认后拖动」/ 确定态「拖动旋转」），toggleAnchor + mousePress 点端点切换路径补 `updateStatusHint()` 调用。
+  回归：test_rotate_copy `anchorSwitchSyncsStrip`（新，走真实接线：StripBridge 补 wire rotateAnchorStateChanged → strip + strip.reverseRequested → tm.forwardReverseRequest；断言 选中即进旋转会话（基准锚心端在前 + 角度 0° + 换向可点）→ 点条带换向锚切终点（基准翻转 + 角度 180° + 提示带锚心 + 不 push 命令）→ 点起点端点锚切回（条带全跟随））；test_context_strip `rotateAnchorStateFlipsBasisAndRoutesReverse` 补角度字段断言（锚=终点 180° / 锚=起点 0°）。**坑：`selectTarget`/`onDeactivate` 这类「先清状态再上报」的顺序坑——凡上报内容依赖自身状态字段，上报必须放在状态翻转之后，测试要用真实接线（StripBridge 全量 wire）而非直驱工具/直调条带**。
 - **undo 双栈分裂 + 命令 ID 撞号 + 绕过 undo 的直写路径（2026-12 P0 修复，AGENTS.md「架构决策记录」 三 P0 全落地）**：
   - **①双栈收口单栈（跨文档污染根除）**：`ParamDocument`（ParamDocument.cpp:26）与 `MainWindow`（MainWindow.cpp:97）各建一只 QUndoStack——CanvasView/ToolSelect/cards 往**文档栈**推命令而菜单 Ctrl+Z、isClean 脏标记只绑 **MainWindow 栈**：文档栈命令撤不掉、不参与脏标记；且 `ParamDocument::clear()` 不清栈 → 打开/新建文档后旧档命令快照在新文档 undo 复活。修复：MainWindow 删除自建栈、`m_undoStack = m_paramDoc->undoStack()`（非拥有别名，析构 disconnect 顺序不变）；`ParamDocument::clear()` 末尾 `m_undoStack->clear(); m_undoStack->setClean();`（ParamDocumentLifecycle.cpp:51-57，清栈在 emit 之上防信号竞态）。**教训：undo 栈生命周期必须绑定模型，UI 只做绑定不做拥有；clear() 不清 undo = 跨文档时间旅行**。
   - **②mergeWith 命令 ID 撞号 = UB**：`RotateBlockCommand::id()=1003`（BlockCommands.h）与 `SetVariableValueCommand::id()=1003`（VariableCommands.h）撞号——QUndoStack push 时按 id 相同判定调 `top->mergeWith(other)`，static_cast 成异类读字段 = 未定义行为。修复：新建集中枚举 `src/document/commands/CommandIds.h`（`cad::cmd::CommandId`：MoveBlock=1001/SetFollowerAngle=1002/RotateBlock=1003/**SetVariableValue=1004**——1003 撞号者重编号），四处 `id()` 改 `static_cast<int>(CommandId::X)`；四个 mergeWith（MoveBlock/RotateBlock/SetFollowerAngle/SetVariableValue）的 `static_cast` 改 `dynamic_cast` + 判空返 false。**教训：QUndoStack 的 merge 判定只看 id，命令 id 必须全局唯一（集中枚举单一定义点），mergeWith 永远 dynamic_cast 兜底**。
@@ -208,3 +271,33 @@
     - **逐行替换脚本不消费下游行**：把「sendEvent+qWait 对」换成「sendEvent+settle」时，逐行处理只改了 sendEvent 行，原 qWait(20) 行照常流过 → 变成 settle+qWait 双重等待。**改完必须复核**（`settle` 的下一行不允许还是 qWait）。
     - **test exe 直跑 stdout 捕获不到**（GUI 子系统进程）：bash 重定向得到空文件但 rc=0，测试照样跑了 13 秒。用 `ctest -R x -V`（Pass/耗时）或 QtTest 自带 `-o 文件,txt`（函数级 PASS 明细 + Totals）。
     - **python 原地改源文件后必须补 BOM 再走构建**；本次 Edit 工具实测**保留**了 BOM（与 AGENTS.md「Edit 剥 BOM」的记载不符，但保险起见每次改完仍用脚本核一遍）。
+
+## 5. 测试 / 基线（判"是不是我引入的红"先看这里）
+
+- **既有基线红 = 2 条（与 AGENTS.md 同步，子用例名与数值一字不差）**：
+  ①`test_serializer::bridgeAuxPointSnappableAndAttachable`（`std::abs(fsWorld.x - 50.0) < 1e-6` 失败）；
+  ②`test_component::dragComponentLeaderCurveFollowStable`（`31.4798mm`，bEnd=(171.194,-46.1355) xEnd=(165,-77)）。
+  **整批 ctest 出现且仅有这两条 = 零回归**，不必逐个考证。
+- **环境漂移红**：test_intersection_update（5 用例）+ test_extend::savedDocFormulaStartExtendRenders 依赖
+  活档 `E:/3.gcad`，用户一改该文件就红（交点偏移 29.17mm / 缺变量「后长补正」），非代码回归；缺该文件则 QSKIP。
+- **GUI 时序抖动**：test_dialog_tabs::switchBackAfterTyping / test_aux_layer / test_rotate_copy 在整批 ctest
+  压力下偶发失败，单跑即过 —— 先单跑复现再判回归。**test_select_wkey 也在此列（2026-08-29 实测：
+  整批 3 次里挂 1 次，单跑连续通过）**，它有 50 处 `qWait`（AGENTS.md P2-3），本就是抖动候选。
+  判法：**同一个 exe 连跑两次 + 整批再跑一次**，只在整批挂、单跑稳 = 抖动，不是回归。
+- **测试里不要用 CanvasView 造视口（2026-08-29 实测，test_mode_indicator）**：`CanvasView` 的 viewport 是
+  `QOpenGLWidget`（CanvasView.cpp:50），Fixture 里放一个 → 每个用例一个 GL 上下文，5 个用例 = 5 个；
+  **单跑 9 用例全绿，整批 ctest 直接 SEGFAULT**。改用**普通 `QGraphicsView`** 即愈 —— 角标锚定只用
+  `mapToScene`，键盘走 `ToolManager::dispatchKeyPress` 根本不经视口，两者都不需要 CanvasView。
+  代价：`CanvasView::zoomFactorChanged` 那条重定位接线不在自动测试覆盖内（滚动那条覆盖了同一机制）。
+  同类旁证：AGENTS.md 记的 test_canvas_perf singleCurveFrame 段错误（疑似环境/软渲染）也是 GL 上下文问题。
+- **构建偶发 `fatal error C1083 ... .obj: Permission denied`（2026-08-29 实测）**：ElaWidgetTools 的 7 个
+  `.obj` 同时报无法写入，但 `Get-Process` 查不到任何占用进程，**重跑一次 build.bat 就全过**。
+  判据：错误全落在 `_deps/elawidgettools-build/` 下 + 无任何编译语义错误 + 重跑即愈 = 文件锁抖动，
+  不要去改 patch 脚本。**改完源码一定要核 exe 时间戳**（`stat -c '%y' build/out/xxx.exe`）：
+  构建失败时 exe 是旧的，跑的也可能是旧版 —— 本次就差点把旧 exe 的"通过"当成新代码已验证。
+- **GUI 测试不要在同一进程里反复 new CanvasScene（2026-08-29 实测，test_mode_indicator）**：为了"每个工具
+  一套干净环境"在循环里造 4 个 Fixture（各含 `CanvasScene` + `ToolManager`），结果 5 个用例全 PASS 却在
+  `cleanupTestCase` **之后进程退出期崩溃**（栈里 QLineEdit 构造 + LdrShutdownProcess，单次耗时从 3ms 涨到
+  33 秒）。改成**一个 Fixture 反复 `switchTool`**（场景只 new 一次）即愈。
+  **判据：用例全绿但进程非零退出 → 先查是不是反复创建场景级对象，别急着判产品代码回归。**
+  与第 1 组"陈旧 AUTOMOC 段错误"的区分：**本条是用例全绿后退出期崩；那条连 `-functions` 都出不来文本。**

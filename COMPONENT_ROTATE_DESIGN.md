@@ -5,7 +5,12 @@
 > 现状：组件整体旋转走「选择工具多选 → R 继承选区」的**选集旋转**（两段式锚点/拖动刚体变换保留，
 > 机制更名 Sel：ToolRotate.h `m_selectionRotate`/`applySelDelta`/`commitSelRotation`）；选集路径
 > **无 D7 结构释放**（跨界连接不删，以影子偏转 baselineOffsetDeg 保姿态）；`RotateComponentCommand`
-> 已删除。现行权威条目见 AGENTS.md「旋转选集与影子偏转角」。
+> 已删除。
+>
+> **2026-08-29 再更新（选集旋转也删了）**：上面说的「多选 → R 继承选区」选集旋转路径**同样已删除**
+> ——多块旋转的交互没设计好，属历史包袱，先删、日后重新设计。当前**产品内无任何整组旋转入口**
+> （多选后按 R = 普通单线旋转）。`baselineOffsetDeg` 字段保留（连接卡「基准偏转/归零」唯一写入方）。
+> 现行权威条目见 AGENTS.md「影子偏转角 baselineOffsetDeg」。
 >
 > 以下原文记录 2026-12 模态存在时的设计（代码已不存在）。
 >
