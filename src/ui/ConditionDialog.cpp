@@ -157,8 +157,9 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     row->widget = new QWidget(this);
     const auto& tk = cad::ui::Theme::tokens();
     row->widget->setStyleSheet(QStringLiteral(
-        "background: %1; border: 1px solid %2; border-radius: 6px;")
-        .arg(tk.surface3.name(), tk.border.name()));
+        "background: %1; border: 1px solid %2; border-radius: %3px;")
+        .arg(tk.surface3.name(), tk.border.name())
+        .arg(cad::ui::ThemeTokens::RadiusLg));  // 功能圆角上限 4px (圆角纪律)
     auto* lay = new QHBoxLayout(row->widget);
     lay->setContentsMargins(8, 6, 8, 6);
     lay->setSpacing(5);

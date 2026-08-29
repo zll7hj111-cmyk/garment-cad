@@ -1,8 +1,9 @@
-#include "VariablePanel.h"
+﻿#include "VariablePanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSizePolicy>
+#include <QPushButton>
 #include "ElaScrollArea.h"
 #include <QScrollBar>
 #include <QStackedWidget>
@@ -11,6 +12,7 @@
 #include "ElaToolButton.h"
 #include "ElaText.h"
 #include "Theme.h"
+#include "PanelSubTabBar.h"
 #include <QFrame>
 #include <QRect>
 #include <QTimer>
@@ -27,7 +29,6 @@
 #include "FormulaGroupHeader.h"
 #include "LinkedCard.h"
 #include "MeasureTab.h"
-#include "ComponentTab.h"
 #include "ConditionDialog.h"
 #include "FormulaTabModel.h"
 #include "FormulaTabModel.h"
@@ -112,8 +113,7 @@ void VariablePanel::applyTheme()
         c->setStyleSheet(containerQss);
     if (m_measureTab)
         m_measureTab->sync();
-    if (m_componentTab)
-        m_componentTab->applyTheme();
+    update();  // 类型色竖线/悬停描边由 paintEvent 现读 token, 触发重绘即可
 }
 
 void VariablePanel::setUndoStack(QUndoStack* stack)
@@ -121,7 +121,6 @@ void VariablePanel::setUndoStack(QUndoStack* stack)
     m_undoStack = stack;
     m_formulaModel->setUndoStack(stack);
     if (m_measureTab) m_measureTab->setUndoStack(stack);
-    if (m_componentTab) m_componentTab->setUndoStack(stack);
 }
 
 void VariablePanel::setupUi()
@@ -141,25 +140,20 @@ void VariablePanel::setupUi()
     headerLayout->setContentsMargins(8, 6, 10, 4);
     headerLayout->setSpacing(4);
 
-    m_tabBar = new ElaTabBar(header);
+    // 子页签 (PanelSubTabBar): 激活下划线 = piece 类型色 (内容层信号),
+    // 只读页签 (关联/测量) 恒 text2 不加粗 (§4.2/§6.3)。
+    m_tabBar = new cad::ui::PanelSubTabBar(header);
     m_tabBar->addTab(QStringLiteral("\u53d8\u91cf"));    // 变量
     m_tabBar->addTab(QStringLiteral("\u516c\u5f0f"));    // 公式
-    m_tabBar->addTab(QStringLiteral("\u5173\u8054"));    // 关联
-    m_tabBar->addTab(QStringLiteral("\u6d4b\u91cf"));    // 测量
-    m_tabBar->addTab(QStringLiteral("\u7ec4\u4ef6"));    // 组件
-    m_tabBar->setTabSize(QSize(64, 30)); // Ela 默认标签 sizeHint ~220px, 5 个必裁剪; 显式紧凑.
-    m_tabBar->setExpanding(true);          // 四个标签平均铺满整行.
-    m_tabBar->setUsesScrollButtons(false); // 禁用滚动箭头, 不允许裁剪标签.
-    m_tabBar->setElideMode(Qt::ElideNone); // 窄窗下也不省略标签文字.
-    m_tabBar->setDrawBase(false);
-    m_tabBar->setCursor(Qt::PointingHandCursor);
-    m_tabBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    // Fixed tabs: ElaTabBar defaults to closable/movable — the × would
-    // delete the stacked page via onTabCloseRequested. Disable it here.
-    m_tabBar->setTabsClosable(false);
-    m_tabBar->setMovable(false);
-    m_tabBar->setAcceptDrops(false);
-    // Tab look comes from the global theme (underline style, accent active).
+    m_tabBar->addTab(QStringLiteral("\u5173\u8054"));    // 关联 (只读)
+    m_tabBar->addTab(QStringLiteral("\u6d4b\u91cf"));    // 测量 (只读)
+    {
+        const auto& tk = cad::ui::Theme::tokens();
+        m_tabBar->setTabProfile(0, tk.piece1, false);  // 变量 = 碳灰
+        m_tabBar->setTabProfile(1, tk.piece2, false);  // 公式 = 深青
+        m_tabBar->setTabProfile(2, tk.piece4, true);   // 关联 = 钴蓝 (只读)
+        m_tabBar->setTabProfile(3, tk.piece3, true);   // 测量 = 陶土 (只读)
+    }
     headerLayout->addWidget(m_tabBar);
 
     auto* metaRow = new QWidget(header);
@@ -207,11 +201,17 @@ void VariablePanel::setupUi()
 
     m_stack->addWidget(buildListPage(
         m_varScroll, m_varContainer, m_varHost, m_varEmptyHint,
-        QStringLiteral("暂无变量\n点击右上角「＋ 添加」创建")));
+        QStringLiteral("暂无变量"),
+        QStringLiteral("点击下方按钮或右上角「＋ 添加」创建"),
+        QStringLiteral("＋ 新建变量"),
+        [this]() { onAddClicked(); }));
 
     m_stack->addWidget(buildListPage(
         m_formulaScroll, m_formulaContainer, m_formulaHost, m_formulaEmptyHint,
-        QStringLiteral("暂无公式变量\n点击右上角「＋ 添加」创建\n\n表达式示例: 胸围/2+6 或 b/2+6")));
+        QStringLiteral("暂无公式变量"),
+        QStringLiteral("表达式示例: 胸围/2+6 或 b/2+6"),
+        QStringLiteral("＋ 新建公式"),
+        [this]() { onAddClicked(); }));
 
     // Formula page: accept card/header drops for reordering & grouping.
     m_formulaContainer->setAcceptDrops(true);
@@ -223,7 +223,9 @@ void VariablePanel::setupUi()
 
     m_stack->addWidget(buildListPage(
         m_linkedScroll, m_linkedContainer, m_linkedHost, m_linkedEmptyHint,
-        QStringLiteral("暂无关联参数\n右键点击线段 →「发布长度参数」\n或在属性对话框中点击「发布」")));
+        QStringLiteral("暂无关联参数"),
+        QStringLiteral("右键点击线段 →「发布长度参数」\n或在属性对话框中点击「发布」"),
+        QString(), {}));
 
     // Tab 3: measure variables (length + angle cards, extracted).
     // Create the tab HERE — a missing new left m_measureTab null and crashed
@@ -231,9 +233,6 @@ void VariablePanel::setupUi()
     m_measureTab = new MeasureTab(m_doc, this);
     m_stack->addWidget(m_measureTab);
 
-    // Tab 4: components (组件 rigid work groups).
-    m_componentTab = new ComponentTab(m_doc, this);
-    m_stack->addWidget(m_componentTab);
     connect(m_measureTab, &MeasureTab::highlightBlockRequested,
             this, &VariablePanel::highlightBlockRequested);
     connect(m_measureTab, &MeasureTab::highlightMeasureRequested,
@@ -252,8 +251,8 @@ void VariablePanel::setupUi()
     // add/remove/rename/visibility so the labels never go stale.
     connect(m_doc, &cad::param::ParamDocument::layersChanged,
             m_measureTab, &MeasureTab::notifyMeasureDataChanged);
-    // Component list rebuilds on componentsChanged (wired inside ComponentTab,
-    // queued) — undo/redo also re-emits it through updateComponent/remove/….
+    // Component list rebuilds on componentsChanged (wired inside ComponentTab
+    // at the panel-window big tab, queued) — undo/redo also re-emits it.
 
     setupCardProviders();
 
@@ -262,9 +261,9 @@ void VariablePanel::setupUi()
     // ===== Connections =====
     connect(m_tabBar, &QTabBar::currentChanged, this, [this](int index) {
         m_stack->setCurrentIndex(index);
-        // Hide the add button on the linked/measure/component tabs (they are
+        // Hide the add button on the linked/measure tabs (they are
         // auto-generated / created from the canvas, not via the ＋ button).
-        m_addBtn->setVisible(index != 2 && index != 3 && index != 4);
+        m_addBtn->setVisible(index != 2 && index != 3);
         m_addGroupBtn->setVisible(index == 1);
         updateCountLabel();
     });
@@ -276,8 +275,10 @@ void VariablePanel::setupUi()
 }
 
 QWidget* VariablePanel::buildListPage(ElaScrollArea*& scrollOut, QWidget*& containerOut,
-                                      VirtualCardList*& hostOut, ElaText*& emptyHintOut,
-                                      const QString& emptyText)
+                                      VirtualCardList*& hostOut, QWidget*& emptyHintOut,
+                                      const QString& emptyTitle, const QString& emptyGuide,
+                                      const QString& ghostAddText,
+                                      const std::function<void()>& onGhostAdd)
 {
     scrollOut = new ElaScrollArea(this);
     scrollOut->setWidgetResizable(true);
@@ -297,10 +298,41 @@ QWidget* VariablePanel::buildListPage(ElaScrollArea*& scrollOut, QWidget*& conta
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    emptyHintOut = new ElaText(emptyText, 13, containerOut);
-    emptyHintOut->setAlignment(Qt::AlignCenter);
-    emptyHintOut->setObjectName(QStringLiteral("dimText"));
-    layout->addWidget(emptyHintOut);
+    // ===== 空状态 (§5.4): 18px Semibold 主文案 + 13px 引导语 + 幽灵「＋新建」 =====
+    auto* emptyBox = new QWidget(containerOut);
+    auto* emptyLay = new QVBoxLayout(emptyBox);
+    emptyLay->setContentsMargins(0, 28, 0, 28);
+    emptyLay->setSpacing(6);
+    const auto& tk = cad::ui::Theme::tokens();
+
+    auto* title = new ElaText(emptyTitle, cad::ui::ThemeTokens::FontXl, emptyBox);
+    title->setAlignment(Qt::AlignCenter);
+    title->setStyleSheet(QStringLiteral(
+        "font-size: %1px; font-weight: 600; color: %2; background: transparent;")
+        .arg(QString::number(cad::ui::ThemeTokens::FontXl), tk.text1.name()));
+    emptyLay->addWidget(title);
+
+    auto* guide = new ElaText(emptyGuide, 13, emptyBox);
+    guide->setAlignment(Qt::AlignCenter);
+    guide->setObjectName(QStringLiteral("dimText"));
+    emptyLay->addWidget(guide);
+
+    if (!ghostAddText.isEmpty()) {
+        // 幽灵按钮 (§5.1 Ghost): 透明底, hover 出 surface2 底 + 描边。
+        auto* ghost = new QPushButton(ghostAddText, emptyBox);
+        ghost->setCursor(Qt::PointingHandCursor);
+        ghost->setFixedHeight(26);
+        ghost->setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; border: 1px solid transparent;"
+            "  border-radius: 2px; padding: 0 12px; font-size: 12px; color: %1; }"
+            "QPushButton:hover { background: %2; border: 1px solid %3; color: %4; }")
+            .arg(tk.text2.name(), tk.surface.name(),
+                 tk.borderStrong.name(), tk.text1.name()));
+        connect(ghost, &QPushButton::clicked, emptyBox, onGhostAdd);
+        emptyLay->addWidget(ghost, 0, Qt::AlignHCenter);
+    }
+    emptyHintOut = emptyBox;
+    layout->addWidget(emptyBox);
 
     // Virtualized card host: list margins live inside the host, and only
     // rows near the viewport are materialized (O(visible) widget count).
@@ -347,7 +379,7 @@ void VariablePanel::setupCardProviders()
                 return nullptr;
             const cad::ui::FormulaTabModel::Row& fr = m_formulaModel->rows()[row];
             if (fr.isHeader) {
-                const auto* g = m_doc->findFormulaGroup(fr.id);
+                const auto* g = m_doc->variablesView().groupById(fr.id);
                 if (!g)
                     return nullptr;
                 auto* header = new FormulaGroupHeader(
@@ -363,7 +395,7 @@ void VariablePanel::setupCardProviders()
                         this, &VariablePanel::onFormulaDroppedOnHeader);
                 return header;
             }
-            const auto* f = m_doc->findFormula(fr.id);
+            const auto* f = m_doc->variablesView().formulaById(fr.id);
             if (!f)
                 return nullptr;
             auto* card = new FormulaCard(*f, fr.localIndex % 2 == 1, m_formulaHost);
@@ -382,7 +414,7 @@ void VariablePanel::setupCardProviders()
                 return;
             const cad::ui::FormulaTabModel::Row& fr = m_formulaModel->rows()[row];
             if (fr.isHeader) {
-                const auto* g = m_doc->findFormulaGroup(fr.id);
+                const auto* g = m_doc->variablesView().groupById(fr.id);
                 if (!g)
                     return;
                 auto* header = static_cast<FormulaGroupHeader*>(w);
@@ -390,7 +422,7 @@ void VariablePanel::setupCardProviders()
                 header->setCollapsed(g->collapsed);
                 header->setCount(formulaGroupMemberCount(m_doc, g->id));
             } else {
-                const auto* f = m_doc->findFormula(fr.id);
+                const auto* f = m_doc->variablesView().formulaById(fr.id);
                 if (!f)
                     return;
                 auto* card = static_cast<FormulaCard*>(w);
@@ -557,7 +589,7 @@ void VariablePanel::onVariableDeleted(const QUuid& id)
 void VariablePanel::onVariableEdited(const cad::param::Variable& var)
 {
     // Skip no-op edits (e.g. spinbox commit without actual change).
-    if (const auto* cur = m_doc->findVariable(var.id)) {
+    if (const auto* cur = m_doc->variablesView().byId(var.id)) {
         if (cur->name == var.name && cur->refName == var.refName
             && qFuzzyIsNull(cur->value - var.value) && cur->comment == var.comment)
             return;
@@ -579,7 +611,7 @@ void VariablePanel::onFormulaDeleted(const QUuid& id)
 void VariablePanel::onFormulaEdited(const cad::param::FormulaVariable& formula)
 {
     // Skip no-op edits.
-    if (const auto* cur = m_doc->findFormula(formula.id)) {
+    if (const auto* cur = m_doc->variablesView().formulaById(formula.id)) {
         if (cur->name == formula.name && cur->expression == formula.expression
             && cur->actualValueCm == formula.actualValueCm
             && cur->comment == formula.comment
@@ -616,7 +648,7 @@ void VariablePanel::onLinkedEdited(const cad::param::LinkedVariable& lv)
 
 void VariablePanel::onConditionsEditRequested(const QUuid& id)
 {
-    const auto* f = m_doc->findFormula(id);
+    const auto* f = m_doc->variablesView().formulaById(id);
     if (!f) return;
 
     // Known variables (cm) under both display name and reference name.
@@ -878,7 +910,6 @@ void VariablePanel::updateCountLabel()
     else if (tab == 2) count = static_cast<int>(m_doc->linkedVars().size());
     else if (tab == 3) count = static_cast<int>(m_doc->measureVars().size()
                                               + m_doc->angleMeasures().size());
-    else               count = static_cast<int>(m_doc->components().size());
     m_countLabel->setText(QString::number(count));
     m_varEmptyHint->setVisible(m_doc->variables().empty());
     m_formulaEmptyHint->setVisible(m_doc->formulas().empty()

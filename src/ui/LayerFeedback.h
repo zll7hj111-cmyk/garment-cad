@@ -5,7 +5,7 @@
 
 #include "parametric/ParamDocument.h"  // ParamDocument, Block, Attachment
 
-namespace cad::tools {
+namespace cad::ui {
 
 /// Cross-layer feedback helpers (跨层连接反馈, 2026-08 收口).
 ///
@@ -21,9 +21,9 @@ inline QString crossLayerToast(const cad::param::ParamDocument* doc,
                                const QUuid& fromLayer, const QUuid& toLayer)
 {
     if (!doc || fromLayer.isNull() || toLayer.isNull()) return QString();
-    if (doc->isAuxLayer(fromLayer) == doc->isAuxLayer(toLayer)) return QString();
+    if (doc->layersView().isAuxLayer(fromLayer) == doc->layersView().isAuxLayer(toLayer)) return QString();
     auto name = [doc](const QUuid& layerId) {
-        const auto* l = doc->layerById(layerId);
+        const auto* l = doc->layersView().byId(layerId);
         return l ? l->name : QStringLiteral("?");
     };
     return QString::fromUtf8("\xe5\xb7\xb2\xe5\xbb\xba\xe7\xab\x8b"
@@ -51,11 +51,11 @@ inline QString crossLayerBadge(const cad::param::ParamDocument* doc,
     const cad::param::Block* to   = doc->findBlock(att.toBlockId);
     if (!from || !to) return QString();
     if (doc->isAuxBlock(*from) == doc->isAuxBlock(*to)) return QString();
-    const auto* leaderLayer = doc->layerById(to->layer);
+    const auto* leaderLayer = doc->layersView().byId(to->layer);
     if (!leaderLayer)
         return QString();
     return QStringLiteral("\u2192 ")  // → <层名>
          + leaderLayer->name;
 }
 
-} // namespace cad::tools
+} // namespace cad::ui

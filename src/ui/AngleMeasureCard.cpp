@@ -18,8 +18,9 @@ AngleMeasureCard::AngleMeasureCard(const cad::param::AngleMeasureVariable& am,
                                    bool alternate, QWidget* parent)
     : CardBase(alternate, parent)
     , m_id(am.id)
-    , m_refName(am.refName)
+     , m_refName(am.refName)
 {
+    setAccentRole(cad::ui::CardAccent::Measure);  // 角度测量 = 陶土竖线 (方案 A)
     setupUi(am, sourceLabel);
 }
 
@@ -60,11 +61,7 @@ void AngleMeasureCard::syncFromModel(const cad::param::AngleMeasureVariable& am,
     m_refName = am.refName;
     m_refChip->setText(am.refName);
     m_sourceInfo->setText(sourceLabel);
-    if (!m_commentEdit->hasFocus()) {
-        m_commentEdit->blockSignals(true);
-        m_commentEdit->setText(am.comment);
-        m_commentEdit->blockSignals(false);
-    }
+    setCommentSilently(am.comment);
     refreshValue(am.value, am.dangling);
 }
 

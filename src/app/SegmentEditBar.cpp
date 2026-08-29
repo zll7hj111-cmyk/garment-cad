@@ -1,4 +1,4 @@
-﻿#include "SegmentEditBar.h"
+#include "SegmentEditBar.h"
 
 #include <cmath>
 
@@ -20,33 +20,24 @@
 #include "parametric/ConditionEngine.h"
 #include "parametric/MeasureVariable.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
 #include "document/commands/BlockCommands.h"
 
 namespace cad::app {
-
-namespace {
-
-/// Normalize an angle to [0, 360°) for display (存储保持原值, 显示不爆表).
-double normalizeDeg(double deg)
-{
-    deg = std::fmod(deg, 360.0);
-    if (deg < 0.0) deg += 360.0;
-    return deg;
-}
-
-} // namespace
 
 SegmentEditBar::SegmentEditBar(cad::param::ParamDocument* paramDoc, QWidget* parent)
     : QWidget(parent)
     , m_paramDoc(paramDoc)
 {
     auto* lay = new QHBoxLayout(this);
-    lay->setContentsMargins(0, 0, 6, 0);
+    lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(6);
 
+    // 串号徽章 (§5.3 serial 标签): 等宽 10px, 墨底 + accent 黄字 (图纸编号感)。
+    // 配色走全局 QSS (QLabel#serialBadge, 主题切换免手动刷新)。
     m_idLabel = new ElaText(QString(), 12, this);
-    m_idLabel->setObjectName(QStringLiteral("accentText"));
-    m_idLabel->setStyleSheet(QStringLiteral("%1 font-weight: bold;")
+    m_idLabel->setObjectName(QStringLiteral("serialBadge"));
+    m_idLabel->setStyleSheet(QStringLiteral("%1 font-size: 11px;")
                                  .arg(cad::ui::ThemeTokens::kMonospaceFamily));
     lay->addWidget(m_idLabel);
 
@@ -86,6 +77,11 @@ SegmentEditBar::SegmentEditBar(cad::param::ParamDocument* paramDoc, QWidget* par
     lay->addWidget(m_angleEdit);
 
     lay->addStretch();
+
+    // 右端常驻快捷键提示 (§4.6): 替代隐式约定。
+    auto* hint = new ElaText(QString::fromUtf8("Esc 撤销创建 · Enter 确认"), 12, this);
+    hint->setObjectName(QStringLiteral("dimText"));
+    lay->addWidget(hint);
 
     // Name applies immediately; length/angle use a 200 ms debounce plus an
     // immediate apply on Enter/focus-loss (same pattern as LinePropertyDialog).
@@ -182,7 +178,7 @@ void SegmentEditBar::showPreview(double lenCm, double angleDeg)
     m_lenEdit->setReadOnly(true);
     m_angleEdit->setReadOnly(true);
     m_lenEdit->setText(QString::number(lenCm, 'f', 2));
-    m_angleEdit->setText(QString::number(normalizeDeg(angleDeg), 'f', 1));
+    m_angleEdit->setText(QString::number(cad::geo::normalizeDeg360(angleDeg), 'f', 1));
     show();
 }
 
@@ -222,15 +218,14 @@ void SegmentEditBar::applyLength()
     if (!ep) return;
 
     cad::cmd::SegmentEditBarCommand::State st = snapshotState();
-    bool isNumber = false;
-    const double numCm = text.toDouble(&isNumber);
-    if (isNumber) {
+    const auto parsed = cad::geo::parseNumberOrFormula(text);
+    if (parsed.isNumber) {
         st.lengthFormula.clear();
         st.endDistanceFormula.clear();
-        st.endDistance = cad::geo::Units::cmToMm(numCm);
+        st.endDistance = cad::geo::Units::cmToMm(parsed.value);
     } else {
-        st.lengthFormula = text;
-        st.endDistanceFormula = text;
+        st.lengthFormula = parsed.formula;
+        st.endDistanceFormula = parsed.formula;
     }
     commitState(std::move(st));
 }
@@ -245,14 +240,13 @@ void SegmentEditBar::applyAngle()
     // Bridge lines are passive — never rewrite their angle (see applyLength).
     if (!seg->lengthFormula.isEmpty()) return;
 
-    const QString text = m_angleEdit->text().trimmed();
-    if (text.isEmpty()) return;
+    const auto parsed = cad::geo::parseNumberOrFormula(m_angleEdit->text());
+    if (parsed.formula.isEmpty()) return;
 
-    bool isNumber = false;
-    double targetDeg = text.toDouble(&isNumber);
-    if (!isNumber) {
+    double targetDeg = parsed.value;
+    if (!parsed.isNumber) {
         auto r = cad::param::ConditionEngine::evaluate(
-            text, m_paramDoc->parameters(), {});
+            parsed.formula, m_paramDoc->parameters(), {});
         if (!r.ok) return;
         targetDeg = r.value;
     }
@@ -266,10 +260,10 @@ void SegmentEditBar::applyAngle()
         st.attId = att->id;
         if (att->rotationMode == cad::param::RotationMode::ArcLength) {
             st.arcLength = cad::geo::Units::cmToMm(targetDeg);
-            st.arcLengthFormula = isNumber ? QString() : text;
+            st.arcLengthFormula = parsed.isNumber ? QString() : parsed.formula;
         } else {
             st.followerAngle = targetDeg;
-            st.followerAngleFormula = isNumber ? QString() : text;
+            st.followerAngleFormula = parsed.isNumber ? QString() : parsed.formula;
         }
         commitState(std::move(st));
         return;
@@ -293,10 +287,10 @@ void SegmentEditBar::applyAngle()
     const double rotDeg = block->transform.rotation * 180.0 / M_PI;
     st.endAngle = targetDeg - rotDeg;
     st.endAngleFormula.clear();
-    if (!isNumber) {
+    if (!parsed.isNumber) {
         st.endAngleFormula = (std::abs(rotDeg) > 1e-9)
-            ? QStringLiteral("(%1)-%2").arg(text).arg(rotDeg, 0, 'g', 12)
-            : text;
+            ? QStringLiteral("(%1)-%2").arg(parsed.formula).arg(rotDeg, 0, 'g', 12)
+            : parsed.formula;
     }
     commitState(std::move(st));
 }
@@ -406,7 +400,7 @@ void SegmentEditBar::refreshFields()
                 : att->arcLengthFormula);
         } else {
             m_angleEdit->setText(att->followerAngleFormula.isEmpty()
-                ? QString::number(normalizeDeg(att->followerAngle), 'f', 1)
+                ? QString::number(cad::geo::normalizeDeg360(att->followerAngle), 'f', 1)
                 : att->followerAngleFormula);
         }
     } else if (ep) {
@@ -415,7 +409,7 @@ void SegmentEditBar::refreshFields()
         } else {
             const double rotDeg = block->transform.rotation * 180.0 / M_PI;
             m_angleEdit->setText(
-                QString::number(normalizeDeg(ep->angle + rotDeg), 'f', 1));
+                QString::number(cad::geo::normalizeDeg360(ep->angle + rotDeg), 'f', 1));
         }
     } else {
         m_angleEdit->clear();

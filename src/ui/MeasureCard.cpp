@@ -21,6 +21,7 @@ MeasureCard::MeasureCard(const cad::param::MeasureVariable& mv,
     , m_refName(mv.refName)
     , m_kind(mv.kind)
 {
+    setAccentRole(cad::ui::CardAccent::Measure);  // 测量 = 陶土竖线 (方案 A)
     setupUi(mv, sourceLabel);
 }
 
@@ -83,11 +84,7 @@ void MeasureCard::syncFromModel(const cad::param::MeasureVariable& mv,
     m_refChip->setText(mv.refName);
     m_kind = mv.kind;  // 虚拟化复用: 同一实例可被不同模式的测量行复用
     m_sourceInfo->setText(sourceLabel);
-    if (!m_commentEdit->hasFocus()) {
-        m_commentEdit->blockSignals(true);
-        m_commentEdit->setText(mv.comment);
-        m_commentEdit->blockSignals(false);
-    }
+    setCommentSilently(mv.comment);
     refreshValue(mv.value, mv.dangling);
 }
 
@@ -121,6 +118,7 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     spec.commentText     = mv.comment;
     spec.refName         = mv.refName;
     spec.refChipWidth    = 72;
+    spec.unit            = QStringLiteral("cm");
 
     buildReadOnlySkeleton(spec,
         [this]() { emit deleteRequested(m_id); },

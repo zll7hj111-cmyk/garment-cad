@@ -7,7 +7,6 @@
 class ElaScrollArea;
 class QVBoxLayout;
 class ElaText;
-class QUndoStack;
 class QFrame;
 class QToolButton;
 
@@ -32,8 +31,6 @@ class LayerPanel : public QWidget
 
 public:
     explicit LayerPanel(cad::param::ParamDocument* doc, QWidget* parent = nullptr);
-
-    void setUndoStack(QUndoStack* stack) { m_undoStack = stack; }
 
     /// Rebuild theme-token driven styles after a theme change (light/dark).
     void applyTheme();
@@ -70,7 +67,6 @@ private:
     void startRename(int layerIndex, ElaText* nameLabel);
 
     cad::param::ParamDocument* m_doc = nullptr;
-    QUndoStack* m_undoStack = nullptr;
 
     ElaScrollArea* m_scroll    = nullptr;
     QWidget*     m_container = nullptr;

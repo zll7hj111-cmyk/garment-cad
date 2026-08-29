@@ -155,7 +155,12 @@ void TestSegmentEditBar::nameEditApplies()
 
     nameEdit->setText(QString::fromUtf8("肩线"));
     nameEdit->setFocus();
-    QTest::qWait(10);
+    // 断言"值变了"(名称写入模型): 谓词 = 该断言本身。
+    QVERIFY2(cad::test::waitUntil([&] {
+        const auto* bb = doc.findBlock(l.blockId);
+        return bb && bb->findSegment(l.segId)
+               && bb->findSegment(l.segId)->name == QString::fromUtf8("肩线");
+    }), "名称应经 SegmentEditBar 应用到模型");
 
     const auto* b = doc.findBlock(l.blockId);
     QCOMPARE(b->findSegment(l.segId)->name, QString::fromUtf8("肩线"));
@@ -174,7 +179,17 @@ void TestSegmentEditBar::lengthEditApplies()
     QVERIFY(lenEdit);
     lenEdit->setText(QStringLiteral("25"));
     emit lenEdit->editingFinished();
-    QTest::qWait(10);
+    // P2-3: wait for the applied value instead of sleeping 10 ms — the write
+    // goes through a command + resolve, which is not guaranteed to have
+    // finished when editingFinished() returns.
+    const QUuid blockId = l.blockId;
+    const QUuid endId   = l.endId;
+    QVERIFY2(cad::test::waitUntil([&] {
+                 auto* bb = doc.findBlock(blockId);
+                 auto* e  = bb ? bb->findPoint(endId) : nullptr;
+                 return e && std::abs(e->distance - cad::geo::Units::cmToMm(25.0)) < 1e-9;
+             }),
+             "timed out waiting for the length edit to reach the model");
 
     auto* b = doc.findBlock(l.blockId);
     const auto* ep = b->findPoint(l.endId);
@@ -195,7 +210,15 @@ void TestSegmentEditBar::angleEditApplies()
     QVERIFY(angleEdit);
     angleEdit->setText(QStringLiteral("90"));
     emit angleEdit->editingFinished();
-    QTest::qWait(10);
+    // P2-3: condition wait instead of a 10 ms sleep (see lengthEditApplies).
+    const QUuid blockId = l.blockId;
+    const QUuid endId   = l.endId;
+    QVERIFY2(cad::test::waitUntil([&] {
+                 auto* bb = doc.findBlock(blockId);
+                 auto* e  = bb ? bb->findPoint(endId) : nullptr;
+                 return e && std::abs(e->angle - 90.0) < 1e-9;
+             }),
+             "timed out waiting for the angle edit to reach the model");
 
     auto* b = doc.findBlock(l.blockId);
     const auto* ep = b->findPoint(l.endId);
@@ -225,7 +248,15 @@ void TestSegmentEditBar::followerAngleEditApplies()
     QVERIFY(angleEdit);
     angleEdit->setText(QStringLiteral("45"));
     emit angleEdit->editingFinished();
-    QTest::qWait(10);
+    // P2-3: condition wait instead of a 10 ms sleep.
+    QVERIFY2(cad::test::waitUntil([&] {
+                 for (const auto& x : doc.attachments())
+                     if (x.fromBlockId == follower.blockId
+                         && std::abs(x.followerAngle - 45.0) < 1e-9)
+                         return true;
+                 return false;
+             }),
+             "timed out waiting for the follower angle edit to reach the model");
 
     const Attachment* a = nullptr;
     for (const auto& x : doc.attachments())
@@ -260,7 +291,10 @@ void TestSegmentEditBar::multiLineFollowerAttachedToOtherLine()
     QVERIFY(angleEdit);
     angleEdit->setText(QStringLiteral("30"));
     emit angleEdit->editingFinished();
-    QTest::qWait(10);
+    // P2-3: this test asserts that NOTHING happened (editing seg2 must not
+    // disturb the attachment on seg1), so there is no state to wait FOR —
+    // settle() drains the event loop instead of guessing a duration.
+    cad::test::settle();
 
     const Attachment* a2 = nullptr;
     for (const auto& x : doc.attachments())
@@ -276,7 +310,15 @@ void TestSegmentEditBar::multiLineFollowerAttachedToOtherLine()
     bar.showForLine(a.blockId, a.seg1Id);
     angleEdit->setText(QStringLiteral("45"));
     emit angleEdit->editingFinished();
-    QTest::qWait(10);
+    // P2-3: condition wait instead of a 10 ms sleep.
+    QVERIFY2(cad::test::waitUntil([&] {
+                 for (const auto& x : doc.attachments())
+                     if (x.fromBlockId == a.blockId
+                         && std::abs(x.followerAngle - 45.0) < 1e-9)
+                         return true;
+                 return false;
+             }),
+             "timed out waiting for the re-edited follower angle to apply");
 
     for (const auto& x : doc.attachments())
         if (x.fromBlockId == a.blockId) { a2 = &x; break; }
@@ -308,10 +350,16 @@ void TestSegmentEditBar::multiLineUndoRestoresOwnLine()
     QVERIFY(angleEdit);
     angleEdit->setText(QStringLiteral("30"));
     emit angleEdit->editingFinished();
+    // editingFinished 直发同步应用; 中间态未断言、无谓词可取, 暂留排空。
     QTest::qWait(10);
 
     stack.undo();
-    QTest::qWait(10);
+    // 断言"值变了"(undo 恢复构建角): 谓词 = 该断言本身。
+    QVERIFY2(cad::test::waitUntil([&] {
+        const auto* bb = doc.findBlock(a.blockId);
+        return bb && bb->findPoint(a.p2)
+               && std::abs(bb->findPoint(a.p2)->angle - 90.0) < 1e-9;
+    }), "undo 应恢复构建角 90°");
 
     auto* b = doc.findBlock(a.blockId);
     const auto* ep2 = b->findPoint(a.p2);

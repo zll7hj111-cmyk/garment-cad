@@ -967,7 +967,7 @@ void TestAuxLayer::lockedDragMovesWholePair()
     tm.setParamDocument(&doc);
     QUndoStack stack;
     tm.setUndoStack(&stack);
-    view.setToolManager(&tm);
+    view.setInputDispatcher(&tm);
 
     auto vp = [&](double x, double y) {
         return view.mapFromScene(QPointF(x, -y));
@@ -979,6 +979,8 @@ void TestAuxLayer::lockedDragMovesWholePair()
                        btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton,
                        mods);
         QApplication::sendEvent(view.viewport(), &ev);
+        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
 
@@ -1043,7 +1045,7 @@ void TestAuxLayer::dragLeaderKeepsFollower()
     tm.setParamDocument(&doc);
     QUndoStack stack;
     tm.setUndoStack(&stack);
-    view.setToolManager(&tm);
+    view.setInputDispatcher(&tm);
 
     auto vp = [&](double x, double y) {
         return view.mapFromScene(QPointF(x, -y));
@@ -1055,6 +1057,8 @@ void TestAuxLayer::dragLeaderKeepsFollower()
                        btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton,
                        mods);
         QApplication::sendEvent(view.viewport(), &ev);
+        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
 

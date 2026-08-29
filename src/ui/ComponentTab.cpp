@@ -1,4 +1,4 @@
-#include "ComponentTab.h"
+﻿#include "ComponentTab.h"
 
 #include <QScrollArea>
 #include <QVBoxLayout>
@@ -24,6 +24,7 @@
 #include "parametric/ConditionEngine.h"
 #include "document/commands/ComponentCommands.h"
 #include "ui/Theme.h"
+#include "ui/FormScaffold.h"
 
 namespace cad::ui {
 
@@ -93,8 +94,9 @@ void ComponentTab::applyTheme()
         c->setStyleSheet(containerQss);
 
     // 卡片: 圆角 + 凹陷表面 (surface2 区别于画布纸色底), 紧凑操作按钮.
+    // 圆角纪律 (ui-redesign §07): 功能圆角上限 4px, 原 6px 钳到 4。
     const QString cardQss = QStringLiteral(
-        "QWidget#componentCard { background: %1; border-radius: 6px; }"
+        "QWidget#componentCard { background: %1; border-radius: 4px; }"
         "QPushButton#componentActionBtn {"
         "  background: %2; border: 1px solid %3; border-radius: 4px;"
         "  padding: 2px 8px; font-size: 11px;"
@@ -144,13 +146,13 @@ void ComponentTab::rebuild()
         h->setContentsMargins(0, 0, 0, 0);
         h->setSpacing(0);
 
-        // 左侧竖线 (蓝/橙按行交替, 与卡片体系一致).
+        // 左侧竖线 = 组件类型色 piece1 碳灰 (方案 A: 竖线标类型, 不再蓝橙交替).
         auto* bar = new QFrame(card);
         bar->setObjectName(QStringLiteral("componentCardBar"));
         bar->setFixedWidth(3);
         bar->setStyleSheet(QStringLiteral(
             "background: %1; border: none; border-radius: 1px;")
-            .arg((index % 2 == 0 ? tok.rowEven : tok.rowOdd).name()));
+            .arg(tok.piece1.name()));
         h->addWidget(bar);
 
         auto* body = new QWidget(card);
@@ -180,7 +182,7 @@ void ComponentTab::rebuild()
         auto* origLabel = new QLabel(QStringLiteral("原始角"), body);
         auto* origEdit = new ElaLineEdit(body);
         origEdit->setMinimumWidth(76);
-        origEdit->setPlaceholderText(QStringLiteral("数值(°)或公式"));
+        origEdit->setPlaceholderText(kPlaceholderAngleOrFormula);
         origEdit->setToolTip(QStringLiteral("组的原始角度（「回正」的目标），可填数值或公式"));
         origEdit->setText(c.defaultAngleFormula.isEmpty()
             ? QString::number(cad::geo::normalizeDeg360(c.defaultAngleDeg), 'f', 1)
@@ -209,7 +211,7 @@ void ComponentTab::rebuild()
         auto* dockLabel = new QLabel(QStringLiteral("对接角"), body);
         auto* dockEdit = new ElaLineEdit(body);
         dockEdit->setMinimumWidth(76);
-        dockEdit->setPlaceholderText(QStringLiteral("数值(°)或公式"));
+        dockEdit->setPlaceholderText(kPlaceholderAngleOrFormula);
         dockEdit->setEnabled(false);
         dockEdit->setToolTip(QStringLiteral("组对接外部线的跟随角（0°=折叠、180°=沿外部线直行），可填数值或公式"));
         auto* dockFx = new ElaText(
@@ -275,7 +277,7 @@ void ComponentTab::rebuild()
         const QUuid compId = c.id;
 
         connect(name, &QLineEdit::editingFinished, this, [this, compId, name]() {
-            const auto* comp = m_doc->findComponent(compId);
+            const auto* comp = m_doc->componentsView().byId(compId);
             if (!comp || comp->name == name->text())
                 return;
             if (m_undoStack)
@@ -285,7 +287,7 @@ void ComponentTab::rebuild()
         });
 
         connect(bbox, &QCheckBox::toggled, this, [this, compId](bool on) {
-            const auto* comp = m_doc->findComponent(compId);
+            const auto* comp = m_doc->componentsView().byId(compId);
             if (!comp || comp->showBoundingBox == on)
                 return;
             if (m_undoStack)
@@ -295,7 +297,7 @@ void ComponentTab::rebuild()
 
         connect(origEdit, &ElaLineEdit::editingFinished, this,
                 [this, compId, origEdit]() {
-                    const auto* comp = m_doc->findComponent(compId);
+                    const auto* comp = m_doc->componentsView().byId(compId);
                     if (!comp) return;
                     const QString text = origEdit->text().trimmed();
                     bool isNum = false;
@@ -344,7 +346,7 @@ void ComponentTab::rebuild()
         });
 
         connect(delBtn, &QPushButton::clicked, this, [this, compId]() {
-            const auto* comp = m_doc->findComponent(compId);
+            const auto* comp = m_doc->componentsView().byId(compId);
             if (!comp) return;
             const auto ret = QMessageBox::question(
                 this, QStringLiteral("删除组件"),

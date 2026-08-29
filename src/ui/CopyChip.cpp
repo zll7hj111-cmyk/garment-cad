@@ -5,6 +5,7 @@
 #include "Theme.h"
 #include <QVBoxLayout>
 #include <QClipboard>
+#include <QSignalBlocker>
 #include <QApplication>
 #include <QStyle>
 #include <QTimer>
@@ -109,10 +110,9 @@ CopyChip::CopyChip(Variant variant, QWidget* parent)
             const QString up = text.toUpper();
             if (up != text) {
                 const int cursor = m_edit->cursorPosition();
-                m_edit->blockSignals(true);
+                const QSignalBlocker blocker(m_edit);
                 m_edit->setText(up);
                 m_edit->setCursorPosition(cursor);
-                m_edit->blockSignals(false);
             }
         });
     }

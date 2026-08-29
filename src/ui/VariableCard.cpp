@@ -30,8 +30,9 @@ public:
 VariableCard::VariableCard(const cad::param::Variable& var, bool alternate,
                            QWidget* parent)
     : CardBase(alternate, parent)
-    , m_id(var.id)
+     , m_id(var.id)
 {
+    setAccentRole(cad::ui::CardAccent::Variable);  // 变量 = 碳灰竖线 (方案 A)
     setupUi(var);
 }
 
@@ -60,9 +61,7 @@ void VariableCard::syncFromModel(const cad::param::Variable& var)
         m_valueSpin->setValue(cad::geo::Units::mmToCm(var.value));
         m_valueSpin->blockSignals(false);
     }
-    m_commentEdit->blockSignals(true);
-    m_commentEdit->setText(var.comment);
-    m_commentEdit->blockSignals(false);
+    setCommentSilently(var.comment);
     updateValueLabel();
 }
 
@@ -92,6 +91,7 @@ void VariableCard::setupUi(const cad::param::Variable& var)
                                      QStringLiteral("名称"), var.name), 1);
 
     header->addWidget(createValueLabel(), 0);
+    header->addWidget(createUnitLabel(QStringLiteral("cm")), 0);  // §4.3 值第一焦点, 单位退居 10px
 
     appendDeleteButton(header, QStringLiteral("删除变量"));
 

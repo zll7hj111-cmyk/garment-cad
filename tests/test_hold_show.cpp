@@ -36,9 +36,10 @@ int renderNonWhitePixels(CanvasScene& scene, const QString& dumpPath = {})
     QGraphicsView view(&scene);
     view.resize(800, 600);
     view.show();
-    QTest::qWaitForWindowExposed(&view);
-    QTest::qWait(30);
-    QImage img = view.grab().toImage();
+    QTest::qWaitForWindowExposed(&view);   // no QVERIFY: non-void helper
+    // P2-3: 等到视图真的画完再抓帧（旧的固定 30ms sleep 在负载下会抓到半帧
+    // / 空白, 让下面所有像素断言假失败 —— 整批 ctest 抖动的来源之一）。
+    QImage img = cad::test::grabStable(view);
     view.hide();
     if (!dumpPath.isEmpty())
         img.save(dumpPath);

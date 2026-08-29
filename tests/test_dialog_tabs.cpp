@@ -1,6 +1,7 @@
 ﻿#include <QtTest>
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QFrame>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QTabBar>
@@ -14,15 +15,15 @@
 #include "parametric/Segment.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasView.h"
-#include "tools/LinePropertyDialog.h"
-#include "tools/PointRefEdit.h"
-#include "tools/SegmentAuxTab.h"
-#include "tools/SegmentExtendCard.h"
-#include "tools/SegmentConnectionCard.h"
+#include "ui/LinePropertyDialog.h"
+#include "ui/PointRefEdit.h"
+#include "ui/SegmentAuxTab.h"
+#include "ui/SegmentExtendCard.h"
+#include "ui/SegmentConnectionCard.h"
 #include "ElaComboBox.h"
 #include "ElaPushButton.h"
 #include "ElaLineEdit.h"
-#include "tools/AuxPointForm.h"
+#include "ui/AuxPointForm.h"
 #include "ElaScrollPageArea.h"
 #include "ElaText.h"
 #include "TestHelpers.h"
@@ -45,8 +46,8 @@ private slots:
     void switchBackWithoutEditing();   ///< control: no editing, no focus
     void switchBackLargeDoc();         ///< heavy document: freeze magnitude
     void probeTabHitArea();            ///< which widget owns the tab-bar pixels
-    void probeCardTitleColor();        ///< why card titles look washed out (像素探针)
-    void extendAppearSideBySide();     ///< 延长|外观 双气泡并排 (用户 2026-12 要求)
+    void probeCardTitleColor();        ///< why section titles look washed out (像素探针)
+    void endpointCardsSideBySide();    ///< 端点 起点|终点 双微卡并排 (2026-12 去卡框化布局)
     void connectCardUniformHeights();  ///< 连接卡行内控件统一高度/宽度 (用户 2026-12 反馈)
 };
 
@@ -78,7 +79,7 @@ void setup(ParamDocument& doc, CanvasScene& scene, LineSetup& line)
     line = makeLine(doc, 60.0);
 }
 
-QLineEdit* percentEditOf(cad::tools::AuxPointForm* form)
+QLineEdit* percentEditOf(cad::ui::AuxPointForm* form)
 {
     for (auto* e : form->findChildren<QLineEdit*>())
         if (e->placeholderText().contains(QLatin1String("0.5")))
@@ -105,10 +106,13 @@ void TestDialogTabs::switchBackAfterTyping()
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
-    auto* dlg = new cad::tools::LinePropertyDialog(
+    auto* dlg = new cad::ui::LinePropertyDialog(
         line.blockId, line.segId, &doc, &scene, &view);
     dlg->show();
-    QTest::qWait(80);
+    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
+    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
+             "timed out waiting for QTabWidget* to appear");
     auto* tabs = dlg->findChild<QTabWidget*>();
     QVERIFY(tabs);
     QCOMPARE(tabs->count(), 4);
@@ -124,7 +128,7 @@ void TestDialogTabs::switchBackAfterTyping()
     // Select the aux list item → edit form becomes visible. The list lives in
     // the aux tab PAGE, which QTabWidget reparents into its internal
     // QStackedWidget — locate it via the page (widget(2)) ancestor chain.
-    auto* auxTab = dlg->findChild<cad::tools::SegmentAuxTab*>();
+    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
     QVERIFY(auxTab);
     QListWidget* list = nullptr;
     for (auto* w : dlg->findChildren<QListWidget*>())
@@ -137,9 +141,11 @@ void TestDialogTabs::switchBackAfterTyping()
     QCOMPARE(list->count(), 1);
     QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
                       list->visualItemRect(list->item(0)).center());
-    QTest::qWait(20);
-
-    auto* form = dlg->findChild<cad::tools::AuxPointForm*>();
+    // P2-3: 等子控件出现而不是固定 sleep 20ms（负载下会让下面
+    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<cad::ui::AuxPointForm*>() != nullptr; }),
+             "timed out waiting for cad::ui::AuxPointForm* to appear");
+    auto* form = dlg->findChild<cad::ui::AuxPointForm*>();
     QVERIFY(form);
     QVERIFY(form->isVisible());
     QLineEdit* percentEdit = percentEditOf(form);
@@ -157,9 +163,29 @@ void TestDialogTabs::switchBackAfterTyping()
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
                       tabs->tabBar()->tabRect(0).center());
     const qint64 msBack = t1.elapsed();
+
+    // P2-3: this is where the ctest flake lived. The typed value is applied on
+    // FOCUS LOSS and the apply path is debounced (SegmentAuxTab's live-update
+    // timer) -- it is NOT guaranteed to have run by the time mouseClick()
+    // returns. Asserting immediately made the test measure how busy the machine
+    // was instead of whether the feature works: on a loaded box the debounce
+    // had not fired yet and a healthy dialog looked broken.
+    QVERIFY2(cad::test::waitUntil([&] { return tabs->currentIndex() == 0; }),
+             "timed out waiting for the tab switch back to 属性");
     QCOMPARE(tabs->currentIndex(), 0);
 
-    // The typed value must have been applied on focus loss
+    const QUuid blockId = line.blockId;
+    const QUuid segId   = line.segId;
+    QVERIFY2(cad::test::waitUntil([&] {
+                 auto* b = doc.findBlock(blockId);
+                 if (!b) return false;
+                 auto* s = b->findSegment(segId);
+                 if (!s || s->auxPointIds.empty()) return false;
+                 auto* p = b->findPoint(s->auxPointIds.front());
+                 return p && std::abs(p->interpPercent - 0.6) < 1e-9;
+             }),
+             "timed out waiting for the typed interpPercent to be applied");
+
     auto* blk = doc.findBlock(line.blockId);
     auto* seg = blk->findSegment(line.segId);
     auto* pt = blk->findPoint(seg->auxPointIds.front());
@@ -245,10 +271,13 @@ void TestDialogTabs::switchBackLargeDoc()
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
-    auto* dlg = new cad::tools::LinePropertyDialog(
+    auto* dlg = new cad::ui::LinePropertyDialog(
         target.blockId, target.segId, &doc, &scene, &view);
     dlg->show();
-    QTest::qWait(80);
+    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
+    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
+             "timed out waiting for QTabWidget* to appear");
     auto* tabs = dlg->findChild<QTabWidget*>();
     QVERIFY(tabs);
 
@@ -268,8 +297,11 @@ void TestDialogTabs::switchBackLargeDoc()
     QCOMPARE(list->count(), 5);
     QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
                       list->visualItemRect(list->item(0)).center());
-    QTest::qWait(20);
-    auto* form = dlg->findChild<cad::tools::AuxPointForm*>();
+    // P2-3: 等子控件出现而不是固定 sleep 20ms（负载下会让下面
+    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<cad::ui::AuxPointForm*>() != nullptr; }),
+             "timed out waiting for cad::ui::AuxPointForm* to appear");
+    auto* form = dlg->findChild<cad::ui::AuxPointForm*>();
     QVERIFY(form && form->isVisible());
     QLineEdit* percentEdit = percentEditOf(form);
     QVERIFY(percentEdit);
@@ -303,10 +335,13 @@ void TestDialogTabs::probeTabHitArea()
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
-    auto* dlg = new cad::tools::LinePropertyDialog(
+    auto* dlg = new cad::ui::LinePropertyDialog(
         line.blockId, line.segId, &doc, &scene, &view);
     dlg->show();
-    QTest::qWait(80);
+    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
+    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
+             "timed out waiting for QTabWidget* to appear");
     auto* tabs = dlg->findChild<QTabWidget*>();
     QVERIFY(tabs);
     auto* bar = tabs->tabBar();
@@ -315,7 +350,7 @@ void TestDialogTabs::probeTabHitArea()
     qInfo() << "[hit] dlg geo:" << dlg->geometry()
             << "tabs geo:" << tabs->geometry()
             << "tabbar geo:" << bar->geometry();
-    auto* auxTab = dlg->findChild<cad::tools::SegmentAuxTab*>();
+    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
     QVERIFY(auxTab);
 
     auto widgetAt = [&](int tabIdx, int yFrac) {
@@ -428,10 +463,13 @@ void TestDialogTabs::switchBackWithoutEditing()
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
-    auto* dlg = new cad::tools::LinePropertyDialog(
+    auto* dlg = new cad::ui::LinePropertyDialog(
         line.blockId, line.segId, &doc, &scene, &view);
     dlg->show();
-    QTest::qWait(80);
+    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
+    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
+             "timed out waiting for QTabWidget* to appear");
     auto* tabs = dlg->findChild<QTabWidget*>();
     QVERIFY(tabs);
 
@@ -453,8 +491,8 @@ void TestDialogTabs::switchBackWithoutEditing()
     delete dlg;
 }
 
-/// 像素探针: 卡片标题为什么"掉色" (用户报告 2026-?)。对比 基本信息 标题
-/// 与 名称: 标签的真实渲染 (grab 最暗像素) + QSS 解析后的调色板。
+/// 像素探针: 分区标题为什么"掉色" (用户报告 2026-?)。对比 几何 分区标题
+/// 与 长度 标签的真实渲染 (grab 最暗像素) + QSS 解析后的调色板。
 void TestDialogTabs::probeCardTitleColor()
 {
     ParamDocument doc;
@@ -468,10 +506,10 @@ void TestDialogTabs::probeCardTitleColor()
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
-    auto* dlg = new cad::tools::LinePropertyDialog(
+    auto* dlg = new cad::ui::LinePropertyDialog(
         line.blockId, line.segId, &doc, &scene, &view);
     dlg->show();
-    QTest::qWait(150);   // 等待 polish + 首次 paint (ElaText::paintEvent 重置 palette)
+    cad::test::grabStable(*dlg);   // 等待 polish + 首次 paint: 两帧一致 = 已绘制 (替代 150ms 墙钟)
 
     auto dump = [](const QString& tag, ElaText* t) {
         if (!t) { qInfo().noquote() << tag << "= null"; return; }
@@ -495,18 +533,19 @@ void TestDialogTabs::probeCardTitleColor()
     };
 
     for (auto* t : dlg->findChildren<ElaText*>()) {
-        if (t->text() == QString::fromUtf8("基本信息"))
-            dump(QStringLiteral("TITLE-基本信息"), t);
-        if (t->text() == QString::fromUtf8("名称:"))
-            dump(QStringLiteral("LABEL-名称"), t);
+        if (t->text() == QString::fromUtf8("几何"))
+            dump(QStringLiteral("TITLE-几何"), t);
+        if (t->text() == QString::fromUtf8("长度"))
+            dump(QStringLiteral("LABEL-长度"), t);
     }
     delete dlg;
 }
 
-/// 回归：延长|外观 双气泡并排 (用户 2026-12: "外观和延长能不能像下面那个
-/// 起点和终点一样，左右各一个气泡")。两卡必须在同一行、等高、左右相邻
-/// (延长在左、外观在右)。
-void TestDialogTabs::extendAppearSideBySide()
+/// 回归：端点 起点|终点 双微卡并排 (2026-12 去卡框化重设计: 原「延长|外观」
+/// 并排契约随布局重构迁移 —— 延长并入几何分区行组, 外观成独立分区; 「左右
+/// 各一个气泡」的语义由端点双微卡继承)。两卡必须在同一行、等高、左右相邻
+/// (起点在左、终点在右); 延长行组仍在属性页可见。
+void TestDialogTabs::endpointCardsSideBySide()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -519,43 +558,54 @@ void TestDialogTabs::extendAppearSideBySide()
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
-    auto* dlg = new cad::tools::LinePropertyDialog(
+    auto* dlg = new cad::ui::LinePropertyDialog(
         line.blockId, line.segId, &doc, &scene, &view);
     dlg->show();
-    QTest::qWait(120);   // 等布局/滚动区几何落定
 
-    auto* extCard = dlg->findChild<cad::tools::SegmentExtendCard*>(
-        QStringLiteral("extendCard"));
-    auto* appearCard = dlg->findChild<ElaScrollPageArea*>(
-        QStringLiteral("appearCard"));
-    QVERIFY(extCard);
-    QVERIFY(appearCard);
-    QVERIFY(extCard->isVisibleTo(dlg));
-    QVERIFY(appearCard->isVisibleTo(dlg));
+    auto* startCard = dlg->findChild<QFrame*>(QStringLiteral("startPointCard"));
+    auto* endCard = dlg->findChild<QFrame*>(QStringLiteral("endPointCard"));
+    QVERIFY(startCard);
+    QVERIFY(endCard);
+    QVERIFY(startCard->isVisibleTo(dlg));
+    QVERIFY(endCard->isVisibleTo(dlg));
+    // 布局落定 = 双微卡到达最终几何 (同行为主判据); waitUntil 等待, 已落定时立即返回。
+    QVERIFY2(cad::test::waitUntil([&] {
+        const QRect a(startCard->mapTo(dlg, QPoint(0, 0)), startCard->size());
+        const QRect b(endCard->mapTo(dlg, QPoint(0, 0)), endCard->size());
+        return std::abs(a.top() - b.top()) <= 1
+               && std::abs(a.height() - b.height()) <= 1
+               && a.right() < b.left();
+    }), "端点双微卡布局未落定");
 
-    const QRect gE(extCard->mapTo(dlg, QPoint(0, 0)), extCard->size());
-    const QRect gA(appearCard->mapTo(dlg, QPoint(0, 0)), appearCard->size());
+    const QRect gS(startCard->mapTo(dlg, QPoint(0, 0)), startCard->size());
+    const QRect gE(endCard->mapTo(dlg, QPoint(0, 0)), endCard->size());
 
     // 同一行、等高 (QHBoxLayout 垂直拉伸), 1px 舍入容差。
-    QVERIFY2(std::abs(gE.top() - gA.top()) <= 1,
+    QVERIFY2(std::abs(gS.top() - gE.top()) <= 1,
              qPrintable(QStringLiteral(
-                 "extend/appear cards must share the same row "
-                 "(ext top %1, appear top %2)").arg(gE.top()).arg(gA.top())));
-    QVERIFY2(std::abs(gE.height() - gA.height()) <= 1,
+                 "endpoint cards must share the same row "
+                 "(start top %1, end top %2)").arg(gS.top()).arg(gE.top())));
+    QVERIFY2(std::abs(gS.height() - gE.height()) <= 1,
              qPrintable(QStringLiteral(
-                 "extend/appear cards must have equal heights "
-                 "(ext %1, appear %2)").arg(gE.height()).arg(gA.height())));
-    // 左右相邻: 延长在左、外观在右, 不重叠。
-    QVERIFY2(gE.right() < gA.left(),
+                 "endpoint cards must have equal heights "
+                 "(start %1, end %2)").arg(gS.height()).arg(gE.height())));
+    // 左右相邻: 起点在左、终点在右, 不重叠。
+    QVERIFY2(gS.right() < gE.left(),
              qPrintable(QStringLiteral(
-                 "extend card must sit left of appear card "
-                 "(ext right %1, appear left %2)")
-                 .arg(gE.right()).arg(gA.left())));
+                 "start card must sit left of end card "
+                 "(start right %1, end left %2)")
+                 .arg(gS.right()).arg(gE.left())));
 
     qInfo().noquote() << QStringLiteral(
-        "[ext-appear] ext geo (dlg) %1x%2 @%3,%4; appear %5x%6 @%7,%8")
-        .arg(gE.width()).arg(gE.height()).arg(gE.x()).arg(gE.y())
-        .arg(gA.width()).arg(gA.height()).arg(gA.x()).arg(gA.y());
+        "[endpoint-cards] start geo (dlg) %1x%2 @%3,%4; end %5x%6 @%7,%8")
+        .arg(gS.width()).arg(gS.height()).arg(gS.x()).arg(gS.y())
+        .arg(gE.width()).arg(gE.height()).arg(gE.x()).arg(gE.y());
+
+    // 延长行组 (并入几何分区) 仍在属性页可见。
+    auto* extCard = dlg->findChild<cad::ui::SegmentExtendCard*>(
+        QStringLiteral("extendCard"));
+    QVERIFY(extCard);
+    QVERIFY(extCard->isVisibleTo(dlg));
 
     delete dlg;
 }
@@ -593,19 +643,21 @@ void TestDialogTabs::connectCardUniformHeights()
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
-    auto* dlg = new cad::tools::LinePropertyDialog(
+    auto* dlg = new cad::ui::LinePropertyDialog(
         line.blockId, line.segId, &doc, &scene, &view);
     dlg->show();
-    QTest::qWait(120);
-
-    auto* card = dlg->findChild<cad::tools::SegmentConnectionCard*>();
+    // P2-3: 等子控件出现而不是固定 sleep 120ms（负载下会让下面
+    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<cad::ui::SegmentConnectionCard*>() != nullptr; }),
+             "timed out waiting for cad::ui::SegmentConnectionCard* to appear");
+    auto* card = dlg->findChild<cad::ui::SegmentConnectionCard*>();
     QVERIFY(card);
 
     // ① 行内控件统一高度 35px。
     int badH = 0;
     for (auto* w : card->findChildren<QWidget*>()) {
         const bool isInput =
-            qobject_cast<ElaLineEdit*>(w) || qobject_cast<cad::tools::PointRefEdit*>(w)
+            qobject_cast<ElaLineEdit*>(w) || qobject_cast<cad::ui::PointRefEdit*>(w)
             || qobject_cast<ElaPushButton*>(w) || qobject_cast<ElaComboBox*>(w);
         if (!isInput) continue;
         if (w->height() != 35 && w->y() >= 0) {   // 布局后高度应为 35
@@ -617,11 +669,11 @@ void TestDialogTabs::connectCardUniformHeights()
     QVERIFY2(badH == 0, qPrintable(QStringLiteral("连接卡行内控件高度不统一: %1 个")
                                        .arg(badH)));
 
-    // ② 点引用输入 (PointRefEdit) 统一 150px 宽。
+    // ② 点引用输入 (PointRefEdit) 统一 140px 宽 (2026-12 版式规范)。
     {
         int refBad = 0;
-        for (auto* p : card->findChildren<cad::tools::PointRefEdit*>()) {
-            if (p->width() != 150) ++refBad;
+        for (auto* p : card->findChildren<cad::ui::PointRefEdit*>()) {
+            if (p->width() != 140) ++refBad;
         }
         QVERIFY2(refBad == 0,
                  qPrintable(QStringLiteral("点引用输入宽度不统一: %1 个")

@@ -21,7 +21,7 @@
 #include "parametric/Serial.h"
 #include "document/commands/LayerCommands.h"
 #include "document/commands/BlockCommands.h"
-#include "document/DeleteImpactConfirm.h"
+#include "ui/DeleteImpactConfirm.h"
 
 namespace {
 
@@ -175,7 +175,7 @@ public:
             "QFrame#LayerCard {"
             "  background: %1;"
             "  border: 1px solid %2;"
-            "  border-radius: 7px;"
+            "  border-radius: 4px;"  // 圆角纪律: 功能圆角上限 4px (原 7px)
             "}"
             "QFrame#LayerCard:hover { border: 1px solid %3; }")
             .arg(isActive ? tk.accentTint.name() : tk.surface.name())
@@ -213,7 +213,7 @@ public:
         m_collapseBtn->setFixedSize(18, 18);
         m_collapseBtn->setCursor(Qt::PointingHandCursor);
         m_collapseBtn->setStyleSheet(
-            "QToolButton { background: transparent; border: none; border-radius: 9px; }"
+            "QToolButton { background: transparent; border: none; border-radius: 4px; }"
             "QToolButton:hover { background: " + tk.surface2.name() + "; }");
         header->addWidget(m_collapseBtn);
 
@@ -258,7 +258,7 @@ public:
         m_countPill = countPill;
         countPill->setStyleSheet(
             "font-size: 10px; background: transparent;"
-            "border-radius: 8px; padding: 1px 7px;");
+            "border-radius: 2px; padding: 1px 7px;");  // 圆角纪律: 计数 pill 2px (原 8px)
         countPill->setToolTip(QString::fromUtf8("%1 \u6761\u7ebf\u6bb5"));  // %1 条线段
         header->addWidget(countPill);
 
@@ -414,7 +414,7 @@ void LayerPanel::setupUi()
     m_countLabel = new ElaText(QString(), 13, header);
     m_countLabel->setStyleSheet(
         "font-size: 11px; background: transparent;"
-        "border-radius: 8px; padding: 1px 8px;");
+        "border-radius: 2px; padding: 1px 8px;");  // 圆角纪律: 计数 pill 2px (原 8px)
     headerLayout->addWidget(m_countLabel);
 
     headerLayout->addStretch();
@@ -429,7 +429,7 @@ void LayerPanel::setupUi()
     addBtn->setCursor(Qt::PointingHandCursor);
     addBtn->setStyleSheet(QStringLiteral(
         "QToolButton { background: transparent; border: 1px solid %1;"
-        "  border-radius: 5px; }"
+        "  border-radius: 4px; }"  // 圆角纪律: 4px (原 5px)
         "QToolButton:hover { background: %2; border: 1px solid %3; }")
         .arg(tk.borderStrong.name(), tk.surface2.name(), tk.borderStrong.name()));
     connect(addBtn, &QToolButton::clicked, this, &LayerPanel::onAddLayerClicked);
@@ -489,7 +489,7 @@ void LayerPanel::applyTheme()
             QStringLiteral("plus"), tk.text1));
         m_addBtn->setStyleSheet(QStringLiteral(
             "QToolButton { background: transparent; border: 1px solid %1;"
-            "  border-radius: 5px; }"
+            "  border-radius: 4px; }"  // 圆角纪律: 4px (原 5px)
             "QToolButton:hover { background: %2; border: 1px solid %3; }")
             .arg(tk.borderStrong.name(), tk.surface2.name(), tk.borderStrong.name()));
     }
@@ -524,8 +524,8 @@ void LayerPanel::refresh()
     }
     m_cards.clear();
 
-    const auto& layers = m_doc->layers();
-    const QUuid active = m_doc->activeLayer();
+    const auto& layers = m_doc->layersView().all();
+    const QUuid active = m_doc->layersView().activeLayer();
 
     // Prune stale collapse state (layer removal drops ids).
     for (auto it = m_collapsed.begin(); it != m_collapsed.end();)
@@ -556,7 +556,7 @@ void LayerPanel::refresh()
 
         auto* card = new LayerCard(i, layer.name, layer.visible,
                                    layer.id == active, static_cast<int>(segs.size()),
-                                   m_doc->isAuxLayer(layer.id), m_container);
+                                   m_doc->layersView().isAuxLayer(layer.id), m_container);
         m_cards.append(card);
 
         // Segment rows.
@@ -615,7 +615,7 @@ void LayerPanel::syncFromDoc()
 {
     // Layer count changed → full rebuild (structure signal normally handles
     // this; the check guards against ordering between queued signals).
-    if (m_cards.size() != static_cast<int>(m_doc->layers().size())) {
+    if (m_cards.size() != static_cast<int>(m_doc->layersView().all().size())) {
         refresh();
         return;
     }
@@ -624,12 +624,12 @@ void LayerPanel::syncFromDoc()
     for (const auto& b : m_doc->blocks())
         if (!b.segments.empty()) { anyBlocks = true; break; }
     m_emptyHint->setVisible(!anyBlocks);
-    m_countLabel->setText(QStringLiteral("%1").arg(m_doc->layers().size()));
+    m_countLabel->setText(QStringLiteral("%1").arg(m_doc->layersView().all().size()));
 
     // In-place per-card update: name / visibility / segment rows. This is
     // the hot path (every resolveAll emits documentChanged) — widgets are
     // reused, only texts change; rebuilding widgets per edit was the lag.
-    const auto& layers = m_doc->layers();
+    const auto& layers = m_doc->layersView().all();
     for (int i = 0; i < m_cards.size(); ++i) {
         auto* card = static_cast<LayerCard*>(m_cards[i]);
         const auto& layer = layers[i];
@@ -672,8 +672,8 @@ bool LayerPanel::eventFilter(QObject* watched, QEvent* event)
     if (auto* lbl = qobject_cast<ElaText*>(watched)) {
         if (event->type() == QEvent::MouseButtonPress) {
             const int idx = lbl->property("layerIndex").toInt();
-            if (idx >= 0 && idx < m_doc->layerCount())
-                m_doc->setActiveLayer(m_doc->layers()[idx].id);
+            if (idx >= 0 && idx < m_doc->layersView().layerCount())
+                m_doc->setActiveLayer(m_doc->layersView().all()[idx].id);
             return true;
         }
         if (event->type() == QEvent::MouseButtonDblClick) {
@@ -687,7 +687,7 @@ bool LayerPanel::eventFilter(QObject* watched, QEvent* event)
 
 void LayerPanel::startRename(int layerIndex, ElaText* nameLabel)
 {
-    if (layerIndex < 0 || layerIndex >= m_doc->layerCount())
+    if (layerIndex < 0 || layerIndex >= m_doc->layersView().layerCount())
         return;
 
     // Overlay a QLineEdit exactly on top of the name label (the label lives
@@ -695,7 +695,7 @@ void LayerPanel::startRename(int layerIndex, ElaText* nameLabel)
     auto* host = nameLabel->parentWidget();
     if (!host) return;
 
-    const QString oldName = m_doc->layers()[layerIndex].name;
+    const QString oldName = m_doc->layersView().all()[layerIndex].name;
 
     auto* edit = new ElaLineEdit(host);
     edit->setText(oldName);
@@ -713,10 +713,9 @@ void LayerPanel::startRename(int layerIndex, ElaText* nameLabel)
         edit->deleteLater();
         nameLabel->setVisible(true);
         if (!newName.isEmpty() && newName != oldName) {
-            if (m_undoStack)
-                m_undoStack->push(new cad::cmd::RenameLayerCommand(m_doc, layerIndex, newName));
-            else
-                m_doc->renameLayer(m_doc->layers()[layerIndex].id, newName);
+            // P0-3: 统一走命令 —— 文档栈恒非空, 删除 null 时静默直改的分支。
+            m_doc->undoStack()->push(new cad::cmd::RenameLayerCommand(
+                m_doc, layerIndex, newName));
         }
     });
 }
@@ -733,8 +732,8 @@ void LayerPanel::showLayerMenu(const QPoint& globalPos, int layerIndex)
     menu.addSeparator();
     auto* del = menu.addAction(QString::fromUtf8("\u5220\u9664\u56fe\u5c42"));  // 删除图层
     // The auxiliary calculation layer cannot be deleted.
-    del->setEnabled(!m_doc->isAuxLayer(m_doc->layers()[layerIndex].id)
-                    && m_doc->layerCount() > 2);
+    del->setEnabled(!m_doc->layersView().isAuxLayer(m_doc->layersView().all()[layerIndex].id)
+                    && m_doc->layersView().layerCount() > 2);
 
     QAction* chosen = menu.exec(globalPos);
     if (!chosen) return;
@@ -761,14 +760,14 @@ void LayerPanel::showSegmentMenu(const QPoint& globalPos, const QUuid& blockId)
     auto* moveMenu = menu.addMenu(QString::fromUtf8("\u79fb\u52a8\u5230\u56fe\u5c42"));  // 移动到图层
     const auto* blk = m_doc->findBlock(blockId);
     const QUuid curLayer = blk ? blk->layer : QUuid();
-    const bool curIsAux = !curLayer.isNull() && m_doc->isAuxLayer(curLayer);
+    const bool curIsAux = !curLayer.isNull() && m_doc->layersView().isAuxLayer(curLayer);
     QList<QAction*> targets;
-    for (int i = 0; i < m_doc->layerCount(); ++i) {
-        if (m_doc->layers()[i].id == curLayer)
+    for (int i = 0; i < m_doc->layersView().layerCount(); ++i) {
+        if (m_doc->layersView().all()[i].id == curLayer)
             continue;
-        if (m_doc->isAuxLayer(m_doc->layers()[i].id) != curIsAux)
+        if (m_doc->layersView().isAuxLayer(m_doc->layersView().all()[i].id) != curIsAux)
             continue;  // sealed boundary
-        auto* act = moveMenu->addAction(m_doc->layers()[i].name);
+        auto* act = moveMenu->addAction(m_doc->layersView().all()[i].name);
         act->setData(i);
         targets.append(act);
     }
@@ -794,27 +793,24 @@ void LayerPanel::onAddLayerClicked()
 {
     // Number working layers only (the sealed aux layer is not counted).
     int workingCount = 0;
-    for (int i = 0; i < m_doc->layerCount(); ++i)
-        if (!m_doc->isAuxLayer(m_doc->layers()[i].id)) ++workingCount;
+    for (int i = 0; i < m_doc->layersView().layerCount(); ++i)
+        if (!m_doc->layersView().isAuxLayer(m_doc->layersView().all()[i].id)) ++workingCount;
     const QString name = QString::fromUtf8("\u56fe\u5c42 %1").arg(workingCount + 1);
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::AddLayerCommand(m_doc, name));
-    else
-        m_doc->addLayer(name);
+    m_doc->undoStack()->push(new cad::cmd::AddLayerCommand(m_doc, name));
 
     // New layer becomes active (so the user can immediately draw on it).
-    m_doc->setActiveLayer(m_doc->layers().back().id);
+    m_doc->setActiveLayer(m_doc->layersView().all().back().id);
 }
 
 void LayerPanel::deleteLayer(int index)
 {
-    if (m_doc->layerCount() <= 2 || m_doc->isAuxLayer(m_doc->layers()[index].id))
+    if (m_doc->layersView().layerCount() <= 2 || m_doc->layersView().isAuxLayer(m_doc->layersView().all()[index].id))
         return;  // Aux layer and the last working layer are undeletable.
 
     // Confirm if the layer is non-empty.
     int count = 0;
     for (const auto& b : m_doc->blocks())
-        if (b.layer == m_doc->layers()[index].id)
+        if (b.layer == m_doc->layersView().all()[index].id)
             ++count;
     if (count > 0) {
         const bool ok = cad::ui::ElaMsgBox::question(this, QString::fromUtf8("删除图层"),
@@ -823,10 +819,7 @@ void LayerPanel::deleteLayer(int index)
             return;
     }
 
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::RemoveLayerCommand(m_doc, index));
-    else
-        m_doc->removeLayer(m_doc->layers()[index].id);
+    m_doc->undoStack()->push(new cad::cmd::RemoveLayerCommand(m_doc, index));
 }
 
 void LayerPanel::deleteBlock(const QUuid& blockId)
@@ -836,10 +829,9 @@ void LayerPanel::deleteBlock(const QUuid& blockId)
     if (!cad::doc::confirmDeleteImpact(this, m_doc, {blockId}))
         return;
 
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::RemoveBlockCommand(m_doc, blockId));
-    else
-        m_doc->removeBlock(blockId);
+    // P0-3: 统一走命令 —— 文档栈由 ParamDocument 构造时创建恒非空,
+    // 删除旧的 "注入栈 null 时静默降级直改" else 双写路径。
+    m_doc->undoStack()->push(new cad::cmd::RemoveBlockCommand(m_doc, blockId));
 }
 
 void LayerPanel::setSegmentVisible(const QUuid& blockId, bool visible)
@@ -853,23 +845,11 @@ void LayerPanel::setSegmentVisible(const QUuid& blockId, bool visible)
 
     auto props = propsFrom(seg);
     props.visible = visible;
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::SetSegmentPropertyCommand(
-            m_doc, blockId, seg.id, props));
-    else {
-        block->segments.front().visible = visible;
-        m_doc->resolveAll();
-    }
+    m_doc->undoStack()->push(new cad::cmd::SetSegmentPropertyCommand(
+        m_doc, blockId, seg.id, props));
 }
 
 void LayerPanel::moveBlockToLayer(const QUuid& blockId, int targetLayer)
 {
-    if (m_undoStack)
-        m_undoStack->push(new cad::cmd::MoveBlockToLayerCommand(m_doc, blockId, targetLayer));
-    else {
-        if (auto* b = m_doc->findBlock(blockId)) {
-            b->layer = m_doc->layers()[targetLayer].id;
-            emit m_doc->layersChanged();
-        }
-    }
+    m_doc->undoStack()->push(new cad::cmd::MoveBlockToLayerCommand(m_doc, blockId, targetLayer));
 }

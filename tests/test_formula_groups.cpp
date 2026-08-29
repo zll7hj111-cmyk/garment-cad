@@ -51,7 +51,7 @@ private slots:
     void moveIntoGroupUndoRestores();         ///< 命令 undo 还原
     void collapseToggleHidesMemberRows();     ///< 折叠: 成员行消失/恢复
     void groupedCardIndents();                ///< 组内卡片右移缩进
-    void cardOrdinalsAndAlternate();          ///< 序号 + 交替色 (缓存复用配套)
+    void cardOrdinalsAndAlternate();          ///< 序号 + 类型色竖线 (缓存复用配套)
 };
 
 // ── ① VirtualCardList: 结构变化后存活行必须重绑定 ──
@@ -294,7 +294,9 @@ void TestFormulaGroups::cardOrdinalsAndAlternate()
     QCOMPARE(ac.findChild<ElaText*>(QStringLiteral("angleIndex"))->text(),
              QStringLiteral("角 5"));
 
-    //── 交替色: 左侧竖线 偶数行蓝 #2F6FED / 奇数行橙 #F59E0B ──
+    //── 类型色竖线 (ui-redesign-2026-08 §2.5 方案 A): 左侧竖线 = 卡片类型 ──
+    // 变量=piece1 碳灰 / 公式=piece2 深青 / 测量(含角度)=piece3 陶土。
+    // setAlternate 仅保留 bind 契约, 不再改变竖线颜色 (幂等, 不抖动)。
     auto barColor = [](QWidget& card) {
         const QPixmap pm = card.grab();     // 触发 paintEvent 渲染
         return pm.toImage().pixelColor(1, card.height() / 2);
@@ -304,30 +306,32 @@ void TestFormulaGroups::cardOrdinalsAndAlternate()
             && std::abs(a.green() - b.green()) <= 8
             && std::abs(a.blue() - b.blue()) <= 8;
     };
-    const QColor blue(0x2F, 0x6F, 0xED), orange(0xF5, 0x9E, 0x0B);
+    const QColor piece1(0x1E, 0x29, 0x3B);  // 变量 = 碳灰 (亮色 token)
+    const QColor piece2(0x0F, 0x76, 0x6E);  // 公式 = 深青
+    const QColor piece3(0xC8, 0x5A, 0x3E);  // 测量 = 陶土
 
     VariableCard va(v, false);
     va.resize(300, 72);
-    QVERIFY(near(barColor(va), blue));       // 偶数行: 蓝
+    QVERIFY(near(barColor(va), piece1));     // 变量: 碳灰 (奇偶同色)
     va.setAlternate(true);
-    QVERIFY(near(barColor(va), orange));     // 奇数行: 橙
+    QVERIFY(near(barColor(va), piece1));     // 行奇偶不再驱动竖线色
     va.setAlternate(true);                   // 幂等: 重复设置不抖动
-    QVERIFY(near(barColor(va), orange));
+    QVERIFY(near(barColor(va), piece1));
     va.setAlternate(false);
-    QVERIFY(near(barColor(va), blue));
+    QVERIFY(near(barColor(va), piece1));
 
     FormulaCard fa(f, false);
     fa.resize(300, 72);
     fa.setAlternate(true);
-    QVERIFY(near(barColor(fa), orange));
+    QVERIFY(near(barColor(fa), piece2));     // 公式: 深青
     MeasureCard ma(mv, QStringLiteral("P1·P2"));
     ma.resize(300, 72);
     ma.setAlternate(true);
-    QVERIFY(near(barColor(ma), orange));
+    QVERIFY(near(barColor(ma), piece3));     // 测量: 陶土
     AngleMeasureCard aa(am, QStringLiteral("S1·S2"));
     aa.resize(300, 72);
     aa.setAlternate(true);
-    QVERIFY(near(barColor(aa), orange));
+    QVERIFY(near(barColor(aa), piece3));     // 角度测量: 陶土
 }
 
 QTEST_MAIN(TestFormulaGroups)

@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WildWind Pattern · 全面板 UI Redesign 设计稿（2026-08）</title>
+<style>
+  :root{
+    --paper:#F4F6F8; --surface:#FFFFFF; --surface2:#E9EDF2; --surface3:#EFF2F6;
+    --border:#CBD2DC; --border-strong:#1A202C;
+    --ink:#0D1117; --ink2:#4A5568; --ink3:#718096;
+    --accent:#FFDE00; --accent-strong:#E6C600; --accent-tint:#FFFAD1;
+    --blue:#2F6FED; --orange:#F59E0B; --teal:#0284C7;
+    --success:#15803D; --warning:#B45309; --danger:#DC2626;
+    --piece1:#1E293B; --piece2:#0F766E; --piece3:#C85A3E; --piece4:#2563EB;
+    --mono:'Consolas','Courier New',monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:var(--paper);color:var(--ink);font-size:14px;line-height:1.7;}
+  .page{max-width:1080px;margin:0 auto;padding:48px 40px 120px;}
+  header.hero{border-bottom:3px solid var(--ink);padding-bottom:28px;margin-bottom:40px;}
+  .hero .kicker{font-family:var(--mono);font-size:12px;letter-spacing:2px;color:var(--ink3);text-transform:uppercase;}
+  .hero h1{font-size:34px;font-weight:700;letter-spacing:-0.5px;margin:8px 0 6px;}
+  .hero .sub{color:var(--ink2);font-size:15px;max-width:760px;}
+  .hero .meta{margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;}
+  .tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border:1px solid var(--border);background:var(--surface);color:var(--ink2);}
+  h2{font-size:22px;font-weight:700;margin:56px 0 6px;padding-left:12px;border-left:5px solid var(--accent);}
+  h2 .no{font-family:var(--mono);color:var(--ink3);font-weight:400;margin-right:8px;}
+  h3{font-size:16px;font-weight:700;margin:28px 0 8px;}
+  .lede{color:var(--ink2);margin-bottom:16px;max-width:840px;}
+  .card{background:var(--surface);border:1px solid var(--border);padding:20px 22px;margin:14px 0;}
+  table.spec{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;background:var(--surface);}
+  table.spec th{background:var(--ink);color:#fff;text-align:left;padding:8px 12px;font-weight:600;font-size:12px;letter-spacing:0.5px;}
+  table.spec td{border:1px solid var(--border);padding:8px 12px;vertical-align:top;}
+  table.spec tr:nth-child(even) td{background:var(--surface3);}
+  .sev{font-family:var(--mono);font-size:11px;font-weight:700;padding:1px 7px;display:inline-block;}
+  .sev.p0{background:var(--danger);color:#fff;}
+  .sev.p1{background:var(--warning);color:#fff;}
+  .sev.p2{background:var(--surface2);color:var(--ink2);border:1px solid var(--border);}
+  .swrow{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0;}
+  .sw{width:150px;border:1px solid var(--border);background:var(--surface);}
+  .sw .chip{height:56px;}
+  .sw .lbl{padding:7px 10px;}
+  .sw .lbl b{display:block;font-size:12px;}
+  .sw .lbl span{font-family:var(--mono);font-size:11px;color:var(--ink3);}
+  .wire{background:var(--surface);border:1px solid var(--border);padding:18px;margin:14px 0;}
+  .wire .cap{font-family:var(--mono);font-size:11px;color:var(--ink3);margin-top:10px;}
+  .box{border:1px solid var(--border);background:var(--surface3);font-size:11px;color:var(--ink2);display:flex;align-items:center;justify-content:center;text-align:center;}
+  .box.solid{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .box.accent{background:var(--accent-tint);border-color:var(--accent-strong);color:var(--ink);}
+  .note{border-left:4px solid var(--warning);background:#FFF8EC;padding:10px 16px;margin:12px 0;font-size:13px;color:var(--ink2);}
+  .note.blue{border-color:var(--blue);background:#EEF4FF;}
+  .note.ok{border-color:var(--success);background:#EFFAF3;}
+  code,.mono{font-family:var(--mono);font-size:12px;background:var(--surface2);padding:1px 5px;}
+  .stategrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin:14px 0;}
+  .statecell{border:1px solid var(--border);background:var(--surface);padding:12px;}
+  .statecell .demo{height:44px;display:flex;align-items:center;justify-content:center;margin-bottom:8px;border:1px dashed var(--border);}
+  .statecell b{font-size:12px;display:block;}
+  .statecell span{font-size:11px;color:var(--ink3);}
+  .btn{font-size:13px;padding:6px 16px;border:1px solid var(--border-strong);background:var(--surface);cursor:default;}
+  .btn.primary{background:var(--accent);border-color:var(--accent-strong);font-weight:600;}
+  .btn.danger{color:var(--danger);border-color:var(--danger);}
+  ul.tight{margin:6px 0 6px 20px;}
+  ul.tight li{margin:4px 0;}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:900px){.two{grid-template-columns:1fr;}}
+  .footer{margin-top:72px;border-top:1px solid var(--border);padding-top:18px;font-size:12px;color:var(--ink3);font-family:var(--mono);}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="hero">
+  <div class="kicker">WildWind Pattern / 野风帖 · UI Redesign Board</div>
+  <h1>全面板视觉重审核与 Redesign 设计稿</h1>
+  <div class="sub">覆盖范围：主窗口框架、面板悬浮窗（变量 / 图层 / 组）、变量面板五页签与五类卡片、图层面板、线条属性对话框及全部工具表单、状态栏编辑条与预输入条。本文档仅输出前端 UI 设计：布局草图、配色方案、组件样式规范、交互状态说明，不涉及任何后端逻辑与功能开发。</div>
+  <div class="meta">
+    <span class="tag">版本 v1.0 · 2026-08-28</span>
+    <span class="tag">基线：Endfield field engineering（信号黄 #FFDE00）</span>
+    <span class="tag">依据源码：src/ui / src/app / src/tools</span>
+  </div>
+</header>
+
+<!-- ============ 0 审核结论 ============ -->
+<h2><span class="no">00</span>全面审核结论（现状问题清单）</h2>
+<p class="lede">对现有全部界面逐面板走查后的核心发现。严重度：P0 = 信号混乱/规则冲突，P1 = 体验受损，P2 = 打磨项。</p>
+
+<table class="spec">
+  <tr><th style="width:150px">面板 / 区域</th><th style="width:60px">严重度</th><th>审核发现</th></tr>
+  <tr><td>全局色彩信号</td><td><span class="sev p0">P0</span></td><td>色相过载：信号黄 accent + 偶蓝/奇橙行竖线 + 4 个 piece 类型色 + 4 个语义色（成功/警告/危险/青）同屏可达 9+ 色相，「什么颜色代表什么」没有单一答案。蓝橙竖线为历史拍板值（Theme.h 注明「终末地下待用户重拍板」），与「信号黄唯一强调色」的设计语言直接冲突。</td></tr>
+  <tr><td>双重导航</td><td><span class="sev p0">P0</span></td><td>主窗口顶部 ElaTabBar（画布/变量/图层/组）与面板悬浮窗大标签构成两级、两处、语义重叠的导航：「变量/图层」既是主窗口标签又是悬浮窗开关，选中态需要 syncPanelTabs 双向同步，用户难以建立稳定心智模型。</td></tr>
+  <tr><td>变量面板页签</td><td><span class="sev p1">P1</span></td><td>5 个平级页签（变量/公式/关联/测量/组件）信息架构扁平：「关联/测量」本质是只读结果，「组件」是工作组，与可编辑的「变量/公式」混排，缺少「输入 → 派生」的层级表达。</td></tr>
+  <tr><td>卡片视觉层级</td><td><span class="sev p1">P1</span></td><td>五类卡片共享 CardBase 骨架是好的，但序号、名称 chip、值、🔒、删除钮在 header 一行内密度过高；值（最重要的信息）与名称同字号同字重，视觉焦点不突出。</td></tr>
+  <tr><td>线条属性对话框</td><td><span class="sev p1">P1</span></td><td>（对照 panel_shot.png）分组标题（基本/几何/外观/端点）样式弱、间距节奏不一致；「填入」按钮与「24.38 cm」只读值并排，语义模糊；端点 P1/P2 卡片样式与全局卡片语言不统一；底部「关闭 / 撤销全部」层级平铺，主操作不明。</td></tr>
+  <tr><td>状态栏</td><td><span class="sev p1">P1</span></td><td>状态栏承载坐标 + 缩放 + 工具提示 + 诊断 + SegmentEditBar + SmartPenPreInputBar 六种信息，编辑态与只读态切换时布局跳动风险高，诊断警告（danger）易被淹没。</td></tr>
+  <tr><td>暗色模式 piece 色</td><td><span class="sev p2">P2</span></td><td>dark() 中 piece1–4 变为另一组色相（蓝灰系），亮/暗两模式下「公式 = 深青」这类类型记忆断裂，跨模式一致性弱。</td></tr>
+  <tr><td>圆角与形状纪律</td><td><span class="sev p2">P2</span></td><td>RadiusPill = 4 的命名与「禁胶囊」纪律自相矛盾；部分对话框（Ela 组件默认）圆角大于 token 规定，直角工业感不统一。</td></tr>
+</table>
+
+<div class="note ok"><b>总体判断：</b>设计 token 体系（ThemeTokens 单源、字号/间距/圆角阶梯、等宽数字纪律）基础扎实，不需要推翻。本次 redesign 定位为 <b>「Endfield 2.0」演进</b>：保留骨架，收敛色彩信号、重构导航层级、统一卡片与表单语言。</div>
+
+<!-- ============ 1 设计原则 ============ -->
+<h2><span class="no">01</span>设计原则（Redesign 总纲）</h2>
+<div class="card">
+<ul class="tight">
+  <li><b>① 一个强调色。</b>信号黄 #FFDE00 是唯一的「动作/选中/焦点」信号。任何其他颜色只能是「实体身份色」或「语义状态色」，绝不兼任强调。</li>
+  <li><b>② 颜色三分层。</b>强调色（黄，全 App 仅 1 个活跃实例）→ 类型色（piece 家族，标识数据类别）→ 语义色（绿/琥珀/红/青，标识状态）。三层不混用。</li>
+  <li><b>③ 一条导航线。</b>主窗口标签只负责「画布 ↔ 面板」开关；面板内部页签负责内容分类。消除双向同步的镜像导航。</li>
+  <li><b>④ 纸面与墨。</b>画布是纸（#ECEFF2 蓝图灰），面板是图纸夹（白面 + 1px 发丝线），直角为主，功能圆角 ≤ 4px。</li>
+  <li><b>⑤ 数字不抖。</b>一切读数/输入用等宽字体 + 固定位宽，拖动联动刷新时布局零位移。</li>
+  <li><b>⑥ 密度服务于手。</b>CAD 是高频工具：信息密度优先于留白美学，但每个交互目标 ≥ 24px 高度。</li>
+</ul>
+</div>
+
+<!-- ============ 2 配色方案 ============ -->
+<h2><span class="no">02</span>配色方案</h2>
+<p class="lede">在现有 ThemeTokens 基础上修订：<b>新增</b>项标注 ✚，<b>修订</b>项标注 ✎，其余维持现状。所有文本色对白底对比度 ≥ 4.5:1（WCAG AA）。</p>
+
+<h3>2.1 中性表面与文字（亮色模式）</h3>
+<div class="swrow">
+  <div class="sw"><div class="chip" style="background:#ECEFF2"></div><div class="lbl"><b>canvasBg 纸面</b><span>#ECEFF2</span></div></div>
+  <div class="sw"><div class="chip" style="background:#FFFFFF;border-bottom:1px solid #CBD2DC"></div><div class="lbl"><b>surface 面板</b><span>#FFFFFF</span></div></div>
+  <div class="sw"><div class="chip" style="background:#E2E6EC"></div><div class="lbl"><b>surface2 凹陷</b><span>#E2E6EC</span></div></div>
+  <div class="sw"><div class="chip" style="background:#EAEDF2"></div><div class="lbl"><b>surface3 条纹</b><span>#EAEDF2</span></div></div>
+  <div class="sw"><div class="chip" style="background:#0D1117"></div><div class="lbl"><b>text1 碳黑</b><span>#0D1117</span></div></div>
+  <div class="sw"><div class="chip" style="background:#4A5568"></div><div class="lbl"><b>text2 次级</b><span>#4A5568</span></div></div>
+  <div class="sw"><div class="chip" style="background:#718096"></div><div class="lbl"><b>text3 元信息</b><span>#718096</span></div></div>
+</div>
+
+<h3>2.2 强调色（唯一信号）</h3>
+<div class="swrow">
+  <div class="sw"><div class="chip" style="background:#FFDE00"></div><div class="lbl"><b>accent 信号黄</b><span>#FFDE00</span></div></div>
+  <div class="sw"><div class="chip" style="background:#E6C600"></div><div class="lbl"><b>accentStrong 按压</b><span>#E6C600</span></div></div>
+  <div class="sw"><div class="chip" style="background:#FFFAD1"></div><div class="lbl"><b>accentTint 浅底</b><span>#FFFAD1</span></div></div>
+  <div class="sw"><div class="chip" style="background:#0D1117"></div><div class="lbl"><b>onAccent 黄上墨字</b><span>#0D1117</span></div></div>
+</div>
+<div class="note"><b>使用纪律：</b>同一屏幕最多一处「实心黄」元素（当前工具按钮 或 主操作按钮，二者取一）；其余激活态一律用 accentTint 浅底 + 1px accentStrong 描边。黄底永不承载白字、永不作大面积填充。</div>
+
+<h3>2.3 类型色（piece 家族 — 只标身份，不标状态）✎</h3>
+<div class="swrow">
+  <div class="sw"><div class="chip" style="background:#1E293B"></div><div class="lbl"><b>piece1 变量/裁片</b><span>#1E293B 碳灰</span></div></div>
+  <div class="sw"><div class="chip" style="background:#0F766E"></div><div class="lbl"><b>piece2 公式</b><span>#0F766E 深青</span></div></div>
+  <div class="sw"><div class="chip" style="background:#C85A3E"></div><div class="lbl"><b>piece3 测量</b><span>#C85A3E 陶土</span></div></div>
+  <div class="sw"><div class="chip" style="background:#2563EB"></div><div class="lbl"><b>piece4 关联</b><span>#2563EB 钴蓝</span></div></div>
+</div>
+<div class="note blue"><b>✎ 修订：</b>暗色模式下 piece 家族保持<b>同一色相、仅提明度</b>（如深青 #0F766E → #2DD4BF），不再换成另一组色相，保证「公式 = 青」跨模式记忆一致。类型色在卡片上的用量 = 4px 竖线或 chip 描边，禁止整卡铺色。</div>
+
+<h3>2.4 语义色（只标状态，不做装饰）</h3>
+<div class="swrow">
+  <div class="sw"><div class="chip" style="background:#15803D"></div><div class="lbl"><b>success 捕捉/OK</b><span>#15803D · 4.95:1</span></div></div>
+  <div class="sw"><div class="chip" style="background:#B45309"></div><div class="lbl"><b>warning 保护/提醒</b><span>#B45309 · 5.8:1</span></div></div>
+  <div class="sw"><div class="chip" style="background:#DC2626"></div><div class="lbl"><b>danger 错误/删除</b><span>#DC2626 · 4.83:1</span></div></div>
+  <div class="sw"><div class="chip" style="background:#0284C7"></div><div class="lbl"><b>teal 连接/附着</b><span>#0284C7</span></div></div>
+</div>
+
+<h3>2.5 行竖线：双色 → 类型色 ✎（建议重拍板项）</h3>
+<div class="note"><b>现状冲突：</b>偶数行蓝 #2F6FED / 奇数行橙 #F59E0B 竖线是历史拍板值，但橙色 #F59E0B 与 warning 琥珀色 #B45309 同族易误读，且蓝橙双色与信号黄争夺注意力，是 P0 色彩过载的主因。<br>
+<b>Redesign 方案（二选一，需用户拍板）：</b><br>
+<b>方案 A（推荐）</b>：竖线改标「卡片类型」——变量=piece1 碳灰、公式=piece2 深青、测量=piece3 陶土、关联=piece4 钴蓝。竖线从「装饰性斑马纹」升级为「类型图例」，与页签颜色呼应。<br>
+<b>方案 B（保守）</b>：保留斑马纹语义但去彩色化——偶数行 #CBD2DC 中性灰、奇数行无色（仅靠 surface3 条纹底），彻底退出色彩信号层。</div>
+
+<h3>2.6 暗色模式要点</h3>
+<table class="spec">
+  <tr><th>Token</th><th>Dark 值</th><th>说明</th></tr>
+  <tr><td>canvasBg / surface</td><td><code>#14181E</code> / <code>#1D2126</code></td><td>夜纸，非死黑，维持现状</td></tr>
+  <tr><td>accent</td><td><code>#FFE600</code></td><td>略提亮保持辨识度，onAccent 恒为 #0D1117</td></tr>
+  <tr><td>piece 家族 ✎</td><td>同色相提明度（见 2.3）</td><td>替换现有蓝灰系四色</td></tr>
+  <tr><td>text3</td><td><code>#8A94A0</code></td><td>已修正至 4.7:1，维持</td></tr>
+</table>
+
+<!-- ============ 3 字体与排版 ============ -->
+<h2><span class="no">03</span>字体与排版规范</h2>
+<table class="spec">
+  <tr><th>阶梯</th><th>字号</th><th>用途</th><th>字重</th></tr>
+  <tr><td><code>FontXs</code></td><td>10px</td><td>badge、序号、serial 标签</td><td>Regular / Mono</td></tr>
+  <tr><td><code>FontSm</code></td><td>11px</td><td>来源信息、提示文字（text3）</td><td>Regular</td></tr>
+  <tr><td><code>FontMd</code></td><td>12px</td><td>卡片正文、输入框</td><td>Regular</td></tr>
+  <tr><td><code>FontBase</code></td><td>13px</td><td>应用正文默认</td><td>Regular</td></tr>
+  <tr><td><code>FontLg</code> ✎</td><td>14px → <b>15px</b></td><td><b>卡片数值读数</b>（建议上调一档并加 600 字重，让「值」成为卡片第一视觉焦点）</td><td>Semibold + Mono</td></tr>
+  <tr><td>✚ FontXl</td><td>18px</td><td>对话框标题、空状态主文案</td><td>Semibold</td></tr>
+</table>
+<div class="note blue"><b>等宽纪律（沿用并扩大）：</b>所有数值读数、角度、长度、坐标、缩放比统一 <code>kMonospaceFamily</code>；对话框标题新增 <b>小号全大写英文代号 + 中文标题</b>组合（如 <code>LINE PROPERTIES · 线条属性</code>），强化工程图纸感。</div>
+
+<!-- ============ 4 布局草图 ============ -->
+<h2><span class="no">04</span>布局草图（Wireframes）</h2>
+
+<h3>4.1 主窗口框架 ✎</h3>
+<div class="wire">
+  <div style="display:flex;flex-direction:column;gap:6px;height:340px;">
+    <div class="box solid" style="height:28px;">菜单栏：文件 · 编辑 · 视图（暗色主题 ☾）· 帮助　<span style="margin-left:auto;font-family:var(--mono)">— □ ✕</span></div>
+    <div style="display:flex;gap:6px;height:34px;">
+      <div class="box accent" style="width:90px;">● 画布</div>
+      <div class="box" style="width:90px;">变量 ◌</div>
+      <div class="box" style="width:90px;">图层 ◌</div>
+      <div class="box" style="width:90px;">组件 ◌</div>
+      <div class="box" style="flex:1;color:var(--ink3)">顶部标签 = 面板悬浮窗开关（再点当前项 = 收起），激活项黄底 + 圆点指示</div>
+    </div>
+    <div style="display:flex;gap:6px;flex:1;position:relative;">
+      <div class="box" style="flex:1;background:#ECEFF2;">画布区（蓝图灰纸面）<br><br>
+        <div style="display:inline-flex;gap:4px;background:#fff;border:1px solid var(--border);padding:5px 10px;">
+          <span style="background:var(--accent);width:26px;height:26px;display:inline-block;line-height:26px;">✎</span>
+          <span style="width:26px;height:26px;display:inline-block;line-height:26px;border:1px solid var(--border)">↖</span>
+          <span style="width:26px;height:26px;display:inline-block;line-height:26px;border:1px solid var(--border)">◠</span>
+          <span style="width:26px;height:26px;display:inline-block;line-height:26px;border:1px solid var(--border)">⟳</span>
+          <span style="width:26px;height:26px;display:inline-block;line-height:26px;border:1px solid var(--border)">✂</span>
+          <span style="width:26px;height:26px;display:inline-block;line-height:26px;border:1px solid var(--border)">⌖</span>
+          <span style="width:26px;height:26px;display:inline-block;line-height:26px;border:1px solid var(--border)">📏</span>
+          <span style="width:26px;height:26px;display:inline-block;line-height:26px;border:1px solid var(--border)">∠</span>
+          <span style="border-left:1px solid var(--border);margin-left:3px;padding-left:8px;line-height:26px;">● 图层 1 ▾</span>
+        </div>
+      </div>
+      <div class="box" style="width:300px;background:#fff;">面板悬浮窗（可停靠）<br>宽 300–360px 可调<br>见 4.2</div>
+    </div>
+    <div class="box" style="height:26px;font-family:var(--mono);font-size:11px;">X 1234.5  Y 678.9　|　🔍 100%　|　智能笔：单击起点，W 切模式　|　<span style="color:var(--danger)">⚠ 诊断（仅异常时占位）</span></div>
+  </div>
+  <div class="cap">图 4-1 · 主窗口：菜单栏 / 顶部标签栏 / 画布 + 浮动 pill 工具坞 + 图层 chip / 右侧面板 / 状态栏</div>
+</div>
+<div class="note blue"><b>✎ 导航收敛：</b>「组」从主窗口标签移入面板悬浮窗页签（见 4.2），主窗口顶部只保留 <b>画布 / 变量 / 图层</b> 三项开关。面板悬浮窗增加「图钉 📌」切换两种形态：<b>悬浮窗</b>（Qt::Tool，现状）与 <b>停靠右栏</b>（嵌入 splitter，新增），用户可在两种形态间一键切换，关闭后记忆形态与位置。</div>
+
+<h3>4.2 面板悬浮窗内部结构 ✎</h3>
+<div class="wire">
+  <div style="display:flex;flex-direction:column;gap:0;width:340px;border:1px solid var(--border-strong);">
+    <div class="box solid" style="height:30px;justify-content:flex-start;padding-left:10px;">变量面板　<span style="margin-left:auto">📌 — ✕</span></div>
+    <div style="display:flex;height:32px;border-bottom:1px solid var(--border);">
+      <div class="box" style="flex:1;background:#fff;border:none;border-bottom:2px solid var(--accent-strong);font-weight:600;">变量</div>
+      <div class="box" style="flex:1;background:#fff;border:none;">图层</div>
+      <div class="box" style="flex:1;background:#fff;border:none;">组件</div>
+    </div>
+    <div style="display:flex;height:30px;border-bottom:1px solid var(--border);background:var(--surface3);">
+      <div class="box" style="flex:1;border:none;border-bottom:2px solid var(--piece1);">变量</div>
+      <div class="box" style="flex:1;border:none;border-bottom:2px solid transparent;color:var(--ink2);">公式</div>
+      <div class="box" style="flex:1;border:none;border-bottom:2px solid transparent;color:var(--ink2);">关联</div>
+      <div class="box" style="flex:1;border:none;border-bottom:2px solid transparent;color:var(--ink2);">测量</div>
+    </div>
+    <div style="padding:10px;display:flex;flex-direction:column;gap:8px;background:var(--surface2);">
+      <div style="background:#fff;border:1px solid var(--border);border-left:4px solid var(--piece1);padding:8px 10px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;color:var(--ink3);font-family:var(--mono)">1</span>
+          <span style="border:1px solid var(--piece1);padding:0 8px;font-size:12px;">胸围</span>
+          <span style="margin-left:auto;font-family:var(--mono);font-size:15px;font-weight:600;">92.00</span>
+          <span style="font-size:10px;color:var(--ink3)">cm</span>
+          <span style="color:var(--ink3)">✕</span>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid var(--border);border-left:4px solid var(--piece1);padding:8px 10px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;color:var(--ink3);font-family:var(--mono)">2</span>
+          <span style="border:1px solid var(--piece1);padding:0 8px;font-size:12px;">腰围</span>
+          <span style="margin-left:auto;font-family:var(--mono);font-size:15px;font-weight:600;">74.50</span>
+          <span style="font-size:10px;color:var(--ink3)">cm</span>
+          <span style="color:var(--ink3)">✕</span>
+        </div>
+      </div>
+      <div class="box" style="height:28px;">＋ 新建变量（hover 才出边框的幽灵按钮）</div>
+    </div>
+  </div>
+  <div class="cap">图 4-2 · 面板悬浮窗：大标签（变量/图层/组件）→ 子页签（类型色下划线指示）→ 卡片列表</div>
+</div>
+<div class="note blue"><b>✎ 层级改造：</b>① 大标签下划线 = accent 黄（导航层）；子页签下划线 = 对应 piece 类型色（内容层），两层信号分离。② 「组件」从变量面板第五页签升级为大标签，与变量/图层平级——它是工作组管理，不是变量类型。③ 子页签 4 个（变量/公式/关联/测量）按「可编辑输入 → 派生结果」排序，只读页签（关联/测量）标签文字用 text2 弱化一档。</div>
+
+<h3>4.3 卡片解剖（五类卡片统一骨架）✎</h3>
+<div class="wire">
+  <div style="background:#fff;border:1px solid var(--border);border-left:4px solid var(--piece2);padding:10px 12px;max-width:420px;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:10px;color:var(--ink3);font-family:var(--mono)">3</span>
+      <span style="border:1px solid var(--piece2);color:var(--piece2);padding:0 8px;font-size:12px;">半胸围</span>
+      <span style="margin-left:auto;font-family:var(--mono);font-size:15px;font-weight:600;">46.00</span>
+      <span style="font-size:10px;color:var(--ink3)">cm</span>
+      <span title="只读">🔒</span>
+      <span style="width:20px;height:20px;border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;color:var(--ink3);">✕</span>
+    </div>
+    <div style="margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--ink2);background:var(--surface3);padding:4px 8px;">= 胸围 / 2</div>
+    <div style="margin-top:4px;font-size:11px;color:var(--ink3);">来源：变量 · 胸围　|　注释…</div>
+  </div>
+  <div class="cap">图 4-3 · 卡片三段式：header（序号 / 名称 chip / 值 / 锁 / 删除）→ 表达式行（等宽、凹陷底）→ meta 行（来源 + 注释，11px text3）</div>
+</div>
+<ul class="tight">
+  <li><b>值区强化 ✎：</b>值 = 15px Semibold 等宽 + 单位缩小至 10px text3，成为卡片第一焦点；名称 chip 退居第二。</li>
+  <li><b>删除按钮：</b>沿用悬停显现 + 同尺寸占位槽契约（20×20），默认态显示 24% 透明度的 ✕ 轮廓，避免「空白→出现」的视觉跳变感。</li>
+  <li><b>类型识别：</b>左侧 4px 竖线 + 名称 chip 描边同色（方案 A 落地处）；公式卡额外有表达式凹陷行，测量/关联卡有来源 meta 行。</li>
+  <li><b>dangling 态：</b>值区文字转 danger 红 + 背景 danger 8% 浅底 + tooltip 说明失效原因（见 §5 状态矩阵）。</li>
+</ul>
+
+<h3>4.4 图层面板 ✎</h3>
+<div class="wire">
+  <div style="width:340px;display:flex;flex-direction:column;gap:8px;">
+    <div style="background:#fff;border:1px solid var(--border-strong);border-left:4px solid var(--accent-strong);">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--accent-tint);">
+        <span>▾</span><span>👁</span><b style="font-size:13px;">图层 1</b>
+        <span style="font-family:var(--mono);font-size:10px;background:#fff;border:1px solid var(--border);padding:0 6px;">12 段</span>
+        <span style="margin-left:auto;font-size:10px;color:var(--ink3);">ACTIVE</span>
+      </div>
+      <div style="padding:4px 0;">
+        <div style="display:flex;gap:8px;padding:4px 14px 4px 26px;font-size:12px;align-items:center;"><span>👁</span><span>肩线</span><span style="margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ink3);">L3</span></div>
+        <div style="display:flex;gap:8px;padding:4px 14px 4px 26px;font-size:12px;align-items:center;color:var(--ink3);"><span>🚫</span><span>侧缝（隐藏）</span><span style="margin-left:auto;font-family:var(--mono);font-size:10px;">L4</span></div>
+      </div>
+    </div>
+    <div style="background:#fff;border:1px solid var(--border);padding:8px 10px;display:flex;gap:8px;align-items:center;">
+      <span>▸</span><span>👁</span><span style="font-size:13px;">辅助层</span>
+      <span style="font-family:var(--mono);font-size:10px;border:1px solid var(--border);padding:0 6px;">3 段</span>
+      <span style="margin-left:auto;font-size:10px;color:var(--teal);">AUX</span>
+    </div>
+    <div class="box" style="height:28px;">＋ 新建图层</div>
+  </div>
+  <div class="cap">图 4-4 · 图层卡：激活卡 = accentTint 头 + accentStrong 左竖线 + ACTIVE 标记；辅助层 = teal 标记（与 H 键切换语义一致）</div>
+</div>
+<div class="note blue"><b>✎ 要点：</b>① 激活图层的「蓝色头 tint」改为 accentTint 黄——「当前激活」是强调信号，应收归黄色系，蓝色留给「关联类型」。② 段行增加 serial 标签（L3/L4）等宽右对齐，与状态栏编辑条的 idLabel 呼应。③ 隐藏段：眼睛图标转 🚫 + 整行 text3 降对比，但保持可点（符合「隐藏实体仍可交互」架构原则）。</div>
+
+<h3>4.5 线条属性对话框（4 页签）✎</h3>
+<div class="wire">
+  <div style="width:440px;border:1px solid var(--border-strong);background:#fff;">
+    <div class="box solid" style="height:34px;justify-content:flex-start;padding-left:12px;gap:8px;"><span style="font-family:var(--mono);font-size:10px;letter-spacing:1px;">LINE PROPERTIES</span><b>线条属性 · L1</b><span style="margin-left:auto">✕</span></div>
+    <div style="display:flex;height:34px;border-bottom:1px solid var(--border);">
+      <div class="box" style="flex:1;border:none;border-bottom:2px solid var(--accent-strong);font-weight:600;">属性</div>
+      <div class="box" style="flex:1;border:none;">锚点</div>
+      <div class="box" style="flex:1;border:none;">辅助点</div>
+      <div class="box" style="flex:1;border:none;">点连接</div>
+    </div>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
+      <div style="font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:var(--ink3);border-bottom:1px solid var(--border);padding-bottom:4px;">几何 GEOMETRY</div>
+      <div style="display:grid;grid-template-columns:88px 1fr auto;gap:8px;align-items:center;font-size:12px;">
+        <span>长度</span>
+        <span style="border:1px solid var(--border-strong);padding:4px 8px;font-family:var(--mono);">24.38</span>
+        <span style="font-family:var(--mono);font-size:11px;color:var(--ink3);">cm</span>
+        <span>角度</span>
+        <span style="border:1px solid var(--border);padding:4px 8px;font-family:var(--mono);">304.5</span>
+        <span style="font-size:11px;color:var(--ink3);">= 世界角 304.5°</span>
+      </div>
+      <div style="font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:var(--ink3);border-bottom:1px solid var(--border);padding-bottom:4px;margin-top:4px;">外观 APPEARANCE</div>
+      <div style="display:flex;gap:8px;align-items:center;font-size:12px;">
+        <span style="width:88px;">线型</span>
+        <span style="border:2px solid var(--accent-strong);background:var(--accent-tint);padding:4px 12px;">━━</span>
+        <span style="border:1px solid var(--border);padding:4px 12px;">┅┅</span>
+        <span style="border:1px solid var(--border);padding:4px 12px;">┈┈</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--border);background:var(--surface3);">
+      <span class="btn" style="font-size:12px;">撤销全部</span>
+      <span class="btn primary" style="font-size:12px;">关闭 ✓</span>
+    </div>
+  </div>
+  <div class="cap">图 4-5 · 对话框重构：代号标题栏 / 分组标题 = 等宽大写代号 + 发丝线 / 表单 88px 标签列栅格 / 底部主操作右置实心黄</div>
+</div>
+<ul class="tight">
+  <li><b>分组标题强化 ✎：</b>「基本/几何/外观/端点」改为 <code>等宽 10px 大写英文代号 + 中文</code> + 底部发丝线，替代当前的裸粗体，分组边界一眼可辨。</li>
+  <li><b>表单栅格：</b>标签列固定 88px、输入列弹性、派生值列（= 0 cm / 世界角）等宽 11px text3；行高 28px、行距 10px，全对话框统一。</li>
+  <li><b>「填入」按钮语义修正：</b>改为输入框内嵌的幽灵图标按钮（⇩ 取画布值），hover 出 tooltip「从画布拾取长度」，不再与只读值并排占位。</li>
+  <li><b>端点 P1/P2 卡片：</b>统一为 CardBase 语言（1px 边框 + 4px 左竖线 teal 连接色），标题行 <code>P1 · 起点</code> 等宽代号。</li>
+  <li><b>底部按钮层级：</b>「关闭」升为主操作（实心黄），「撤销全部」降为次级描边按钮并加 danger hover 态——破坏性操作不享用主色。</li>
+</ul>
+
+<h3>4.6 状态栏编辑条 ✎</h3>
+<div class="wire">
+  <div style="display:flex;flex-direction:column;gap:6px;">
+    <div style="display:flex;align-items:center;gap:10px;border:1px solid var(--accent-strong);background:var(--accent-tint);padding:6px 12px;font-size:12px;">
+      <span style="font-family:var(--mono);background:var(--ink);color:var(--accent);padding:0 6px;">L3</span>
+      <span>名称 <span style="border:1px solid var(--border);background:#fff;padding:2px 8px;font-family:var(--mono);">肩线</span></span>
+      <span>长度 <span style="border:1px solid var(--border-strong);background:#fff;padding:2px 8px;font-family:var(--mono);">24.38</span></span>
+      <span>角度 <span style="border:1px solid var(--border);background:#fff;padding:2px 8px;font-family:var(--mono);">304.5°</span></span>
+      <span style="margin-left:auto;font-size:11px;color:var(--ink2);">Esc 撤销创建 · Enter 确认</span>
+    </div>
+    <div class="box" style="height:24px;font-family:var(--mono);font-size:11px;">X 1234.5  Y 678.9　|　🔍 100%　|　选择：单击或框选</div>
+  </div>
+  <div class="cap">图 4-6 · 编辑条 = 状态栏上方的独立「创建中」条带（accentTint 底 + accentStrong 描边），与常态状态栏视觉分离</div>
+</div>
+<div class="note blue"><b>✎ 要点：</b>① SegmentEditBar 从「状态栏内嵌」改为「状态栏上方的独立条带」，用 accentTint 浅黄底标识「你正处于创建后编辑态」，消除与坐标/缩放信息的混排拥挤。② 条带右端常驻快捷键提示（Esc/Enter），替代隐式约定。③ 诊断警告改为状态栏左侧的 danger 实心 badge（⚠ 3），点击展开明细，不再与工具提示文字混排。</div>
+
+<!-- ============ 5 组件样式规范 ============ -->
+<h2><span class="no">05</span>组件样式规范</h2>
+
+<h3>5.1 按钮体系（4 级）</h3>
+<div class="stategrid">
+  <div class="statecell"><div class="demo"><span class="btn primary">主操作 Primary</span></div><b>实心黄 · 每屏 ≤1 个</b><span>背景 accent / 字 onAccent / 边框 accentStrong。仅用于对话框主确认、工具激活态。</span></div>
+  <div class="statecell"><div class="demo"><span class="btn">次级 Secondary</span></div><b>描边墨 · 默认按钮</b><span>白底 / borderStrong 1px 描边 / text1。表单、对话框常规操作。</span></div>
+  <div class="statecell"><div class="demo"><span class="btn" style="border-color:transparent;">幽灵 Ghost</span></div><b>无边框 · 列表内嵌</b><span>透明底，hover 出 surface2 底 + border 描边。「＋新建」、卡内小操作。</span></div>
+  <div class="statecell"><div class="demo"><span class="btn danger">危险 Danger</span></div><b>红描边 · 破坏性操作</b><span>danger 描边 + 字；hover 转 danger 实心白字。删除、撤销全部。</span></div>
+</div>
+
+<h3>5.2 输入框</h3>
+<table class="spec">
+  <tr><th>状态</th><th>样式</th></tr>
+  <tr><td>默认</td><td>白底 / 1px border / 圆角 2px / 高 28px / 等宽 12px（数值类）</td></tr>
+  <tr><td>悬停</td><td>描边转 borderStrong</td></tr>
+  <tr><td>焦点 ✎</td><td>1px borderStrong 描边 + 左侧 3px accent 竖条（直角纪律下的焦点信号，不用外发光）</td></tr>
+  <tr><td>校验失败 ✚</td><td>danger 描边 + 下方 11px danger 错误文案（当前表达式错误仅 tooltip，建议显性化）</td></tr>
+  <tr><td>只读/禁用</td><td>surface2 底 + text3 字 + 无虚线框</td></tr>
+</table>
+
+<h3>5.3 Chip / Badge</h3>
+<table class="spec">
+  <tr><th>类型</th><th>样式</th><th>用途</th></tr>
+  <tr><td>名称 chip（可编辑）</td><td>1px piece 色描边 + piece 色文字 + 白底，圆角 0</td><td>卡片名称，双击进入编辑</td></tr>
+  <tr><td>计数 pill</td><td>等宽 10px + border 描边</td><td>「12 段」「N 项」</td></tr>
+  <tr><td>状态 badge</td><td>语义色字 + 同色系 12% 透明底（沿用 badgeStyle）</td><td>teal=附着 / purple=跨层 / warning=保护</td></tr>
+  <tr><td>serial 标签 ✎</td><td>等宽 10px，ink 底 + accent 黄字（图纸编号感）</td><td>L3 / g6mf·jL1 等编号展示（编辑条 idLabel 已用此式，推广到图层段行与画布 HUD）</td></tr>
+</table>
+
+<h3>5.4 列表与滚动</h3>
+<ul class="tight">
+  <li>卡片列表：卡片间距 8px、列表内边距 10px、列表底 surface2（凹陷感）；卡片白底 + 1px border。</li>
+  <li>斑马纹：surface3 隔行底（✎ 替代彩色竖线方案 B 时启用）。</li>
+  <li>滚动条：宽 10px、滑块 border 色、hover 转 text3、轨道透明，圆角 2px。</li>
+  <li>空状态：居中 18px Semibold 主文案 + 13px text3 引导语 + 幽灵「＋新建」按钮（替代当前纯文本 emptyHint）。</li>
+</ul>
+
+<h3>5.5 对话框通用规范</h3>
+<ul class="tight">
+  <li>标题栏：ink 实心底 + 白字，左对齐 <code>英文代号</code> + 中文标题，右置 ✕。</li>
+  <li>内容区：内边距 14–16px，分组间距 18px，分组标题 = 等宽大写代号 + 底部发丝线。</li>
+  <li>按钮条：surface3 底 + 顶部分隔线，按钮右对齐，主操作最右。</li>
+  <li>删除影响确认（DeleteImpactConfirm）：九项计数用「语义色数字 + 说明」表格化呈现，danger 仅标真正破坏性项，避免整框红色恐吓。</li>
+</ul>
+
+<h3>5.6 Tooltip / HUD</h3>
+<ul class="tight">
+  <li>Tooltip：反转面（ink 底 #F8FAFC 字）+ 等宽数值，延迟 400ms，无动画（沿用 ElaMenu 去动画纪律）。</li>
+  <li>画布 HUD（AngleHud/预输入）：半透明 ink 85% 底 + 黄字读数，贴光标右下 16px 偏移。</li>
+</ul>
+
+<!-- ============ 6 交互状态矩阵 ============ -->
+<h2><span class="no">06</span>交互状态说明（状态矩阵）</h2>
+
+<h3>6.1 工具按钮（pill 工具坞）</h3>
+<table class="spec">
+  <tr><th>状态</th><th>视觉</th><th>触发 / 说明</th></tr>
+  <tr><td>默认</td><td>透明底 + text2 图标</td><td>—</td></tr>
+  <tr><td>悬停</td><td>surface2 底 + text1 图标</td><td>鼠标进入</td></tr>
+  <tr><td>激活（当前工具）</td><td>实心 accent 黄底 + ink 图标</td><td>全屏唯一实心黄；切换工具即时转移</td></tr>
+  <tr><td>按压</td><td>accentStrong 底</td><td>mousePress 期间</td></tr>
+  <tr><td>禁用</td><td>text3 图标 40% 透明</td><td>工具不可用（如无选区时）</td></tr>
+</table>
+
+<h3>6.2 卡片</h3>
+<table class="spec">
+  <tr><th>状态</th><th>视觉</th><th>说明</th></tr>
+  <tr><td>默认</td><td>白底 + border + 类型色左竖线</td><td>—</td></tr>
+  <tr><td>悬停</td><td>描边转 borderStrong + 删除钮显现（占位槽互换，零位移）</td><td>沿用 CardBase 契约</td></tr>
+  <tr><td>名称编辑中</td><td>chip 转输入框：borderStrong 描边 + 焦点竖条</td><td>Enter/Esc 提交/取消</td></tr>
+  <tr><td>拖拽中（公式分组）</td><td>原卡 40% 透明 + 2px accent 插入指示线</td><td>沿用 dropIndicator，指示线由灰改 accent 黄 ✎</td></tr>
+  <tr><td>dangling（引用失效）</td><td>值区 danger 字 + danger 8% 浅底 + 卡右上角 ⚠ badge</td><td>✎ 增加 ⚠ badge 显性化，当前仅值变色</td></tr>
+  <tr><td>高亮联动</td><td>点击关联/测量卡 → 画布源闪烁，卡片本身边框转 accentStrong 1.5px，800ms 后还原</td><td>与 highlightBlockRequested 信号对应</td></tr>
+</table>
+
+<h3>6.3 页签（两级）</h3>
+<table class="spec">
+  <tr><th>层级</th><th>默认</th><th>悬停</th><th>激活</th></tr>
+  <tr><td>大标签（变量/图层/组件）</td><td>text2</td><td>text1 + surface2 底</td><td>text1 600 字重 + 2px accent 下划线</td></tr>
+  <tr><td>子页签（变量/公式/关联/测量）</td><td>text2</td><td>text1</td><td>text1 + 2px piece 类型色下划线</td></tr>
+  <tr><td>只读页签标识</td><td colspan="3">「关联/测量」标签文字恒为 text2，激活时也不加粗——区分「输入区」与「结果区」</td></tr>
+</table>
+
+<h3>6.4 图层行 / 段行</h3>
+<table class="spec">
+  <tr><th>状态</th><th>视觉</th></tr>
+  <tr><td>默认 / 悬停</td><td>透明底 → surface2 底</td></tr>
+  <tr><td>激活图层</td><td>accentTint 头 + accentStrong 左竖线 + ACTIVE 等宽标记</td></tr>
+  <tr><td>隐藏段</td><td>整行 text3 + 眼图标划线，仍响应点击（架构原则：隐藏 ≠ 禁用交互）</td></tr>
+  <tr><td>重命名中</td><td>名称转输入框，焦点竖条，失焦即提交</td></tr>
+  <tr><td>右键</td><td>ElaMenu 无动画弹出；危险项（删除）danger 字 + 分隔线隔离</td></tr>
+</table>
+
+<h3>6.5 全局反馈</h3>
+<table class="spec">
+  <tr><th>场景</th><th>反馈规范</th></tr>
+  <tr><td>保存成功</td><td>状态栏左侧 success 对勾 + 文件名，2s 淡出（✚ 当前无显性保存反馈）</td></tr>
+  <tr><td>诊断异常</td><td>状态栏 danger 实心 badge（⚠ N），点击弹出明细列表；健康时完全不占位</td></tr>
+  <tr><td>捕捉命中</td><td>画布 success 绿点 + 类型 tooltip（端点/中点/交点）</td></tr>
+  <tr><td>撤销/重做</td><td>状态栏瞬时文字「已撤销：创建线段」，1.5s 还原（✚ 新增）</td></tr>
+  <tr><td>长任务（求解/序列化）</td><td>> 150ms 出状态栏细进度条（accent 黄 2px），< 150ms 不出任何反馈（防闪烁）</td></tr>
+</table>
+
+<!-- ============ 7 逐面板要点汇总 ============ -->
+<h2><span class="no">07</span>逐面板 Redesign 要点汇总</h2>
+<table class="spec">
+  <tr><th style="width:170px">面板</th><th>核心动作</th><th style="width:70px">优先级</th></tr>
+  <tr><td>主窗口 / 导航</td><td>顶部标签收敛为 3 项；悬浮窗加图钉停靠形态；工具坞激活态保持唯一实心黄</td><td><span class="sev p0">P0</span></td></tr>
+  <tr><td>全局色彩</td><td>行竖线双色 → 类型色（方案 A，待拍板）或中性化（方案 B）；dark 模式 piece 色同色相化</td><td><span class="sev p0">P0</span></td></tr>
+  <tr><td>变量面板</td><td>「组件」升为大标签；子页签类型色下划线；只读页签弱化；空状态升级</td><td><span class="sev p1">P1</span></td></tr>
+  <tr><td>五类卡片</td><td>值区 15px Semibold 强化；dangling 加 ⚠ badge；拖拽指示线黄化；serial 标签统一</td><td><span class="sev p1">P1</span></td></tr>
+  <tr><td>图层面板</td><td>激活卡蓝 tint → 黄 tint；段行加 serial 标签；隐藏段降对比但保交互</td><td><span class="sev p1">P1</span></td></tr>
+  <tr><td>线条属性对话框</td><td>代号标题栏；分组标题发丝线化；88px 标签栅格；「填入」内嵌化；主操作右置黄</td><td><span class="sev p1">P1</span></td></tr>
+  <tr><td>状态栏 / 编辑条</td><td>编辑条独立条带化（accentTint）；诊断 badge 化；新增保存/撤销瞬时反馈</td><td><span class="sev p1">P1</span></td></tr>
+  <tr><td>工具表单群（锚点/辅助点/交点/连接/延长/测量结果）</td><td>统一对话框骨架（标题栏 + 分组 + 按钮条），表单栅格与线条属性对话框一致</td><td><span class="sev p2">P2</span></td></tr>
+  <tr><td>圆角纪律</td><td>RadiusPill 更名并清理 > 4px 圆角实例，直角工业感统一</td><td><span class="sev p2">P2</span></td></tr>
+</table>
+
+<div class="note"><b>落地映射（供后续实施参考，本稿不含代码）：</b>2.x 配色 → <code>ThemeTokens::light()/dark()</code>；4.3/5.3 卡片 → <code>CardBase</code> 骨架 + 派生卡；4.5/5.5 对话框 → <code>ElaDialogButtons</code> + 各 Form/Dialog；4.6 → <code>SegmentEditBar</code> / <code>MainWindow::setupStatusBar</code>。所有改动均可沿现有 token 单源机制推进，无需引入新样式系统。</div>
+
+<div class="footer">WildWind Pattern UI Redesign Board v1.0 · 2026-08-28 · 仅前端视觉设计稿，不含功能开发 · 依据 src/ui · src/app · src/tools 源码走查</div>
+
+</div>
+</body>
+</html>

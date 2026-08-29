@@ -21,6 +21,7 @@ LinkedCard::LinkedCard(const cad::param::LinkedVariable& lv,
     , m_refName(lv.refName)
     , m_sourceLabel(sourceLabel)
 {
+    setAccentRole(cad::ui::CardAccent::Linked);  // 关联 = 钴蓝竖线 (方案 A)
     setupUi(lv, sourceLabel);
 }
 
@@ -57,11 +58,7 @@ void LinkedCard::syncFromModel(const cad::param::LinkedVariable& lv,
     m_refChip->setText(lv.refName);
     m_sourceLabel = sourceLabel;
     m_sourceInfo->setText(sourceLabel);
-    if (!m_commentEdit->hasFocus()) {
-        m_commentEdit->blockSignals(true);
-        m_commentEdit->setText(lv.comment);
-        m_commentEdit->blockSignals(false);
-    }
+    setCommentSilently(lv.comment);
     refreshValue(lv.value, lv.dangling);
 }
 
@@ -88,6 +85,7 @@ void LinkedCard::setupUi(const cad::param::LinkedVariable& lv,
     spec.commentText     = lv.comment;
     spec.refName         = lv.refName;
     spec.refChipWidth    = 72;
+    spec.unit            = QStringLiteral("cm");
 
     buildReadOnlySkeleton(spec,
         [this]() { emit deleteRequested(m_id); },

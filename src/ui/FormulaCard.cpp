@@ -25,6 +25,7 @@ FormulaCard::FormulaCard(const cad::param::FormulaVariable& formula,
     , m_conditions(formula.conditions)
     , m_conditionsEnabled(formula.conditionsEnabled)
 {
+    setAccentRole(cad::ui::CardAccent::Formula);  // 公式 = 深青竖线 (方案 A)
     setupUi(formula);
     setResult(formula.valid, cad::geo::Units::mmToCm(formula.value), formula.error);
 }
@@ -56,8 +57,14 @@ void FormulaCard::focusName()
 
 void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
 {
-    m_valueLabel->setStyleSheet(QStringLiteral("%1 background: transparent;")
-                                    .arg(cad::ui::ThemeTokens::kMonospaceMd));
+    // 结果读数与五卡值区同级强化: FontLg Semibold 等宽; 失败态 danger 红 (§6.2)。
+    m_valueLabel->setStyleSheet(
+        QStringLiteral("%1font-size: %2px; font-weight: 600; background: transparent;%3")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily,
+                 QString::number(cad::ui::ThemeTokens::FontLg),
+                 ok ? QString()
+                    : QStringLiteral(" color: %1;")
+                          .arg(cad::ui::Theme::tokens().danger.name())));
     if (ok) {
         m_valueLabel->setText(
             QStringLiteral("= %1").arg(cad::geo::Units::formatNumberTrimmed(valueCm)));
@@ -97,12 +104,10 @@ void FormulaCard::syncFromModel(const cad::param::FormulaVariable& f)
     if (!m_actualEdit->hasFocus()) {
         m_actualEdit->blockSignals(true);
         m_actualEdit->setText(f.actualValueCm.has_value()
-            ? QString::number(*f.actualValueCm, 'f', 2) : QString());
+            ? cad::geo::Units::formatNumberTrimmed(*f.actualValueCm) : QString());
         m_actualEdit->blockSignals(false);
     }
-    m_commentEdit->blockSignals(true);
-    m_commentEdit->setText(f.comment);
-    m_commentEdit->blockSignals(false);
+    setCommentSilently(f.comment);
     m_conditions = f.conditions;
     m_conditionsEnabled = f.conditionsEnabled;
     updateCondRow();
@@ -251,7 +256,7 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
 
     m_actualEdit = new ElaLineEdit(m_detail);
     if (formula.actualValueCm.has_value())
-        m_actualEdit->setText(QString::number(*formula.actualValueCm, 'f', 2));
+        m_actualEdit->setText(cad::geo::Units::formatNumberTrimmed(*formula.actualValueCm));
     m_actualEdit->setPlaceholderText(QStringLiteral("实际值(留空=按公式)"));
     m_actualEdit->setFixedHeight(22);
     m_actualEdit->setFixedWidth(68);

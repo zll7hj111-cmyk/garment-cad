@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WildWind Pattern · 二次元风格方向探索</title>
+<style>
+  :root{
+    --page-bg:#0B0D10; --page-surface:#14171C; --page-surface2:#1B1F25;
+    --page-border:#282E37; --page-text:#E8EAED; --page-text2:#9BA3AE; --page-text3:#6B7482;
+    --gold:#D4A24C;
+    --ui:'Segoe UI','Segoe UI Variable Text','Microsoft YaHei UI',sans-serif;
+    --mono:'Consolas','Courier New',monospace;
+    --serif:'Georgia','Times New Roman',serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:var(--ui);background:var(--page-bg);color:var(--page-text);font-size:13px;line-height:1.65;
+       background-image:
+         radial-gradient(ellipse at 15% 0%, rgba(212,162,76,.05) 0%, transparent 55%),
+         radial-gradient(ellipse at 85% 100%, rgba(35,222,222,.04) 0%, transparent 55%);
+       background-attachment:fixed;}
+  .page{max-width:1180px;margin:0 auto;padding:36px 30px 100px;}
+
+  header.hero{border-bottom:1px solid var(--page-border);padding-bottom:24px;margin-bottom:30px;position:relative;}
+  header.hero::after{content:'';position:absolute;bottom:-1px;left:0;width:120px;height:2px;background:var(--gold);}
+  .hero .kicker{font-family:var(--mono);font-size:10.5px;letter-spacing:3px;color:var(--gold);text-transform:uppercase;}
+  .hero h1{font-size:28px;font-weight:600;letter-spacing:-.3px;margin:8px 0 8px;}
+  .hero .sub{color:var(--page-text2);font-size:13.5px;max-width:840px;}
+
+  h2{font-size:19px;font-weight:600;margin:46px 0 6px;color:var(--page-text);display:flex;align-items:baseline;gap:10px;}
+  h2 .no{font-family:var(--mono);color:var(--gold);font-weight:400;font-size:14px;}
+  h2 .sub{font-size:12.5px;color:var(--page-text3);font-weight:400;}
+  p.lede{color:var(--page-text2);font-size:13px;margin:0 0 16px;max-width:900px;}
+
+  /* ---- Insight callout ---- */
+  .insight{border:1px solid var(--page-border);border-left:3px solid var(--gold);background:var(--page-surface);padding:14px 18px;margin:16px 0;}
+  .insight .tag{font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:var(--gold);text-transform:uppercase;display:block;margin-bottom:6px;}
+  .insight p{font-size:13px;color:var(--page-text2);}
+  .insight p b{color:var(--page-text);}
+  .insight.warn{border-left-color:#E0A030;}
+
+  /* ---- Grammar comparison table ---- */
+  table.grammar{width:100%;border-collapse:collapse;font-size:12.5px;margin:14px 0;background:var(--page-surface);border:1px solid var(--page-border);}
+  table.grammar th{background:var(--page-surface2);color:var(--page-text2);text-align:left;padding:8px 14px;font-weight:600;font-size:11px;letter-spacing:.5px;border-bottom:1px solid var(--page-border);}
+  table.grammar td{border-bottom:1px solid var(--page-border);padding:8px 14px;vertical-align:top;color:var(--page-text2);line-height:1.6;}
+  table.grammar tr:last-child td{border-bottom:none;}
+  table.grammar td:first-child{color:var(--page-text);font-weight:500;width:110px;}
+
+  /* ---- Direction block ---- */
+  .dir{border:1px solid var(--page-border);background:var(--page-surface);margin:22px 0;overflow:hidden;}
+  .dir-head{padding:14px 20px;border-bottom:1px solid var(--page-border);display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+  .dir-head .name{font-size:16px;font-weight:600;}
+  .dir-head .en{font-family:var(--mono);font-size:10.5px;letter-spacing:1.5px;color:var(--page-text3);}
+  .dir-head .tagline{font-size:12.5px;color:var(--page-text2);margin-left:auto;}
+  .rec-badge{background:var(--gold);color:#0B0D10;font-size:10.5px;font-weight:700;padding:2px 9px;letter-spacing:.5px;font-family:var(--mono);}
+  .dir-body{display:grid;grid-template-columns:250px 1fr;gap:0;}
+  @media(max-width:900px){.dir-body{grid-template-columns:1fr;}}
+
+  .palette{padding:16px;border-right:1px solid var(--page-border);background:var(--page-surface2);}
+  .palette h4{font-size:10.5px;letter-spacing:1.2px;color:var(--page-text3);font-family:var(--mono);margin-bottom:10px;text-transform:uppercase;}
+  .p-row{display:flex;align-items:center;gap:9px;margin-bottom:6px;}
+  .p-chip{width:26px;height:26px;border:1px solid rgba(255,255,255,.12);flex-shrink:0;}
+  .p-meta{font-size:11px;line-height:1.3;}
+  .p-meta b{display:block;color:var(--page-text);font-weight:500;}
+  .p-meta span{font-family:var(--mono);font-size:10px;color:var(--page-text3);}
+
+  .mockup-host{padding:18px;display:flex;justify-content:center;}
+
+  .dir-foot{padding:14px 20px;border-top:1px solid var(--page-border);background:var(--page-surface2);}
+  .scores{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px;}
+  .score{font-size:11.5px;}
+  .score .lbl{color:var(--page-text3);font-family:var(--mono);font-size:10px;letter-spacing:.5px;text-transform:uppercase;display:block;margin-bottom:3px;}
+  .score .stars{color:var(--gold);letter-spacing:1px;font-size:12px;}
+  .score .stars .off{color:#39404A;}
+  .notes{font-size:12.5px;color:var(--page-text2);}
+  .notes ul{margin:0;padding-left:18px;}
+  .notes li{margin:3px 0;}
+  .notes b{color:var(--page-text);}
+
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;}
+  .chip{font-family:var(--mono);font-size:10px;padding:2px 8px;border:1px solid var(--page-border);color:var(--page-text2);background:var(--page-surface);}
+  .chip.good{border-color:rgba(212,162,76,.5);color:var(--gold);}
+  .chip.bad{border-color:rgba(224,90,90,.4);color:#E08A8A;}
+
+  /* ============================================================
+     DIRECTION A — Arknights Industrial
+     ============================================================ */
+  .a-wrap{background:#0F1115;padding:14px;width:100%;max-width:440px;
+          background-image:repeating-linear-gradient(0deg,transparent 0 3px,rgba(35,222,222,.018) 3px 4px);}
+  .a-panel{background:#1A1D23;border:1px solid #2E343D;}
+  .a-tabs{display:flex;border-bottom:1px solid #2E343D;}
+  .a-tabs span{flex:1;padding:7px 4px;text-align:center;font-size:11.5px;color:#7A8592;border-bottom:2px solid transparent;letter-spacing:.5px;}
+  .a-tabs span.on{color:#E8EAED;border-bottom-color:#23DEDE;font-weight:600;}
+  .a-subtabs{display:flex;border-bottom:1px solid #23272E;background:#15181D;}
+  .a-subtabs span{flex:1;padding:5px 3px;text-align:center;font-size:10.5px;color:#7A8592;border-bottom:2px solid transparent;font-family:var(--mono);letter-spacing:.5px;text-transform:uppercase;}
+  .a-subtabs span.on{color:#23DEDE;border-bottom-color:#23DEDE;}
+
+  .a-list{padding:10px;display:flex;flex-direction:column;gap:7px;min-height:230px;}
+  .a-card{background:#1E2229;border:1px solid #2E343D;position:relative;padding:8px 10px 8px 16px;
+          clip-path:polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 0 100%);}
+  .a-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--pc,#23DEDE);}
+  .a-card .r1{display:flex;align-items:center;gap:8px;}
+  .a-card .r2{display:flex;align-items:center;gap:8px;margin-top:5px;}
+  .a-idx{font-family:var(--mono);font-size:10px;color:#5A6472;min-width:14px;}
+  .a-chip{border:1px solid var(--pc,#23DEDE);color:var(--pc,#23DEDE);padding:0 8px;font-size:11.5px;line-height:18px;
+          clip-path:polygon(0 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 4px 100%, 0 calc(100% - 4px));}
+  .a-val{font-family:var(--mono);font-size:15px;font-weight:600;margin-left:auto;color:#E8EAED;letter-spacing:-.2px;}
+  .a-unit{font-family:var(--mono);font-size:10px;color:#5A6472;}
+  .a-del{width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#4A5462;border:1px solid #2E343D;}
+  .a-expr{font-family:var(--mono);font-size:11px;background:#15181D;padding:3px 9px;color:#8A94A2;flex:1;border-left:1px solid #2E343D;}
+  .a-src{font-size:11px;color:#5A6472;}
+  .a-hud{font-family:var(--mono);font-size:9.5px;letter-spacing:1.5px;color:#4A5462;padding:6px 10px 0;text-transform:uppercase;display:flex;gap:10px;}
+  .a-hud .dot{width:5px;height:5px;background:#23DEDE;display:inline-block;margin-right:4px;vertical-align:middle;}
+
+  /* ============================================================
+     DIRECTION B — Reverse 1999 Arcane
+     ============================================================ */
+  .b-wrap{background:#0D0A08;padding:16px;width:100%;max-width:440px;position:relative;}
+  .b-wrap::after{content:'';position:absolute;inset:0;pointer-events:none;
+                 background:repeating-linear-gradient(45deg,transparent 0 2px,rgba(200,164,100,.012) 2px 3px);}
+  .b-panel{background:#171310;border:1px solid #3A2E24;position:relative;}
+  .b-panel::before{content:'';position:absolute;inset:3px;border:1px solid rgba(200,164,100,.28);pointer-events:none;}
+  .b-tabs{display:flex;border-bottom:1px solid #3A2E24;position:relative;}
+  .b-tabs span{flex:1;padding:8px 4px;text-align:center;font-size:12px;color:#8A7A66;font-family:var(--serif);letter-spacing:1px;}
+  .b-tabs span.on{color:#D8C4A0;border-bottom:2px solid #C8A464;}
+  .b-tabs::after{content:'';position:absolute;left:12px;right:12px;bottom:7px;height:1px;background:linear-gradient(90deg,transparent,#C8A464,transparent);}
+  .b-subtabs{display:flex;border-bottom:1px solid #3A2E24;background:#120F0C;}
+  .b-subtabs span{flex:1;padding:6px 3px;text-align:center;font-size:10px;color:#8A7A66;font-family:var(--serif);letter-spacing:2px;text-transform:uppercase;}
+  .b-subtabs span.on{color:#C8A464;}
+
+  .b-list{padding:12px;display:flex;flex-direction:column;gap:9px;min-height:230px;}
+  .b-card{background:#1C1713;border:1px solid #3A2E24;padding:9px 11px 9px 16px;position:relative;}
+  .b-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--pc,#C8A464);}
+  .b-card::after{content:'';position:absolute;right:5px;top:5px;width:12px;height:12px;border-top:1px solid rgba(200,164,100,.5);border-right:1px solid rgba(200,164,100,.5);}
+  .b-card .r1{display:flex;align-items:center;gap:9px;}
+  .b-card .r2{display:flex;align-items:center;gap:9px;margin-top:6px;}
+  .b-idx{font-family:var(--serif);font-size:10.5px;color:#7A6A56;min-width:14px;}
+  .b-chip{border:1px solid var(--pc,#C8A464);color:var(--pc,#C8A464);padding:0 9px;font-size:11.5px;line-height:19px;font-family:var(--serif);}
+  .b-val{font-family:var(--serif);font-size:16px;margin-left:auto;color:#E8DFD0;}
+  .b-unit{font-family:var(--serif);font-size:10px;color:#7A6A56;}
+  .b-del{width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#6A5A48;border:1px solid #3A2E24;}
+  .b-expr{font-family:var(--mono);font-size:11px;background:#120F0C;padding:3px 9px;color:#9A8874;flex:1;border-left:1px solid #3A2E24;}
+  .b-src{font-size:11px;color:#7A6A56;font-family:var(--serif);}
+  .b-hud{font-family:var(--serif);font-size:10px;letter-spacing:3px;color:#6A5A48;padding:8px 12px 0;text-transform:uppercase;text-align:center;}
+  .b-hud .diamond{display:inline-block;width:4px;height:4px;background:#C8A464;transform:rotate(45deg);margin:0 8px;vertical-align:middle;}
+
+  /* ============================================================
+     DIRECTION C — Recommended Fusion
+     ============================================================ */
+  .c-wrap{background:#12151A;padding:14px;width:100%;max-width:440px;
+          background-image:
+            repeating-linear-gradient(0deg,transparent 0 3px,rgba(212,162,76,.014) 3px 4px),
+            linear-gradient(180deg,rgba(212,162,76,.035) 0%,transparent 40%);}
+  .c-panel{background:#1C2027;border:1px solid #333A45;position:relative;}
+  .c-panel::after{content:'';position:absolute;left:0;right:0;top:0;height:1px;background:linear-gradient(90deg,transparent,rgba(212,162,76,.55) 20%,rgba(212,162,76,.55) 80%,transparent);}
+  .c-tabs{display:flex;border-bottom:1px solid #2A313A;}
+  .c-tabs span{flex:1;padding:7px 4px;text-align:center;font-size:11.5px;color:#8A94A0;border-bottom:2px solid transparent;letter-spacing:.5px;}
+  .c-tabs span.on{color:#F0E4D0;border-bottom-color:#D4A24C;font-weight:600;}
+  .c-subtabs{display:flex;border-bottom:1px solid #232932;background:#171B21;}
+  .c-subtabs span{flex:1;padding:5px 3px;text-align:center;font-size:10px;color:#7A8592;border-bottom:2px solid transparent;font-family:var(--mono);letter-spacing:1px;text-transform:uppercase;}
+  .c-subtabs span.on{color:#D4A24C;border-bottom-color:var(--pc,#D4A24C);}
+
+  .c-list{padding:10px;display:flex;flex-direction:column;gap:7px;min-height:230px;}
+  .c-card{background:#212630;border:1px solid #333A45;position:relative;padding:8px 10px 8px 16px;
+          clip-path:polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0 100%);}
+  .c-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--pc,#D4A24C);}
+  .c-card .r1{display:flex;align-items:center;gap:8px;}
+  .c-card .r2{display:flex;align-items:center;gap:8px;margin-top:5px;}
+  .c-idx{font-family:var(--mono);font-size:10px;color:#6B7482;min-width:14px;}
+  .c-chip{border:1px solid var(--pc,#D4A24C);color:var(--pc,#D4A24C);padding:0 8px;font-size:11.5px;line-height:18px;
+          clip-path:polygon(0 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 4px 100%, 0 calc(100% - 4px));}
+  .c-val{font-family:var(--mono);font-size:15px;font-weight:600;margin-left:auto;color:#F2E8D8;letter-spacing:-.2px;}
+  .c-unit{font-family:var(--mono);font-size:10px;color:#6B7482;}
+  .c-del{width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#5A6472;border:1px solid #333A45;}
+  .c-expr{font-family:var(--mono);font-size:11px;background:#171B21;padding:3px 9px;color:#9AA3AE;flex:1;border-left:2px solid var(--pc,#D4A24C);}
+  .c-src{font-size:11px;color:#6B7482;}
+  .c-hud{font-family:var(--mono);font-size:9.5px;letter-spacing:2px;color:#6B7482;padding:6px 10px 0;text-transform:uppercase;display:flex;align-items:center;gap:8px;}
+  .c-hud .bar{flex:1;height:1px;background:linear-gradient(90deg,rgba(212,162,76,.45),transparent);}
+  .c-hud .dot{width:4px;height:4px;background:#D4A24C;transform:rotate(45deg);}
+
+  /* ---- Roadmap ---- */
+  .roadmap{border:1px solid var(--page-border);background:var(--page-surface);padding:18px 22px;margin:16px 0;}
+  .roadmap h4{font-size:13px;margin:0 0 10px;color:var(--page-text);}
+  .roadmap table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .roadmap th{text-align:left;padding:7px 12px;background:var(--page-surface2);font-size:11px;color:var(--page-text2);font-weight:600;border-bottom:1px solid var(--page-border);}
+  .roadmap td{padding:7px 12px;border-bottom:1px solid var(--page-border);color:var(--page-text2);vertical-align:top;}
+  .roadmap tr:last-child td{border-bottom:none;}
+  .roadmap td b{color:var(--page-text);}
+  .cost{font-family:var(--mono);font-size:11px;padding:1px 7px;display:inline-block;}
+  .cost.low{background:rgba(90,180,120,.15);color:#7AC49A;}
+  .cost.mid{background:rgba(212,162,76,.15);color:#D4A24C;}
+  .cost.high{background:rgba(224,90,90,.15);color:#E08A8A;}
+
+  .footer{margin-top:56px;border-top:1px solid var(--page-border);padding-top:14px;font-size:11px;color:var(--page-text3);font-family:var(--mono);line-height:1.7;}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="hero">
+  <div class="kicker">WildWind Pattern · Style Direction Exploration</div>
+  <h1>二次元风格方向探索</h1>
+  <div class="sub">从 Endfield 工业工具语言，转向有情绪、有质感的二次元视觉体系。参考锚点：《明日方舟》的数据终端美学 与 《重返未来：1999》的复古秘仪美学。本页拆解两者的视觉语法，评估其在 CAD 高密度场景下的适配边界，并给出三个可落地方向。</div>
+</header>
+
+<!-- ============ 01 视觉语法拆解 ============ -->
+<h2><span class="no">01</span>视觉语法拆解 <span class="sub">两个游戏的语言本质差异</span></h2>
+<p class="lede">这两个参考看似都是「二次元」，实则走的是几乎相反的两条路。理解这个差异，是判断它们能否嫁接到 CAD 的前提。</p>
+
+<table class="grammar">
+  <tr><th>维度</th><th>《明日方舟》 Arknights</th><th>《重返未来：1999》 Reverse: 1999</th></tr>
+  <tr><td>核心信条</td><td><b>克制</b> — 「所有视觉内容都承担功能」，装饰元素仅用于分割层级，不承载信息</td><td><b>铺陈</b> — 「复古 / 神秘学 / 电影感 / 20 世纪」，装饰本身即是内容</td></tr>
+  <tr><td>色彩逻辑</td><td>大面积中性色（灰白黑）+ 少量功能色 + 极少量警示色。招牌是「酸橙色信笺」：深灰底 + 高彩度化学绿 + 极细亮色描边</td><td>极深墨底 + 暖金 / 复古橙。饱和度不高，靠「暗」与「金」的对比营造低调奢华</td></tr>
+  <tr><td>几何语言</td><td><b>斜切角（chamfer）</b>、矩形切割、数据化辅助线、工业网格、参数化图形、工程制图式排布</td><td><b>Art Deco</b> 对称几何、装饰性双层边框、拱形、放射线、菱形、拼贴</td></tr>
+  <tr><td>字体</td><td>汉字黑体 / 方折造型体；<b>英文与数字几乎清一色等宽字体</b>（终端机般的机械序列感）</td><td>衬线体标题（古典、有文学性）+ 无衬线正文；大量装饰性分隔与烫金质感</td></tr>
+  <tr><td>质感</td><td>磨砂玻璃 / 亚克力（Fluent 质感）、扫描线、噪点化、马赛克切分、背景模糊分层</td><td>纸张纹理、胶片颗粒、做旧、烫金、老照片色偏</td></tr>
+  <tr><td>构图</td><td>非对称构图，<b>「参差感」</b>— 用不对齐制造视觉流动与方向指向</td><td>电影感居中构图，对称庄重，留白给看板角色</td></tr>
+</table>
+
+<div class="insight">
+<span class="tag">关键判断</span>
+<p>方舟的底层其实是<b>「高信息密度的工程终端」</b>——它的设计团队反复强调「真正优秀的 UI 不是减少信息量，而是在高信息密度下依然保持清晰秩序」。这与 CAD 的需求<b>几乎完全同构</b>。而 1999 的底层是<b>「沉浸叙事」</b>，靠装饰与氛围打动人，与「精确读数」存在结构性冲突。<br><br>
+换句话说：<b>方舟好看是因为它把工具做到了极致；1999 好看是因为它把装饰做到了极致。</b></p>
+</div>
+
+<!-- ============ 02 CAD 适配边界 ============ -->
+<h2><span class="no">02</span>CAD 场景的适配边界 <span class="sub">什么能要，什么必须拒绝</span></h2>
+<p class="lede">服装 CAD 有四条硬约束，任何风格转向都不能突破。这决定了两个参考的可用边界。</p>
+
+<table class="grammar">
+  <tr><th style="width:150px">CAD 硬约束</th><th>对方舟元素的影响</th><th>对 1999 元素的影响</th></tr>
+  <tr><td><b>数值必须瞬时可读</b><br>（高频扫读，不能有任何干扰）</td><td style="color:#7AC49A">✓ 等宽数字、工程制图式排布、参数化标注 —— <b>天然契合</b>，这是方舟的看家本领</td><td style="color:#E08A8A">✗ Art Deco 装饰边框、花纹分隔线会与数字争夺注意力；衬线数字在小数位辨识上弱于等宽体</td></tr>
+  <tr><td><b>长时间使用不疲劳</b><br>（打版师一天 8 小时）</td><td style="color:#7AC49A">✓ 低饱和大面积中性色 + 极少量高亮 —— 官方自述「长时间保持视觉舒适度，几乎不产生视觉疲劳」</td><td style="color:#D4A24C">△ 暗色+暖金本身舒适，但持续暴露在高密度装饰纹样下会增加认知负荷</td></tr>
+  <tr><td><b>画布是主体，UI 是配角</b></td><td style="color:#7AC49A">✓ 深灰底让画布线条更突出，UI 自然退后</td><td style="color:#E08A8A">✗ 华丽边框会抢画布注意力——打版时用户眼睛要盯线条，不能被金色花纹拉走</td></tr>
+  <tr><td><b>刷新性能敏感</b><br>（拖动时每帧重绘）</td><td style="color:#D4A24C">△ 斜切角 / 描边 / 网格 = 静态绘制，零运行时代价；<b>但真磨砂玻璃需要背景模糊抓帧，在频繁重绘的面板上是性能陷阱</b></td><td style="color:#E08A8A">✗ 双层边框、纹理叠加、做旧质感多为位图或多层自绘，重绘成本高</td></tr>
+</table>
+
+<div class="insight warn">
+<span class="tag">给你的判断</span>
+<p>你说「降低工具感，多一些漂亮的感觉」——我的诊断是：<b>问题不在缺装饰，而在当前配色太冷、太平、太素</b>。蓝图灰 #ECEFF2 + 白面板 + 信号黄，这套配色在功能上没问题，但它没有质感、没有情绪、没有「材质」。<br><br>
+<b>正确的解法是加「质感」而不是加「花纹」</b>：换深色基底、换有情绪的强调色、加极细描边与斜切几何、铺一层几乎看不见的扫描线与噪点。这些不改变信息密度，却能让界面从「工具」变成「有性格的终端」。<br><br>
+1999 的 Art Deco 装饰边框如果照搬，会在两周后让你怀念现在这个朴素的版本。</p>
+</div>
+
+<!-- ============ 03 三个方向 ============ -->
+<h2><span class="no">03</span>三个方向 <span class="sub">同一界面内容，三套视觉皮肤</span></h2>
+<p class="lede">下面用同一个变量面板（3 张卡片：变量 / 公式 / 测量）渲染三套方案，你可以直接对比「好看」与「可用」的取舍。</p>
+
+<!-- Direction A -->
+<div class="dir">
+  <div class="dir-head">
+    <span class="name">方向 A · 罗德岛终端</span>
+    <span class="en">ARKNIGHTS INDUSTRIAL</span>
+    <span class="tagline">冷峻、精密、数据终端感 — 工具美学的极致</span>
+  </div>
+  <div class="dir-body">
+    <div class="palette">
+      <h4>Palette</h4>
+      <div class="p-row"><div class="p-chip" style="background:#0F1115"></div><div class="p-meta"><b>桌面 / 画布底</b><span>#0F1115</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#1A1D23"></div><div class="p-meta"><b>面板</b><span>#1A1D23</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#1E2229"></div><div class="p-meta"><b>卡片</b><span>#1E2229</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#2E343D"></div><div class="p-meta"><b>描边</b><span>#2E343D</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#E8EAED"></div><div class="p-meta"><b>主文字</b><span>#E8EAED</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#23DEDE"></div><div class="p-meta"><b>强调青</b><span>#23DEDE</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#7FDB6A"></div><div class="p-meta"><b>捕捉绿</b><span>#7FDB6A</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#E05A5A"></div><div class="p-meta"><b>错误红</b><span>#E05A5A</span></div></div>
+    </div>
+    <div class="mockup-host">
+      <div class="a-wrap">
+        <div class="a-panel">
+          <div class="a-tabs"><span class="on">变量</span><span>图层</span><span>组件</span></div>
+          <div class="a-subtabs"><span class="on">VAR</span><span>FML</span><span>LNK</span><span>MSR</span></div>
+          <div class="a-list">
+            <div class="a-card" style="--pc:#8A94A2">
+              <div class="r1"><span class="a-idx">01</span><span class="a-chip">胸围</span><span class="a-val">92.00</span><span class="a-unit">cm</span><span class="a-del">✕</span></div>
+              <div class="r2"><span class="a-src">手动输入</span></div>
+            </div>
+            <div class="a-card" style="--pc:#23DEDE">
+              <div class="r1"><span class="a-idx">02</span><span class="a-chip">半胸围</span><span class="a-val">46.00</span><span class="a-unit">cm</span><span class="a-del">✕</span></div>
+              <div class="r2"><span class="a-expr">= 胸围 / 2</span></div>
+            </div>
+            <div class="a-card" style="--pc:#E0954A">
+              <div class="r1"><span class="a-idx">03</span><span class="a-chip">前中线</span><span class="a-val">38.20</span><span class="a-unit">cm</span><span class="a-del">✕</span></div>
+              <div class="r2"><span class="a-src">P1 ↔ P3 · 前片</span></div>
+            </div>
+          </div>
+          <div class="a-hud"><span><span class="dot"></span>SYS / R.I. TERMINAL</span><span style="margin-left:auto">3 ENTITIES</span></div>
+          <div style="height:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="dir-foot">
+    <div class="scores">
+      <div class="score"><span class="lbl">数值可读性</span><span class="stars">★★★★★</span></div>
+      <div class="score"><span class="lbl">长时舒适度</span><span class="stars">★★★★<span class="off">★</span></span></div>
+      <div class="score"><span class="lbl">情绪 / 漂亮感</span><span class="stars">★★★<span class="off">★★</span></span></div>
+      <div class="score"><span class="lbl">实现成本</span><span class="stars">★★★★<span class="off">★</span></span></div>
+    </div>
+    <div class="notes">
+      <ul>
+        <li><b>拿什么：</b>斜切角（右上切 9px）、极细扫描线、等宽数字、工程代号（VAR/FML/MSR）、终端感 HUD 条、高亮青作为唯一强调色</li>
+        <li><b>适配性：</b>与现有架构几乎零冲突——等宽数字纪律、piece 类型色分类逻辑全部保留，只需换色板 + 加斜切绘制</li>
+        <li><b>风险：</b>可能仍然偏「工具感」。如果你要的就是这个，它完美；如果你嫌方舟也太硬，看方向 C</li>
+      </ul>
+    </div>
+    <div class="chips">
+      <span class="chip good">信息密度不降</span><span class="chip good">性能零代价</span><span class="chip good">工程制图调性</span><span class="chip">偏冷</span>
+    </div>
+  </div>
+</div>
+
+<!-- Direction B -->
+<div class="dir">
+  <div class="dir-head">
+    <span class="name">方向 B · 暴雨秘仪</span>
+    <span class="en">REVERSE 1999 ARCANE</span>
+    <span class="tagline">华丽、复古、神秘学氛围 — 装饰艺术的极致</span>
+  </div>
+  <div class="dir-body">
+    <div class="palette">
+      <h4>Palette</h4>
+      <div class="p-row"><div class="p-chip" style="background:#0D0A08"></div><div class="p-meta"><b>桌面 / 画布底</b><span>#0D0A08</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#171310"></div><div class="p-meta"><b>面板</b><span>#171310</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#1C1713"></div><div class="p-meta"><b>卡片</b><span>#1C1713</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#3A2E24"></div><div class="p-meta"><b>描边</b><span>#3A2E24</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#E8DFD0"></div><div class="p-meta"><b>主文字</b><span>#E8DFD0</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#C8A464"></div><div class="p-meta"><b>暖金</b><span>#C8A464</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#9A8874"></div><div class="p-meta"><b>次级</b><span>#9A8874</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#8A4A3A"></div><div class="p-meta"><b>暗红</b><span>#8A4A3A</span></div></div>
+    </div>
+    <div class="mockup-host">
+      <div class="b-wrap">
+        <div class="b-panel">
+          <div class="b-tabs"><span class="on">变量</span><span>图层</span><span>组件</span></div>
+          <div class="b-subtabs"><span class="on">VAR</span><span>FML</span><span>LNK</span><span>MSR</span></div>
+          <div class="b-list">
+            <div class="b-card" style="--pc:#9A8874">
+              <div class="r1"><span class="b-idx">Ⅰ</span><span class="b-chip">胸围</span><span class="b-val">92.00</span><span class="b-unit">cm</span><span class="b-del">✕</span></div>
+              <div class="r2"><span class="b-src">手动输入</span></div>
+            </div>
+            <div class="b-card" style="--pc:#C8A464">
+              <div class="r1"><span class="b-idx">Ⅱ</span><span class="b-chip">半胸围</span><span class="b-val">46.00</span><span class="b-unit">cm</span><span class="b-del">✕</span></div>
+              <div class="r2"><span class="b-expr">= 胸围 / 2</span></div>
+            </div>
+            <div class="b-card" style="--pc:#B08050">
+              <div class="r1"><span class="b-idx">Ⅲ</span><span class="b-chip">前中线</span><span class="b-val">38.20</span><span class="b-unit">cm</span><span class="b-del">✕</span></div>
+              <div class="r2"><span class="b-src">P1 ↔ P3 · 前片</span></div>
+            </div>
+          </div>
+          <div class="b-hud">PATTERN WORKSHOP<span class="diamond"></span>MMXXVI</div>
+          <div style="height:10px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="dir-foot">
+    <div class="scores">
+      <div class="score"><span class="lbl">数值可读性</span><span class="stars">★★<span class="off">★★★</span></span></div>
+      <div class="score"><span class="lbl">长时舒适度</span><span class="stars">★★★<span class="off">★★</span></span></div>
+      <div class="score"><span class="lbl">情绪 / 漂亮感</span><span class="stars">★★★★★</span></div>
+      <div class="score"><span class="lbl">实现成本</span><span class="stars">★★<span class="off">★★★</span></span></div>
+    </div>
+    <div class="notes">
+      <ul>
+        <li><b>拿什么：</b>极深墨底、暖金双层描边、衬线标题、装饰性角标、菱形分隔符、罗马数字序号、做旧颗粒</li>
+        <li><b>致命问题：</b>衬线体数字（Georgia）在小数位辨识上明显弱于等宽体 —— 92.00 与 38.20 快速扫读时容易串行。这是 CAD 的硬伤</li>
+        <li><b>次生问题：</b>双层描边 + 角标 + 底纹 = 每卡片多 3~4 次绘制调用，虚拟化列表快速滚动时有掉帧风险</li>
+        <li><b>可接受用法：</b>只用于<b>「关于」对话框、欢迎页、空状态插画</b>这类低频界面，不进主工作流</li>
+      </ul>
+    </div>
+    <div class="chips">
+      <span class="chip good">氛围感最强</span><span class="chip bad">衬线数字伤读数</span><span class="chip bad">重绘成本高</span><span class="chip bad">装饰抢画布</span>
+    </div>
+  </div>
+</div>
+
+<!-- Direction C -->
+<div class="dir">
+  <div class="dir-head">
+    <span class="name">方向 C · 打版工坊终端</span>
+    <span class="en">ATELIER TERMINAL · 融合推荐</span>
+    <span class="rec-badge">RECOMMENDED</span>
+    <span class="tagline">方舟的骨架 + 1999 的温度 — 精密但不冰冷</span>
+  </div>
+  <div class="dir-body">
+    <div class="palette">
+      <h4>Palette</h4>
+      <div class="p-row"><div class="p-chip" style="background:#12151A"></div><div class="p-meta"><b>桌面 / 画布底</b><span>#12151A</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#1C2027"></div><div class="p-meta"><b>面板</b><span>#1C2027</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#212630"></div><div class="p-meta"><b>卡片</b><span>#212630</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#333A45"></div><div class="p-meta"><b>描边</b><span>#333A45</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#F2E8D8"></div><div class="p-meta"><b>主文字</b><span>#F2E8D8</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#D4A24C"></div><div class="p-meta"><b>暖金强调</b><span>#D4A24C</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#4A9E8F"></div><div class="p-meta"><b>数据青</b><span>#4A9E8F</span></div></div>
+      <div class="p-row"><div class="p-chip" style="background:#C8705A"></div><div class="p-meta"><b>陶土橙</b><span>#C8705A</span></div></div>
+    </div>
+    <div class="mockup-host">
+      <div class="c-wrap">
+        <div class="c-panel">
+          <div class="c-tabs"><span class="on">变量</span><span>图层</span><span>组件</span></div>
+          <div class="c-subtabs"><span class="on" style="--pc:#A8B0BC">VAR</span><span style="--pc:#4A9E8F">FML</span><span style="--pc:#6A8EC4">LNK</span><span style="--pc:#C8705A">MSR</span></div>
+          <div class="c-list">
+            <div class="c-card" style="--pc:#A8B0BC">
+              <div class="r1"><span class="c-idx">01</span><span class="c-chip">胸围</span><span class="c-val">92.00</span><span class="c-unit">cm</span><span class="c-del">✕</span></div>
+              <div class="r2"><span class="c-src">手动输入</span></div>
+            </div>
+            <div class="c-card" style="--pc:#4A9E8F">
+              <div class="r1"><span class="c-idx">02</span><span class="c-chip">半胸围</span><span class="c-val">46.00</span><span class="c-unit">cm</span><span class="c-del">✕</span></div>
+              <div class="r2"><span class="c-expr">= 胸围 / 2</span></div>
+            </div>
+            <div class="c-card" style="--pc:#C8705A">
+              <div class="r1"><span class="c-idx">03</span><span class="c-chip">前中线</span><span class="c-val">38.20</span><span class="c-unit">cm</span><span class="c-del">✕</span></div>
+              <div class="r2"><span class="c-src">P1 ↔ P3 · 前片</span></div>
+            </div>
+          </div>
+          <div class="c-hud"><span>VARIABLE</span><span class="bar"></span><span class="dot"></span><span>3</span></div>
+          <div style="height:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="dir-foot">
+    <div class="scores">
+      <div class="score"><span class="lbl">数值可读性</span><span class="stars">★★★★★</span></div>
+      <div class="score"><span class="lbl">长时舒适度</span><span class="stars">★★★★★</span></div>
+      <div class="score"><span class="lbl">情绪 / 漂亮感</span><span class="stars">★★★★<span class="off">★</span></span></div>
+      <div class="score"><span class="lbl">实现成本</span><span class="stars">★★★★<span class="off">★</span></span></div>
+    </div>
+    <div class="notes">
+      <ul>
+        <li><b>骨架取自方舟：</b>斜切角（收敛到 7px，比 A 更克制）、等宽数字、工程代号标签、终端感 HUD、深色基底让画布突出</li>
+        <li><b>温度取自 1999：</b>强调色从冷青换成<b>暖金 #D4A24C</b>（黄铜/缝纫机/裁缝剪的金属联想，与服装行业天然契合）；主文字用暖白 #F2E8D8 而非纯白，去掉「塑料感」；顶部一道渐隐金线作为「质感锚点」，成本几乎为零</li>
+        <li><b>关键取舍：</b>数字坚持等宽 + 坚持 15px/600，<b>绝不用衬线体做数值</b>；装饰只用「斜切 + 描边 + 一条渐隐线」，拒绝花纹与双层框</li>
+        <li><b>行业联想：</b>暖金 + 深色 + 精密刻度 = 「高级定制工坊的黄铜量具」，而非「科幻军工厂」。这比方舟的冷青更贴服装</li>
+      </ul>
+    </div>
+    <div class="chips">
+      <span class="chip good">数字仍等宽</span><span class="chip good">性能零代价</span><span class="chip good">有情绪有质感</span><span class="chip good">贴合服装行业</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 04 落地路径 ============ -->
+<h2><span class="no">04</span>落地路径 <span class="sub">以方向 C 为例</span></h2>
+<p class="lede">现有 ThemeTokens 单源架构是这次改造的最大资产——换风格不需要动任何业务逻辑，只需重做色板与少量自绘。</p>
+
+<div class="roadmap">
+  <h4>改造清单与成本</h4>
+  <table>
+    <tr><th style="width:150px">改造项</th><th style="width:80px">成本</th><th>说明</th></tr>
+    <tr><td><b>色板重做</b><br><code>Theme.h/.cpp</code></td><td><span class="cost low">低</span></td><td>替换 <code>light()/dark()</code> 两组 token 值，并<b>将默认模式改为 Dark</b>。42 个 token 结构不变，QSS 生成器自动跟随。这是收益最高、成本最低的一步</td></tr>
+    <tr><td><b>斜切角</b><br><code>CardBase::paintEvent</code></td><td><span class="cost low">低</span></td><td>卡片已有自绘 paintEvent 骨架，把 <code>drawRect</code> 换成 <code>drawPolygon</code>（右上切 7px）即可。静态绘制，零运行时代价</td></tr>
+    <tr><td><b>顶部渐隐金线</b><br>全局 QSS</td><td><span class="cost low">低</span></td><td>面板/对话框顶部 1px 渐变描边。Qt 下用 <code>border-image</code> 或自绘一行。视觉收益远大于成本</td></tr>
+    <tr><td><b>工程代号标签</b><br>VAR / FML / MSR</td><td><span class="cost low">低</span></td><td>子页签文字改为等宽大写代号，与 <code>FormScaffold::makeFormGroupHeader</code> 已有模式一致</td></tr>
+    <tr><td><b>扫描线 / 噪点底纹</b></td><td><span class="cost mid">中</span></td><td>需要生成一张 4px 高的平铺贴图（运行时 QImage 生成或 qrc 内置），通过 QSS background 平铺。注意：<b>透明度要压到 2% 以下</b>，否则干扰读数</td></tr>
+    <tr><td><b>Ela 控件去圆角</b><br>ElaWidgetTools</td><td><span class="cost mid">中</span></td><td>Ela 组件默认圆角偏大（与斜切直角语言冲突）。现有 PATCH_COMMAND 机制已能打补丁，追加一条即可</td></tr>
+    <tr><td><b>画布配色同步</b><br><code>CanvasStyle</code></td><td><span class="cost mid">中</span></td><td>CanvasStyle 与 ThemeTokens 手工同步，画布底色、网格线、piece 填充需一并调整为深色版。注意 <code>displayColor</code> 的暗色提亮逻辑要重新校准</td></tr>
+    <tr><td><b>真磨砂玻璃</b></td><td><span class="cost high">不推荐</span></td><td>Qt Widgets 下需 <code>QGraphicsBlurEffect</code> 抓取背景，在每帧刷新的画布旁是性能陷阱。<b>替代方案：</b>半透明纯色 + 噪点贴图模拟，视觉接近但零代价</td></tr>
+    <tr><td><b>Art Deco 装饰元素</b></td><td><span class="cost high">不推荐</span></td><td>双层边框、花纹、角标需大量自绘，重绘成本高且干扰读数。<b>仅建议用于</b>「关于」对话框与欢迎页</td></tr>
+  </table>
+</div>
+
+<div class="insight">
+<span class="tag">建议路径</span>
+<p><b>第一步（1~2 天）：</b>只改 ThemeTokens 色板 + 默认切 Dark + 顶部渐隐金线。这一步就能拿到 80% 的观感提升，且完全不动逻辑，随时可回滚。<br><br>
+<b>第二步（3~5 天）：</b>加斜切角 + 工程代号 + 扫描线贴图。此时风格语言基本成型。<br><br>
+<b>第三步：</b>校准画布配色与 Ela 圆角。做完这一步才是完整交付。<br><br>
+先用第一步的「低成本试妆」验证方向对不对，再决定是否投入后续——这比一次性重做要稳妥得多。</p>
+</div>
+
+<div class="footer">
+  WildWind Pattern · Style Direction Exploration · 2026-08-28 · UI Designer<br>
+  参考锚点：《明日方舟》Arknights / 《重返未来：1999》Reverse: 1999<br>
+  所有色值为本方案拟定值，未写入 ThemeTokens —— 方向确认后再落库
+</div>
+
+</div>
+</body>
+</html>

@@ -12,17 +12,33 @@ class ElaText;
 class ElaToolButton;
 class QHBoxLayout;
 
+namespace cad::ui {
+
+/// Card accent-bar role (ui-redesign-2026-08 §2.5 方案 A, 用户拍板):
+/// the left 4px bar carries the card's TYPE color instead of the old
+/// blue/orange row alternation — 变量=碳灰 / 公式=深青 / 测量=陶土 / 关联=钴蓝.
+enum class CardAccent
+{
+    Variable,  ///< piece1 碳灰 (also: component work-group rows)
+    Formula,   ///< piece2 深青
+    Measure,   ///< piece3 陶土 (MeasureCard / AngleMeasureCard)
+    Linked,    ///< piece4 钴蓝
+};
+
+} // namespace cad::ui
+
 /// Shared skeleton for the five virtual-list cards
 /// (VariableCard / FormulaCard / LinkedCard / MeasureCard / AngleMeasureCard).
 ///
 /// Owns the machinery that used to be copy-pasted across all five:
-///   - the alternating left accent bar (paintEvent: 偶数行蓝 / 奇数行橙),
+///   - the type-colored left accent bar (paintEvent: piece 家族, 方案 A),
 ///   - the hover-revealed delete button with its same-size placeholder slot
-///     (enterEvent/leaveEvent — 防布局跳动),
+///     (enterEvent/leaveEvent — 防布局跳动; 占位槽默认画 24% 透明 ✕ 轮廓),
 ///   - the row-ordinal label (setIndex; per-card prefix via indexText()),
 ///   - the name chip and the monospace value label,
 ///   - the 🔒 read-only marker (setupLockIcon),
-///   - the dangling value-label style flip (setValueLabelDangling),
+///   - the dangling value-label style flip (setValueLabelDangling: danger 字
+///     + danger 8% 浅底 + 卡片 ⚠ badge),
 ///   - the per-frame value no-op guard (refreshValueGuard).
 ///
 /// Derived cards build their own header/detail rows with the protected
@@ -37,13 +53,17 @@ public:
     /// panels re-apply this on every (re)bind of a reused card.
     void setIndex(int n);
 
-    /// Set the alternating row parity (odd = orange bar, even = blue).
-    /// Re-applied on every (re)bind — reused cards must not keep a stale
-    /// parity from their previous row position.
+    /// Row parity is no longer visual (类型色竖线取代蓝橙交替, 方案 A) but the
+    /// virtual-list binders still call this on every rebind — kept as a no-op
+    /// for API compatibility.
     void setAlternate(bool alternate);
 
 protected:
     explicit CardBase(bool alternate, QWidget* parent = nullptr);
+
+    /// Select the piece type color of the accent bar (paint resolves the
+    /// token live, so theme switches restyle without rebinding).
+    void setAccentRole(cad::ui::CardAccent role);
 
     // --- Common widget builders (parent = this; caller adds to its layout) ---
     /// Row ordinal label with the shared "font-size: 11px" style.
@@ -54,6 +74,13 @@ protected:
                                       const QString& text);
     /// Monospace value label; @p bold=false for the formula result label.
     ElaText* createValueLabel(bool bold = true);
+    /// 10px text3 unit caption ("cm" / "°") appended right of the value —
+    /// the value is the card's first focus, the unit retires to meta size.
+    ElaText* createUnitLabel(const QString& unit);
+    /// ⚠ dangling badge inserted right after the value label (hidden until
+    /// setValueLabelDangling(true)). VariableCard/FormulaCard headers call
+    /// this; buildReadOnlySkeleton calls it automatically.
+    void appendDanglingBadge(QHBoxLayout* header);
     /// 🔒 read-only marker appended to the header by the caller.
     void setupLockIcon(const QString& tooltip);
     /// Append [placeholder slot][delete button] to @p header. The slot is a
@@ -62,6 +89,11 @@ protected:
     void appendDeleteButton(QHBoxLayout* header, const QString& tooltip);
     /// "注释…" line editor (height 22); caller sets text and adds to layout.
     ElaLineEdit* createCommentEdit(QWidget* parent);
+
+    /// Set the comment text without emitting signals, and skip entirely while
+    /// the user is editing (hasFocus guard — the read-only three cards' status
+    /// quo, unified across all five cards).
+    void setCommentSilently(const QString& text);
 
     /// Parameter bundle for buildReadOnlySkeleton() — the only per-card
     /// differences among the three read-only cards
@@ -79,6 +111,7 @@ protected:
         QString sourceLabel;     ///< Initial source-info text.
         QString commentText;     ///< Initial comment text.
         QString refName;         ///< Initial refName text.
+        QString unit;            ///< Value unit caption ("cm" / "°", empty = none).
         int     refChipWidth = 72;  ///< Ref-chip fixed width (Linked/Measure 72, Angle 84).
     };
 
@@ -112,10 +145,14 @@ protected:
     virtual int accentBarX() const;
 
     // --- Shared state (derived cards read/write these) ---
-    bool m_alternate = false;
+    bool m_alternate = false;  ///< 行奇偶 (视觉已由类型色取代, 仅保留 bind 契约).
+    cad::ui::CardAccent m_accentRole = cad::ui::CardAccent::Variable;
+    bool m_hovered = false;    ///< 悬停态: 描边转 borderStrong (§6.2 状态矩阵).
     ElaText*        m_indexLabel = nullptr;
     cad::ui::CopyChip* m_nameChip = nullptr;
     ElaText*        m_valueLabel = nullptr;
+    ElaText*        m_unitLabel = nullptr;
+    ElaText*        m_danglingBadge = nullptr;  ///< ⚠ 引用失效 badge (dangling 时显).
     ElaText*        m_lockIcon = nullptr;
     QWidget*        m_deleteBtnSlot = nullptr;  ///< 悬停占位: 与删除按钮同尺寸互斥显隐, 防布局跳动.
     ElaToolButton*  m_deleteBtn = nullptr;

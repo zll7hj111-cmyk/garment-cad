@@ -53,7 +53,7 @@ QVector<QUuid> FormulaTabModel::keys() const
 void FormulaTabModel::toggleCollapsed(const QUuid& groupId)
 {
     // View state: not undoable, but persisted with the document.
-    if (const auto* g = m_doc->findFormulaGroup(groupId))
+    if (const auto* g = m_doc->variablesView().groupById(groupId))
         m_doc->setFormulaGroupCollapsed(groupId, !g->collapsed);
 }
 
@@ -76,7 +76,7 @@ void FormulaTabModel::dissolve(const QUuid& groupId)
 void FormulaTabModel::moveFormula(const QUuid& formulaId, const QUuid& targetGroupId,
                                   int targetLocalIndex)
 {
-    const auto* f = m_doc->findFormula(formulaId);
+    const auto* f = m_doc->variablesView().formulaById(formulaId);
     if (!f)
         return;
 

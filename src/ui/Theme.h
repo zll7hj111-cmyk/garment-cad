@@ -13,10 +13,12 @@ enum class ThemeMode { Light, Dark };
 /// tokens live in CanvasStyle and are kept in sync with these by hand
 /// (same accent / semantic families).
 ///
-/// Design language ("Endfield field engineering", 2026-09): 蓝图灰纸面
+/// Design language ("Endfield 2.0" — ui-redesign-2026-08 board): 蓝图灰纸面
 /// (industrial concrete) + 碳黑墨字 + 信号黄 #FFDE00 唯一受控强调色。
 /// 信号黄只作「图形信号」(选中/激活条/焦点/一个主动作), 绝不作正文或
-/// 大面积填充 (黄字白底不可读)。几何 = 默认直角, 功能圆角 2–4px, 1px 细线。
+/// 大面积填充 (黄字白底不可读)。颜色三分层: 强调色(黄, 全屏唯一实心实例)
+/// → 类型色(piece 家族, 标识数据类别) → 语义色(绿/琥珀/红/青, 标识状态),
+/// 三层不混用。几何 = 默认直角, 功能圆角 2–4px, 1px 细线。
 /// 深度 = complex (系统级重建), 克制在「工具仍快、密、可用」边界内。
 /// 其余纪律 (cyclorama/variable-font/cassette-j-card/alphabet-storm) 不变。
 struct ThemeTokens
@@ -41,6 +43,9 @@ struct ThemeTokens
     QColor onAccent;      ///< Text on accent fills (碳黑 #0D1117 on yellow, 两模式同值).
 
     // ── Piece palette (entity identity ONLY, never status) ──
+    // ui-redesign-2026-08 §2.5 方案 A（用户拍板）: 卡片左竖线 = 卡片类型色
+    // （变量=piece1 / 公式=piece2 / 测量=piece3 / 关联=piece4），替代旧
+    // 蓝/橙行交替。竖线用量 4px，禁止整卡铺色。
     QColor piece1;  ///< 碳黑灰 — Block pieces, variable-type values.
     QColor piece2;  ///< 深青 — formula-type values.
     QColor piece3;  ///< 陶土橙 — measure-type values.
@@ -52,10 +57,6 @@ struct ThemeTokens
     QColor danger;   ///< Red: errors, diagnostics.
     QColor teal;     ///< Attachment / connection rings.
 
-    // ── Row alternation (card lists; 2026-08 用户拍板 — fixed in both modes) ──
-    QColor rowEven;  ///< 偶数行竖线蓝 #2F6FED (亮/暗同值; 终末地下待用户重拍板)
-    QColor rowOdd;   ///< 奇数行竖线橙 #F59E0B
-
     // ── Tooltips (inverted surfaces) ──
     QColor tooltipBg;
     QColor tooltipFg;
@@ -65,14 +66,17 @@ struct ThemeTokens
     static constexpr int FontSm   = 11;  ///< captions, source info
     static constexpr int FontMd   = 12;  ///< cards, inputs, secondary text
     static constexpr int FontBase = 13;  ///< body (app default)
-    static constexpr int FontLg   = 14;  ///< emphasized values
+    static constexpr int FontLg   = 15;  ///< 卡片数值读数 (15px Semibold+Mono, 卡片第一视觉焦点)
+    static constexpr int FontXl   = 18;  ///< 对话框标题、空状态主文案 (Semibold)
 
     // ── Radius scale (Endfield: 默认 0, 功能圆角 2–4px, 禁胶囊) ──
-    static constexpr int RadiusXs   = 0;   ///< chips, inline marks (squared)
-    static constexpr int RadiusSm   = 2;   ///< inputs, tags, scrollbars
-    static constexpr int RadiusMd   = 2;   ///< buttons, menu items, rows
-    static constexpr int RadiusLg   = 4;   ///< cards, group boxes
-    static constexpr int RadiusPill = 4;   ///< dock, badges (no pills)
+    static constexpr int RadiusXs    = 0;  ///< chips, inline marks (squared)
+    static constexpr int RadiusSm    = 2;  ///< inputs, tags, scrollbars
+    static constexpr int RadiusMd    = 2;  ///< buttons, menu items, rows
+    static constexpr int RadiusLg    = 4;  ///< cards, group boxes (功能圆角上限)
+    static constexpr int RadiusBadge = 4;  ///< dock, badges (原 RadiusPill 更名,
+                                           ///< ui-redesign §07: 值恒 4px,「胶囊」
+                                           ///< 命名与禁胶囊纪律自相矛盾)
 
     // ── Spacing scale ──
     static constexpr int SpaceXs  = 2;   ///< icon gaps

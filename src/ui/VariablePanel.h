@@ -1,9 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QList>
 #include <QVector>
 #include <QUuid>
+
+#include <functional>
 
 #include "parametric/Variable.h"
 #include "parametric/FormulaVariable.h"
@@ -14,7 +16,6 @@
 class QVBoxLayout;
 class ElaScrollArea;
 class QStackedWidget;
-class ElaTabBar;
 class ElaText;
 class ElaPushButton;
 class ElaToolButton;
@@ -27,13 +28,14 @@ namespace cad::param { class ParamDocument; }
 namespace cad::ui {
 class FormulaTabModel;
 class MeasureTab;
-class ComponentTab;
+class PanelSubTabBar;
 
-/// Sidebar page with four sub-tabs:
+/// Sidebar page with four sub-tabs (ui-redesign-2026-08 §4.2 — 组件已升级为
+/// 面板悬浮窗第三大标签, 不再是本面板子页签):
 ///   Tab 0 "变量": plain value variables (editable cards)
 ///   Tab 1 "公式": formula variables (expression -> computed value)
-///   Tab 2 "关联": linked variables
-///   Tab 3 "测量": measure variables (length + angle cards)
+///   Tab 2 "关联": linked variables (只读页签, 文字弱化)
+///   Tab 3 "测量": measure variables (length + angle cards, 只读页签)
 /// Data is owned by ParamDocument; this panel is a pure editor/view.
 class VariablePanel : public QWidget
 {
@@ -63,9 +65,13 @@ protected:
 
 private:
     void setupUi();
+    /// @p emptyTitle/emptyGuide 组成 §5.4 空状态 (18px 主文案 + 13px 引导语);
+    /// @p ghostAddText 非空时追加幽灵「＋新建」按钮 (点击触发 @p onGhostAdd)。
     QWidget* buildListPage(ElaScrollArea*& scrollOut, QWidget*& containerOut,
-                           VirtualCardList*& hostOut, ElaText*& emptyHintOut,
-                           const QString& emptyText);
+                           VirtualCardList*& hostOut, QWidget*& emptyHintOut,
+                           const QString& emptyTitle, const QString& emptyGuide,
+                           const QString& ghostAddText,
+                           const std::function<void()>& onGhostAdd);
 
     /// Wire the virtualized hosts' row factories / binders to the card types.
     void setupCardProviders();
@@ -109,7 +115,7 @@ private:
     /// Formula tab display-order model (rows + group/move operations).
     cad::ui::FormulaTabModel* m_formulaModel = nullptr;
 
-    ElaTabBar*        m_tabBar = nullptr;
+    cad::ui::PanelSubTabBar* m_tabBar = nullptr;
     QStackedWidget* m_stack = nullptr;
     ElaPushButton*    m_addBtn = nullptr;
     ElaToolButton*    m_addGroupBtn = nullptr;  ///< "新建分组" (formula tab only).
@@ -119,26 +125,23 @@ private:
     ElaScrollArea* m_varScroll = nullptr;
     QWidget*     m_varContainer = nullptr;
     VirtualCardList* m_varHost = nullptr;
-    ElaText*     m_varEmptyHint = nullptr;
+    QWidget*     m_varEmptyHint = nullptr;
 
     // Tab 1: formulas
     ElaScrollArea* m_formulaScroll = nullptr;
     QWidget*     m_formulaContainer = nullptr;
     VirtualCardList* m_formulaHost = nullptr;
-    ElaText*     m_formulaEmptyHint = nullptr;
+    QWidget*     m_formulaEmptyHint = nullptr;
     QFrame*      m_dropIndicator = nullptr;   ///< 2px insert line during drags.
 
     // Tab 2: linked variables
     ElaScrollArea* m_linkedScroll = nullptr;
     QWidget*     m_linkedContainer = nullptr;
     VirtualCardList* m_linkedHost = nullptr;
-    ElaText*     m_linkedEmptyHint = nullptr;
+    QWidget*     m_linkedEmptyHint = nullptr;
 
     /// Tab 3: measure variables (length + angle cards, extracted).
     MeasureTab* m_measureTab = nullptr;
-
-    /// Tab 4: components (组件 rigid work groups).
-    ComponentTab* m_componentTab = nullptr;
 };
 
 } // namespace cad::ui

@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WildWind Pattern · UI Design Review &amp; Optimization Proposal</title>
+<style>
+  :root{
+    --paper:#F4F6F8; --surface:#FFFFFF; --surface2:#E9EDF2; --surface3:#EFF2F6;
+    --border:#CBD2DC; --border-strong:#1A202C;
+    --ink:#0D1117; --ink2:#4A5568; --ink3:#718096;
+    --accent:#FFDE00; --accent-strong:#E6C600; --accent-tint:#FFFAD1;
+    --success:#15803D; --warning:#B45309; --danger:#DC2626; --teal:#0284C7;
+    --piece1:#1E293B; --piece2:#0F766E; --piece3:#C85A3E; --piece4:#2563EB;
+    --mono:'Consolas','Courier New',monospace;
+    --radius:2px; --radius-lg:4px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:var(--paper);color:var(--ink);font-size:14px;line-height:1.7;}
+  .page{max-width:1100px;margin:0 auto;padding:40px 36px 100px;}
+
+  header.hero{border-bottom:3px solid var(--ink);padding-bottom:24px;margin-bottom:36px;}
+  .hero .kicker{font-family:var(--mono);font-size:11px;letter-spacing:2.5px;color:var(--ink3);text-transform:uppercase;}
+  .hero h1{font-size:30px;font-weight:700;letter-spacing:-0.5px;margin:8px 0 6px;}
+  .hero .sub{color:var(--ink2);font-size:14px;max-width:800px;line-height:1.7;}
+  .hero .meta{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;}
+  .tag{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border:1px solid var(--border);background:var(--surface);color:var(--ink2);border-radius:var(--radius);}
+
+  h2{font-size:20px;font-weight:700;margin:48px 0 10px;padding-left:12px;border-left:4px solid var(--accent);}
+  h2 .no{font-family:var(--mono);color:var(--ink3);font-weight:400;margin-right:8px;font-size:15px;}
+  h3{font-size:16px;font-weight:700;margin:24px 0 8px;color:var(--ink);}
+  h4{font-size:13.5px;font-weight:600;margin:18px 0 6px;color:var(--ink2);}
+  p.lede{color:var(--ink2);margin-bottom:14px;max-width:860px;}
+
+  .card{background:var(--surface);border:1px solid var(--border);padding:18px 22px;margin:12px 0;border-radius:var(--radius-lg);}
+  table.spec{width:100%;border-collapse:collapse;font-size:12.5px;margin:10px 0;background:var(--surface);}
+  table.spec th{background:var(--ink);color:#fff;text-align:left;padding:7px 12px;font-weight:600;font-size:11px;letter-spacing:0.5px;}
+  table.spec td{border:1px solid var(--border);padding:7px 12px;vertical-align:top;line-height:1.65;}
+  table.spec tr:nth-child(even) td{background:var(--surface3);}
+
+  .sev{font-family:var(--mono);font-size:10.5px;font-weight:700;padding:1px 7px;display:inline-block;border-radius:2px;}
+  .sev.p0{background:var(--danger);color:#fff;}
+  .sev.p1{background:var(--warning);color:#fff;}
+  .sev.p2{background:var(--surface2);color:var(--ink2);border:1px solid var(--border);}
+  .sev.p3{background:var(--surface);color:var(--ink3);border:1px solid var(--border);}
+
+  .note{border-left:3px solid var(--warning);background:#FFF8EC;padding:9px 16px;margin:12px 0;font-size:13px;color:var(--ink2);line-height:1.65;}
+  .note.blue{border-color:var(--teal);background:#EEF6FF;}
+  .note.ok{border-color:var(--success);background:#EFFAF3;}
+  .note.danger{border-color:var(--danger);background:#FEF2F2;}
+
+  code,.mono{font-family:var(--mono);font-size:12px;background:var(--surface2);padding:1px 5px;border-radius:var(--radius);}
+  pre{background:var(--ink);color:#e6edf3;padding:14px 18px;border-radius:var(--radius-lg);overflow-x:auto;font-size:12px;line-height:1.55;margin:10px 0;}
+  pre code{background:none;padding:0;color:inherit;}
+
+  ul.tight{margin:6px 0 6px 20px;}
+  ul.tight li{margin:4px 0;}
+  ol.tight{margin:6px 0 6px 20px;}
+  ol.tight li{margin:5px 0;}
+
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:860px){.two-col{grid-template-columns:1fr;}}
+
+  .score-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:14px 0;}
+  .score-card{background:var(--surface);border:1px solid var(--border);padding:14px;text-align:center;border-radius:var(--radius-lg);}
+  .score-card .num{font-size:32px;font-weight:700;font-family:var(--mono);}
+  .score-card .lbl{font-size:11px;color:var(--ink3);margin-top:2px;}
+  .score-card .bar{height:4px;border-radius:2px;margin-top:8px;background:var(--surface2);}
+  .score-card .bar>span{display:block;height:100%;border-radius:2px;}
+
+  .wireframe{background:var(--surface);border:1px solid var(--border);padding:14px;margin:14px 0;border-radius:var(--radius-lg);overflow:hidden;}
+  .wf-cap{font-family:var(--mono);font-size:10.5px;color:var(--ink3);margin-top:8px;text-align:center;}
+
+  .comparison{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0;}
+  .comp-box{border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
+  .comp-label{font-size:11px;font-weight:600;padding:6px 12px;text-align:center;font-family:var(--mono);letter-spacing:0.5px;}
+  .comp-before>.comp-label{background:var(--danger);color:#fff;}
+  .comp-after>.comp-label{background:var(--success);color:#fff;}
+  .comp-body{padding:14px;min-height:120px;}
+
+  .checklist{list-style:none;margin:10px 0;padding:0;}
+  .checklist li{padding:6px 0 6px 28px;position:relative;font-size:13px;border-bottom:1px solid var(--surface2);}
+  .checklist li:last-child{border:none;}
+  .checklist li::before{position:absolute;left:0;top:6px;width:18px;height:18px;border-radius:50%;text-align:center;line-height:18px;font-size:11px;font-weight:700;}
+  .checklist.yes li::before{content:"\2713";background:var(--success);color:#fff;}
+  .checklist.no li::before{content:"\2717";background:var(--danger);color:#fff;}
+  .checklist.partial li::before{content:"!";background:var(--warning);color:#fff;}
+
+  .timeline{position:relative;padding-left:32px;margin:16px 0;}
+  .timeline::before{content:'';position:absolute;left:10px;top:0;bottom:0;width:2px;background:var(--border);}
+  .tl-item{position:relative;margin-bottom:18px;}
+  .tl-item::before{content:'';position:absolute;left:-22px;top:6px;width:12px;height:12px;border-radius:50%;border:2px solid var(--accent);background:var(--surface);}
+  .tl-phase{font-weight:700;font-size:13px;}
+  .tl-desc{font-size:12.5px;color:var(--ink2);margin-top:2px;}
+
+  .footer{margin-top:64px;border-top:1px solid var(--border);padding-top:16px;font-size:11.5px;color:var(--ink3);font-family:var(--mono);line-height:1.6;}
+
+  /* Interactive tabs */
+  .tab-group{margin:14px 0;}
+  .tab-btns{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px;}
+  .tab-btn{padding:7px 18px;font-size:12.5px;cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;color:var(--ink2);font-family:var(--mono);transition:all .15s;}
+  .tab-btn:hover{color:var(--ink);background:var(--surface2);}
+  .tab-btn.active{color:var(--ink);font-weight:600;border-bottom-color:var(--accent);}
+  .tab-pane{display:none;}
+  .tab-pane.active{display:block;}
+
+  /* Color swatch row */
+  .swatches{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;}
+  .sw{width:90px;border:1px solid var(--border);background:var(--surface);border-radius:var(--radius-lg);overflow:hidden;}
+  .sw-chip{height:42px;}
+  .sw-lbl{padding:5px 8px;}
+  .sw-lbl b{display:block;font-size:11.5px;}
+  .sw-lbl span{font-family:var(--mono);font-size:10px;color:var(--ink3);}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="hero">
+  <div class="kicker">WildWind Pattern / UI Design Review &amp; Optimization Proposal</div>
+  <h1>UI Design Review &amp; Optimization Proposal</h1>
+  <div class="sub">对 WildWind Pattern（野风帖）参数化服装 CAD 系统现有 UI 的全面评审与优化方案。覆盖范围：设计令牌体系、全部 20 个 UI 组件、导航架构、交互模式、可访问性、暗色模式一致性。基于源码走查 + 实际界面截图 + 已有设计稿交叉验证。</div>
+  <div class="meta">
+    <span class="tag">Reviewer: UI Designer</span>
+    <span class="tag">Date: 2026-08-28</span>
+    <span class="tag">Baseline: Endfield 2.0 (ThemeTokens v42)</span>
+    <span class="tag">Scope: src/ui + src/app + src/tools</span>
+  </div>
+</header>
+
+<!-- ============ Executive Summary ============ -->
+<h2><span class="no">00</span>Executive Summary</h2>
+
+<div class="score-grid">
+  <div class="score-card"><div class="num" style="color:var(--success)">B+</div><div class="lbl">Overall Grade</div><div class="bar"><span style="width:78%;background:var(--success)"></span></div></div>
+  <div class="score-card"><div class="num" style="color:var(--teal)">42</div><div class="lbl">Design Tokens</div><div class="bar"><span style="width:95%;background:var(--teal)"></span></div></div>
+  <div class="score-card"><div class="num" style="color:var(--warning)">105</div><div class="lbl">Inline Styles</div><div class="bar"><span style="width:45%;background:var(--warning)"></span></div></div>
+  <div class="score-card"><div class="num" style="color:var(--danger)">8</div><div class="lbl">Token Escapes</div><div class="bar"><span style="width:25%;background:var(--danger)"></span></div></div>
+  <div class="score-card"><div class="num" style="color:var(--piece2)">5/5</div><div class="lbl">Card Types Unified</div><div class="bar"><span style="width:92%;background:var(--piece2)"></span></div></div>
+  <div class="score-card"><div class="num" style="color:var(--piece3)">C-</div><div class="lbl">Accessibility</div><div class="bar"><span style="width:30%;background:var(--piece3)"></span></div></div>
+</div>
+
+<p class="lede"><b>一句话结论：</b>设计令牌体系基础扎实、组件架构优秀（CardBase 虚拟化三件套是工程亮点），但存在 <b>P0 级色彩信号过载</b>和 <b>P0 级双重导航混乱</b>两个架构级问题，以及 <b>可访问性几乎空白</b>的系统性缺陷。本次优化定位为「Endfield 2.1 演进」——保留骨架，收敛信号、补齐无障碍、统一细节。</p>
+
+<div class="note ok">
+<b>核心优势（应保持）：</b>
+(1) ThemeTokens 单源 42 色令牌 + QSS 生成器，变色只需改一处；
+(2) CardBase 模板方法 + ReadOnlySkeletonSpec 收敛了 5 类卡片差异，消灭复制粘贴；
+(3) VirtualCardList 视口物化 + 对象池，大数据量下性能有保障；
+(4) 三层色彩分离纪律（强调色 / 类型色 / 语义色）设计理念正确；
+(5) 等宽数字纪律保证拖动时布局零抖动。
+</div>
+
+<div class="note danger">
+<b>必须修复（P0）：</b>
+(1) 同屏可达 9+ 色相争夺注意力——信号黄 + 斑马蓝橙 + 4 piece 色 + 4 语义色；
+(2) 主窗口标签与面板悬浮窗构成镜像导航，syncPanelTabs 双向同步是技术债；
+(3) 可访问性：键盘 Tab 不可达删除按钮、屏幕阅读器不可见虚拟列表行、无 ARIA 等价物。
+</div>
+
+<!-- ============ Section 1: Design Token Audit ============ -->
+<h2><span class="no">01</span>Design Token System Audit</h2>
+<p class="lede">对 <code>ThemeTokens</code>（42 色 + 3 尺度族 + 3 可复用 QSS 片段）的完整审计结果。</p>
+
+<h3>1.1 Token Coverage Assessment</h3>
+<table class="spec">
+  <tr><th>Token Family</th><th>Count</th><th>Coverage</th><th>Issues</th></tr>
+  <tr><td>Surfaces</td><td>6</td><td><span class="sev p0" style="background:var(--success)">Full</span></td><td>canvasBg 与 surface 视觉接近（#ECEFF2 vs #FFFFFF），在浅色模式下区分度依赖边框</td></tr>
+  <tr><td>Text</td><td>3</td><td><span class="sev p0" style="background:var(--success)">Full</span></td><td>text3 在两模式均通过 WCAG AA（亮 4.7:1 / 暗 4.7:1），但仅 3 级在复杂面板中层级不够用</td></tr>
+  <tr><td>Accent</td><td>4</td><td><span class="sev p1">Good</span></td><td>onAccent 恒为 #0D1117 是正确的；但 accentTint 浅黄底在白色 surface 上对比度不足（~1.3:1）</td></tr>
+  <tr><td>Piece palette</td><td>4</td><td><span class="sev p1">Good</span></td><td>暗色模式换为另一组色相（蓝灰系），跨模式类型记忆断裂</td></tr>
+  <tr><td>Semantic</td><td>4</td><td><span class="sev p0" style="background:var(--success)">Full</span></td><td>四色均通过 AA 前景对比度</td></tr>
+  <tr><td>Tooltip</td><td>2</td><td><span class="sev p0" style="background:var(--success)">Full</span></td><td>反转面设计正确</td></tr>
+  <tr><td>Type scale</td><td>7</td><td><span class="sev p1">Good</span></td><td>FontLg=15 用于卡片值是好的，但缺少 FontXxl（24px+）用于空状态主文案</td></tr>
+  <tr><td>Radius scale</td><td>5</td><td><span class="sev p2">Partial</span></td><td>RadiusBadge=4 命名含「pill」但值禁胶囊，自相矛盾；Ela 默认圆角 >4px 处未钳制</td></tr>
+  <tr><td>Spacing scale</td><td>6</td><td><span class="sev p0" style="background:var(--success)">Full</span></td><td>4px 基数合理，CAD 密度场景适用</td></tr>
+</table>
+
+<h3>1.2 Token Escape Inventory（硬编码色逃逸）</h3>
+<table class="spec">
+  <tr><th style="width:40px">#</th><th style="width:200px">Location</th><th style="width:80px">Hardcoded Value</th><th style="width:60px">Severity</th><th>Impact</th></tr>
+  <tr><td>1</td><td><code>ChipLabel.cpp</code> — chip 描边</td><td><code>#4E5866</code> / <code>#9AA4B2</code></td><td><span class="sev p1">P1</span></td><td>全项目最明显的逃逸。注释承认 borderStrong 太浅而另取中灰，但破坏了主题切换一致性</td></tr>
+  <tr><td>2</td><td><code>SerialDelegate.cpp</code></td><td><code>#9A9A9A</code> 前缀<br><code>#D40000</code> 序号</td><td><span class="sev p2">P2</span></td><td>序列号渲染灰色前缀 + 红色加粗序号，未走 token</td></tr>
+  <tr><td>3</td><td><code>LayerPanel.cpp</code></td><td><code>#2E86C1</code> 眼睛图标<br><code>#B0BEC5</code> 闭眼<br><code>#7F8C8D</code> 折叠箭头<br><code>#6C3483</code> 漏斗</td><td><span class="sev p1">P1</span></td><td>4 处硬编码色集中在图层面板（29 处 setStyleSheet 最重文件），主题切换时这些不变</td></tr>
+  <tr><td>4</td><td><code>FormulaCard.cpp</code></td><td><code>#6C3483</code> 漏斗图标</td><td><span class="sev p2">P2</span></td><td>与 LayerPanel 同一紫色硬编码</td></tr>
+  <tr><td>5</td><td><code>MainWindow.cpp</code></td><td><code>#FFFFFF</code> 诊断 badge 字</td><td><span class="sev p2">P2</span></td><td>诊断 badge 用 danger 底 + 白字，白字硬编码</td></tr>
+  <tr><td>6</td><td><code>Theme.cpp</code> purpleBadgeStyle()</td><td><code>#8e44ad</code></td><td><span class="sev p2">P2</span></td><td>purpleBadgeStyle 函数内硬编码紫色，未使用 token</td></tr>
+  <tr><td>7</td><td><code>ToolDockStyle</code></td><td>圆角 <code>3px</code> 硬编码</td><td><span class="sev p3">P3</span></td><td>在 2–4px 纪律内但不引用 token 常量</td></tr>
+  <tr><td>8</td><td><code>SegmentEditBar</code></td><td>输入框高 <code>24px</code> 硬编码</td><td><span class="sev p3">P3</span></td><td>为对抗 ElaLineEdit 固定 35px 而设，属 Ela 兼容 hack</td></tr>
+</table>
+
+<div class="note blue">
+<b>修复方案：</b>将 #1–#6 全部替换为 token 引用。#1 ChipLabel 描边新增 <code>chipBorder</code> token（亮 #9AA4B2 / 暗 #4E5866）；#3 LayerPanel 图标色新增 <code>iconEye</code> / <code>iconEyeClosed</code> / <code>iconCaret</code> 三个语义 token；#6 purpleBadge 改为接收 QColor 参数或从 piece 家族派生。目标：<b>零硬编码色</b>。
+</div>
+
+<!-- ============ Section 2: Color Signal Overload ============ -->
+<h2><span class="no">02</span>Critical Issue: Color Signal Overload (P0)</h2>
+<p class="lede">这是当前 UI 最严重的架构级问题。同一屏幕上同时出现过多竞争色相，用户无法建立稳定的「颜色 → 含义」映射。</p>
+
+<h3>2.1 Current Color Count on Screen</h3>
+
+<div class="swatches">
+  <div class="sw"><div class="sw-chip" style="background:var(--accent)"></div><div class="sw-lbl"><b>Signal Yellow</b><span>accent #FFDE00</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:#2F6FED"></div><div class="sw-lbl"><b>Zebra Blue</b><span>even rows</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:#F59E0B"></div><div class="sw-lbl"><b>Zebra Orange</b><span>odd rows</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:var(--piece1)"></div><div class="sw-lbl"><b>piece1 Carbon</b><span>variable</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:var(--piece2)"></div><div class="sw-lbl"><b>piece2 Teal</b><span>formula</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:var(--piece3)"></div><div class="sw-lbl"><b>piece3 Terracotta</b><span>measure</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:var(--piece4)"></div><div class="sw-lbl"><b>piece4 Cobalt</b><span>linked</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:var(--success)"></div><div class="sw-lbl"><b>Success Green</b><span>snap/OK</span></div></div>
+  <div class="sw"><div class="sw-chip" style="background:var(--warning)"></div><div class="sw-lbl"><b>Warning Amber</b><span>protected</span></div></div>
+</div>
+
+<p><b>问题本质：</b>斑马纹蓝（#2F6FED）与 piece4 钴蓝（#2563EB）视觉重叠；斑马纹橙（#F59E0B）与 warning 琥珀（#B45309）同族易混淆。加上信号黄作为唯一强调色被稀释——用户看到黄色不再能确定它代表「当前激活」。</p>
+
+<h3>2.2 Proposed Solution: Two Options</h3>
+
+<div class="tab-group">
+  <div class="tab-btns">
+    <button class="tab-btn active" onclick="switchTab(event,'opt-a')">Option A: Type-Colored Bars (Recommended)</button>
+    <button class="tab-btn" onclick="switchTab(event,'opt-b')">Option B: Neutral Zebra</button>
+  </div>
+  <div id="opt-a" class="tab-pane active">
+    <div class="card">
+      <h4 style="color:var(--piece2);margin-top:0;">Option A — Row bars encode card type (recommended)</h4>
+      <p style="font-size:13px;color:var(--ink2);margin:8px 0;">竖线从「装饰性斑马纹」升级为「类型图例」。变量卡 = piece1 碳灰、公式卡 = piece2 深青、测量卡 = piece3 陶土、关联卡 = piece4 钴蓝。与页签颜色呼应，形成一致的颜色语言。</p>
+      <ul class="tight" style="font-size:13px;">
+        <li><b>优点：</b>增加信息密度不增加认知负担——颜色已有含义（类型），只是复用到竖线上</li>
+        <li><b>优点：</b>消除斑马纹蓝橙两个多余色相，同屏色相从 9+ 降到 7</li>
+        <li><b>优点：</b>页签下划线已用 piece 色（PanelSubTabBar 实现），竖线与之呼应形成闭环</li>
+        <li><b>代价：</b>需要用户拍板确认（当前斑马纹是历史决策）</li>
+        <li><b>实现：</b>CardBase::paintEvent 左竖线色从固定蓝橙改为 <code>m_pieceColor</code> 成员</li>
+      </ul>
+    </div>
+  </div>
+  <div id="opt-b" class="tab-pane">
+    <div class="card">
+      <h4 style="color:var(--ink3);margin-top:0;">Option B — Neutral zebra stripes</h4>
+      <p style="font-size:13px;color:var(--ink2);margin:8px 0;">彻底退出色彩信号层：偶数行用中性灰 #CBD2DC，奇数行无色（仅靠 surface3 条纹底区分）。最保守方案。</p>
+      <ul class="tight" style="font-size:13px;">
+        <li><b>优点：</b>零风险，不影响任何现有色彩语义</li>
+        <li><b>缺点：</b>丢失一个可利用的信息通道（竖线本可用于编码类型）</li>
+        <li><b>缺点：</b>中性灰辨识度低，尤其在暗色模式下</li>
+        <li><b>适用：</b>如果团队希望最小改动范围</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Section 3: Navigation Architecture ============ -->
+<h2><span class="no">03</span>Critical Issue: Dual Navigation (P0)</h2>
+<p class="lede">主窗口顶部 ElaTabBar（画布/变量/图层/组）与面板悬浮窗大标签构成两级镜像导航，是用户心智模型的持续负担。</p>
+
+<h3>3.1 Current State Analysis</h3>
+<table class="spec">
+  <tr><th>Navigation Layer</th><th>Items</th><th>Problem</th></tr>
+  <tr><td>Main window top bar</td><td>画布 / 变量 / 图层 / 组</td><td>点击「变量」→ 打开面板悬浮窗并切到变量页；再点「图层」→ 面板切到图层页。两组标签语义完全重叠。</td></tr>
+  <tr><td>Panel floating window</td><td>变量 / 图层 / 组件</td><td>内部导航。但「变量/图层」已在顶部出现一次。</td></tr>
+  <tr><td>Variable panel sub-tabs</td><td>变量 / 公式 / 关联 / 测量</td><td>第四层导航。5 个平级页签信息架构扁平。</td></tr>
+</table>
+
+<h3>3.2 Proposed Navigation Restructuring</h3>
+<div class="wireframe">
+  <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;font-family:var(--mono);">
+    <div style="display:flex;gap:4px;height:28px;">
+      <div style="flex:1;background:var(--accent-tint);border:1px solid var(--accent-strong);display:flex;align-items:center;justify-content:center;font-weight:600;">Canvas</div>
+      <div style="flex:1;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--ink2);">Panels</div>
+      <div style="flex:1;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--ink2);">Layers</div>
+      <div style="flex:1;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--ink3);">(removed)</div>
+    </div>
+    <div style="color:var(--ink3);text-align:center;padding:4px;">Top bar: only 3 items. "Components" moves into panel.</div>
+    <div style="display:flex;gap:4px;margin-top:8px;">
+      <div style="width:280px;border:1px solid var(--border);background:var(--surface);">
+        <div style="display:flex;border-bottom:1px solid var(--border);">
+          <div style="flex:1;padding:6px;text-align:center;font-weight:600;border-bottom:2px solid var(--accent);font-size:11px;">Variables</div>
+          <div style="flex:1;padding:6px;text-align:center;color:var(--ink2);font-size:11px;">Layers</div>
+          <div style="flex:1;padding:6px;text-align:center;color:var(--ink2);font-size:11px;">Components</div>
+        </div>
+        <div style="display:flex;border-bottom:1px solid var(--border);background:var(--surface3);">
+          <div style="flex:1;padding:5px;text-align:center;font-size:10.5px;font-weight:600;border-bottom:2px solid var(--piece1);">Vars</div>
+          <div style="flex:1;padding:5px;text-align:center;color:var(--ink2);font-size:10.5px;">Formulas</div>
+          <div style="flex:1;padding:5px;text-align:center;color:var(--ink2);font-size:10.5px;">Linked</div>
+          <div style="flex:1;padding:5px;text-align:center;color:var(--ink2);font-size:10.5px;">Measure</div>
+        </div>
+        <div style="padding:10px;font-size:10.5px;color:var(--ink3);text-align:center;">card list area...</div>
+      </div>
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--ink3);font-size:11px;">
+        Two-level navigation: Big tabs (nav) + Sub-tabs (content type)<br>
+        Sub-tab underline = piece type color
+      </div>
+    </div>
+  </div>
+  <div class="wf-cap">Fig 3-1 — Proposed: Top bar reduced to 3; Panel has big tabs + sub-tabs with type-colored underlines</div>
+</div>
+
+<ul class="tight" style="font-size:13px;margin-top:12px;">
+  <li><b>Top bar 收敛为 3 项：</b>画布 / 面板 / 图层。「组件」从主窗口标签移入面板悬浮窗大标签——它是工作组管理，不是顶级导航。</li>
+  <li><b>面板两级分离：</b>大标签（变量/图层/组件）负责导航层，子页签（变量/公式/关联/测量）负责内容分类层。两层信号不同：大标签下划线 = accent 黄，子页签下划线 = piece 类型色。</li>
+  <li><b>只读页签弱化：</b>「关联/测量」标签文字恒用 text2（不加粗），区分「输入区」与「结果区」。</li>
+  <li><b>消除 syncPanelTabs：</b>主窗口标签只控制面板显隐，不再需要双向同步状态。</li>
+</ul>
+
+<!-- ============ Section 4: Component-by-Component Review ============ -->
+<h2><span class="no">04</span>Component-by-Component Review</h2>
+
+<h3>4.1 Card System (CardBase + 5 card types)</h3>
+<div class="comparison">
+  <div class="comp-box comp-before">
+    <div class="comp-label">CURRENT STATE</div>
+    <div class="comp-body" style="font-size:12px;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid #2F6FED;padding:8px 10px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:10px;color:var(--ink3);font-family:var(--mono)">1</span>
+          <span style="border:1px solid var(--piece1);padding:0 6px;font-size:11.5px;">胸围</span>
+          <span style="font-family:var(--mono);font-size:13px;">92.00</span>
+          <span style="font-size:10px;color:var(--ink3)">cm</span>
+          <span style="color:var(--ink3);font-size:11px;">✕</span>
+        </div>
+      </div>
+      <ul class="tight" style="font-size:11.5px;color:var(--ink2);">
+        <li>Value same size as name — no visual hierarchy</li>
+        <li>Left bar = zebra color, not type identity</li>
+        <li>Delete button invisible until hover (a11y gap)</li>
+        <li>Dangling: only value turns red, no badge</li>
+      </ul>
+    </div>
+  </div>
+  <div class="comp-box comp-after">
+    <div class="comp-label">PROPOSED</div>
+    <div class="comp-body" style="font-size:12px;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--piece1);padding:8px 12px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;color:var(--ink3);font-family:var(--mono)">1</span>
+          <span style="border:1px solid var(--piece1);color:var(--piece1);padding:0 8px;font-size:11.5px;">胸围</span>
+          <span style="margin-left:auto;font-family:var(--mono);font-size:15px;font-weight:600;">92.00</span>
+          <span style="font-size:10px;color:var(--ink3)">cm</span>
+          <span style="width:18px;height:18px;border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;color:var(--ink3);font-size:10px;opacity:0.25;">✕</span>
+        </div>
+      </div>
+      <ul class="tight" style="font-size:11.5px;color:var(--ink2);">
+        <li><b>Value = 15px Semibold mono</b> — first visual focal point</li>
+        <li><b>Left bar = piece type color</b> (Option A)</li>
+        <li>Ghost delete slot: always visible at 25% opacity</li>
+        <li>Dangling: red value + warning badge + tooltip</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<h4>Key Changes Summary:</h4>
+<ol class="tight" style="font-size:13px;">
+  <li><b>Value prominence (P1):</b> FontLg 15px + weight 600 + monospace. The numeric value is the primary information a CAD user needs. Currently it's the same size as the name label.</li>
+  <li><b>Type-colored left bar (P0):</b> Replace zebra blue/orange with piece family colors. 3px → 4px width for slightly more presence.</li>
+  <li><b>Ghost delete slot (P2):</b> Current implementation is good (24% opacity outline). Keep it but add keyboard accessibility (Tab-reachable, screen-reader labeled).</li>
+  <li><b>Dangling state enhancement (P1):</b> Add ⚠ badge (U+26A0) in card corner when value is dangling. Current behavior only changes text color — insufficient for color-blind users.</li>
+  <li><b>Name chip refinement (P2):</b> Add piece color to chip text and border (currently border-only). Strengthens type identity.</li>
+</ol>
+
+<h3>4.2 Line Property Dialog (对照 panel_shot.png)</h3>
+<p class="lede">这是截图中可见的最复杂表单对话框。对照设计稿 §4.5 的分析：</p>
+
+<table class="spec">
+  <tr><th>Element</th><th>Current Issue</th><th>Proposed Fix</th><th>Priority</th></tr>
+  <tr><td>Tab bar</td><td>属性/锚点/辅助点/点连接 — 样式正确但分组标题太弱</td><td>Keep PanelSubTabBar approach; add accent underline for active tab</td><td>P2</td></tr>
+  <tr><td>Section headers</td><td>"基本/几何/外观/端点" — plain bold, no visual separator</td><td><code>Monospace uppercase code + Chinese</code> + hairline bottom border (as FormScaffold::makeFormGroupHeader already does)</td><td>P1</td></tr>
+  <tr><td>"填入" button</td><td>Placed next to read-only "24.38 cm" value — semantic confusion</td><td>Inline ghost icon button (⇩) inside input field; hover tooltip "Pick from canvas"</td><td>P1</td></tr>
+  <tr><td>Endpoint P1/P2 cards</td><td>Visual language differs from global CardBase pattern</td><td>Unify: 1px border + 4px teal left-bar + code-style title "P1 · Start"</td><td>P2</td></tr>
+  <tr><td>Bottom buttons</td><td>"关闭 / 撤销全部" flat, equal weight</td><td>"关闭" = primary (solid yellow), right-aligned; "撤销全部" = secondary with danger hover</td><td>P1</td></tr>
+  <tr><td>Form grid</td><td>Inconsistent label widths and spacing across sections</td><td>Fixed 88px label column (FormScaffold::applyFormGrid), 10px row gaps</td><td>P1</td></tr>
+</table>
+
+<h3>4.3 Layer Panel</h3>
+<table class="spec">
+  <tr><th>Aspect</th><th>Current</th><th>Proposed</th><th>Priority</th></tr>
+  <tr><td>Active layer highlight</td><td>Blue tint head (historical)</td><td>Yellow accentTint head — "active" is an emphasis signal, belongs to yellow family</td><td>P1</td></tr>
+  <tr><td>Segment rows</td><td>No serial label (L3/L4)</td><td>Add monospace serial badge right-aligned, matching SegmentEditBar idLabel</td><td>P2</td></tr>
+  <tr><td>Hidden segments</td><td>Eye icon change only</td><td>Eye → slashed icon + entire row text3 dimmed but still interactive (per architecture rule: hidden ≠ disabled)</td><td>P2</td></tr>
+  <tr><td>Inline rename</td><td>Geometry overlay hack (ElaLineEdit positioned over label)</td><td>Keep approach but add focus ring (3px accent left-border on the input)</td><td>P3</td></tr>
+  <tr><td>Hardcoded icon colors</td><td>4 hardcoded hex values (#2E86C1 eye, etc.)</td><td>Migrate to new iconColor tokens; theme-switch safe</td><td>P1</td></tr>
+</table>
+
+<h3>4.4 Status Bar &amp; Edit Bar</h3>
+<div class="wireframe">
+  <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;font-family:var(--mono);">
+    <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--accent-strong);background:var(--accent-tint);padding:5px 10px;">
+      <span style="background:var(--ink);color:var(--accent);padding:0 5px;font-size:10px;">L3</span>
+      <span>Name <span style="border:1px solid var(--border);background:#fff;padding:1px 6px;">Shoulder</span></span>
+      <span>Len <span style="border:1px solid var(--border-strong);background:#fff;padding:1px 6px;">24.38</span></span>
+      <span>Ang <span style="border:1px solid var(--border);background:#fff;padding:1px 6px;">304.5</span></span>
+      <span style="margin-left:auto;color:var(--ink2);">Esc cancel · Enter confirm</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;background:var(--surface2);padding:3px 10px;border-top:1px solid var(--border);">
+      <span>X 1234.5</span><span>Y 678.9</span>
+      <span style="color:var(--border);">|</span>
+      <span>Zoom 100%</span>
+      <span style="color:var(--border);">|</span>
+      <span>SmartPen: click start point</span>
+      <span style="margin-left:auto;"><span style="background:var(--danger);color:#fff;padding:0 5px;font-size:10px;border-radius:2px;">⚠ 3</span></span>
+    </div>
+  </div>
+  <div class="wf-cap">Fig 4-4 — Edit bar above status bar; diagnostic badge left-aligned in status bar</div>
+</div>
+
+<ul class="tight" style="font-size:13px;margin-top:10px;">
+  <li><b>Edit bar independence (P1):</b> SegmentEditBar should be a distinct strip ABOVE the status bar (not embedded within it), with accentTint background signaling "you're in edit mode". This separates creation-time editing from normal coordinate display.</li>
+  <li><b>Diagnostic badge (P1):</b> Move from inline text to a solid danger badge (⚠ N) at the far left of the status bar. Click to expand detail menu. When healthy: zero footprint (completely hidden).</li>
+  <li><b>Shortcut hints (P2):</b> Show "Esc / Enter" hints at the right end of the edit bar. Replace implicit conventions.</li>
+  <li><b>New feedback channels (P2):</b> Save success = green checkmark + filename, 2s fadeout. Undo/redo = transient text "Undid: create segment", 1.5s fade.</li>
+</ul>
+
+<!-- ============ Section 5: Accessibility Audit ============ -->
+<h2><span class="no">05</span>Accessibility Audit (Systemic Gap)</h2>
+<p class="lede">这是评分最低的维度（C-）。Qt Widgets 应用天然支持部分辅助技术，但当前实现中有意或无意地阻断了多个关键路径。</p>
+
+<h3>5.1 Accessibility Checklist</h3>
+
+<div class="tab-group">
+  <div class="tab-btns">
+    <button class="tab-btn active" onclick="switchTab(event,'a11y-pass')">Passing (4)</button>
+    <button class="tab-btn" onclick="switchTab(event,'a11y-partial')">Partial (4)</button>
+    <button class="tab-btn" onclick="switchTab(event,'a11y-fail')">Failing (6)</button>
+  </div>
+
+  <div id="a11y-pass" class="tab-pane active">
+    <ul class="checklist yes">
+      <li>Text contrast meets WCAG AA (4.5:1 minimum) for all token-defined text colors</li>
+      <li>Focus visible on form inputs (QSS :focus-outline via Fusion style)</li>
+      <li>Keyboard navigation works for main form elements (Tab through inputs)</li>
+      <li>Tooltip text available on hover (400ms delay, no animation per Ela discipline)</li>
+    </ul>
+  </div>
+  <div id="a11y-partial" class="tab-pane">
+    <ul class="checklist partial">
+      <li><b>Touch targets:</b> Most interactive elements ≥ 24px, but some tool buttons are 26×26 (barely passing). Delete buttons are 20×20 (below minimum).</li>
+      <li><b>Screen reader labels:</b> ElaToolButton icons have accessible names via ElaIconType, but custom painted elements (card left bars, ghost delete slots) have none.</li>
+      <li><b>Dark mode:</b> All surfaces checked for light-island failure. Text readability maintained. But some hardcoded colors in LayerPanel won't switch.</li>
+      <li><b>Error identification:</b> Formula evaluation errors show red text + tooltip, but no programmatic error association (accessible description missing).</li>
+    </ul>
+  </div>
+  <div id="a11y-fail" class="tab-pane">
+    <ul class="checklist no">
+      <li><b>VirtualCardList not accessible:</b> Rows outside viewport are not in widget tree → screen reader cannot see them. Only ~8-10 rows are "visible" to assistive tech regardless of actual list size.</li>
+      <li><b>Delete button not keyboard reachable:</b> setVisible(false) until hover means Tab key can never focus it. No alternative keyboard method to delete a card.</li>
+      <li><b>No ARIA-equivalent roles:</b> Qt accessibility framework exists (QAccessible) but no custom roles registered for cards, lists, or badges.</li>
+      <li><b>Color-only information:</b> Piece type indicated solely by left bar color. Color-blind users cannot distinguish variable vs formula vs measure cards.</li>
+      <li><b>No reduced-motion support:</b> ElaWidgetTools animations removed (good), but CanvasView rendering has no prefers-reduced-motion check.</li>
+      <li><b>Drag-and-drop no alternative:</b> Formula card reordering requires mouse drag. No keyboard equivalent (no arrow-key reorder mode).</li>
+    </ul>
+  </div>
+</div>
+
+<h3>5.2 Accessibility Improvement Plan</h3>
+<table class="spec">
+  <tr><th>Issue</th><th>Solution</th><th>Effort</th></tr>
+  <tr><td>VirtualList a11y</td><td>Implement QAccessibleInterface for VirtualCardList: report total row count, current viewport range, and row-level role/name/state. Use QAccessible::queryAccessibleItem for off-screen rows.</td><td>Medium</td></tr>
+  <tr><td>Delete button a11y</td><td>Always keep delete button in tab chain but visually ghost it (opacity 0.25). Use setGraphicsEffect or just paint override. Screen readers see it always.</td><td>Low</td></tr>
+  <tr><td>Color-blind safety</td><td>Add type label prefix to each card's accessibleName: "Variable: Chest 92.00cm", "Formula: HalfChest 46.00cm". Icon + text dual-coding.</td><td>Low</td></tr>
+  <tr><td>Keyboard reorder</td><td>When formula card gets focus + Ctrl+Enter: enter "reorder mode" with arrow keys. Esc cancels. Enter confirms position.</td><td>Medium</td></tr>
+  <tr><td>Error announcement</td><td>Use QAccessible::updateAccessibility with QAccessible::Event::ObjectShow when formula error appears. Screen reader announces "Error: undefined variable x".</td><td>Low</td></tr>
+</table>
+
+<!-- ============ Section 6: Dark Mode Consistency ============ -->
+<h2><span class="no">06</span>Dark Mode Consistency Issues</h2>
+
+<h3>6.1 Piece Palette Problem</h3>
+<div class="comparison">
+  <div class="comp-box comp-before">
+    <div class="comp-label">LIGHT MODE</div>
+    <div class="comp-body">
+      <div class="swatches" style="justify-content:center;">
+        <div class="sw"><div class="sw-chip" style="background:var(--piece1)"></div><div class="sw-lbl"><b>Var</b><span>carbon</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:var(--piece2)"></div><div class="sw-lbl"><b>Fml</b><span>teal</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:var(--piece3)"></div><div class="sw-lbl"><b>Msr</b><span>terra</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:var(--piece4)"></div><div class="sw-lbl"><b>Lnk</b><span>cobalt</span></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="comp-box comp-after">
+    <div class="comp-label">DARK MODE (Current)</div>
+    <div class="comp-body">
+      <div class="swatches" style="justify-content:center;">
+        <div class="sw"><div class="sw-chip" style="background:#94A3B8"></div><div class="sw-lbl"><b>Var</b><span>blue-gray?</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#2DD4BF"></div><div class="sw-lbl"><b>Fml</b><span>bright teal</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#E08F73"></div><div class="sw-lbl"><b>Msr</b><span>dusty coral</span></div></div>
+        <div class="sw"><div class="sw-chip" style="background:#60A5FA"></div><div class="sw-lbl"><b>Lnk</b><span>light blue</span></div></div>
+      </div>
+      <p style="font-size:11px;color:var(--danger);margin-top:8px;text-align:center;">Different hues! User's "formula = teal" memory breaks.</p>
+    </div>
+  </div>
+</div>
+
+<div class="note blue">
+<b>Proposed fix:</b> Dark mode piece colors should keep the <b>same hue</b>, only adjusting lightness. Example: piece2 deep teal #0F766E → brightened to #2DD4BF (same hue, higher luminance). This preserves cross-mode type recognition. The current dark palette uses completely different hues (slate-blue-gray instead of carbon, etc.) which forces users to relearn color meanings when switching themes.
+</div>
+
+<h3>6.2 Other Dark Mode Issues</h3>
+<ul class="tight" style="font-size:13px;">
+  <li><b>LayerPanel hardcoded colors (#2E86C1, #B0BEC5, #7F8C8D):</b> These do NOT change in dark mode. Eye icon stays medium-blue on dark background (OK-ish visibility), but closed-eye gray #B0BEC5 may fail contrast on dark surface2.</li>
+  <li><b>ChipLabel border (#4E5866 / #9AA4B2):</b> Two separate hardcoded values for light/dark — this is actually a manual fork that happens to work, but should be tokenized.</li>
+  <li><b>tooltip_shot.png:</b>> The tooltip shown uses light-background styling even though we can't tell from the screenshot whether it was captured in light or dark mode. Tooltip tokens exist and should handle both correctly.</li>
+</ul>
+
+<!-- ============ Section 7: Implementation Roadmap ============ -->
+<h2><span class="no">07</span>Implementation Roadmap</h2>
+
+<div class="timeline">
+  <div class="tl-item">
+    <div class="tl-phase">Phase 1: P0 Fixes (Week 1-2)</div>
+    <div class="tl-desc">
+      <b>Color signal convergence:</b> Implement Option A (type-colored left bars) after user sign-off.<br>
+      <b>Navigation restructuring:</b> Reduce top bar to 3 items; move Components to panel big-tab; eliminate syncPanelTabs.<br>
+      <b>Token escape cleanup:</b> Eliminate all 8 hardcoded colors (especially #1 ChipLabel and #3 LayerPanel).<br>
+      Files: <code>CardBase.cpp, MainWindow.cpp, ChipLabel.cpp, LayerPanel.cpp, Theme.h/.cpp</code>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-phase">Phase 2: P1 Component Improvements (Week 3-4)</div>
+    <div class="tl-desc">
+      <b>Card value prominence:</b> Upgrade value display to 15px/600/mono in CardBase.<br>
+      <b>Dialog unification:</b> Apply FormScaffold code-title pattern to LinePropertyDialog; 88px label grid; inline pick button.<br>
+      <b>Status bar/edit bar split:</b> Extract SegmentEditBar as independent strip above status bar.<br>
+      <b>Layer panel active state:</b> Change blue tint → yellow accentTint for active layer.<br>
+      <b>Dangling badge:</b> Add U+26A0 warning badge to dangling card states.<br>
+      Files: <code>CardBase.h/.cpp, VariableCard.cpp, LinePropertyDialog.cpp, FormScaffold.h, MainWindow.cpp, LayerPanel.cpp</code>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-phase">Phase 3: Accessibility (Week 5-6)</div>
+    <div class="tl-desc">
+      <b>Keyboard-accessible delete:</b> Ghost delete button always in tab chain.<br>
+      <b>VirtualList QAccessibleInterface:</b> Custom accessible interface for virtualized card list.<br>
+      <b>Color-blind dual-coding:</b> AccessibleName prefix with type for all cards.<br>
+      <b>Error announcements:</b> QAccessible::updateAccessibility for formula errors.<br>
+      <b>Keyboard reorder:</b> Arrow-key reorder mode for formula groups.<br>
+      Files: <code>CardBase.cpp, VirtualCardList.h/.cpp, VariableCard.cpp, FormulaCard.cpp</code>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-phase">Phase 4: Polish (Week 7-8)</div>
+    <div class="tl-desc">
+      <b>Dark mode piece palette:</b> Same-hue lightness adjustment for dark() factory.<br>
+      <b>Radius discipline:</b> Rename RadiusBadge → RadiusLgExtra; clamp Ela default radii.<br>
+      <b>Feedback channels:</b> Save success indicator; undo/redo transient messages.<br>
+      <b>Input focus signal:</b> 3px accent left-border on focused inputs (global QSS).<br>
+      <b>Empty state upgrade:</b> 18px Semibold headline + ghost "+ New" button (replacing text-only emptyHint).<br>
+      Files: <code>Theme.cpp, Theme.h, VariablePanel.cpp, buildStylesheet()</code>
+    </div>
+  </div>
+</div>
+
+<h3>Effort Estimate Summary</h3>
+<table class="spec">
+  <tr><th>Phase</th><th>Duration</th><th>Files Touched</th><th>Risk</th><th>Dependency</th></tr>
+  <tr><td>Phase 1: P0</td><td>2 weeks</td><td>~8 files</td><td>Medium</td><td>User sign-off on Option A/B</td></tr>
+  <tr><td>Phase 2: P1</td><td>2 weeks</td><td>~10 files</td><td>Low</td><td>Phase 1 complete</td></tr>
+  <tr><td>Phase 3: A11y</td><td>2 weeks</td><td>~6 files</td><td>Medium</td><td>None (parallelizable)</td></tr>
+  <tr><td>Phase 4: Polish</td><td>2 weeks</td><td>~5 files</td><td>Low</td><td>Phase 1-2 complete</td></tr>
+  <tr><td><b>Total</b></td><td><b>8 weeks</b></td><td><b>~20 unique files</b></td><td>—</td><td>—</td></tr>
+</table>
+
+<!-- ============ Section 8: Design Principles Recap ============ -->
+<h2><span class="no">08</span>Design Principles (Endfield 2.1)</h2>
+<div class="card">
+  <ol class="tight" style="font-size:13px;">
+    <li><b>One accent color.</b> Signal yellow #FFDE00 is the sole "action/selected/focus" signal. Maximum one solid-yellow element per screen. All other colors are entity identity (piece) or semantic state only.</li>
+    <li><b>Three color layers, never mixed.</b> Accent (yellow, 1 active instance) → Piece type (4 identity colors) → Semantic (4 status colors). A color never serves two roles.</li>
+    <li><b>One navigation path.</b> Main window tabs = panel show/hide toggle only. Panel internal tabs = content classification. No mirrored navigation, no bidirectional sync.</li>
+    <li><b>Paper and ink.</b> Canvas = blueprint-gray paper. Panels = white binder with hairline borders. Right angles by default, functional radius ≤ 4px.</li>
+    <li><b>Numbers don't jitter.</b> All readouts/inputs use monospace font with fixed column width. Layout zero-displacement on value refresh.</li>
+    <li><b>Density serves the hand.</b> CAD is a high-frequency tool: information density takes priority over whitespace aesthetics. But every interactive target ≥ 24px height.</li>
+    <li><b>Accessibility is not optional.</b> Every visual signal must have a non-color backup. Every action must be keyboard-reachable. Screen readers must understand the interface.</li>
+    <li><b>Zero hardcoded colors.</b> Every pixel of color comes from ThemeTokens. If you need a new color, add a token first.</li>
+  </ol>
+</div>
+
+<div class="footer">
+  WildWind Pattern UI Design Review v1.0 · 2026-08-28 · Reviewer: UI Designer<br>
+  Based on source code audit (src/ui, src/app, src/tools) + screenshot analysis (panel_shot.png, tooltip_shot.png) + existing design document (design/ui-redesign-2026-08.html)<br>
+  Baseline: Endfield 2.0 design system (ThemeTokens 42 tokens) · Target: Endfield 2.1 evolution
+</div>
+
+</div>
+
+<script>
+function switchTab(evt, paneId) {
+  const btnGroup = evt.target.parentElement;
+  btnGroup.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  evt.target.classList.add('active');
+  const parent = btnGroup.parentElement;
+  parent.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.getElementById(paneId).classList.add('active');
+}
+</script>
+</body>
+</html>

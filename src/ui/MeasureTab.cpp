@@ -27,7 +27,7 @@ QString blockLayerName(const cad::param::ParamDocument* doc, const QUuid& blockI
 {
     const auto* blk = doc->findBlock(blockId);
     if (!blk) return QString();
-    const auto* layer = doc->layerById(blk->layer);
+    const auto* layer = doc->layersView().byId(blk->layer);
     return layer ? layer->name : QString();
 }
 

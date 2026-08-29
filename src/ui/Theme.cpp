@@ -48,9 +48,8 @@ ThemeTokens ThemeTokens::light()
     t.danger  = QColor("#DC2626");  // 4.83:1 on white
     t.teal    = QColor("#0284C7");  // cyan connection
 
-    // Row alternation: fixed by user decision (蓝/橙交替), same in both modes.
-    t.rowEven = QColor("#2F6FED");
-    t.rowOdd  = QColor("#F59E0B");
+    // Row alternation bars removed (ui-redesign-2026-08 §2.5 方案 A):
+    // card accent bars now carry the piece type color — see CardBase.
 
     t.tooltipBg = QColor("#0D1117");
     t.tooltipFg = QColor("#F8FAFC");
@@ -76,20 +75,18 @@ ThemeTokens ThemeTokens::dark()
     t.accentTint   = QColor("#2D2B10");
     t.onAccent     = QColor("#0D1117");   // deep ink on bright yellow
 
-    // Piece palette — lighter fabric-block hues readable on dark surfaces.
-    t.piece1 = QColor("#7E9CC0");
-    t.piece2 = QColor("#93B3D9");
+    // Piece palette — same hue as light(), only raised lightness (§2.3/§2.6):
+    // 深青 #0F766E → #2DD4BF, 钴蓝 #2563EB → #60A5FA, 碳灰 #1E293B → #94A3B8,
+    // 陶土保持同相 #E08F73。「公式 = 青」跨模式记忆一致, 不再换组色相。
+    t.piece1 = QColor("#94A3B8");
+    t.piece2 = QColor("#2DD4BF");
     t.piece3 = QColor("#E08F73");
-    t.piece4 = QColor("#8FB58A");
+    t.piece4 = QColor("#60A5FA");
 
     t.success = QColor("#34C77B");
     t.warning = QColor("#F0A94B");
     t.danger  = QColor("#F0655A");
     t.teal    = QColor("#2BB3A3");
-
-    // Row alternation: fixed by user decision (蓝/橙交替), same in both modes.
-    t.rowEven = QColor("#2F6FED");
-    t.rowOdd  = QColor("#F59E0B");
 
     t.tooltipBg = QColor("#E8EAED");
     t.tooltipFg = QColor("#1D2126");
@@ -123,6 +120,16 @@ QWidget {
 
 QFrame#divider { background: @border; border: none; max-height: 1px; min-height: 1px; }
 QFrame#accentBar { background: @accent; border: none; }
+
+/* ── 编辑条带 (§4.6): 状态栏上方的独立「创建后编辑/预输入」条带 ── */
+QWidget#editBand {
+    background: @accentTint; border: 1px solid @accentStrong; border-radius: 2px;
+}
+
+/* ── 串号徽章 (§5.3): 墨底 + accent 黄字, 图纸编号感 ── */
+QLabel#serialBadge {
+    background-color: @text1; color: @accent; font-weight: 600; padding: 0 6px;
+}
 
 /* ── 分组头: 悬停 + 拖放目标高亮 ─────────────── */
 QWidget#FormulaGroupHeader { background: transparent; border-radius: 2px; }
@@ -193,7 +200,6 @@ QToolTip {
     background: @tooltipBg; color: @tooltipFg;
     border: 1px solid @borderStrong; border-radius: 2px;
     padding: 4px 8px; font-size: 12px;
-    font-family: 'Consolas','Courier New',monospace;
 }
 )QSS");
 
@@ -209,6 +215,9 @@ QToolTip {
     s.replace(QStringLiteral("@accent"),       t.accent.name());
     s.replace(QStringLiteral("@onAccent"),     t.onAccent.name());
     s.replace(QStringLiteral("@danger"),       t.danger.name());
+    // 坑: @tooltipFg 曾漏替换 → QSS 颜色声明非法, 文字取回调色板深色,
+    // 叠加 @tooltipBg 黑底 → "提示纯黑、字完全看不清" (用户 2026-12 反馈)。
+    s.replace(QStringLiteral("@tooltipFg"),    t.tooltipFg.name());
     s.replace(QStringLiteral("@tooltipBg"),    t.tooltipBg.name());
     return s;
 }
