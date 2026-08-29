@@ -195,7 +195,7 @@
 |---|------|------|------|
 | L1 | `ToolIntersection.cpp`(3处) / `ToolCurveEdit.cpp`(3) / `ToolAngleMeasure.cpp`(2) / `ToolBreak` / `ToolRotate` / `ToolSmartPen` / `RotateGizmo` 各 1 | 共 8 处 `if (m_x) { m_scene->removeItem(m_x); delete m_x; m_x = nullptr; }` 清理样板，逐项手写、容易漏 | 基类提供 `ManagedItems` RAII 容器，登记后由 `deactivate` 统一释放（见 P1） |
 | L2 | `ToolSelect.cpp:955-971` vs `ToolRotate.cpp:1808-1823` | `hitBlock` 两份近似实现，且一个用 `layersView().activeLayer()`、另一个用 `activeLayer()` —— 规则已经开始漂移 | 合并进共享 `HitTester`（与 M7 一起做） |
-| L3 | 9 处 `SnapEngine m_snapEngine`（7 个工具 + `ConnectGesture.h:231` + `LeaderCandidatePicker.h:62`） | `SnapEngine` 实际无状态（`SnapEngine.h:44-61`，仅一个可配置 `snapRadius`），却给每个工具各造一份 | 改为按半径构造的轻量值对象或共享实例 |
+| L3 | 9 处 `SnapEngine m_snapEngine`（7 个工具 + `ConnectGesture.h:231` + `LeaderCandidatePicker.h:62`） | ~~`SnapEngine` 实际无状态~~ —— **前提已过时**：2026-09 性能专项为 SnapEngine 增加每块坐标缓存（`SnapEngine.h:170-171` 的 `m_snapBlockCache`/`m_snapSegCache`），已是有状态类；各工具独立实例 = 独立缓存，属合理设计 | ~~改为按半径构造的轻量值对象或共享实例~~ **无需做** |
 | L4 | `ToolSelect.h:59` / `ToolSmartPen.h:94` / `ToolCurveEdit.h:41` 等 | 工具名用八进制转义硬编码中文（`"\xe9\x80\x89\xe6\x8b\xa9"`），不可读、不可维护 | 改用 `QStringLiteral(u8"选择")`；并把 `name()` 的返回类型从 `const char*` 改为 `QString` |
 | L5 | `ToolManager.cpp:61-103` | `switchTool` 无条件 `make_unique` 重建，即使切的是当前工具 → 连按两次 R 会清空旋转目标与 HUD 内容 | `if (m_activeType == type && m_activeTool) return;`（或提供显式的 `reset()` 入口） |
 | L6 | `ToolSelect.cpp:474-477` | 右键菜单守卫 `overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr && cands.size() < 2` 中，末项与首项等价，冗余 | 删除末项 |
@@ -205,7 +205,7 @@
 **L 项复核状态（2026-12）**：
 - **L1**（清理样板）✅ 随 P1 `ManagedItems` 收口（7 文件 17 处）。
 - **L2**（hitBlock 两份实现）✅ 随 P1 `HitTester.h` 合并。
-- **L3**（SnapEngine 冗余实例）— 未处理（低收益，各工具持有可配置 snapRadius 的语义可接受）。
+- **L3**（SnapEngine 冗余实例）— **无需做**：2026-09 性能专项给 SnapEngine 加了每块坐标缓存（SnapEngine.h:170-171），"无状态"前提已过时；各工具独立实例 = 独立缓存，属有意设计。
 - **L4**（八进制中文名）— 未处理（显示名已迁 `describe().displayName`，`name()` 保留原样）。
 - **L5**（重复切换重建）✅ 随 P2 常驻实例池 + 同类型 no-op。
 - **L6**（右键守卫冗余末项）✅ 已删（`cands.size() < 2` 与 `overlapMenu == nullptr` 等价）。
