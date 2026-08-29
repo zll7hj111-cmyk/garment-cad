@@ -1,4 +1,4 @@
-#include "CurveMath.h"
+﻿#include "CurveMath.h"
 
 #include <QPainterPath>
 
@@ -187,6 +187,14 @@ double hobbyVelocity(double theta, double phi)
     const double den = 3.0 * (1.0 + cA * std::cos(theta) + cB * std::cos(phi));
     return (std::abs(den) > 1e-9) ? (num / den) : (1.0 / 3.0);
 }
+
+/// Handle-length clamp (P3-2): at near-180° chord fold-backs (e.g. anchors
+/// extrapolated past a curve endpoint, interpPercent outside [0,1]) the Hobby
+/// velocity formula emits handles several times the chord length and the curve
+/// loops/self-intersects. Normal garment curves sit at ratio 0.3~0.7, so 2.0
+/// only catches runaway shapes (measured worst normal neckline ratio ~1.4).
+/// Manual tangents are never clamped (user intent). Tune here if needed.
+constexpr double kMaxHandleRatio = 2.0;
 
 } // namespace
 
@@ -389,11 +397,17 @@ std::pair<std::vector<Vec2>, std::vector<Vec2>> solveHobbyTangents(
         const double tStart = normAnglePi(theta[k] - psi);
         const double tEnd   = normAnglePi(theta[k + 1] - (psi + M_PI));
 
+        // P3-2 (D6/D7/D8): AUTO handle lengths are clamped to kMaxHandleRatio
+        // times their chord — fold-back chords near ±180° turn make the
+        // velocity formula emit handles several chord-lengths long and the
+        // curve loops. Manual branches keep the user's explicit length (D8).
         const double cOut = autoAt(k)
-            ? hobbyVelocity(tStart, tEnd) * chordLen[k] / tau
+            ? std::min(hobbyVelocity(tStart, tEnd) * chordLen[k] / tau,
+                       chordLen[k] * kMaxHandleRatio)
             : manualTanOut[k].length();
         const double cIn = autoAt(k + 1)
-            ? hobbyVelocity(tEnd, tStart) * chordLen[k] / tau
+            ? std::min(hobbyVelocity(tEnd, tStart) * chordLen[k] / tau,
+                       chordLen[k] * kMaxHandleRatio)
             : manualTanIn[k + 1].length();
 
         tOut[k]     = Vec2(std::cos(theta[k]),     std::sin(theta[k]))     * cOut;
@@ -612,24 +626,32 @@ double arcLengthToParam(const std::vector<BezierSpan>& spans, double targetS)
     double spanLen = cumLen[spanIdx + 1] - cumLen[spanIdx];
     if (spanLen < 1e-9) return static_cast<double>(spanIdx);
 
-    // Bisection within the span to find local t
+    // Safeguarded Newton within the span. Arc length over [0, t] is monotone
+    // in t with derivative speed(t) = |B'(t)|, so Newton converges
+    // quadratically; bisection guards the bracket whenever the Newton step
+    // leaves it or the speed vanishes (cusp / degenerate span).
     const BezierSpan& sp = spans[spanIdx];
-    double lo = 0.0, hi = 1.0;
-    for (int iter = 0; iter < 40; ++iter) {
-        double mid = (lo + hi) * 0.5;
-        // Compute arc length from 0 to mid using GL on [0, mid]
+    auto lenTo = [&sp](double t) {  // arc length over [0, t] via GL
         double len = 0.0;
         for (int i = 0; i < GL_N; ++i) {
-            double t = mid * 0.5 * (GL_NODES[i] + 1.0);
-            double w = mid * 0.5 * GL_WEIGHTS[i];
-            len += w * evalBezierDerivative(sp, t).length();
+            double tt = t * 0.5 * (GL_NODES[i] + 1.0);
+            double w  = t * 0.5 * GL_WEIGHTS[i];
+            len += w * evalBezierDerivative(sp, tt).length();
         }
-        if (len < localTarget)
-            lo = mid;
-        else
-            hi = mid;
+        return len;
+    };
+    double lo = 0.0, hi = 1.0, t = 0.5;
+    for (int iter = 0; iter < 32; ++iter) {
+        const double f = lenTo(t) - localTarget;
+        if (std::abs(f) < 1e-9) break;
+        if (f < 0.0) lo = t; else hi = t;
+        const double speed = evalBezierDerivative(sp, t).length();
+        double next = (speed > 1e-9) ? (t - f / speed) : (lo + hi) * 0.5;
+        if (next <= lo || next >= hi) next = (lo + hi) * 0.5;  // safeguard
+        if (std::abs(next - t) < 1e-12) { t = next; break; }
+        t = next;
     }
-    return spanIdx + (lo + hi) * 0.5;
+    return spanIdx + t;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -653,44 +675,60 @@ CurveProjection projectPointOnCurve(const Vec2& query,
     for (int i = 0; i < n; ++i) {
         const BezierSpan& sp = spans[i];
 
-        // Coarse sampling (8 subdivisions) to find initial guess
+        // Coarse sampling + MULTI-CANDIDATE refinement. The old single-start
+        // Newton (from the one best sample) can converge to a LOCAL nearest
+        // point on strong-curvature shapes (deep sleeve-cap bends, hairpins):
+        // the coarse best sample may sit in the wrong basin. Instead, seed
+        // Newton from every local minimum of the sampled distance (plus both
+        // span endpoints) and keep the best result — the global nearest point
+        // is then found reliably.
+        constexpr int SAMPLES = 16;
+        double sampleDSq[SAMPLES + 1];
+        for (int k = 0; k <= SAMPLES; ++k) {
+            const Vec2 pt = evalBezier(sp, static_cast<double>(k) / SAMPLES);
+            sampleDSq[k] = query.distanceSquaredTo(pt);
+        }
+        std::vector<double> candidates;
+        candidates.push_back(0.0);
+        for (int k = 1; k < SAMPLES; ++k) {
+            if (sampleDSq[k] <= sampleDSq[k - 1] && sampleDSq[k] <= sampleDSq[k + 1])
+                candidates.push_back(static_cast<double>(k) / SAMPLES);
+        }
+        candidates.push_back(1.0);
+
+        // Newton refinement: minimize |B(t) - Q|²
+        // f(t) = dot(B(t) - Q, B'(t)) = 0
         double bestLocalT = 0.0;
         double bestSpanDistSq = 1e30;
-        constexpr int SAMPLES = 8;
-        for (int k = 0; k <= SAMPLES; ++k) {
-            double t = static_cast<double>(k) / SAMPLES;
-            Vec2 pt = evalBezier(sp, t);
-            double dSq = query.distanceSquaredTo(pt);
+        for (double seed : candidates) {
+            double t = seed;
+            for (int iter = 0; iter < 8; ++iter) {
+                Vec2 pt = evalBezier(sp, t);
+                Vec2 deriv = evalBezierDerivative(sp, t);
+                double f = (pt - query).dot(deriv);
+
+                // f'(t) = |B'(t)|² + dot(B(t)-Q, B''(t))
+                // Approximate B''(t) numerically
+                double eps = 1e-6;
+                Vec2 derivPlus = evalBezierDerivative(sp, std::min(t + eps, 1.0));
+                Vec2 derivMinus = evalBezierDerivative(sp, std::max(t - eps, 0.0));
+                Vec2 secondDeriv = (derivPlus - derivMinus) / (2.0 * eps);
+                double fPrime = deriv.lengthSquared() + (pt - query).dot(secondDeriv);
+
+                if (std::abs(fPrime) < 1e-12) break;
+                double dt = -f / fPrime;
+                t = std::clamp(t + dt, 0.0, 1.0);
+                if (std::abs(dt) < 1e-10) break;
+            }
+            const double dSq = query.distanceSquaredTo(evalBezier(sp, t));
             if (dSq < bestSpanDistSq) {
                 bestSpanDistSq = dSq;
                 bestLocalT = t;
             }
         }
 
-        // Newton refinement: minimize |B(t) - Q|²
-        // f(t) = dot(B(t) - Q, B'(t)) = 0
-        for (int iter = 0; iter < 8; ++iter) {
-            Vec2 pt = evalBezier(sp, bestLocalT);
-            Vec2 deriv = evalBezierDerivative(sp, bestLocalT);
-            double f = (pt - query).dot(deriv);
-
-            // f'(t) = |B'(t)|² + dot(B(t)-Q, B''(t))
-            // Approximate B''(t) numerically
-            double eps = 1e-6;
-            Vec2 derivPlus = evalBezierDerivative(sp, std::min(bestLocalT + eps, 1.0));
-            Vec2 derivMinus = evalBezierDerivative(sp, std::max(bestLocalT - eps, 0.0));
-            Vec2 secondDeriv = (derivPlus - derivMinus) / (2.0 * eps);
-            double fPrime = deriv.lengthSquared() + (pt - query).dot(secondDeriv);
-
-            if (std::abs(fPrime) < 1e-12) break;
-            double dt = -f / fPrime;
-            bestLocalT = std::clamp(bestLocalT + dt, 0.0, 1.0);
-            if (std::abs(dt) < 1e-10) break;
-        }
-
-        double dSq = query.distanceSquaredTo(evalBezier(sp, bestLocalT));
-        if (dSq < bestDistSq) {
-            bestDistSq = dSq;
+        if (bestSpanDistSq < bestDistSq) {
+            bestDistSq = bestSpanDistSq;
             double globalT = i + bestLocalT;
             Vec2 pt = evalBezier(sp, bestLocalT);
             Vec2 tan = evalBezierDerivative(sp, bestLocalT).normalized();
@@ -699,7 +737,7 @@ CurveProjection projectPointOnCurve(const Vec2& query,
             best.point = pt;
             best.tangent = tan;
             best.normal = tan.perpendicular();
-            best.distance = std::sqrt(dSq);
+            best.distance = std::sqrt(bestSpanDistSq);
             best.valid = true;
 
             // Compute arc-length s

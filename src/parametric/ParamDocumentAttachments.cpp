@@ -399,10 +399,27 @@ void ParamDocument::updateSlideOffsetsFromCurrent(const QUuid& id)
     if (!from || !to) return;
     const auto [s, t] = computeSlideOffsets(*from, *it, *to);
     // 只回写自由轴; 锁轴坐标保持激活时快照 (拖动只改变自由轴).
-    if (it->slideMode == SlideMode::AlongLeader)
+    // 拖动 = 手工调整 → 清该轴公式 (公式优先语义下否则拖不动)。
+    if (it->slideMode == SlideMode::AlongLeader) {
         it->slideAlongMm = s;
-    else
+        it->slideAlongFormula.clear();
+    } else {
         it->slidePerpMm = t;
+        it->slidePerpFormula.clear();
+    }
+}
+
+void ParamDocument::updateBaselineOffsets(const QHash<QUuid, double>& offsets)
+{
+    // 影子偏转角拖动回写 (旋转会话每帧调用, 用户拍板 2026-08-27): 只写存储值,
+    // 不触发 resolve —— 随后的 resolveForDrag 按新值落位 (与
+    // updateSlideOffsetsFromCurrent 同一拖帧回写契约)。未知 id 忽略。
+    for (auto it = offsets.constBegin(); it != offsets.constEnd(); ++it) {
+        auto att = std::find_if(m_attachments.begin(), m_attachments.end(),
+            [&it](const Attachment& a) { return a.id == it.key(); });
+        if (att != m_attachments.end())
+            att->baselineOffsetDeg = it.value();
+    }
 }
 
 QSet<QUuid> ParamDocument::lockedClosure(const QSet<QUuid>& seed) const

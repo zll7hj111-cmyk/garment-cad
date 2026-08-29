@@ -1,4 +1,4 @@
-#include <QtTest>
+﻿#include <QtTest>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QUuid>
@@ -44,7 +44,6 @@ private slots:
     void bridgeAuxPointSnappableAndAttachable();
     void auxPointFromEndDirection();
     void auxFromEndRoundTrip();
-    void diagL54ConnectionOffset();
     void degradedValuesProduceWarnings();
 
 private:
@@ -724,6 +723,9 @@ void TestSerializer::attachmentsRoundTrip()
         mut->slideMode = cad::param::SlideMode::PerpLeader;
         mut->slideAlongMm = 12.5;
         mut->slidePerpMm = -3.25;
+        // 滑轨公式 (Optional since v7): 两轴公式原样往返.
+        mut->slideAlongFormula = QStringLiteral("肩宽/2");
+        mut->slidePerpFormula = QStringLiteral("3*2");
     }
 
     QJsonObject json = DocumentSerializer::serialize(src);
@@ -747,6 +749,8 @@ void TestSerializer::attachmentsRoundTrip()
              "slideMode must survive serialization");
     QVERIFY(qFuzzyCompare(da.slideAlongMm, 12.5));
     QVERIFY(qFuzzyCompare(da.slidePerpMm, -3.25));
+    QCOMPARE(da.slideAlongFormula, QStringLiteral("肩宽/2"));
+    QCOMPARE(da.slidePerpFormula, QStringLiteral("3*2"));
 }
 
 void TestSerializer::bridgeRoundTrip()
@@ -1228,51 +1232,6 @@ void TestSerializer::auxFromEndRoundTrip()
     const ParamPoint* ra = rb->findPoint(auxId);
     QVERIFY(ra != nullptr);
     QCOMPARE(ra->interpFromEnd, true);
-}
-
-// Diagnostic for the reported L54/P128->P127 connection offset. Loads the
-// user's document, resolves, and measures how far the follower point P128
-// lands from its leader point P127. A correct attachment must coincide.
-void TestSerializer::diagL54ConnectionOffset()
-{
-    const QString path = QStringLiteral("e:/\u5b58\u6863/1.gcad");  // e:/存档/1.gcad
-    if (!QFileInfo::exists(path))
-        QSKIP("user document 1.gcad not present");
-
-    ParamDocument doc;
-    QString err;
-    QVERIFY2(cad::doc::DocumentFile::load(path, doc, &err),
-             qPrintable(QStringLiteral("load failed: %1").arg(err)));
-
-    doc.resolveAll();
-
-    // P127 = 697f002b-... (leader point, on block 996f42fb)
-    // P128 = d2fab945-... (L54 start, follower)
-    const QUuid p127Block{QStringLiteral("996f42fb-b8ce-46b6-a3b8-2b43cad525f2")};
-    const QUuid p127Id{QStringLiteral("697f002b-e213-479a-bf4a-6a5d3fd84bc7")};
-    const QUuid l54Block{QStringLiteral("efd61f21-e25e-4670-9ede-a9838d926a56")};
-    const QUuid p128Id{QStringLiteral("d2fab945-e0f3-4f86-b782-d0ffb3ffd9e6")};
-
-    const Block* b127 = doc.findBlock(p127Block);
-    const Block* bL54 = doc.findBlock(l54Block);
-    // This is a diagnostic regression test pinned to a specific user document.
-    // The document is user-mutable (it gets re-saved/edited), so if the blocks
-    // it references are gone the test is simply no longer applicable — skip
-    // rather than fail.
-    if (!(b127 && bL54))
-        QSKIP("document 1.gcad no longer contains the referenced blocks");
-
-    cad::geo::Vec2 w127 = b127->worldPos(p127Id);
-    cad::geo::Vec2 w128 = bL54->worldPos(p128Id);
-
-    qDebug() << "P127 world:" << w127.x << w127.y;
-    qDebug() << "P128 world:" << w128.x << w128.y;
-    qDebug() << "offset mm :" << w127.distanceTo(w128);
-
-    // A snapped attachment must place P128 exactly on P127.
-    QVERIFY2(w127.distanceTo(w128) < 1e-3,
-             qPrintable(QStringLiteral("P128 is offset from P127 by %1 mm")
-                        .arg(w127.distanceTo(w128))));
 }
 
 QTEST_MAIN(TestSerializer)

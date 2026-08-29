@@ -488,13 +488,13 @@ private slots:
         QVERIFY2(baseRight > 0, "baseline line must be visible");
 
         // 终点延长 5cm (正向) —— 画布同步后右端必须右移。
-        const quint64 epoch0 = doc.findBlock(L.blockId)->geometryEpoch;
+        const quint64 epoch0 = doc.findBlock(L.blockId)->geometryEpoch();
         cad::cmd::SetSegmentExtendCommand::Values vEnd;
         vEnd.endMm = 50.0;
         doc.undoStack()->push(new cad::cmd::SetSegmentExtendCommand(
             &doc, L.blockId, L.segId, vEnd));
         const auto* b = doc.findBlock(L.blockId);
-        QVERIFY2(b->geometryEpoch != epoch0,
+        QVERIFY2(b->geometryEpoch() != epoch0,
                  "end extension must bump geometryEpoch (canvas redraw rule)");
         QVERIFY2(b->worldPos(L.endId).distanceTo(Vec2(150.0, 40.0)) < 1e-6,
                  "end effective position must include the tail");
@@ -716,265 +716,74 @@ private slots:
                      .arg(baseLeft).arg(afterLeft).toUtf8().constData());
     }
 
-    // ── 真实文档复现 (用户 2026-11 报告场景): 装入 E:\3.gcad, 对修正线 /
-    //    后肩线施加终点延长, 验证有效端点确实外移。缺文档时跳过。
-    void realDocExtensionMovesEffectiveEnd()
-    {
-        const QString path = QStringLiteral("E:/3.gcad");
-        if (!QFile::exists(path)) QSKIP("E:\\3.gcad not present");
 
+    // ── 公式驱动的起点延长 (P2-2：原用例加载用户存档 E:\3.gcad 的线段
+    //    5wfkxL74 与变量「后长补正」；现在用合成档覆盖同一行为，不再依赖
+    //    磁盘上的用户文档) ── 起点延长量 = 公式「ext」(变量 50mm) →
+    //    ① 求值 ② 有效起点沿段方向外移 ③ 画布包围盒随之变宽（尾巴画出来了）。
+    void formulaStartExtendEvaluatesAndMovesStart()
+    {
         ParamDocument doc;
-        QString err;
-        QVERIFY2(cad::doc::DocumentFile::load(path, doc, &err),
-                 qPrintable(QStringLiteral("load failed: %1").arg(err)));
+        const auto L = makeLine(doc, 100.0);          // 本体 (0,0)→(100,0)
+
+        Variable v;
+        v.name = QStringLiteral("后长补正");
+        v.refName = QStringLiteral("ext");
+        v.value = 50.0;                                // mm
+        doc.addVariable(v);
+
+        auto* b0 = doc.findBlock(L.blockId);
+        QVERIFY(b0);
+        auto* s0 = b0->findSegment(L.segId);
+        QVERIFY(s0);
+        s0->extendStartMm = 0.0;
+        s0->extendStartFormula = QStringLiteral("ext");
         doc.resolveAll();
 
-        // 修正线片断 (aux 层, 带交点/插值辅助点) 与 后肩线片断。
-        const QStringList wantSerial = {
-            QStringLiteral("f55zfL78"),   // 修正线 segment
-            QStringLiteral("k043rL82"),   // 后肩线 segment
-        };
-        for (const QString& serial : wantSerial) {
-            const Block* blk = nullptr;
-            const Segment* seg = nullptr;
-            for (const auto& b : doc.blocks()) {
-                for (const auto& s : b.segments) {
-                    if (s.serial == serial) { blk = &b; seg = &s; break; }
-                }
-                if (seg) break;
-            }
-            if (!blk || !seg) {
-                qWarning() << "segment serial" << serial << "not in doc — skipped";
-                continue;
-            }
-            const auto* sp = blk->findPoint(seg->startPointId);
-            const auto* ep = blk->findPoint(seg->endPointId);
-            QVERIFY(sp && ep);
-            const Vec2 baseStartWorld = blk->worldPos(sp->id);
-            const Vec2 baseEndWorld   = blk->worldPos(ep->id);
-            const double baseLen = baseStartWorld.distanceTo(baseEndWorld);
-            QVERIFY2(baseLen > 1.0, qPrintable(
-                QStringLiteral("segment %1 must have a non-degenerate base")
-                    .arg(serial)));
+        const auto* b = doc.findBlock(L.blockId);
+        QVERIFY(b);
 
-            // 终点延长 2cm (emulating the card: endMm = cmToMm(2)).
-            cad::cmd::SetSegmentExtendCommand::Values v;
-            v.endMm = 20.0;
-            doc.undoStack()->push(new cad::cmd::SetSegmentExtendCommand(
-                &doc, blk->id, seg->id, v));
-            const auto* b2 = doc.findBlock(blk->id);
-            const Vec2 endWorld = b2->worldPos(ep->id);
-            const Vec2 dir = (baseEndWorld - baseStartWorld) / baseLen;
-            const double moved = (endWorld - baseEndWorld).length();
-            QVERIFY2(std::abs(moved - 20.0) < 1e-6,
-                     qPrintable(QStringLiteral(
-                         "segment %1 end must move 20mm (moved %2)")
-                         .arg(serial).arg(moved)));
-            const double dot = (endWorld - baseEndWorld).x * dir.x
-                             + (endWorld - baseEndWorld).y * dir.y;
-            QVERIFY2(dot > 19.9,
-                     qPrintable(QStringLiteral(
-                         "segment %1 tail must extend OUTWARD (dot %2)")
-                         .arg(serial).arg(dot)));
+        // ① 公式求值：起点延长 = 变量值 50mm。
+        const double startMm = b->segmentExtendStart(L.segId);
+        QVERIFY2(std::abs(startMm - 50.0) < 1e-6,
+                 qPrintable(QStringLiteral("公式起点延长应求值为 50mm (got %1)").arg(startMm)));
 
-            // 渲染级验证: 真实文档的画布在终点延长后必须出现新像素 (尾巴)。
-            // 渲染区域 = 该线段包围盒 + 40mm 余量; 其他块不受本次延长影响,
-            // 因此出现变化像素 = 尾巴被画出来了。
-            // 辅助层块在非激活时整块隐身 (不绘制) → 只对工作层块做渲染级检查。
-            const bool isWorking = !doc.layers().empty()
-                && blk->layer != doc.layers().front().id;
-            if (!isWorking) {
-                qWarning() << "segment" << serial
-                           << "on aux layer — skipping render check";
-                continue;
-            }
-            {
-                const Vec2 lo(std::min(baseStartWorld.x, baseEndWorld.x) - 40.0,
-                              std::min(baseStartWorld.y, baseEndWorld.y) - 40.0);
-                const Vec2 hi(std::max(baseStartWorld.x, baseEndWorld.x) + 40.0,
-                              std::max(baseStartWorld.y, baseEndWorld.y) + 40.0);
-                CanvasScene scene(&doc);
-                // 块在场景构造前已加载 → 逐块补齐 BlockItem。
-                for (const auto& b : doc.blocks())
-                    scene.addBlockItem(b.id);
-                // 完整渲染一遍 (同步块项 + 层模式), 然后只取局部区域比较。
-                constexpr double kScale = 3.0;
-                const QRectF region(lo.x, -hi.y, hi.x - lo.x, hi.y - lo.y);
-                auto renderRegion = [&]() {
-                    const QRectF sceneRect(
-                        region.left(), region.top(), region.width(), region.height());
-                    QImage img(static_cast<int>(sceneRect.width() * kScale),
-                               static_cast<int>(sceneRect.height() * kScale),
-                               QImage::Format_ARGB32);
-                    img.fill(Qt::white);
-                    QPainter p(&img);
-                    scene.render(&p, img.rect(), sceneRect);
-                    p.end();
-                    return img;
-                };
-                scene.syncBlockPositions();          // 同步最近一次 resolve 的结果
-                const QImage q0 = renderRegion();
-                auto* item = scene.findBlockItem(blk->id);
-                QVERIFY(item);
-                const QRectF b0 = item->boundingRect();
-                const quint64 epochA = doc.findBlock(blk->id)->geometryEpoch;
-                cad::cmd::SetSegmentExtendCommand::Values v2;
-                v2.endMm = 35.0;   // 20mm (上一步) → 35mm: 真正的变更
-                doc.undoStack()->push(new cad::cmd::SetSegmentExtendCommand(
-                    &doc, blk->id, seg->id, v2));
-                const quint64 epochB = doc.findBlock(blk->id)->geometryEpoch;
-                const QRectF b1 = item->boundingRect();
-                qWarning().noquote() << QStringLiteral(
-                    "[extend-render] %1 epoch %2→%3 bounds %4→%5 "
-                    "(width %6→%7) visible=%8")
-                    .arg(serial)
-                    .arg(epochA).arg(epochB)
-                    .arg(QLocale::c().toString(b0.width(), 'f', 1))
-                    .arg(QLocale::c().toString(b1.width(), 'f', 1))
-                    .arg(QLocale::c().toString(b0.width(), 'f', 1))
-                    .arg(QLocale::c().toString(b1.width(), 'f', 1))
-                    .arg(item->isVisible());
-                const QImage q1 = renderRegion();
-                int diffPx = 0;
-                for (int yy = 0; yy < q0.height(); ++yy) {
-                    for (int xx = 0; xx < q0.width(); ++xx) {
-                        if (q0.pixel(xx, yy) != q1.pixel(xx, yy)) ++diffPx;
-                    }
-                }
-                QVERIFY2(diffPx > 30,
-                         qPrintable(QStringLiteral(
-                             "segment %1 render must gain tail pixels "
-                             "(changed %2 px)")
-                             .arg(serial).arg(diffPx)));
-            }
-        }
-    }
-
-    // ── 用户已保存文档 (E:\3.gcad, 3.gcad 存档 5wfkxL74): 起点延长量 =
-    //    公式「后长补正」(5cm) 的真实场景 —— 加载后验证求值 + 有效端点 +
-    //    渲染尾巴像素 (修复「延长了但图像没显示」)。缺文档时跳过。
-    void savedDocFormulaStartExtendRenders()
-    {
-        const QString path = QStringLiteral("E:/3.gcad");
-        if (!QFile::exists(path)) QSKIP("E:\\3.gcad not present");
-
-        ParamDocument doc;
-        QString err;
-        QVERIFY2(cad::doc::DocumentFile::load(path, doc, &err),
-                 qPrintable(QStringLiteral("load failed: %1").arg(err)));
-        doc.resolveAll();
-
-        const Block* blk = nullptr;
-        const Segment* seg = nullptr;
-        for (const auto& b : doc.blocks()) {
-            for (const auto& s : b.segments) {
-                if (s.serial == QStringLiteral("5wfkxL74")) { blk = &b; seg = &s; break; }
-            }
-            if (seg) break;
-        }
-        if (!blk || !seg) QSKIP("5wfkxL74 not present (user doc changed)");
-
-        auto* sp = blk->findPoint(seg->startPointId);
-        auto* ep = blk->findPoint(seg->endPointId);
-        QVERIFY(sp && ep);
-
-        // ① 公式求值: 后长补正 = 当前文档变量值 (mm)。测试不得硬编码 — 用户
-        //    会调整该变量 (3.gcad 是活档)。
-        double expectMm = -1.0;
-        for (const auto& v : doc.variables())
-            if (v.name == QString::fromUtf8("后长补正")) expectMm = v.value;
-        QVERIFY2(expectMm > 0.0, "缺少变量 后长补正");
-        QVERIFY2(std::abs(blk->segmentExtendStart(seg->id) - expectMm) < 1e-6,
-                 qPrintable(QStringLiteral(
-                     "后长补正 must evaluate to %1mm (got %2)")
-                     .arg(expectMm).arg(blk->segmentExtendStart(seg->id))));
-        // ② 有效起点 = 本体起点 − expectMm × 段方向 (起点向外)。
-        const Vec2 baseStart = blk->transform.toWorld(
-            sp->resolved ? sp->resolvedPos : Vec2::zero());
-        const Vec2 effStart = blk->worldPos(sp->id);
-        const Vec2 segDir = (blk->worldPos(ep->id) - baseStart).normalized();
+        // ② 有效起点 = 本体起点 − 50mm × 段方向（起点向外）。
+        const auto* sp = b->findPoint(L.startId);
+        const auto* ep = b->findPoint(L.endId);
+        QVERIFY(sp && ep && sp->resolved && ep->resolved);
+        const Vec2 baseStart = b->transform.toWorld(sp->resolvedPos);
+        const Vec2 effStart = b->worldPos(L.startId);
+        const Vec2 segDir = (b->worldPos(L.endId) - baseStart).normalized();
         const double moved = (effStart - baseStart).length();
-        QVERIFY2(std::abs(moved - expectMm) < 1e-6,
-                 qPrintable(QStringLiteral(
-                     "start must move %1mm (moved %2)").arg(expectMm).arg(moved)));
-        const double dot = (effStart - baseStart).x * segDir.x
-                         + (effStart - baseStart).y * segDir.y;
-        QVERIFY2(dot < -(expectMm - 1.0),
-                 qPrintable(QStringLiteral(
-                     "start tail must extend OUTWARD (dot %1, expect ~-%2)")
-                     .arg(dot).arg(expectMm)));
+        QVERIFY2(std::abs(moved - 50.0) < 1e-6,
+                 qPrintable(QStringLiteral("起点应外移 50mm (moved %1)").arg(moved)));
+        const double dot = (effStart - baseStart).dot(segDir);
+        QVERIFY2(dot < -49.9,
+                 qPrintable(QStringLiteral("起点延长必须朝段外侧 (dot %1)").arg(dot)));
 
-        // ③ 渲染级: 起点上方必须出现尾巴像素。
+        // ③ 画布：延长后该块包围盒变宽（尾巴真的画出来了）。
         CanvasScene scene(&doc);
-        for (const auto& b : doc.blocks())
-            scene.addBlockItem(b.id);
+        for (const auto& blk : doc.blocks())
+            scene.addBlockItem(blk.id);
         scene.syncBlockPositions();
-        constexpr double kScale = 3.0;
-        const Vec2 lo(baseStart.x - 40.0, std::min(baseStart.y, effStart.y) - 15.0);
-        const Vec2 hi(baseStart.x + 40.0, std::max(baseStart.y, effStart.y) + 15.0);
-        const QRectF region(lo.x, -hi.y, hi.x - lo.x, hi.y - lo.y);
-        auto renderRegion = [&]() {
-            QImage img(static_cast<int>(region.width() * kScale),
-                       static_cast<int>(region.height() * kScale),
-                       QImage::Format_ARGB32);
-            img.fill(Qt::white);
-            QPainter p(&img);
-            scene.render(&p, img.rect(), region);
-            p.end();
-            return img;
-        };
-        // 起点上方 expectMm/2 高度带 (scaled): 尾巴必须画在这里。
-        const QImage img = renderRegion();
-        // 图像行 = (region 顶世界高 − 采样世界高) × scale。
-        const int kTailRow = static_cast<int>(
-            (hi.y - (baseStart.y + expectMm * 0.5)) * kScale);
-        // 诊断: 区域亮像素总量 + 亮像素包围盒 (列/行范围)。
-        int litTotal = 0, minX = 99999, maxX = -1, minY = 99999, maxY = -1;
-        for (int y = 0; y < img.height(); ++y) {
-            for (int x = 0; x < img.width(); ++x) {
-                if (img.pixelColor(x, y) != QColor(Qt::white)) {
-                    ++litTotal;
-                    minX = std::min(minX, x); maxX = std::max(maxX, x);
-                    minY = std::min(minY, y); maxY = std::max(maxY, y);
-                }
-            }
-        }
-        qWarning().noquote() << QStringLiteral(
-            "[tail-diag] region %1x%2 lit %3 px bbox x[%4..%5] y[%6..%7] "
-            "tailRow %8 (baseStartWorld y %9, effStartWorld y %10)")
-            .arg(img.width()).arg(img.height()).arg(litTotal)
-            .arg(minX).arg(maxX).arg(minY).arg(maxY)
-            .arg(kTailRow).arg(baseStart.y).arg(effStart.y);
-        int lit = 0;
-        for (int x = 0; x < img.width(); ++x)
-            if (img.pixelColor(x, kTailRow) != QColor(Qt::white)) ++lit;
-        QVERIFY2(lit >= 1,
-                 qPrintable(QStringLiteral(
-                     "start tail (后长补正 %1mm) must render above the base "
-                     "start (lit %1 px @row %2)")
-                     .arg(expectMm).arg(lit).arg(kTailRow)));
+        auto* item = scene.findBlockItem(L.blockId);
+        QVERIFY(item);
+        const double widthWithTail = item->boundingRect().width();
 
-        // ── 编辑流复现: 加载后 (尾巴已渲染) 再改值 (3cm), 画布必须刷新 ──
-        // 用户报告场景: 卡片里改延长量 → 跟随线动了但原始段没刷新。
-        {
-            const QImage q0 = renderRegion();
-            const quint64 epochA = doc.findBlock(blk->id)->geometryEpoch;
-            cad::cmd::SetSegmentExtendCommand::Values v2;
-            v2.startMm = 30.0;   // 公式 → 30mm (真实变更)
-            doc.undoStack()->push(new cad::cmd::SetSegmentExtendCommand(
-                &doc, blk->id, seg->id, v2));
-            const quint64 epochB = doc.findBlock(blk->id)->geometryEpoch;
-            const QImage q1 = renderRegion();
-            int diffPx = 0;
-            for (int y = 0; y < q0.height(); ++y)
-                for (int x = 0; x < q0.width(); ++x)
-                    if (q0.pixel(x, y) != q1.pixel(x, y)) ++diffPx;
-            QVERIFY2(diffPx > 30,
-                     qPrintable(QStringLiteral(
-                         "edit flow must refresh the leader render "
-                         "(epoch %1→%2, changed %3 px)")
-                         .arg(epochA).arg(epochB).arg(diffPx)));
+        auto* bm = doc.findBlock(L.blockId);
+        QVERIFY(bm);
+        if (auto* sm = bm->findSegment(L.segId)) {
+            sm->extendStartMm = 0.0;
+            sm->extendStartFormula.clear();
         }
+        doc.resolveAll();
+        scene.syncBlockPositions();
+        const double widthBase = item->boundingRect().width();
+
+        QVERIFY2(widthWithTail > widthBase + 40.0,
+                 qPrintable(QStringLiteral("起点延长后包围盒应增宽 ~50mm (%1 → %2)")
+                                .arg(widthBase).arg(widthWithTail)));
     }
 };
 

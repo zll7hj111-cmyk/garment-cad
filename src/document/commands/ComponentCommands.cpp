@@ -7,6 +7,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/ConditionEngine.h"
 #include "geometry/Angle.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::cmd {
 
@@ -26,7 +27,7 @@ MakeComponentCommand::MakeComponentCommand(cad::param::ParamDocument* doc,
     // Creation-time overall orientation (回到默认角度 target): the first
     // member's current rotation.
     if (!m_memberBlockIds.isEmpty()) {
-        if (const auto* a = doc->findBlock(m_memberBlockIds.first()))
+        if (const auto* a = doc->blocksView().byId(m_memberBlockIds.first()))
             m_defaultAngleDeg = cad::geo::radToDeg(a->transform.rotation);
     }
 }
@@ -55,7 +56,7 @@ DissolveComponentCommand::DissolveComponentCommand(cad::param::ParamDocument* do
     , m_doc(doc)
 {
     setText(QStringLiteral("解散组件"));
-    if (const auto* c = doc->findComponent(componentId))
+    if (const auto* c = doc->componentsView().byId(componentId))
         m_component = *c;
 }
 
@@ -78,7 +79,7 @@ DeleteComponentCommand::DeleteComponentCommand(cad::param::ParamDocument* doc,
     , m_doc(doc)
 {
     setText(QStringLiteral("删除组件"));
-    const cad::param::Component* c = doc->findComponent(componentId);
+    const cad::param::Component* c = doc->componentsView().byId(componentId);
     if (!c) return;
     m_component = *c;
 
@@ -86,14 +87,14 @@ DeleteComponentCommand::DeleteComponentCommand(cad::param::ParamDocument* doc,
     QSet<QUuid> cascade;
     for (const QUuid& mid : c->memberBlockIds) {
         cascade.insert(mid);
-        if (const auto* b = doc->findBlock(mid))
+        if (const auto* b = doc->blocksView().byId(mid))
             m_blocks.push_back(*b);
     }
     for (const QUuid& mid : c->memberBlockIds) {
-        for (const QUuid& bridgeId : doc->bridgesPinnedTo(mid)) {
+        for (const QUuid& bridgeId : doc->attachmentsView().bridgesPinnedTo(mid)) {
             if (cascade.contains(bridgeId)) continue;
             cascade.insert(bridgeId);
-            if (const auto* b = doc->findBlock(bridgeId))
+            if (const auto* b = doc->blocksView().byId(bridgeId))
                 m_bridges.push_back(*b);
         }
     }
@@ -123,7 +124,7 @@ DeleteComponentCommand::DeleteComponentCommand(cad::param::ParamDocument* doc,
                 m_bakedConsumers.begin(), m_bakedConsumers.end(),
                 [&cid](const cad::param::Block& b) { return b.id == cid; });
             if (taken) continue;
-            if (const auto* cb = doc->findBlock(cid))
+            if (const auto* cb = doc->blocksView().byId(cid))
                 m_bakedConsumers.push_back(*cb);
         }
         for (const auto& mv : doc->measureVars())
@@ -148,7 +149,7 @@ void DeleteComponentCommand::undo()
         m_doc->addBlock(b);
     for (const auto& bridge : m_bridges)
         m_doc->addBlock(bridge);
-    m_doc->addAttachmentsRaw(m_attachments);
+    cad::param::RawModelAccess::addAttachmentsRaw(*m_doc, m_attachments);
     for (const auto& lv : m_linked)
         m_doc->addLinked(lv);
     for (const auto& mv : m_measures)
@@ -174,7 +175,7 @@ SetComponentPropertyCommand::SetComponentPropertyCommand(cad::param::ParamDocume
     , m_doc(doc)
 {
     setText(QStringLiteral("组件属性"));
-    if (const auto* c = doc->findComponent(componentId))
+    if (const auto* c = doc->componentsView().byId(componentId))
         m_old = *c;
     m_new = m_old;
     m_new.name = name;
@@ -202,7 +203,7 @@ ResetComponentAngleCommand::ResetComponentAngleCommand(cad::param::ParamDocument
     , m_doc(doc)
 {
     setText(QStringLiteral("回到初始状态"));
-    const cad::param::Component* c = doc->findComponent(componentId);
+    const cad::param::Component* c = doc->componentsView().byId(componentId);
     if (!c || c->memberBlockIds.empty()) return;
     m_oldComponent = *c;
     m_newComponent = *c;
@@ -219,10 +220,10 @@ ResetComponentAngleCommand::ResetComponentAngleCommand(cad::param::ParamDocument
     // Overall orientation = exposed endpoint's host member (or first member).
     QUuid dirBlockId = c->memberBlockIds.front();
     if (!c->exposedPointId.isNull())
-        dirBlockId = doc->memberOwningPoint(*c, c->exposedPointId);
-    const cad::param::Block* dirBlk = doc->findBlock(dirBlockId);
+        dirBlockId = doc->componentsView().memberOwningPoint(*c, c->exposedPointId);
+    const cad::param::Block* dirBlk = doc->blocksView().byId(dirBlockId);
     if (!dirBlk) return;
-    const cad::param::BBox box = doc->boundingBoxOf(componentId);
+    const cad::param::BBox box = doc->componentsView().boundingBoxOf(componentId);
     if (!box.valid) return;
 
     // 2) 转回原始角: 公式 (若有) 求值一次并烘焙为数值, 然后清除公式.
@@ -239,7 +240,7 @@ ResetComponentAngleCommand::ResetComponentAngleCommand(cad::param::ParamDocument
     const double delta = targetRad - dirBlk->transform.rotation;
     const cad::geo::Vec2 pivot = box.center();
     for (const QUuid& mid : c->memberBlockIds) {
-        const cad::param::Block* b = doc->findBlock(mid);
+        const cad::param::Block* b = doc->blocksView().byId(mid);
         if (!b) continue;
         m_oldTransforms.insert(mid, b->transform);
         cad::param::Transform2D nf = b->transform;
@@ -275,102 +276,9 @@ void ResetComponentAngleCommand::undo()
     m_doc->updateComponent(m_oldComponent);
     // 还原对接.
     if (m_hadAttachment)
-        m_doc->addAttachmentRaw(m_att);
+        cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_att);
     m_doc->resolveAll();
 }
 
-
-// ─── RotateComponentCommand ───
-
-RotateComponentCommand::RotateComponentCommand(cad::param::ParamDocument* doc,
-                                               const QUuid& componentId,
-                                               const QHash<QUuid, cad::param::Transform2D>& oldTf,
-                                               const QHash<QUuid, cad::param::Transform2D>& newTf,
-                                               const std::vector<cad::param::Attachment>& releasedAtts,
-                                               const std::vector<AimRelease>& releasedTargets,
-                                               const std::vector<DartRelease>& releasedDarts,
-                                               QUndoCommand* parent)
-    : QUndoCommand(parent)
-    , m_doc(doc)
-    , m_componentId(componentId)
-    , m_oldTf(oldTf)
-    , m_newTf(newTf)
-    , m_releasedAtts(releasedAtts)
-    , m_releasedTargets(releasedTargets)
-    , m_releasedDarts(releasedDarts)
-{
-    setText(QStringLiteral("整组旋转"));
-}
-
-void RotateComponentCommand::redo()
-{
-    if (!m_doc) return;
-    // 1) 全体成员写入新刚体位姿.
-    for (auto it = m_newTf.cbegin(); it != m_newTf.cend(); ++it) {
-        if (auto* b = m_doc->findBlock(it.key()))
-            b->transform = it.value();
-    }
-    // 2) 释放外部约束: attachment 批处理 (组件级不清 exposedPointId).
-    QList<QUuid> ids;
-    ids.reserve(static_cast<int>(m_releasedAtts.size()));
-    for (const auto& a : m_releasedAtts) ids << a.id;
-    if (!ids.isEmpty())
-        m_doc->removeAttachments(ids);
-    // 3) 清外部 endTarget (成员指向组外点).
-    for (const auto& r : m_releasedTargets) {
-        if (auto* b = m_doc->findBlock(r.blockId)) {
-            b->endTargetBlockId = QUuid();
-            b->endTargetPointId = QUuid();
-            b->endTargetOffset = 0.0;
-            b->endTargetOffsetFormula.clear();
-        }
-    }
-    // 4) 省道引用组外 → 降级普通线 (清 start/ref; 偏移/角度字段保留).
-    for (const auto& r : m_releasedDarts) {
-        if (auto* b = m_doc->findBlock(r.blockId)) {
-            b->dartStartBlockId = QUuid();
-            b->dartStartPointId = QUuid();
-            b->dartRefBlockId = QUuid();
-            b->dartRefPointId = QUuid();
-            b->dartRefSegmentId = QUuid();
-        }
-    }
-    m_doc->resolveAll();
-}
-
-void RotateComponentCommand::undo()
-{
-    if (!m_doc) return;
-    // 还原全体成员位姿.
-    for (auto it = m_oldTf.cbegin(); it != m_oldTf.cend(); ++it) {
-        if (auto* b = m_doc->findBlock(it.key()))
-            b->transform = it.value();
-    }
-    // 还原外部约束 (原样快照, 快照完整性).
-    if (!m_releasedAtts.empty())
-        m_doc->addAttachmentsRaw(m_releasedAtts);
-    for (const auto& r : m_releasedTargets) {
-        if (auto* b = m_doc->findBlock(r.blockId)) {
-            b->endTargetBlockId = r.endTargetBlockId;
-            b->endTargetPointId = r.endTargetPointId;
-            b->endTargetOffset = r.endTargetOffset;
-            b->endTargetOffsetFormula = r.endTargetOffsetFormula;
-        }
-    }
-    for (const auto& r : m_releasedDarts) {
-        if (auto* b = m_doc->findBlock(r.blockId)) {
-            b->dartStartBlockId = r.dartStartBlockId;
-            b->dartStartPointId = r.dartStartPointId;
-            b->dartRefBlockId = r.dartRefBlockId;
-            b->dartRefPointId = r.dartRefPointId;
-            b->dartRefSegmentId = r.dartRefSegmentId;
-            b->dartOffsetMm = r.dartOffsetMm;
-            b->dartOffsetFormula = r.dartOffsetFormula;
-            b->dartAngleDeg = r.dartAngleDeg;
-            b->dartAngleFormula = r.dartAngleFormula;
-        }
-    }
-    m_doc->resolveAll();
-}
 
 } // namespace cad::cmd

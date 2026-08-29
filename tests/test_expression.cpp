@@ -5,8 +5,13 @@
 #include <cmath>
 
 #include "parametric/ExpressionEvaluator.h"
+#include "parametric/ParamDocument.h"
+#include "parametric/Block.h"
+#include "parametric/ParamPoint.h"
+#include "parametric/Segment.h"
 
 using cad::param::ExpressionEvaluator;
+using cad::param::ExpressionCache;
 
 class TestExpression : public QObject
 {
@@ -40,6 +45,11 @@ private slots:
     void functionNamingFallback();
     void functionDomainErrors();
     void backShoulderCorrection();
+
+    // P1-5: the compile cache is an instance, not a process-wide static.
+    void cacheIsInstanceScoped();
+    void cacheReferencesSurviveGrowthGuard();
+    void documentOwnsCompileCache();
 };
 
 void TestExpression::basicArithmetic()
@@ -759,6 +769,97 @@ void TestExpression::backShoulderCorrection()
     QVERIFY(r.ok);
     QVERIFY(qAbs(r.value - 12.8039) < 0.005);
     QVERIFY(v2["省道角"] > 0.0 && v2["省道角"] < 30.0);
+}
+
+// P1-5: the compile cache is an INSTANCE (document/pass-owned), not the old
+// process-wide static. Two caches must be fully independent.
+void TestExpression::cacheIsInstanceScoped()
+{
+    ExpressionCache a;
+    ExpressionCache b;
+    const QString expr = QStringLiteral("2+3*hip");
+
+    const auto& ra1 = a.compiled(expr);
+    const auto& ra2 = a.compiled(expr);
+    QVERIFY(&ra1 == &ra2);   // one entry per cache: identical reference
+    QVERIFY(ra1.ok);
+
+    const auto& rb = b.compiled(expr);
+    QVERIFY(&rb != &ra1);    // separate storage, separate bytecode objects
+    QVERIFY(rb.ok);
+
+    QHash<QString, double> vars;
+    vars[QStringLiteral("hip")] = 4.0;
+    QCOMPARE(ExpressionEvaluator::execute(ra1, vars).value, 14.0);
+    QCOMPARE(ExpressionEvaluator::execute(rb, vars).value, 14.0);
+
+    // Clearing one cache must not disturb the other's entries (the old static
+    // cache had no owner at all, so nothing could ever release it).
+    a.clear();
+    QCOMPARE(a.size(), 0);
+    QVERIFY(&b.compiled(expr) == &rb);
+}
+
+// The old static cache reset its whole store at 8192 entries, dangling every
+// reference it had already handed out (the header could only warn callers to
+// re-fetch). The instance cache retires a generation instead: references stay
+// valid for the lifetime of the cache.
+void TestExpression::cacheReferencesSurviveGrowthGuard()
+{
+    ExpressionCache cache;
+    const auto& first = cache.compiled(QStringLiteral("hip/4+2"));
+    QVERIFY(first.ok);
+
+    // Push past the live-generation cap with unique texts (live-typing
+    // validation produces exactly this pattern).
+    for (int i = 0; i < 8300; ++i)
+        cache.compiled(QStringLiteral("x%1*2").arg(i));
+
+    QVERIFY(cache.generationCount() > 1);   // a generation was retired
+
+    // `first` must still be readable AND produce correct results.
+    QVERIFY(first.ok);
+    QHash<QString, double> vars;
+    vars[QStringLiteral("hip")] = 8.0;
+    QCOMPARE(ExpressionEvaluator::execute(first, vars).value, 4.0);  // 8/4 + 2
+}
+
+// End-to-end: resolve passes compile through the document's own cache, and
+// clear() releases it with the rest of the model.
+void TestExpression::documentOwnsCompileCache()
+{
+    cad::param::ParamDocument doc;
+    QCOMPARE(doc.expressionCache().size(), 0);
+
+    cad::param::Block block;
+    cad::param::ParamPoint origin;
+    origin.constraint = cad::param::PointConstraint::Free;
+    origin.freePos = {0.0, 0.0};
+    const QUuid idO = block.addPoint(origin);
+
+    cad::param::ParamPoint end;
+    end.constraint = cad::param::PointConstraint::Polar;
+    end.refPointId = idO;
+    end.distance = 0.0;                                  // driven by formula
+    end.distanceFormula = QStringLiteral("hip/4+2");
+    end.angle = 0.0;
+    const QUuid idE = block.addPoint(end);
+
+    cad::param::Segment seg;
+    seg.startPointId = idO;
+    seg.endPointId = idE;
+    block.addSegment(seg);
+    doc.addBlock(std::move(block));
+
+    doc.resolveAll();
+
+    // The pass compiled into the DOCUMENT's cache (before P1-5 every
+    // compilation went to the process-wide static, so this was 0).
+    QVERIFY(doc.expressionCache().size() > 0);
+    QVERIFY(doc.expressionCache().compiled(QStringLiteral("hip/4+2")).ok);
+
+    doc.clear();
+    QCOMPARE(doc.expressionCache().size(), 0);           // released with the model
 }
 
 QTEST_GUILESS_MAIN(TestExpression)

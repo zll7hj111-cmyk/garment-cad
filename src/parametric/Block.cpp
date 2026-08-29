@@ -9,7 +9,46 @@
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
 
+#include <cstring>
+
 namespace cad::param {
+
+namespace {
+
+/// Hash one double into a running fingerprint (boost-style combine on the
+/// bit pattern). Used by Block::spansForSegment's memo key.
+inline quint64 fpMix(quint64 h, double v)
+{
+    quint64 bits = 0;
+    static_assert(sizeof(bits) == sizeof(v));
+    std::memcpy(&bits, &v, sizeof(v));
+    h ^= bits + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+}
+
+/// Fingerprint of everything that determines a curve's Bézier spans: anchor
+/// positions, stored tangents, auto flags and the segment tension. Any
+/// change to the curve shape changes the key — so a memo hit is ALWAYS the
+/// same spans a fresh Hobby solve would produce, mid-fixpoint included.
+quint64 curveAnchorFingerprint(const std::vector<geo::Vec2>& pts,
+                               const std::vector<geo::Vec2>& tIn,
+                               const std::vector<geo::Vec2>& tOut,
+                               const std::vector<bool>& autoTan,
+                               double tension)
+{
+    quint64 h = 0xcbf29ce484222325ULL;
+    h = fpMix(h, static_cast<double>(pts.size()));
+    h = fpMix(h, tension);
+    for (size_t i = 0; i < pts.size(); ++i) {
+        h = fpMix(h, pts[i].x);   h = fpMix(h, pts[i].y);
+        h = fpMix(h, tIn[i].x);   h = fpMix(h, tIn[i].y);
+        h = fpMix(h, tOut[i].x);  h = fpMix(h, tOut[i].y);
+        h = fpMix(h, (i < autoTan.size() && autoTan[i]) ? 1.0 : 0.0);
+    }
+    return h;
+}
+
+} // namespace
 
 // --- Transform2D ---
 
@@ -78,7 +117,7 @@ void Block::resolve(const QHash<QString, double>& params,
     for (size_t i = 0; i < points.size(); ++i) {
         if (points[i].resolved &&
             points[i].resolvedPos.distanceSquaredTo(prevPos[i]) > 1e-6) {
-            ++geometryEpoch;
+            touchGeometry();
             break;
         }
     }
@@ -98,7 +137,7 @@ void Block::resolve(const QHash<QString, double>& params,
     for (const auto& seg : segments)
         if (seg.isCurve()) { hasCurveSegments = true; break; }
     const bool staleCache = hasCurveSegments
-        ? (m_curveSpans.empty() || geometryEpoch != m_curveCacheEpoch)
+        ? (m_curveSpans.empty() || m_geometryEpoch != m_curveCacheEpoch)
         : !m_curveSpans.empty();  // curve→straight: drop stale entries
     if (staleCache)
         rebuildCurveCache();
@@ -132,10 +171,7 @@ bool Block::polarEndpointCycleSeed(const ParamPoint& ep, const Block& block,
     // Evaluate the polar formula anchored at the segment START instead (a
     // principled bootstrap — the true anchor resolves in a later pass).
     double dist = ep.distance;
-    if (!ep.distanceFormula.isEmpty()) {
-        auto r = ConditionEngine::evaluate(ep.distanceFormula, params, conditioned, ctx);
-        if (r.ok) dist = geo::Units::cmToMm(r.value);
-    }
+    ConditionEngine::evaluateLengthMm(ep.distanceFormula, params, conditioned, dist, ctx);
     double ang = ep.angle;
     if (!ep.angleFormula.isEmpty()) {
         auto r = ConditionEngine::evaluate(ep.angleFormula, params, conditioned, ctx);
@@ -242,10 +278,7 @@ bool Block::resolvePolarPoint(ParamPoint& pt,
     // Evaluate formulas if present, otherwise use numeric values.
     // Formula domain is cm (user-facing unit); convert result to mm.
     double dist = pt.distance;
-    if (!pt.distanceFormula.isEmpty()) {
-        auto r = ConditionEngine::evaluate(pt.distanceFormula, params, conditioned, ctx);
-        if (r.ok) dist = geo::Units::cmToMm(r.value);
-    }
+    ConditionEngine::evaluateLengthMm(pt.distanceFormula, params, conditioned, dist, ctx);
 
     double ang = pt.angle;
     if (!pt.angleFormula.isEmpty()) {
@@ -352,22 +385,13 @@ bool Block::resolveIntersectionPoint(ParamPoint& pt,
 
     // --- Curve target: rayCurveIntersect ---
     if (seg->isCurve()) {
-        std::vector<geo::Vec2> pts;
-        std::vector<geo::Vec2> tIn, tOut;
-        std::vector<bool> autoTan;
-        pts.push_back(spEff);
-        tIn.push_back(sp->tangentIn); tOut.push_back(sp->tangentOut); autoTan.push_back(sp->autoTangent);
-        for (const auto& ppId : seg->passPointIds) {
-            const ParamPoint* pp = findPoint(ppId);
-            if (!pp || !pp->resolved) continue;
-            pts.push_back(pp->resolvedPos);
-            tIn.push_back(pp->tangentIn); tOut.push_back(pp->tangentOut); autoTan.push_back(pp->autoTangent);
-        }
-        pts.push_back(epEff);
-        tIn.push_back(ep->tangentIn); tOut.push_back(ep->tangentOut); autoTan.push_back(ep->autoTangent);
-
-        auto spans = geo::buildBezierSpans(pts, tIn, tOut, autoTan, seg->tension,
-                                            geo::AutoCurveMode::Hobby);
+        // Unified span entry (single Hobby solve path). Mid-fixpoint
+        // tolerance matches the old ad-hoc build: unresolved pass points are
+        // skipped, a mid-cycle endpoint contributes its cached position.
+        // (Curves do not support endpoint extension, so resolvedPos == the
+        // effective position here — spEff/epEff only differ for lines.)
+        const auto spans = spansForSegment(*seg, /*skipUnresolvedPassPoints=*/true,
+                                           /*tolerateStaleEndpoints=*/true);
         if (spans.empty()) return false;
 
         auto hits = geo::rayCurveIntersect(origin->resolvedPos, d, spans, pt.interBidirectional);
@@ -461,42 +485,21 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
 
     // --- Curve branch: arc-length parameterized interpolation ---
     if (hostSeg->isCurve()) {
-        // Collect resolved positions: start + passPoints + end
-        // The END point may be mid-cycle in the fixpoint (e.g. a break endpoint
-        // whose position depends on THIS interpolated point): its cached position
-        // is used now and later iterations converge once the endpoint resolves.
-        const ParamPoint* sp = findPoint(hostSeg->startPointId);
-        const ParamPoint* ep = findPoint(hostSeg->endPointId);
-        if (!sp || !ep || !sp->resolved) return false;
-        
-        std::vector<geo::Vec2> pts;
-        std::vector<geo::Vec2> tIn, tOut;
-        std::vector<bool> autoTan;
-        pts.push_back(sp->resolvedPos);
-        tIn.push_back(sp->tangentIn);
-        tOut.push_back(sp->tangentOut);
-        autoTan.push_back(sp->autoTangent);
-
-        for (const auto& ppId : hostSeg->passPointIds) {
-            const ParamPoint* pp = findPoint(ppId);
-            if (!pp || !pp->resolved) return false;
-            pts.push_back(pp->resolvedPos);
-            tIn.push_back(pp->tangentIn);
-            tOut.push_back(pp->tangentOut);
-            autoTan.push_back(pp->autoTangent);
-        }
-        pts.push_back(ep->resolvedPos);
-        tIn.push_back(ep->tangentIn);
-        tOut.push_back(ep->tangentOut);
-        autoTan.push_back(ep->autoTangent);
-
-        auto spans = geo::buildBezierSpans(pts, tIn, tOut, autoTan, hostSeg->tension,
-                                            geo::AutoCurveMode::Hobby);
+        // Unified span entry (single Hobby solve path, memoized per sweep —
+        // the old ad-hoc build re-ran the full Hobby solve for EVERY aux
+        // point on EVERY fixpoint pass). Strict on pass points (CurveAnchors
+        // resolve inside Block::resolve, before this step), tolerant on the
+        // END point: it may be mid-cycle (a break endpoint whose position
+        // depends on THIS interpolated point) — its cached position is used
+        // now and later iterations converge once the endpoint resolves.
+        const auto spans = spansForSegment(*hostSeg, /*skipUnresolvedPassPoints=*/false,
+                                           /*tolerateStaleEndpoints=*/true);
         if (spans.empty()) return false;
 
         double totalArc = geo::totalArcLength(spans);
         if (totalArc < 1e-9) {
-            pt.resolvedPos = sp->resolvedPos;
+            // Degenerate curve — sit on the start anchor (spans[0].p0).
+            pt.resolvedPos = spans[0].p0;
             pt.resolved = true;
             return true;
         }
@@ -510,10 +513,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
 
         // Evaluate constant (cm → mm)
         double constant = pt.interpConstant;
-        if (!pt.interpConstantFormula.isEmpty()) {
-            auto r = ConditionEngine::evaluate(pt.interpConstantFormula, params, conditioned, ctx);
-            if (r.ok) constant = geo::Units::cmToMm(r.value);
-        }
+        ConditionEngine::evaluateLengthMm(pt.interpConstantFormula, params, conditioned, constant, ctx);
 
         // Target arc-length position
         double targetS = totalArc * percent + constant;
@@ -534,10 +534,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
             if (r.ok) offAngle = r.value;
         }
         double offDist = pt.interpOffsetDist;
-        if (!pt.interpOffsetDistFormula.isEmpty()) {
-            auto r = ConditionEngine::evaluate(pt.interpOffsetDistFormula, params, conditioned, ctx);
-            if (r.ok) offDist = geo::Units::cmToMm(r.value);
-        }
+        ConditionEngine::evaluateLengthMm(pt.interpOffsetDistFormula, params, conditioned, offDist, ctx);
 
         if (std::abs(offDist) > 1e-9) {
             double angleRad = baseAngle + offAngle * M_PI / 180.0;
@@ -598,10 +595,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
 
     // Evaluate constant (cm domain → mm)
     double constant = pt.interpConstant;
-    if (!pt.interpConstantFormula.isEmpty()) {
-        auto r = ConditionEngine::evaluate(pt.interpConstantFormula, params, conditioned, ctx);
-        if (r.ok) constant = geo::Units::cmToMm(r.value);
-    }
+    ConditionEngine::evaluateLengthMm(pt.interpConstantFormula, params, conditioned, constant, ctx);
 
     double along = distAB * percent + constant;
     geo::Vec2 basePos = origin + unitDir * along;
@@ -615,10 +609,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
 
     // Evaluate offset distance (cm domain → mm)
     double offDist = pt.interpOffsetDist;
-    if (!pt.interpOffsetDistFormula.isEmpty()) {
-        auto r = ConditionEngine::evaluate(pt.interpOffsetDistFormula, params, conditioned, ctx);
-        if (r.ok) offDist = geo::Units::cmToMm(r.value);
-    }
+    ConditionEngine::evaluateLengthMm(pt.interpOffsetDistFormula, params, conditioned, offDist, ctx);
 
     if (std::abs(offDist) > 1e-9) {
         double angleRad = baseAngle + offAngle * M_PI / 180.0;
@@ -642,7 +633,7 @@ void Block::resolveInterpolatedPoints(const QHash<QString, double>& params,
         const geo::Vec2 oldPos = pt.resolvedPos;
         resolveInterpolatedPoint(pt, params, conditioned, ctx);
         if (pt.resolvedPos.distanceSquaredTo(oldPos) > 1e-6)
-            ++geometryEpoch;
+            touchGeometry();
     }
 }
 
@@ -650,19 +641,35 @@ bool Block::collectCurveAnchors(const Segment& seg,
                                 std::vector<geo::Vec2>& pts,
                                 std::vector<geo::Vec2>& tIn,
                                 std::vector<geo::Vec2>& tOut,
-                                std::vector<bool>& autoTan) const
+                                std::vector<bool>& autoTan,
+                                bool skipUnresolvedPass,
+                                bool tolerateStaleEndpoints) const
 {
     pts.clear(); tIn.clear(); tOut.clear(); autoTan.clear();
 
     const ParamPoint* sp = findPoint(seg.startPointId);
     const ParamPoint* ep = findPoint(seg.endPointId);
-    if (!sp || !ep || !sp->resolved || !ep->resolved) return false;
+    if (!sp || !ep) return false;
+    if (!tolerateStaleEndpoints && (!sp->resolved || !ep->resolved))
+        return false;
+    // Tolerant mode: an endpoint mid-cycle in the fixpoint keeps its CACHED
+    // resolvedPos — the fixpoint converges once the endpoint resolves
+    // (endpoint↔query dependency cycle, e.g. break endpoints).
+    if (!sp->resolved || !ep->resolved) {
+        // Never fabricate geometry from a never-resolved (zero) endpoint.
+        if (sp->resolvedPos.lengthSquared() < 1e-12 &&
+            ep->resolvedPos.lengthSquared() < 1e-12)
+            return false;
+    }
 
     pts.push_back(sp->resolvedPos);
     tIn.push_back(sp->tangentIn);  tOut.push_back(sp->tangentOut);  autoTan.push_back(sp->autoTangent);
     for (const auto& ppId : seg.passPointIds) {
         const ParamPoint* pp = findPoint(ppId);
-        if (!pp || !pp->resolved) return false;
+        if (!pp || !pp->resolved) {
+            if (skipUnresolvedPass) continue;  // mid-fixpoint tolerance
+            return false;
+        }
         pts.push_back(pp->resolvedPos);
         tIn.push_back(pp->tangentIn); tOut.push_back(pp->tangentOut); autoTan.push_back(pp->autoTangent);
     }
@@ -671,14 +678,46 @@ bool Block::collectCurveAnchors(const Segment& seg,
     return true;
 }
 
+std::vector<geo::BezierSpan> Block::spansForSegment(
+    const Segment& seg, bool skipUnresolvedPassPoints,
+    bool tolerateStaleEndpoints) const
+{
+    if (!seg.isCurve()) return {};
+
+    std::vector<geo::Vec2> pts, tIn, tOut;
+    std::vector<bool> autoTan;
+    if (!collectCurveAnchors(seg, pts, tIn, tOut, autoTan,
+                             skipUnresolvedPassPoints, tolerateStaleEndpoints))
+        return {};
+    if (pts.size() < 2) return {};
+
+    // Memo by anchor fingerprint: within one settle sweep the anchors do not
+    // move (aux/intersection points never shape the curve), so N consumers
+    // on the same curve share ONE Hobby solve. The fingerprint — not the
+    // geometry epoch — is the validity key, because mid-fixpoint positions
+    // change BEFORE the epoch bump (Block::resolve bumps it after the
+    // fixpoint), so an epoch check would serve stale spans exactly when the
+    // resolve-time callers run.
+    const quint64 fp = curveAnchorFingerprint(pts, tIn, tOut, autoTan, seg.tension);
+    const auto it = m_spanMemo.constFind(seg.id);
+    if (it != m_spanMemo.constEnd() && it->fingerprint == fp)
+        return it->spans;
+
+    auto spans = geo::buildBezierSpans(pts, tIn, tOut, autoTan, seg.tension,
+                                       geo::AutoCurveMode::Hobby);
+    m_spanMemo.insert(seg.id, CurveSpanMemo{fp, spans});
+    return spans;
+}
+
 void Block::rebuildCurveCache()
 {
     ++curveCacheBuilds;               // telemetry: rigid drags must NOT grow this
-    m_curveCacheEpoch = geometryEpoch;
+    m_curveCacheEpoch = m_geometryEpoch;
     m_curveSpans.clear();
     m_curveSpans.reserve(segments.size());
     m_curveSpanIndex.clear();
     m_curveSpanIndex.reserve(segments.size());
+    m_spanMemo.clear();  // repopulated below with the canonical spans
 
     for (const auto& seg : segments) {
         if (!seg.isCurve()) continue;
@@ -691,6 +730,11 @@ void Block::rebuildCurveCache()
             geo::buildBezierSpans(pts, tIn, tOut, autoTan, seg.tension,
                                   geo::AutoCurveMode::Hobby);
         if (spans.empty()) continue;
+
+        // Prime the spansForSegment memo with the canonical spans so
+        // post-resolve consumers (tools, commands) reuse this solve.
+        m_spanMemo.insert(seg.id, CurveSpanMemo{
+            curveAnchorFingerprint(pts, tIn, tOut, autoTan, seg.tension), spans});
 
         // Control-polygon bbox (local): the curve lies inside it (convex hull
         // property of Béziers), safe for coarse distance culling.
@@ -714,9 +758,14 @@ void Block::rebuildCurveCache()
         entry.bboxMin = lo;
         entry.bboxMax = hi;
         entry.flatLocal    = geo::flattenBezierSpans(entry.spans, 0.1);
-        entry.labelLocal   = geo::evalCurve(entry.spans, 0.5);
-        entry.labelLocalDir = geo::evalCurveTangent(entry.spans, 0.5);
         entry.arcLengthMm  = geo::totalArcLength(entry.spans);
+        // Label anchor: the ARC-LENGTH midpoint of the whole curve. The old
+        // evalCurve(spans, 0.5) was the parametric middle of span 0 — on
+        // multi-anchor curves (3+ spans) the name/length labels drifted
+        // toward the start of the curve instead of sitting at its middle.
+        const double tMid = geo::arcLengthToParam(entry.spans, entry.arcLengthMm * 0.5);
+        entry.labelLocal   = geo::evalCurve(entry.spans, tMid);
+        entry.labelLocalDir = geo::evalCurveTangent(entry.spans, tMid);
         m_curveSpanIndex.insert(seg.id, static_cast<int>(m_curveSpans.size()));
         m_curveSpans.push_back(std::move(entry));
     }
@@ -1064,15 +1113,9 @@ void Block::evaluateExtendValues(const QHash<QString, double>& params,
     for (const auto& seg : segments) {
         ExtendEval e;
         e.startMm = seg.extendStartMm;
-        if (!seg.extendStartFormula.isEmpty()) {
-            auto r = ConditionEngine::evaluate(seg.extendStartFormula, params, conditioned, ctx);
-            if (r.ok) e.startMm = geo::Units::cmToMm(r.value);
-        }
+        ConditionEngine::evaluateLengthMm(seg.extendStartFormula, params, conditioned, e.startMm, ctx);
         e.endMm = seg.extendEndMm;
-        if (!seg.extendEndFormula.isEmpty()) {
-            auto r = ConditionEngine::evaluate(seg.extendEndFormula, params, conditioned, ctx);
-            if (r.ok) e.endMm = geo::Units::cmToMm(r.value);
-        }
+        ConditionEngine::evaluateLengthMm(seg.extendEndFormula, params, conditioned, e.endMm, ctx);
         if (e.startMm < 0.0) e.startMm = 0.0;
         if (e.endMm   < 0.0) e.endMm   = 0.0;
         if (e.startMm > 0.0 || e.endMm > 0.0)
@@ -1087,7 +1130,7 @@ void Block::applyEffectivePositions()
     // 变化，显式 +epoch 触发重绘。
     if (m_extendEval.isEmpty()) {
         if (!m_effectiveLocal.isEmpty())
-            ++geometryEpoch;
+            touchGeometry();
         m_effectiveLocal.clear();
         return;
     }
@@ -1130,7 +1173,7 @@ void Block::applyEffectivePositions()
             }
         }
         if (moved)
-            ++geometryEpoch;
+            touchGeometry();
     }
     m_effectiveLocal = std::move(eff);
 }

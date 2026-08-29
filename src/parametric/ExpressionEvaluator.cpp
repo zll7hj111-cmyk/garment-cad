@@ -56,40 +56,51 @@ const QHash<QString, FuncSig>& functionTable()
 } // namespace
 
 // ============================================================
-// Compile cache (process-wide, stable references via deque)
+// Compile cache (instance-owned; stable references via deque generations)
 // ============================================================
 
 const ExpressionEvaluator::Compiled&
-ExpressionEvaluator::compiled(const QString& expression)
+ExpressionCache::compiled(const QString& expression)
 {
-    // deque storage keeps element references stable across insertions, so
-    // callers may hold a `const Compiled&` without lifetime concerns.
-    static QHash<QString, int> index;
-    static std::deque<Compiled> store;
-
-    auto it = index.constFind(expression);
-    if (it != index.constEnd())
-        return store[static_cast<std::size_t>(it.value())];
-
-    // Pathological-growth guard (unique expression texts are few in practice).
-    // NOTE: resetting invalidates every previously returned reference — the
-    // documented contract (see header) is that callers must re-fetch per call.
-    if (index.size() >= 8192) {
-        index.clear();
-        store.clear();
+    // NOTE: `live` is a reference into a std::deque<Generation>; appending a
+    // generation does not move existing elements, but a new generation means
+    // this reference is no longer the live one — re-fetch after the switch.
+    if (m_generations.back().index.size() >= kMaxLiveEntries) {
+        m_generations.emplace_back();  // retire the full one (entries stay alive)
     }
+    Generation& live = m_generations.back();
 
-    Compiled c;
-    ExpressionEvaluator ev(normalized(expression));
+    auto it = live.index.constFind(expression);
+    if (it != live.index.constEnd())
+        return live.store[static_cast<std::size_t>(it.value())];
+
+    ExpressionEvaluator::Compiled c;
+    ExpressionEvaluator ev(ExpressionEvaluator::normalized(expression));
     ev.compile(c);
-    store.push_back(std::move(c));
-    index.insert(expression, static_cast<int>(store.size()) - 1);
-    return store.back();
+    live.store.push_back(std::move(c));
+    live.index.insert(expression, static_cast<int>(live.store.size()) - 1);
+    return live.store.back();
+}
+
+ExpressionCache& ExpressionEvaluator::defaultCache()
+{
+    // Context-free fallback for callers with no document/pass at hand
+    // (UI validation, one-shot command evaluations, tests). thread_local, so
+    // the fallback is never SHARED mutable state either — a second thread gets
+    // its own cache instead of racing on a global one.
+    static thread_local ExpressionCache cache;
+    return cache;
 }
 
 // ============================================================
 // Public API
 // ============================================================
+
+const ExpressionEvaluator::Compiled&
+ExpressionEvaluator::compiled(const QString& expression)
+{
+    return defaultCache().compiled(expression);
+}
 
 ExpressionEvaluator::Result
 ExpressionEvaluator::evaluate(const QString& expression,

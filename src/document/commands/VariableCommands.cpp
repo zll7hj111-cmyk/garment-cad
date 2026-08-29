@@ -1,6 +1,7 @@
-#include "VariableCommands.h"
+﻿#include "VariableCommands.h"
 
 #include "parametric/ParamDocument.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::cmd {
 
@@ -65,7 +66,8 @@ void SetVariableValueCommand::undo()
 bool SetVariableValueCommand::mergeWith(const QUndoCommand* other)
 {
     if (other->id() != id()) return false;
-    const auto* cmd = static_cast<const SetVariableValueCommand*>(other);
+    const auto* cmd = dynamic_cast<const SetVariableValueCommand*>(other);
+    if (!cmd) return false;  // id collision safety net (P0-2)
     if (cmd->m_varId != m_varId) return false;
     m_newValue = cmd->m_newValue;
     return true;
@@ -187,7 +189,7 @@ void RemoveFormulaGroupCommand::undo()
     // Restore the group at its original registry position...
     const int pos = qBound(0, m_groupIndex,
                            static_cast<int>(m_doc->formulaGroups().size()));
-    m_doc->insertFormulaGroupAt(pos, m_group);
+    cad::param::RawModelAccess::insertFormulaGroupAt(*m_doc, pos, m_group);
     // ...and re-attach the former members (relative order is untouched by
     // dissolution, so restoring groupId is enough).
     for (const auto& id : m_memberIds) {

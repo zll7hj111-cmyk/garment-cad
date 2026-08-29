@@ -20,7 +20,7 @@
 #include "canvas/CanvasView.h"
 #include "tools/ToolManager.h"
 #include "tools/ToolSelect.h"
-#include "tools/AngleHud.h"
+#include "ui/AngleHud.h"
 #include "TestHelpers.h"
 
 using namespace cad::param;
@@ -500,7 +500,7 @@ void TestComponent::junctionComponentConnectGesture()
 
     cad::tools::ToolManager tm(&scene);
     tm.setParamDocument(&doc);
-    view.setToolManager(&tm);
+    view.setInputDispatcher(&tm);
     // NOTE: ConnectGesture pushes its undo macro to m_paramDoc->undoStack()
     // (ToolSelect::activate), not the injected tool stack — undo via the doc.
 
@@ -513,12 +513,15 @@ void TestComponent::junctionComponentConnectGesture()
             : (btn | (mods & Qt::ControlModifier ? Qt::LeftButton : Qt::NoButton));
         QMouseEvent ev(type, pos, global, btn, buttons, mods);
         QApplication::sendEvent(view.viewport(), &ev);
+        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
 
     // 1) 选中 B (点击线身).
     sendMouse(QEvent::MouseButtonPress, vp(140.0, 0.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(140.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    // 前序事件已同步处理完成(工具状态机/文档变更直接生效); 无统一可观测条件, 暂留排空。
     QTest::qWait(20);
 
     // 2) 抓 B 的 END 端点 (B 是内部 follower — 组件级连接不占用线级名额) 拖到 X.end.
@@ -527,23 +530,26 @@ void TestComponent::junctionComponentConnectGesture()
     sendMouse(QEvent::MouseMove, vp(170.0, -50.0), Qt::NoButton, Qt::NoModifier);
     sendMouse(QEvent::MouseMove, vp(160.0, -80.0), Qt::NoButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(160.0, -80.0), Qt::LeftButton, Qt::NoModifier);
+    // 前序事件已同步处理完成(工具状态机/文档变更直接生效); 无统一可观测条件, 暂留排空。
     QTest::qWait(30);
 
     auto* ts = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
     QVERIFY(ts);
     QCOMPARE(ts->state(), cad::tools::SelectState::AngleInput);
     // 组件级连接必须弹出角度 HUD (对接角设置入口).
-    auto* hudCheck = view.viewport()->findChild<cad::tools::AngleHud*>();
+    auto* hudCheck = view.viewport()->findChild<cad::ui::AngleHud*>();
     QVERIFY(hudCheck);
     QVERIFY(hudCheck->isVisible());
     // 2 条 attachment: 内部 B→A 保留 + 组件级连接 (组件 → X).
     QCOMPARE(static_cast<int>(doc.attachments().size()), 2);
 
     // 3) Esc → 提交 (保留连接).
-    auto* hud = view.viewport()->findChild<cad::tools::AngleHud*>();
+    auto* hud = view.viewport()->findChild<cad::ui::AngleHud*>();
     QVERIFY(hud);
     QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QApplication::sendEvent(hud, &esc);
+    // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+    // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
     QTest::qWait(30);
 
     QCOMPARE(ts->state(), cad::tools::SelectState::Idle);
@@ -617,7 +623,7 @@ void TestComponent::componentConnectOverlapSwitchTarget()
 
     cad::tools::ToolManager tm(&scene);
     tm.setParamDocument(&doc);
-    view.setToolManager(&tm);
+    view.setInputDispatcher(&tm);
 
     auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
     auto sendMouse = [&](QEvent::Type type, const QPoint& pos,
@@ -628,6 +634,8 @@ void TestComponent::componentConnectOverlapSwitchTarget()
             : (btn | (mods & Qt::ControlModifier ? Qt::LeftButton : Qt::NoButton));
         QMouseEvent ev(type, pos, global, btn, buttons, mods);
         QApplication::sendEvent(view.viewport(), &ev);
+        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
     auto click = [&](double x, double y) {
@@ -648,6 +656,7 @@ void TestComponent::componentConnectOverlapSwitchTarget()
 
     // 1) 选中 B (点击线身).
     click(140.0, 0.0);
+    // 前序事件已同步处理完成(工具状态机/文档变更直接生效); 无统一可观测条件, 暂留排空。
     QTest::qWait(20);
 
     // 2) 抓 B 的 END 端点拖到重叠点 (180,0) 释放 → 直接连最近候选.
@@ -658,13 +667,14 @@ void TestComponent::componentConnectOverlapSwitchTarget()
     // 最后一步 move 落在目标点上 (release 只认最后一次 move 留下的 snap).
     sendMouse(QEvent::MouseMove, vp(180.0, 0.0), Qt::NoButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(180.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    // 前序事件已同步处理完成(工具状态机/文档变更直接生效); 无统一可观测条件, 暂留排空。
     QTest::qWait(30);
 
     auto* ts = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
     QVERIFY(ts);
     QCOMPARE(ts->state(), cad::tools::SelectState::AngleInput);
     QCOMPARE(static_cast<int>(doc.attachments().size()), 2);
-    auto* hud = view.viewport()->findChild<cad::tools::AngleHud*>();
+    auto* hud = view.viewport()->findChild<cad::ui::AngleHud*>();
     QVERIFY(hud && hud->isVisible());
 
     // 初始 leader = 最近候选 (X 或 Y, 顺序不承诺 — 读出来再切到另一个).
@@ -705,6 +715,8 @@ void TestComponent::componentConnectOverlapSwitchTarget()
     // 6) Esc → 提交 (带符号折角保持初始角): 连接保留、基准为 other.
     QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QApplication::sendEvent(hud, &esc);
+    // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
+    // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
     QTest::qWait(30);
     QCOMPARE(ts->state(), cad::tools::SelectState::Idle);
     QCOMPARE(static_cast<int>(doc.attachments().size()), 2);

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUndoCommand>
 #include <QUuid>
@@ -6,6 +6,7 @@
 
 #include "parametric/Attachment.h"
 #include "parametric/Block.h"
+#include "document/commands/CommandIds.h"  // central merge-id enum (P0-2)
 
 namespace cad::param { class ParamDocument; }
 
@@ -283,7 +284,7 @@ public:
                           QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
-    int id() const override { return 1002; }
+    int id() const override { return static_cast<int>(CommandId::SetFollowerAngle); }
     bool mergeWith(const QUndoCommand* other) override;
 
 private:
@@ -299,6 +300,27 @@ private:
     double m_newArcLength;
     QString m_oldArcFormula;
     QString m_newArcFormula;
+};
+
+/// 基准影子偏转角独立设置 (用户拍板 2026-08-27, ROTATE_REDESIGN_DESIGN.md
+/// §2.6): records a baselineOffsetDeg change (old → new) on one attachment.
+/// Used by the connection card's「归零」button; RotateBlocksCommand performs
+/// its own shadow snapshot and does NOT route through this command.
+class SetAttachmentBaselineOffsetCommand : public QUndoCommand
+{
+public:
+    SetAttachmentBaselineOffsetCommand(cad::param::ParamDocument* doc,
+                                       const QUuid& attId,
+                                       double newOffsetDeg,
+                                       QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_attId;
+    double m_oldOffset = 0.0;
+    double m_newOffset = 0.0;
 };
 
 } // namespace cad::cmd

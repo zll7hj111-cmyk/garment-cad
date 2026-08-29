@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUndoCommand>
 #include <QUuid>
@@ -9,6 +9,7 @@
 #include "parametric/LinkedVariable.h"
 #include "parametric/MeasureVariable.h"
 #include "parametric/AngleMeasureVariable.h"
+#include "document/commands/CommandIds.h"  // central merge-id enum (P0-2)
 
 namespace cad::param { class ParamDocument; }
 
@@ -53,7 +54,7 @@ public:
                             QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
-    int id() const override { return 1003; }
+    int id() const override { return static_cast<int>(CommandId::SetVariableValue); }
     bool mergeWith(const QUndoCommand* other) override;
 
 private:

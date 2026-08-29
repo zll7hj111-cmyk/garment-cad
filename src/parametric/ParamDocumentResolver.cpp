@@ -21,6 +21,22 @@
 
 namespace cad::param {
 
+namespace {
+
+/// Report a global (non-attachment-specific) non-convergence ONCE per pass.
+/// Several bounded phases (2.5 / 3 / 4 / component follow) can exhaust their
+/// budget in the same resolve; duplicating the entry would only inflate the
+/// diagnostics badge count without telling the user anything new.
+void reportNotConverged(std::vector<ResolveDiagnostic>& diags)
+{
+    for (const auto& d : diags)
+        if (d.kind == ResolveDiagnostic::Kind::NotConverged && d.attachmentId.isNull())
+            return;
+    diags.push_back({ResolveDiagnostic::Kind::NotConverged, QUuid()});
+}
+
+} // namespace
+
 // 求解装配：环检测 / 引用追踪 / 受影响集 / resolveAll* 管线 (2026-08 拆分)
 
 bool ParamDocument::wouldCreateMeasureValueCycle(const Attachment& candidate) const
@@ -306,15 +322,26 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         measureAngleMeasureVars();
         Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                              &auxDiag, Resolver::Scope::AuxOnly, kAuxLayer,
-                             effAffected);
-        for (int i = 0; i < 4 && (measureLinkedVars() || measureMeasureVars()
-                                  || measureAngleMeasureVars()); ++i) {
+                             effAffected,
+                             &m_exprCache);
+        // Bounded fixpoint (was `i < 4 && measure*()`): re-resolve while the
+        // aux pass keeps changing published measurements. Exhausting the
+        // budget means the LAST round still moved → report non-convergence.
+        bool auxSettled = false;
+        for (int i = 0; i < kMaxSettleRounds; ++i) {
+            if (!(measureLinkedVars() || measureMeasureVars()
+                  || measureAngleMeasureVars())) {
+                auxSettled = true;
+                break;
+            }
             if (effAffected) effAffected = nullptr;  // measurement changed → full
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &auxDiag,
                                  Resolver::Scope::AuxOnly, kAuxLayer,
-                                 effAffected);
+                                 effAffected,
+                                 &m_exprCache);
         }
+        if (!auxSettled) reportNotConverged(m_diagnostics);
         m_layerRegistry->setAuxDirty(false);
         auxRan = true;
         // Published measurement values sourced from the aux layer may have
@@ -337,21 +364,30 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         measureAngleMeasureVars(/*skipAuxSource=*/true);
         Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                              &m_diagnostics, Resolver::Scope::WorkingOnly, kAuxLayer,
-                             effAffected);
+                             effAffected,
+                             &m_exprCache);
         // Linked measurements are taken BEFORE the pass; if the pass moved any
         // measured geometry (e.g. the source segment of a length-linked copy was
         // just edited), propagate to consumers until stable (bounded: linked
         // chains are shallow — copies reference originals directly).
-        for (int i = 0; i < 4 &&
-             (measureLinkedVars(/*skipAuxSource=*/true) ||
-              measureMeasureVars(/*skipAuxSource=*/true) ||
-              measureAngleMeasureVars(/*skipAuxSource=*/true)); ++i) {
+        // Bounded fixpoint (was `i < 4 && measure*()`), same contract as the
+        // other settle loops: exhausting the budget = still moving.
+        bool workSettled = false;
+        for (int i = 0; i < kMaxSettleRounds; ++i) {
+            if (!(measureLinkedVars(/*skipAuxSource=*/true) ||
+                  measureMeasureVars(/*skipAuxSource=*/true) ||
+                  measureAngleMeasureVars(/*skipAuxSource=*/true))) {
+                workSettled = true;
+                break;
+            }
             if (effAffected) effAffected = nullptr;  // measurement changed → full
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &m_diagnostics,
                                  Resolver::Scope::WorkingOnly, kAuxLayer,
-                                 effAffected);
+                                 effAffected,
+                                 &m_exprCache);
         }
+        if (!workSettled) reportNotConverged(m_diagnostics);
         m_layerRegistry->setWorkingDirty(false);
         workingRan = true;
     };
@@ -376,18 +412,25 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         }
         const bool auxRefsWorking = m_auxIntersectToWorking;
         if (auxRefsWorking) {
-            for (int round = 0; round < 4; ++round) {
+            bool settled = false;
+            for (int round = 0; round < kMaxSettleRounds; ++round) {
                 std::vector<ResolveDiagnostic> auxDiag2;  // discarded
                 Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                      m_conditioned, &auxDiag2,
                                      Resolver::Scope::AuxOnly, kAuxLayer,
-                                     nullptr);
+                                     nullptr,
+                                     &m_exprCache);
                 if (!(measureLinkedVars() || measureMeasureVars()
-                      || measureAngleMeasureVars()))
+                      || measureAngleMeasureVars())) {
+                    settled = true;
                     break;
+                }
                 m_layerRegistry->setWorkingDirty(true);
                 runWorkingPhase();
             }
+            // Budget exhausted: aux measurements kept changing on the last
+            // round, so the aux↔working ping-pong never reached a fixed point.
+            if (!settled) reportNotConverged(m_diagnostics);
         }
     }
 
@@ -403,13 +446,14 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     bool xLayerMoved = false;
     if (m_crossLayerCount > 0 && workingRan) {
         bool settled = false;
-        for (int round = 0; round < 4; ++round) {
+        for (int round = 0; round < kMaxSettleRounds; ++round) {
             xLayerMoved = true;
             GCAD_PERF_SCOPE("resolve.xlayer");
             std::vector<ResolveDiagnostic> xDiag;  // discarded (phase 2 owns m_diagnostics)
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                                  &xDiag, Resolver::Scope::AuxOnly, kAuxLayer,
-                                 effAffected);
+                                 effAffected,
+                                 &m_exprCache);
             // No skipAuxSource here: cross-layer-linked aux geometry may have
             // moved, and its published values must be re-measured fully.
             if (!(measureLinkedVars() || measureMeasureVars()
@@ -433,8 +477,9 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             std::vector<ResolveDiagnostic> finalDiag;  // discarded (NotConverged reported below)
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                                  &finalDiag, Resolver::Scope::AuxOnly, kAuxLayer,
-                                 effAffected);
-            m_diagnostics.push_back({ResolveDiagnostic::Kind::NotConverged, QUuid()});
+                                 effAffected,
+                                 &m_exprCache);
+            reportNotConverged(m_diagnostics);
         }
     }
 
@@ -447,12 +492,15 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     // Re-run the working pass against the fresh aux pose; if the re-solve moved
     // measured geometry, the aux must re-settle too — bounded like Phase 2.5/3.
     if (m_workingIntersectToAux && workingRan) {
-        for (int round = 0; round < 4; ++round) {
+        bool settled = false;
+        for (int round = 0; round < kMaxSettleRounds; ++round) {
             m_layerRegistry->setWorkingDirty(true);
             runWorkingPhase();
             if (!(measureLinkedVars() || measureMeasureVars()
-                  || measureAngleMeasureVars()))
+                  || measureAngleMeasureVars())) {
+                settled = true;
                 break;
+            }
             // Working geometry moved measured values → aux re-settle so the next
             // round re-solves the working intersections against the fresh pose.
             m_layerRegistry->setAuxDirty(true);
@@ -460,9 +508,12 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &auxDiag4,
                                  Resolver::Scope::AuxOnly, kAuxLayer,
-                                 nullptr);
+                                 nullptr,
+                                 &m_exprCache);
             m_layerRegistry->setAuxDirty(false);
         }
+        // Budget exhausted: working measurements kept moving the aux pose.
+        if (!settled) reportNotConverged(m_diagnostics);
     }
 
     // Component-level attachments (组件级连接): drive each component's
@@ -480,11 +531,13 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     // 两者都不再移动 (不动点 5 未知/5 约束, 见 test_component.cpp
     // dragComponentLeaderCurveFollowStable). 常见拖帧 (无锚点跟随) 第一轮
     // 即 break, 仅多一次 settleComponents 扫描 + 后处理扫描.
-    constexpr int kMaxFollowSettleRounds = 4;
+    constexpr int kMaxFollowSettleRounds = kMaxSettleRounds;
+    bool followConverged = false;
     for (int round = 0; round < kMaxFollowSettleRounds; ++round) {
-        for (int inner = 0; inner < 4; ++inner) {
+        bool compConverged = false;
+        for (int inner = 0; inner < kMaxSettleRounds; ++inner) {
             const bool compMoved = settleComponents(*passAttachments, effAffected);
-            if (!compMoved) break;
+            if (!compMoved) { compConverged = true; break; }
             // 组件动了 → 重解线级森林 (外部 followers 跟随成员新姿态)
             std::vector<ResolveDiagnostic> reDiag;  // discarded (phase 2 owns m_diagnostics)
             // 组件沉降移动成员 → 基于成员点的测量值 (M_ 变量) 可能变化 →
@@ -496,8 +549,12 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                 if (effAffected) effAffected = nullptr;
             }
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
-                                 &reDiag, Resolver::Scope::All, QUuid(), effAffected);
+                                 &reDiag, Resolver::Scope::All, QUuid(), effAffected,
+                                 &m_exprCache);
         }
+        // Budget exhausted: components kept moving every round while the line
+        // forest kept re-settling (an oscillating component attachment).
+        if (!compConverged) reportNotConverged(m_diagnostics);
 
         // --- Curve-anchor follow post-pass ---
         // CurveAnchor points with a follow connection track their target point:
@@ -558,7 +615,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                 // ran BEFORE this post-pass, so without this the curve would keep
                 // passing through the OLD anchor until the next resolve).
                 if (pt.resolvedPos.distanceSquaredTo(newPos) > 1e-6) {
-                    ++blk.geometryEpoch;
+                    blk.touchGeometry();
                     followMoved = true;
                 }
                 pt.resolvedPos = newPos;
@@ -585,22 +642,27 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                 std::vector<ResolveDiagnostic> reDiag;  // discarded (phase 2 owns m_diagnostics)
                 Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                                      &reDiag, Resolver::Scope::WorkingOnly, kAuxLayer,
-                                     effAffected);
+                                     effAffected,
+                                     &m_exprCache);
             }
             if (auxRan || xLayerMoved) {
                 GCAD_PERF_SCOPE("resolve.followResettleAux");
                 std::vector<ResolveDiagnostic> reDiag;  // discarded
                 Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                                      &reDiag, Resolver::Scope::AuxOnly, kAuxLayer,
-                                     effAffected);
+                                     effAffected,
+                                     &m_exprCache);
             }
         }
 
         // 本轮组件与锚点都没动 → 已到不动点, 结束外层收敛。
         // compMoved 由内层循环消费 (它负责组件动了之后的 forest 重解); 这里
         // 只看 post-pass —— 锚点没动就没有需要再对账的几何, 继续一轮纯属浪费.
-        if (!followMoved) break;
+        if (!followMoved) { followConverged = true; break; }
     }
+    // Budget exhausted: the anchor-follow post-pass kept moving anchors every
+    // round (curve-follow ↔ component-settle oscillation).
+    if (!followConverged) reportNotConverged(m_diagnostics);
 
     emit resolved();
     if (emitDocChanged)

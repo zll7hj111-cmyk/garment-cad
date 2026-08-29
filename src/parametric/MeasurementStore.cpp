@@ -217,7 +217,7 @@ void MeasurementStore::updateMeasure(const MeasureVariable& mv)
                         }
                     }
                     if (renamed)
-                        ++owner->geometryEpoch;
+                        owner->touchGeometry();
                 }
             }
             break;

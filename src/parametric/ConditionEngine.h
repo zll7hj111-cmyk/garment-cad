@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QHash>
 #include <QString>
@@ -40,6 +40,23 @@ public:
         const QString& expr,
         const QHash<QString, double>& baseValues,
         const QHash<QString, QList<Condition>>& condByName,
+        EvalContext* ctx = nullptr);
+
+    /// Evaluate a length formula (cm domain) and convert the result to mm.
+    /// Equivalent to the common idiom
+    ///   `if (!f.isEmpty()) { auto r = evaluate(f, ...); if (r.ok) x = Units::cmToMm(r.value); }`
+    /// in one call — 2026-08-28 收口 A2.
+    /// @param formulaCm    Empty string → returns false, @p outMm untouched.
+    /// @param baseValues   Same as evaluate().
+    /// @param condByName   Same as evaluate().
+    /// @param outMm        Written ONLY on success (mm value).
+    /// @param ctx          Optional per-pass memo (same as evaluate()).
+    /// @return true when @p formulaCm is non-empty and evaluates OK.
+    [[nodiscard]] static bool evaluateLengthMm(
+        const QString& formulaCm,
+        const QHash<QString, double>& baseValues,
+        const QHash<QString, QList<Condition>>& condByName,
+        double& outMm,
         EvalContext* ctx = nullptr);
 };
 

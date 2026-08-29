@@ -1,6 +1,8 @@
-#include "ConditionEngine.h"
+﻿#include "ConditionEngine.h"
 
 #include <cmath>
+
+#include "geometry/Units.h"
 
 namespace cad::param {
 
@@ -62,7 +64,9 @@ ExpressionEvaluator::Result ConditionEngine::evaluate(
     ExpressionEvaluator::Result r;
 
     // Standalone reference to a conditioned formula -> use its adjusted value.
-    const auto& ce = ExpressionEvaluator::compiled(expr);
+    // Bytecode comes from the pass's own compile cache (document-owned) when
+    // one was threaded through EvalContext, else the thread-local fallback.
+    const auto& ce = cacheFor(ctx).compiled(expr);
     if (ce.ok && ce.isStandalone) {
         const auto cit = condByName.constFind(ce.standaloneName);
         if (cit != condByName.constEnd()) {
@@ -82,6 +86,20 @@ ExpressionEvaluator::Result ConditionEngine::evaluate(
     if (ctx)
         ctx->memo.insert(expr, r);
     return r;
+}
+
+bool ConditionEngine::evaluateLengthMm(
+    const QString& formulaCm,
+    const QHash<QString, double>& baseValues,
+    const QHash<QString, QList<Condition>>& condByName,
+    double& outMm,
+    EvalContext* ctx)
+{
+    if (formulaCm.isEmpty()) return false;
+    const auto r = evaluate(formulaCm, baseValues, condByName, ctx);
+    if (!r.ok) return false;
+    outMm = geo::Units::cmToMm(r.value);
+    return true;
 }
 
 } // namespace cad::param

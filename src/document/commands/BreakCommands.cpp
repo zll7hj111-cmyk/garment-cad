@@ -7,7 +7,9 @@
 #include "parametric/LinkedVariable.h"
 #include "parametric/ConditionEngine.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::cmd {
 
@@ -273,8 +275,10 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     }
     addCurvePt(endPt);
 
-    auto spans = cad::geo::buildBezierSpans(cPts, cTanIn, cTanOut, cAuto, seg->tension,
-                                            cad::geo::AutoCurveMode::Hobby);
+    // Spans via the unified entry — same Hobby solve as the frame cache,
+    // memoized (single code path; the freeze below keeps its own
+    // solveHobbyTangents call because it needs per-point in/out vectors).
+    auto spans = block->spansForSegment(*seg, /*skipUnresolvedPassPoints=*/true);
     if (spans.empty()) return true;
 
     // Freeze the tangents of the ORIGINAL curve. The running curve is built
@@ -417,6 +421,10 @@ void evaluateBreakPosition(cad::param::ParamDocument& doc, const QUuid& blockId,
 
     // Formula re-evaluation uses the same environment as the Resolver.
     cad::param::EvalContext ctx;
+    // Compile into the document's own cache (P1-5) rather than the
+    // context-free fallback, so the bytecode lands where the resolve passes
+    // will reuse it (and is released when the document is cleared).
+    ctx.cache = &doc.expressionCache();
     const auto& params = doc.parameters();
     const auto& conditioned = doc.conditions();
 
@@ -453,11 +461,7 @@ void evaluateBreakPosition(cad::param::ParamDocument& doc, const QUuid& blockId,
         const auto* refPt = block->findPoint(auxPt->interpRefPointId);
         const cad::geo::Vec2 refRel = refPt->resolvedPos - startPt->resolvedPos;
         double offsetMm = auxPt->interpConstant;
-        if (!auxPt->interpConstantFormula.isEmpty()) {
-            auto r = cad::param::ConditionEngine::evaluate(
-                auxPt->interpConstantFormula, params, conditioned, &ctx);
-            if (r.ok) offsetMm = cad::geo::Units::cmToMm(r.value);
-        }
+        cad::param::ConditionEngine::evaluateLengthMm(auxPt->interpConstantFormula, params, conditioned, offsetMm, &ctx);
         if (offsetMm < -1e-9 || refRel.dot(unit) > st.breakAlong + 1e-6) {
             st.polarRefId = QUuid();  // marker: no anchor, numeric freeze below
         } else {
@@ -484,11 +488,7 @@ void evaluateBreakPosition(cad::param::ParamDocument& doc, const QUuid& blockId,
             if (r.ok) percent = r.value;
         }
         double constantMm = auxPt->interpConstant;  // mm internal
-        if (!auxPt->interpConstantFormula.isEmpty()) {
-            auto r = cad::param::ConditionEngine::evaluate(
-                auxPt->interpConstantFormula, params, conditioned, &ctx);
-            if (r.ok) constantMm = cad::geo::Units::cmToMm(r.value);
-        }
+        cad::param::ConditionEngine::evaluateLengthMm(auxPt->interpConstantFormula, params, conditioned, constantMm, &ctx);
 
         // Effective percent from start (accounting for interpFromEnd).
         double effPercent = auxPt->interpFromEnd ? (1.0 - percent) : percent;
@@ -908,7 +908,7 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
         // Block::resolve 的增量几何检测不会 bump epoch，惰性曲线缓存就会继续
         // 用打断前的 span 缓存（前段画出旧曲线 = 打断形状不保持的根因）。
         // 铁律见 AGENTS.md「画布缓存刷新」。
-        ++block->geometryEpoch;
+        block->touchGeometry();
     }
 
     // Remove the original end point if no other segment references it.
@@ -1177,8 +1177,7 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
                     }
                 } else if (att.followerAngleFormula.isEmpty()) {
                     double ang = att.followerAngle + st.refDeltaRad * 180.0 / M_PI;
-                    ang = std::fmod(ang, 360.0);
-                    if (ang < 0.0) ang += 360.0;
+                    ang = cad::geo::normalizeDeg360(ang);
                     att.followerAngle = ang;
                 }
             }
@@ -1193,7 +1192,7 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
             kept.push_back(std::move(att));
         }
     }
-    doc.addAttachmentsRaw(kept);
+    cad::param::RawModelAccess::addAttachmentsRaw(doc, kept);
 
     // --- Create attachment: back block → front block at break point ---
     cad::param::Attachment att;
@@ -1234,7 +1233,7 @@ void BreakSegmentCommand::undo()
         if (snapped) liveIds.push_back(att.id);
     }
     m_doc->removeAttachments(liveIds);
-    m_doc->addAttachmentsRaw(m_removedAttachments);
+    cad::param::RawModelAccess::addAttachmentsRaw(*m_doc, m_removedAttachments);
 
     // Remove the auto-published front-length variable (a variable the user
     // published themselves stays untouched).

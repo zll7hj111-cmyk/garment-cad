@@ -43,6 +43,8 @@ private slots:
     void measureLineFollowsHostsWhenFollowing();
     void connPointRetargetReplacesAttachment();
     void endTargetRotationDoesNotOffsetFollowers();
+    void aimRingExhaustingBudgetReportsNotConverged();
+    void oneWayAimReportsNoDiagnostics();
     void curveAnchorResolvesOnChord();
     void rigidDragKeepsCurveCacheFrozen();
     void curveAnchorFollowsEndpoints();
@@ -50,6 +52,10 @@ private slots:
     void arcLengthZeroMeansFoldBack0();
     void arcLengthHalfCircleMeansStraight180();
     void arcLengthQuarterTurnMatchesAngle90();
+
+    // P1-3: block-pointer lifetime guards (structure epoch + range check).
+    void structureEpochTracksBlockMutations();
+    void blockPointerMayLeaveStorageAfterGrowth();
 };
 
 void TestResolver::freePointsResolve()
@@ -1184,6 +1190,96 @@ void TestResolver::endTargetRotationDoesNotOffsetFollowers()
     QVERIFY(std::abs(wPA.y - wPB.y) < 1e-6);
 }
 
+namespace {
+
+/// A one-segment block (origin point + end point at local (len, 0)) that can
+/// carry an endpoint-aim constraint. Shared by the aim-ring tests.
+struct AimBlock {
+    Block block;
+    QUuid idOrigin;
+    QUuid idEnd;
+};
+
+AimBlock makeAimBlock(const Vec2& origin, double len)
+{
+    AimBlock ab;
+    ab.block.transform.origin = origin;
+    ab.block.transform.rotation = 0.0;
+
+    ParamPoint o; o.constraint = PointConstraint::Free; o.freePos = {0.0, 0.0};
+    ab.idOrigin = ab.block.addPoint(o);
+    ParamPoint e; e.constraint = PointConstraint::Free; e.freePos = {len, 0.0};
+    ab.idEnd = ab.block.addPoint(e);
+
+    Segment seg; seg.startPointId = ab.idOrigin; seg.endPointId = ab.idEnd;
+    ab.block.addSegment(std::move(seg));
+    return ab;
+}
+
+} // namespace
+
+// Two blocks aiming at EACH OTHER's endpoint form a ring: every Step-7 pass
+// re-aims both blocks, and the iteration only creeps toward its fixed point
+// (~0.15°/round left after 3 rounds for the offsets used here). The
+// kMaxSettleRounds budget therefore runs out while the poses are STILL MOVING —
+// which must be reported as NotConverged rather than silently shipping a pose
+// that is one rotation short of the fixed point (P1-4: 未收敛可观测化).
+void TestResolver::aimRingExhaustingBudgetReportsNotConverged()
+{
+    AimBlock a = makeAimBlock({0.0, 0.0}, 40.0);
+    AimBlock b = makeAimBlock({100.0, 0.0}, 40.0);
+
+    // Mutual aims with asymmetric offsets so the ring never lands exactly on a
+    // fixed point within the budget.
+    a.block.endTargetBlockId = b.block.id;
+    a.block.endTargetPointId = b.idEnd;
+    a.block.endTargetOffset = 30.0;
+    b.block.endTargetBlockId = a.block.id;
+    b.block.endTargetPointId = a.idEnd;
+    b.block.endTargetOffset = 20.0;
+
+    std::vector<Block> blocks;
+    blocks.push_back(std::move(a.block));
+    blocks.push_back(std::move(b.block));
+    std::vector<Attachment> attachments;
+
+    std::vector<ResolveDiagnostic> diags;
+    Resolver::resolveAll(blocks, attachments, {}, {}, &diags);
+
+    // Sanity: the ring really rotated both blocks (the budget was consumed by
+    // movement, not by a no-op loop).
+    QVERIFY(std::abs(blocks[0].transform.rotation) > 1e-6);
+    QVERIFY(std::abs(blocks[1].transform.rotation) > 1e-6);
+
+    // Budget exhausted → non-convergence is observable, and reported ONCE (the
+    // dedup in report() keeps repeated reports out of the badge count).
+    int notConverged = 0;
+    for (const auto& d : diags)
+        if (d.kind == ResolveDiagnostic::Kind::NotConverged) ++notConverged;
+    QVERIFY(notConverged == 1);
+}
+
+// Control: the same two blocks with a ONE-WAY aim (A aims at B, B is static)
+// reach their fixed point in the first round, so a healthy document must stay
+// free of diagnostics — the new exhaustion report must not cry wolf.
+void TestResolver::oneWayAimReportsNoDiagnostics()
+{
+    AimBlock a = makeAimBlock({0.0, 0.0}, 40.0);
+    AimBlock b = makeAimBlock({100.0, 0.0}, 40.0);
+    a.block.endTargetBlockId = b.block.id;
+    a.block.endTargetPointId = b.idEnd;
+    a.block.endTargetOffset = 30.0;
+
+    std::vector<Block> blocks;
+    blocks.push_back(std::move(a.block));
+    blocks.push_back(std::move(b.block));
+    std::vector<Attachment> attachments;
+
+    std::vector<ResolveDiagnostic> diags;
+    Resolver::resolveAll(blocks, attachments, {}, {}, &diags);
+    QVERIFY(diags.empty());
+}
+
 void TestResolver::curveAnchorResolvesOnChord()
 {
     // A CurveAnchor point sits on its host segment's CHORD at interpPercent,
@@ -1260,7 +1356,7 @@ void TestResolver::rigidDragKeepsCurveCacheFrozen()
     Resolver::resolveAll(blocks, attachments);
     Block& b = blocks[0];
 
-    const quint64 epoch0 = b.geometryEpoch;
+    const quint64 epoch0 = b.geometryEpoch();
     const quint64 builds0 = b.curveCacheBuilds;
     const auto* entry0 = b.curveSpanEntry(segId);
     QVERIFY(entry0 && !entry0->spans.empty());
@@ -1271,7 +1367,7 @@ void TestResolver::rigidDragKeepsCurveCacheFrozen()
     b.transform.origin = {55.0, -30.0};
     b.transform.rotation = 0.7;
     Resolver::resolveAll(blocks, attachments);
-    QCOMPARE(b.geometryEpoch, epoch0);      // 无局部点移动
+    QCOMPARE(b.geometryEpoch(), epoch0);      // 无局部点移动
     QCOMPARE(b.curveCacheBuilds, builds0);  // 没有 C2 重解 / 重 flatten
     const auto* entryA = b.curveSpanEntry(segId);
     QVERIFY(entryA && entryA->flatLocal == flat0);
@@ -1279,7 +1375,7 @@ void TestResolver::rigidDragKeepsCurveCacheFrozen()
     // 局部变化 (锚点 percent 移动) → epoch 变化 + 缓存重建 + span 更新.
     if (auto* pa = b.findPoint(anchorId)) pa->interpPercent = 0.8;
     Resolver::resolveAll(blocks, attachments);
-    QVERIFY(b.geometryEpoch != epoch0);
+    QVERIFY(b.geometryEpoch() != epoch0);
     QCOMPARE(b.curveCacheBuilds, builds0 + 1);
     const auto* entryB = b.curveSpanEntry(segId);
     QVERIFY(entryB && entryB->flatLocal != flat0);
@@ -1489,6 +1585,103 @@ void TestResolver::arcLengthQuarterTurnMatchesAngle90()
     QVERIFY(std::abs(dWorld.x - 100.0) < 1e-6);   // 90°: up from B
     QVERIFY(std::abs(dWorld.y - 50.0) < 1e-6);
     QVERIFY(std::abs(rf.transform.rotation - 0.5 * M_PI) < 1e-9);
+}
+
+// P1-3: `Block* findBlock()` hands out a pointer INTO the blocks vector, so it
+// dies on the next structural mutation. The document now exposes an observable
+// structure epoch (cheap cache invalidation) plus a debug range check; the
+// pointer/handle migration itself remains a separate project.
+void TestResolver::structureEpochTracksBlockMutations()
+{
+    ParamDocument doc;
+
+    Block b1;
+    ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = {0.0, 0.0};
+    const QUuid s1 = b1.addPoint(p1);
+    ParamPoint e1; e1.constraint = PointConstraint::Free; e1.freePos = {100.0, 0.0};
+    const QUuid e1id = b1.addPoint(e1);
+    Segment seg1; seg1.startPointId = s1; seg1.endPointId = e1id;
+    b1.addSegment(seg1);
+    const QUuid id1 = doc.addBlock(std::move(b1));
+    Q_UNUSED(id1);
+
+    const quint64 afterAdd = doc.structureEpoch();
+    QVERIFY(afterAdd > 0);
+
+    // A resolve pass (and any property-only edit) must NOT touch the epoch:
+    // the set of blocks is unchanged, so caches keyed on it stay valid.
+    doc.resolveAll();
+    Block* b = doc.findBlock(id1);
+    QVERIFY(b);
+    b->name = QStringLiteral("renamed");
+    b->touchGeometry();
+    QCOMPARE(doc.structureEpoch(), afterAdd);
+
+    // A structural mutation must bump it (add ...).
+    Block b2;
+    ParamPoint p2; p2.constraint = PointConstraint::Free; p2.freePos = {0.0, 0.0};
+    const QUuid s2 = b2.addPoint(p2);
+    ParamPoint e2; e2.constraint = PointConstraint::Free; e2.freePos = {50.0, 0.0};
+    const QUuid e2id = b2.addPoint(e2);
+    Segment seg2; seg2.startPointId = s2; seg2.endPointId = e2id;
+    b2.addSegment(seg2);
+    const QUuid id2 = doc.addBlock(std::move(b2));
+    QVERIFY(doc.structureEpoch() > afterAdd);
+
+    // ... and remove.
+    const quint64 afterAdd2 = doc.structureEpoch();
+    doc.removeBlock(id2);
+    QVERIFY(doc.structureEpoch() > afterAdd2);
+
+    // clear() counts as a structural change too.
+    const quint64 afterRemove = doc.structureEpoch();
+    doc.clear();
+    QVERIFY(doc.structureEpoch() > afterRemove);
+}
+
+// The debug range check detects the classic "held a Block* across addBlock()
+// and the vector reallocated" bug. Release builds compile it to `true`, so the
+// assertion is conditional.
+void TestResolver::blockPointerMayLeaveStorageAfterGrowth()
+{
+    ParamDocument doc;
+
+    Block first;
+    ParamPoint p; p.constraint = PointConstraint::Free; p.freePos = {0.0, 0.0};
+    const QUuid sp = first.addPoint(p);
+    ParamPoint e; e.constraint = PointConstraint::Free; e.freePos = {10.0, 0.0};
+    const QUuid ep = first.addPoint(e);
+    Segment seg; seg.startPointId = sp; seg.endPointId = ep;
+    first.addSegment(seg);
+    const QUuid firstId = doc.addBlock(std::move(first));
+
+    Block* held = doc.findBlock(firstId);
+    QVERIFY(held);
+    QVERIFY(doc.blockPointerInRange(held));
+
+    // Grow the vector well past any reserved capacity so it must reallocate.
+    for (int i = 0; i < 200; ++i) {
+        Block filler;
+        ParamPoint fp; fp.constraint = PointConstraint::Free; fp.freePos = {0.0, 0.0};
+        const QUuid fs = filler.addPoint(fp);
+        ParamPoint fe; fe.constraint = PointConstraint::Free; fe.freePos = {5.0, 0.0};
+        const QUuid feid = filler.addPoint(fe);
+        Segment fseg; fseg.startPointId = fs; fseg.endPointId = feid;
+        filler.addSegment(fseg);
+        doc.addBlock(std::move(filler));
+    }
+
+#ifndef NDEBUG
+    // Either the stale pointer is out of the current storage, or the allocator
+    // happened to hand the new buffer the same address (in which case it still
+    // denotes the same block) — both observations are consistent,never neither.
+    QVERIFY(!doc.blockPointerInRange(held)
+            || held == doc.findBlock(firstId));
+#endif
+
+    // The safe pattern: re-fetch after any mutation.
+    QVERIFY(doc.findBlock(firstId) != nullptr);
+    QVERIFY(doc.blockPointerInRange(doc.findBlock(firstId)));
 }
 
 QTEST_GUILESS_MAIN(TestResolver)

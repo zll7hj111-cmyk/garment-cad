@@ -35,8 +35,8 @@ struct CurveSpanEntry {
     // The canvas only applies rotation + Y-flip — it never re-flattens,
     // re-evaluates or re-integrates the curve on cache rebuild.
     std::vector<geo::Vec2> flatLocal;    ///< Flattened polyline (0.1 mm tolerance).
-    geo::Vec2 labelLocal;                ///< Parametric midpoint t=0.5 (local).
-    geo::Vec2 labelLocalDir;             ///< Unit tangent at t=0.5 (local).
+    geo::Vec2 labelLocal;                ///< Arc-length midpoint of the curve (local).
+    geo::Vec2 labelLocalDir;             ///< Unit tangent at the arc-length midpoint.
     double    arcLengthMm = 0.0;         ///< Exact arc length (mm).
 };
 
@@ -64,10 +64,24 @@ public:
     Transform2D transform;  ///< Rigid-body placement (drag changes this).
 
     /// Monotonically bumped whenever a resolve pass changes any point's
-    /// resolvedPos (internal geometry). The canvas compares this against its
-    /// last-seen value to distinguish transform-only moves (cheap setPos)
-    /// from internal shape changes (full cache rebuild).
-    quint64 geometryEpoch = 0;
+    /// resolvedPos (internal geometry), and by touchGeometry() for edits that
+    /// change the drawn shape WITHOUT moving any point (curve structure,
+    /// tangents, extend tails, pass-point ids...). The canvas compares this
+    /// against its last-seen value to distinguish transform-only moves (cheap
+    /// setPos) from internal shape changes (full cache rebuild).
+    ///
+    /// P1-1 (2026-12): the counter is private and the ONLY way to bump it is
+    /// touchGeometry(). It used to be a bare public field with ~20 hand-written
+    /// `++geometryEpoch` sites spread over engine / commands / tools, and
+    /// forgetting one silently freezes the canvas cache — now the bump point is
+    /// greppable (`touchGeometry`) and documented in one place.
+    [[nodiscard]] quint64 geometryEpoch() const noexcept { return m_geometryEpoch; }
+
+    /// Bump the geometry epoch: the drawn shape changed, so every canvas cache
+    /// keyed on it (BlockItem display cache, SnapEngine per-block coordinate
+    /// cache, curve spans) must be rebuilt. Call this whenever a model edit
+    /// changes what the user SEES without necessarily moving a resolved point.
+    void touchGeometry() noexcept { ++m_geometryEpoch; }
 
     /// Curve-cache rebuild counter (telemetry / 回归): every
     /// rebuildCurveCache() call increments this. A pure rigid drag (transform
@@ -246,6 +260,30 @@ public:
     /// rebuilt at the end of every resolve() pass.
     [[nodiscard]] const CurveSpanEntry* curveSpanEntry(const QUuid& segmentId) const;
 
+    /// THE single entry point for a curve segment's Bézier spans. Every
+    /// consumer — resolve-time queries (intersection ray target, arc-length
+    /// interpolation), tools (double-click distance test), commands (curve
+    /// break) — must go through here: the previous 5 ad-hoc build sites each
+    /// re-ran the Hobby solve and had to be kept in sync by hand
+    /// (BreakCommands already drifted once, 曲线打断形状修复 2026-10).
+    ///
+    /// Mid-fixpoint the frame cache (curveSpanEntry) can be stale — endpoints
+    /// may still be moving while the epoch has not been bumped yet — so this
+    /// always builds from the CURRENT anchor data, memoized by an anchor
+    /// fingerprint: N aux points on the same curve then share ONE Hobby
+    /// solve per settle sweep instead of one solve per point per pass.
+    ///
+    /// @param skipUnresolvedPassPoints  true = drop still-unresolved pass
+    ///        points (ray-intersection target mid-fixpoint); false = any
+    ///        unresolved pass point fails the build (strict, default).
+    /// @param tolerateStaleEndpoints    true = an endpoint still mid-cycle in
+    ///        the fixpoint contributes its CACHED resolvedPos (the designed
+    ///        convergence mechanism for endpoint↔query dependency cycles);
+    ///        false = unresolved endpoint fails the build (strict, default).
+    [[nodiscard]] std::vector<geo::BezierSpan> spansForSegment(
+        const Segment& seg, bool skipUnresolvedPassPoints = false,
+        bool tolerateStaleEndpoints = false) const;
+
     /// Length (mm, local coordinates) of the segment incident to pointId.
     /// Returns the Euclidean distance between the segment's start and end
     /// resolved positions. Returns 0 if no segment is found or endpoints
@@ -299,6 +337,10 @@ public:
     void rebuildSegmentIndex() const;
 
 private:
+    /// See geometryEpoch()/touchGeometry(): private so every bump goes through
+    /// the single, greppable entry point.
+    quint64 m_geometryEpoch = 0;
+
     mutable QHash<QUuid, int> m_pointIndex;  ///< pointId -> index (mutable cache).
     mutable QHash<QUuid, int> m_segmentIndex;  ///< segmentId -> index (mutable cache).
 
@@ -314,8 +356,9 @@ private:
     mutable QHash<QUuid, ExtendEval> m_extendEval;
 
     /// End-of-resolve pass: 用 m_extendEval（resolve 开头已求值）+ 当前本体位置
-    /// 重建 m_effectiveLocal 缓存，并在可视尾巴变化时显式 +geometryEpoch
-    /// （本体不变但视觉要重绘 —— 铁律: 只改显示/语义属性必须显式 +epoch）。
+    /// 重建 m_effectiveLocal 缓存，并在可视尾巴变化时显式 touchGeometry()
+    /// （本体不变但视觉要重绘 —— 铁律: 只改显示/语义属性必须显式 touchGeometry()；
+    /// P1-1 起 geometryEpoch 是私有字段，唯一入口就是 touchGeometry()）。
     void applyEffectivePositions();
 
     /// resolve() 开头：求值各段延长量（数值 mm / 公式 cm 域，防御性 clamp ≥0）
@@ -337,12 +380,28 @@ private:
     quint64 m_curveCacheEpoch = 0;
 
     /// Collect the resolved anchor sequence (start + passPoints + end) of a
-    /// curve segment. Returns false when any anchor is unresolved.
+    /// curve segment. Strict mode (defaults): any unresolved anchor fails.
+    /// skipUnresolvedPass: unresolved PASS points are dropped instead.
+    /// tolerateStaleEndpoints: an unresolved endpoint contributes its cached
+    /// resolvedPos (mid-fixpoint convergence; see spansForSegment callers).
     [[nodiscard]] bool collectCurveAnchors(const Segment& seg,
                                            std::vector<geo::Vec2>& pts,
                                            std::vector<geo::Vec2>& tIn,
                                            std::vector<geo::Vec2>& tOut,
-                                           std::vector<bool>& autoTan) const;
+                                           std::vector<bool>& autoTan,
+                                           bool skipUnresolvedPass = false,
+                                           bool tolerateStaleEndpoints = false) const;
+
+    /// Memo for spansForSegment(): the last Hobby solve per curve segment,
+    /// keyed by a fingerprint of the anchor data (positions + tangents +
+    /// auto flags + tension). Correct under ANY resolve phase — a changed
+    /// input always changes the fingerprint, no epoch/lifecycle tracking
+    /// needed (mid-fixpoint positions move before the epoch bump).
+    struct CurveSpanMemo {
+        quint64 fingerprint = 0;
+        std::vector<geo::BezierSpan> spans;
+    };
+    mutable QHash<QUuid, CurveSpanMemo> m_spanMemo;
 
     /// Rebuild m_curveSpans from the CURRENT resolved positions — called from
     /// resolve() only when the local geometry actually changed (epoch delta /

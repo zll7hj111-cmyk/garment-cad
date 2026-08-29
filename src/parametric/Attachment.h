@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -158,6 +158,21 @@ struct Attachment {
     double slidePerpMm = 0.0;   ///< 锁轴坐标快照 (mm, 基准线局部系 y):
                                 ///< 垂直基准线方向的偏移 —— AlongLeader 锁此轴,
                                 ///< PerpLeader 忽略 (该轴自由, 拖动回写).
+    QString slideAlongFormula;  ///< 沿线公式 (cm 域, 公式优先于 slideAlongMm 生效;
+                                ///< 拖拽沿自由轴时清空 —— 与"公式优先、手调=数值"
+                                ///< 的其它数值/公式字段同约定, Serialized since v7).
+    QString slidePerpFormula;   ///< 垂直公式 (cm 域, 同理).
+
+    /// 基准影子偏转角 (用户拍板 2026-08-27, ROTATE_REDESIGN_DESIGN.md §2.6):
+    /// 有效角度基准方向 = 真基准出方向 + 本值 (度)。平时恒为 0 —— 影子贴着
+    /// 真基准转, 行为与无此字段逐位一致 (旧档缺省 0 零迁移)。批量/整组刚体
+    /// 旋转 δ 时, 凡"被驱朝向属于旋转集 S、而角度基准方向在 S 外"的活跃连接
+    /// 写入 += δ —— 直觉 = "真基准也陪组转了 δ", 但真基准本体与其上存储
+    /// 一概不动; followerAngle/followerAngleFormula/baselineOffsetDeg 三者
+    /// 相互独立, 公式原样存活。连接删除即字段陪葬 (彻底自由, 不做转接)。
+    /// 序列化 Optional since v11; 滑轨局部系 (slideMode) 不吃本值 —— 轨道
+    /// 属于位置宿主, 与角度影子无关。
+    double baselineOffsetDeg = 0.0;
 };
 
 } // namespace cad::param

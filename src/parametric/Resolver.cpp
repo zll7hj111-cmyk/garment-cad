@@ -12,6 +12,7 @@
 #include "parametric/PerfProbe.h"
 #include "parametric/IntersectDebug.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
 
 namespace cad::param {
 
@@ -162,7 +163,7 @@ bool Resolver::resolveCrossBlockIntersection(
                       .arg(newLocal.x).arg(newLocal.y)
                       .arg((pt.resolvedPos - newLocal).length()));
     if (!pt.resolved || pt.resolvedPos.distanceSquaredTo(newLocal) > 1e-6)
-        ++block.geometryEpoch;  // canvas must rebuild the cache
+        block.touchGeometry();
     const bool madeProgress = !pt.resolved;
     pt.resolvedPos = newLocal;
     pt.resolved = true;
@@ -176,7 +177,8 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                           std::vector<ResolveDiagnostic>* diagnostics,
                           Scope scope,
                           const QUuid& auxLayerId,
-                          const QSet<QUuid>* affectedOnly)
+                          const QSet<QUuid>* affectedOnly,
+                          ExpressionCache* exprCache)
 {
     if (diagnostics) diagnostics->clear();
     GCAD_PERF_SCOPE("r.total");
@@ -200,6 +202,9 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // Per-pass memo: params/conditioned are constant throughout this call, so
     // identical formula texts (shared by many points/attachments) execute once.
     EvalContext ctx;
+    // Compile cache: the caller's (document-owned) instance when provided,
+    // else cacheFor() falls back to the thread-local default.
+    ctx.cache = exprCache;
 
     // Step 1: Resolve each block's internal points independently.
     {
@@ -366,7 +371,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             if (!pt) continue;
             const geo::Vec2 newPos = pin.hostWorld - bridge.transform.origin;
             if (pt->resolvedPos.distanceSquaredTo(newPos) > 1e-6) {
-                ++bridge.geometryEpoch;  // canvas must rebuild the cache
+                bridge.touchGeometry();
                 bridgesMoved = true;
             }
             pt->resolvedPos = newPos;
@@ -397,9 +402,12 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // the TARGET segment of intersections on the same block) can re-run it —
     // a stale local intersection drifts off the origin→borrow ray (用户回归:
     // P612 在肩褶高 15/20 时不共线).
-    auto runIntersectionFixpoint = [&]() -> bool {
+    // @param budgetExhausted set when every round still made progress, i.e. the
+    //        geometry was still moving when the budget ran out (no fixed point).
+    auto runIntersectionFixpoint = [&](bool* budgetExhausted = nullptr) -> bool {
         bool geoProgressed = false;
-        for (int pass = 0; pass < 4; ++pass) {
+        bool converged = false;
+        for (int pass = 0; pass < kMaxSettleRounds; ++pass) {
             bool progressed = false;
 
     // --- Step 6: cross-block intersections ---
@@ -459,18 +467,22 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     }
 
         if (progressed) geoProgressed = true;
-        if (!progressed) break;
+        if (!progressed) { converged = true; break; }
     }
+        if (budgetExhausted) *budgetExhausted = !converged;
         return geoProgressed;
     };
 
     {
     GCAD_PERF_SCOPE("r.intersect");
-    const bool geoProgressed = runIntersectionFixpoint();
+    bool intersectExhausted = false;
+    const bool geoProgressed = runIntersectionFixpoint(&intersectExhausted);
     // Step 6d: the cross-block fixpoint may have resolved points that are
     // attachment targets (e.g. a break endpoint Polar-referencing an aux point
     // that references a cross-block intersection). Re-settle the forest so
     // followers track the fresh geometry before Step 7 runs.
+    if (intersectExhausted)
+        report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     if (geoProgressed && settleAttachments())
         report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
@@ -488,7 +500,8 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // own attachment re-snaps, requiring a fresh aim).
     {
     GCAD_PERF_SCOPE("r.aim");
-    for (int aimPass = 0; aimPass < 4; ++aimPass) {
+    bool aimConverged = false;
+    for (int aimPass = 0; aimPass < kMaxSettleRounds; ++aimPass) {
         bool rotated = false;
         for (auto& block : blocks) {
             if (!inScope(block)) continue;  // frozen group
@@ -544,8 +557,14 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         bool unsettled = false;
         if (rotated)
             unsettled = settleAttachments(/*preserveEndTargetRotation=*/true);
-        if (!rotated && !unsettled) break;
+        if (!rotated && !unsettled) { aimConverged = true; break; }
     }
+    // Budget exhausted = aims were still rotating on the last allowed round
+    // (typically two blocks aiming at each other). Previously silent; now the
+    // caller can surface it (diagnostics badge) instead of shipping a pose that
+    // is one rotation short of the fixed point.
+    if (!aimConverged)
+        report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
 
     // Step 7b: the aim rotations may have rotated the TARGET segments of
@@ -555,7 +574,11 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // 15/20 时不共线).
     {
         GCAD_PERF_SCOPE("r.intersect.7b");
-        if (runIntersectionFixpoint() && settleAttachments())
+        bool reExhausted = false;
+        const bool reProgressed = runIntersectionFixpoint(&reExhausted);
+        if (reExhausted)
+            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+        if (reProgressed && settleAttachments())
             report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
 
@@ -572,7 +595,8 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     {
         GCAD_PERF_SCOPE("r.dart");
         bool dartMoved = false;
-        for (int dartPass = 0; dartPass < 4; ++dartPass) {
+        bool dartConverged = false;
+        for (int dartPass = 0; dartPass < kMaxSettleRounds; ++dartPass) {
             bool passMoved = false;
             for (auto& block : blocks) {
                 if (!inScope(block)) continue;  // frozen group
@@ -600,11 +624,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                 // Offset distance d (formula overrides the numeric value;
                 // formula domain is cm, auto-converted to mm).
                 double dMm = block.dartOffsetMm;
-                if (!block.dartOffsetFormula.isEmpty()) {
-                    auto r = ConditionEngine::evaluate(block.dartOffsetFormula,
-                                                       params, conditioned, &ctx);
-                    if (r.ok) dMm = geo::Units::cmToMm(r.value);
-                }
+                ConditionEngine::evaluateLengthMm(block.dartOffsetFormula, params, conditioned, dMm, &ctx);
                 // Angle β relative to the reference segment (formula override).
                 double betaDeg = block.dartAngleDeg;
                 if (!block.dartAngleFormula.isEmpty()) {
@@ -640,7 +660,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                 ep->distance = newLength;
                 const geo::Vec2 newEndLocal(newLength, 0.0);
                 if (ep->resolvedPos.distanceSquaredTo(newEndLocal) > 1e-9) {
-                    ++block.geometryEpoch;  // internal geometry changed → canvas rebuild
+                    block.touchGeometry();
                     ep->resolvedPos = newEndLocal;
                     ep->resolved = true;
                 }
@@ -650,8 +670,12 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                     dartMoved = true;
                 }
             }
-            if (!passMoved) break;
+            if (!passMoved) { dartConverged = true; break; }
         }
+        // Budget exhausted = dart endpoints were still moving on the last round
+        // (a dart chain that never reaches its fixed point).
+        if (!dartConverged)
+            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
 
         // Dart-driven endpoints may carry followers (a line snapped to the
         // computed end point E): re-settle the forest with aim-driven
@@ -713,6 +737,14 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         }
     }
 
+    // 基准影子偏转角 (用户拍板 2026-08-27, Attachment::baselineOffsetDeg):
+    // 有效基准方向 = 真基准方向 + 影子累计偏转。平时为 0, 行为不变;
+    // 批量/整组旋转的会话把"基准在旋转集外"的连接逐帧写成 base+δ,
+    // 让被驱朝向跟着组走而真基准不动 (ROTATE_REDESIGN_DESIGN.md §2.6)。
+    // 只影响驱动旋转的 refWorld —— 滑轨轨道用的 leaderRefWorld 是位置宿主
+    // 的方向, 与影子无关; 本字段位于公式求值链之外, 公式/常量原样存活。
+    refWorld += att.baselineOffsetDeg * M_PI / 180.0;
+
     // The follower's attached point must exist and be resolved (checked before
     // any direction lookup so dangling points short-circuit cleanly).
     const ParamPoint* fromPt = from.findPoint(att.fromPointId);
@@ -737,12 +769,9 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         // 重叠), sweeping so that πr = 180° = straight continuation (闭合基准,
         // 用户拍板 2026-08 定稿, 与角度模式同基准): 弧长 0 = 0°, 弧长 πr = 180°.
         double arcMm = att.arcLength;
-        if (!att.arcLengthFormula.isEmpty()) {
-            auto r = ConditionEngine::evaluate(att.arcLengthFormula, params, conditioned, ctx);
-            if (r.ok) arcMm = geo::Units::cmToMm(r.value);
-        }
+        ConditionEngine::evaluateLengthMm(att.arcLengthFormula, params, conditioned, arcMm, ctx);
         const double radius = from.segmentLengthAtPoint(att.fromPointId);
-        angleRad = (radius > 1e-9) ? (arcMm / radius) : 0.0;
+        angleRad = cad::geo::degToRad(cad::geo::arcMmToDeg(arcMm, radius));
     } else {
         // Angle mode (default).
         double angleDeg = att.followerAngle;
@@ -801,11 +830,18 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         const geo::Vec2 alongDir(std::cos(railAngle), std::sin(railAngle));
         const geo::Vec2 perpDir(-alongDir.y, alongDir.x);
 
+        // 数值或公式 (cm 域, 2026-12): 公式优先于存储值; 公式无效时回退存储值
+        // (与弧长/跟随角公式同约定)。面板输入的 .00 只是数值回显, 变量/表达式
+        // 同样可用。
+        double alongMm = att.slideAlongMm;
+        double perpMm  = att.slidePerpMm;
+        ConditionEngine::evaluateLengthMm(att.slideAlongFormula, params, conditioned, alongMm, ctx);
+        ConditionEngine::evaluateLengthMm(att.slidePerpFormula, params, conditioned, perpMm, ctx);
+
         // from-point world position on the rail, pinned from the stored pair.
         const geo::Vec2 localOffset = fromPt->resolvedPos;
         const geo::Vec2 fromPointWorld =
-            targetWorldPos + alongDir * att.slideAlongMm
-                          + perpDir * att.slidePerpMm;
+            targetWorldPos + alongDir * alongMm + perpDir * perpMm;
 
         // origin = from-point world minus the (new-rotation) rotated local offset.
         const double c = std::cos(newRotation);

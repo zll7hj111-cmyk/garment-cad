@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QString>
 #include <QPointF>
@@ -95,5 +95,27 @@ struct Units {
         return trimTrailingZeros(QString::number(deg, 'f', 1));
     }
 };
+
+/// 共享「数值或公式」输入解析入口 (2026-08-28 收口 A6).
+///
+/// 原散落于 ToolSmartPen/SegmentEditBar/SegmentAngleCard/SegmentExtendCard/
+/// ConnectGesture/LinePropertyDialog 的两段式判读:
+///   `bool ok; double v = text.toDouble(&ok);` 成功走数值、失败走公式。
+/// 本结构只做"判读 + 保留原文", 不做单位换算 (数值域按调用点语义:
+/// 长度=cm、角度=度 —— 由调用方各自 cmToMm 等, 不强行统一)。
+struct ParsedNumberOrFormula
+{
+    bool isNumber = false;   ///< text 整体可解析为数值.
+    double value = 0.0;      ///< isNumber 时的数值 (原始输入单位: cm 或 度).
+    QString formula;         ///< 非数值时的原样输入串 (用户公式, 含空白 trim).
+};
+
+inline ParsedNumberOrFormula parseNumberOrFormula(const QString& text)
+{
+    ParsedNumberOrFormula out;
+    out.formula = text.trimmed();
+    out.value = out.formula.toDouble(&out.isNumber);
+    return out;
+}
 
 } // namespace cad::geo

@@ -1,6 +1,10 @@
-#include "DocumentSerializer.h"
+﻿#include "DocumentSerializer.h"
 
 #include <algorithm>
+#include <array>
+#include <utility>
+#include <tuple>
+#include <cmath>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QUuid>
@@ -20,6 +24,7 @@
 #include "parametric/MeasureVariable.h"
 #include "parametric/AngleMeasureVariable.h"
 #include "parametric/Condition.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::param {
 namespace {
@@ -29,78 +34,97 @@ QString uuidStr(const QUuid& id) { return id.toString(QUuid::WithoutBraces); }
 QUuid uuidFrom(const QString& s) { return QUuid::fromString(s); }
 
 // ─── Enum string maps ───
-// The two functions below must be extended IN PAIRS when PointConstraint
-// gains a value (see the registry next to the enum in ParamPoint.h). The
-// if-chain in pointConstraintFrom does NOT fail the build on a missing
-// case — it silently degrades to Free and corrupts saved files on reload.
-QString pointConstraintStr(PointConstraint c) {
-    switch (c) {
-    case PointConstraint::Free:         return "Free";
-    case PointConstraint::Polar:        return "Polar";
-    case PointConstraint::Midpoint:     return "Midpoint";
-    case PointConstraint::OnSegment:    return "OnSegment";
-    case PointConstraint::Intersection: return "Intersection";
-    case PointConstraint::Interpolated: return "Interpolated";
-    case PointConstraint::CurveAnchor:  return "CurveAnchor";
+// 序列化成对映射表驱动 (2026-08-28 收口 B4)。原四个手写 switch + if 链改为
+// 单张 constexpr 表 + 双向查找 —— 新增枚举只改一处表 (str→enum 与 enum→str
+// 同表必然同步; 旧的 From 侧 if 链漏分支不报错、静默降级损坏存档, 现为
+// 表项缺失走 canonical default, 语义逐字节不变)。
+// 登记表规则: 第一行 = canonical default (未知枚举/未知字符串的降级目标),
+// 与 ParamPoint.h 枚举旁的 12 处登记同步扩展。
+template <typename E, std::size_t N>
+QString enumToStr(const std::array<std::pair<E, const char*>, N>& table, E v,
+                  const char* fallback)
+{
+    for (const auto& [e, s] : table)
+        if (e == v) return QLatin1String(s);
+    return QLatin1String(fallback);
+}
+
+/// @p recognized 语义与旧实现逐位一致: 命中表中任一 (含默认行) = true;
+/// 未知字符串 = false (s 非空且不是默认名)。空串 = 字段缺失, 正常默认化。
+template <typename E, std::size_t N>
+E enumFromStr(const std::array<std::pair<E, const char*>, N>& table,
+              const QString& s, const char* defaultName, E defaultVal,
+              bool* recognized)
+{
+    for (const auto& [e, name] : table) {
+        if (s == QLatin1String(name)) {
+            if (recognized) *recognized = true;
+            return e;
+        }
     }
-    return "Free";
+    if (recognized) *recognized =
+        (s.isEmpty() || s == QLatin1String(defaultName));
+    return defaultVal;
+}
+
+constexpr std::array<std::pair<PointConstraint, const char*>, 7>
+    kPointConstraintMap = {{
+        {PointConstraint::Free,         "Free"},
+        {PointConstraint::Polar,        "Polar"},
+        {PointConstraint::Midpoint,     "Midpoint"},
+        {PointConstraint::OnSegment,    "OnSegment"},
+        {PointConstraint::Intersection, "Intersection"},
+        {PointConstraint::Interpolated, "Interpolated"},
+        {PointConstraint::CurveAnchor,  "CurveAnchor"},
+    }};
+QString pointConstraintStr(PointConstraint c) {
+    return enumToStr(kPointConstraintMap, c, "Free");
 }
 PointConstraint pointConstraintFrom(const QString& s, bool* recognized = nullptr) {
-    if (s == "Polar")        { if (recognized) *recognized = true;  return PointConstraint::Polar; }
-    if (s == "Midpoint")     { if (recognized) *recognized = true;  return PointConstraint::Midpoint; }
-    if (s == "OnSegment")    { if (recognized) *recognized = true;  return PointConstraint::OnSegment; }
-    if (s == "Intersection") { if (recognized) *recognized = true;  return PointConstraint::Intersection; }
-    if (s == "Interpolated") { if (recognized) *recognized = true;  return PointConstraint::Interpolated; }
-    if (s == "CurveAnchor")  { if (recognized) *recognized = true;  return PointConstraint::CurveAnchor; }
-    // The DEFAULT branch is only a degradation when the string is neither the
-    // canonical default nor empty (missing field = normal defaulting).
-    if (recognized) *recognized = (s.isEmpty() || s == QLatin1String("Free"));
-    return PointConstraint::Free;
+    return enumFromStr(kPointConstraintMap, s, "Free",
+                       PointConstraint::Free, recognized);
 }
 
+constexpr std::array<std::pair<SegmentType, const char*>, 3>
+    kSegmentTypeMap = {{
+        {SegmentType::Line,   "Line"},
+        {SegmentType::Arc,    "Arc"},
+        {SegmentType::Bezier, "Bezier"},
+    }};
 QString segmentTypeStr(SegmentType t) {
-    switch (t) {
-    case SegmentType::Line:   return "Line";
-    case SegmentType::Arc:    return "Arc";
-    case SegmentType::Bezier: return "Bezier";
-    }
-    return "Line";
+    return enumToStr(kSegmentTypeMap, t, "Line");
 }
 SegmentType segmentTypeFrom(const QString& s, bool* recognized = nullptr) {
-    if (s == "Arc")    { if (recognized) *recognized = true;  return SegmentType::Arc; }
-    if (s == "Bezier") { if (recognized) *recognized = true;  return SegmentType::Bezier; }
-    if (recognized) *recognized = (s.isEmpty() || s == QLatin1String("Line"));
-    return SegmentType::Line;
+    return enumFromStr(kSegmentTypeMap, s, "Line",
+                       SegmentType::Line, recognized);
 }
 
+constexpr std::array<std::pair<SegmentRole, const char*>, 3>
+    kSegmentRoleMap = {{
+        {SegmentRole::Outline,   "Outline"},
+        {SegmentRole::Internal,  "Internal"},
+        {SegmentRole::Auxiliary, "Auxiliary"},
+    }};
 QString segmentRoleStr(SegmentRole r) {
-    switch (r) {
-    case SegmentRole::Outline:   return "Outline";
-    case SegmentRole::Internal:  return "Internal";
-    case SegmentRole::Auxiliary: return "Auxiliary";
-    }
-    return "Outline";
+    return enumToStr(kSegmentRoleMap, r, "Outline");
 }
 SegmentRole segmentRoleFrom(const QString& s, bool* recognized = nullptr) {
-    if (s == "Internal")  { if (recognized) *recognized = true;  return SegmentRole::Internal; }
-    if (s == "Auxiliary") { if (recognized) *recognized = true;  return SegmentRole::Auxiliary; }
-    if (recognized) *recognized = (s.isEmpty() || s == QLatin1String("Outline"));
-    return SegmentRole::Outline;
+    return enumFromStr(kSegmentRoleMap, s, "Outline",
+                       SegmentRole::Outline, recognized);
 }
 
+constexpr std::array<std::pair<LineStyle, const char*>, 3>
+    kLineStyleMap = {{
+        {LineStyle::Solid,  "Solid"},
+        {LineStyle::Dashed, "Dashed"},
+        {LineStyle::Dotted, "Dotted"},
+    }};
 QString lineStyleStr(LineStyle s) {
-    switch (s) {
-    case LineStyle::Solid:  return "Solid";
-    case LineStyle::Dashed: return "Dashed";
-    case LineStyle::Dotted: return "Dotted";
-    }
-    return "Solid";
+    return enumToStr(kLineStyleMap, s, "Solid");
 }
 LineStyle lineStyleFrom(const QString& s, bool* recognized = nullptr) {
-    if (s == "Dashed") { if (recognized) *recognized = true;  return LineStyle::Dashed; }
-    if (s == "Dotted") { if (recognized) *recognized = true;  return LineStyle::Dotted; }
-    if (recognized) *recognized = (s.isEmpty() || s == QLatin1String("Solid"));
-    return LineStyle::Solid;
+    return enumFromStr(kLineStyleMap, s, "Solid",
+                       LineStyle::Solid, recognized);
 }
 
 QString adjustModeStr(AdjustMode m) {
@@ -355,8 +379,7 @@ QJsonObject blockJson(const Block& b) {
         {"segments", segs},
     };
 }
-Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr,
-                int* legacyLayerIndex = nullptr) {
+Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     Block b;
     b.id = uuidFrom(o["id"].toString());
     b.name = o["name"].toString();
@@ -364,18 +387,11 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr,
     b.transform.rotation = o["rotation"].toDouble();
     b.isClosed = o["isClosed"].toBool();
     b.isBridge = o["isBridge"].toBool();  // Optional since v3 — defaults to false.
-    // Layer reference: stable Layer::id string (current format) or a legacy
-    // integer index (pre-id files). Legacy indices are reported through
-    // @p legacyLayerIndex and remapped to layer ids by the caller once the
-    // layer registry is restored.
-    const QJsonValue layerVal = o["layer"];
-    if (legacyLayerIndex)
-        *legacyLayerIndex = -1;
-    if (layerVal.isString()) {
-        b.layer = uuidFrom(layerVal.toString());   // Missing/empty = null id.
-    } else if (legacyLayerIndex) {
-        *legacyLayerIndex = layerVal.toInt(0);     // Legacy index (default 0).
-    }
+    // Layer reference: always a stable Layer::id string. Integer indices are
+    // a v0 (pre-id) shape and are rewritten by FormatMigration::migrateV0ToV1
+    // before this function ever runs — anything non-string here is corruption
+    // and degrades to a null id (caller: first working layer).
+    b.layer = uuidFrom(o["layer"].toString());   // Missing/empty = null id.
     b.endTargetBlockId = uuidFrom(o["endTargetBlockId"].toString());
     b.endTargetPointId = uuidFrom(o["endTargetPointId"].toString());
     b.endTargetOffset = o["endTargetOffset"].toDouble();
@@ -422,6 +438,9 @@ QJsonObject attachmentJson(const Attachment& a) {
           {"angleIndependent", a.angleIndependent},
         {"slideAlongMm", a.slideAlongMm},
         {"slidePerpMm", a.slidePerpMm},
+        {"slideAlongFormula", a.slideAlongFormula},
+        {"slidePerpFormula", a.slidePerpFormula},
+        {"baselineOffsetDeg", a.baselineOffsetDeg},  // 影子偏转角 (Optional since v11)
     };
 }
 Attachment attachmentFrom(const QJsonObject& o) {
@@ -461,6 +480,13 @@ Attachment attachmentFrom(const QJsonObject& o) {
         ? static_cast<cad::param::SlideMode>(sm) : cad::param::SlideMode::None;
     a.slideAlongMm = o["slideAlongMm"].toDouble();
     a.slidePerpMm = o["slidePerpMm"].toDouble();
+    // 滑轨公式 (Optional since v7): 缺失 = 空 (数值路径兼容旧档).
+    a.slideAlongFormula = o["slideAlongFormula"].toString();
+    a.slidePerpFormula = o["slidePerpFormula"].toString();
+    // 基准影子偏转角 (Optional since v11): 缺失 = 0 —— 平时恒为 0, 旧档零迁移
+    // (shadow offset, 用户拍板 2026-08-27; ROTATE_REDESIGN_DESIGN.md §2.6).
+    const double bo = o["baselineOffsetDeg"].toDouble(0.0);
+    a.baselineOffsetDeg = std::isfinite(bo) ? bo : 0.0;
     return a;
 }
 
@@ -794,12 +820,18 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
         docObj["lineSeq"].toInt(1));
 
     // Canvas layers (restore before blocks: blocks reference layers by id).
-    // Legacy migration: files written before the auxiliary calculation layer
-    // have no aux layer — one is inserted first and every legacy block layer
-    // INDEX shifts up by one (their old layer 0 was a WORKING layer). Files
-    // without any "layers" array keep the default pair created by clear()
-    // and get the same shift.
-    bool legacyShift = false;
+    //
+    // P2-1: HISTORY is no longer handled here. A file loaded through
+    // DocumentFile::load has already been walked forward to kFormatVersion by
+    // the registered migration chain — the "v0 predates the auxiliary layer,
+    // so integer block layer indices shift up by one" knowledge now lives in
+    // cad::doc::FormatMigration::migrateV0ToV1, where it is named, versioned
+    // and unit-testable on its own.
+    //
+    // What remains is CORRUPTION tolerance for hand-built JSON (tests and
+    // direct API callers that never went through DocumentFile): missing or
+    // nonsensical structure degrades to the documented safe default instead
+    // of being silently reinterpreted as history.
     if (docObj.contains(QStringLiteral("layers"))) {
         std::vector<Layer> restored;
         for (const auto& v : docObj["layers"].toArray())
@@ -809,6 +841,17 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
             fallback.name = QStringLiteral("图层 1");
             restored.push_back(std::move(fallback));
         }
+        // Model invariant (NOT history): exactly one auxiliary layer, at index
+        // 0. A file whose layers array has none (e.g. an unrecognised "type"
+        // was degraded to Working above) still has to end up with one — the
+        // layer registry cannot represent a document without it.
+        //
+        // What is deliberately NOT done here anymore is the v0 INDEX REMAP
+        // ("every block's integer layer index shifts up by one because v0 had
+        // no aux layer"): that is version-specific history and now lives in
+        // cad::doc::FormatMigration::migrateV0ToV1 (P2-1). By the time a file
+        // reaches this function through DocumentFile::load, every layer
+        // reference is already a stable id.
         bool hasAux = false;
         for (const auto& l : restored)
             if (l.type == LayerType::Auxiliary) { hasAux = true; break; }
@@ -817,43 +860,22 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
             aux.name = QStringLiteral("辅助层");
             aux.type = LayerType::Auxiliary;
             restored.insert(restored.begin(), std::move(aux));
-            legacyShift = true;
         }
-        doc.replaceLayersRaw(std::move(restored));
-    } else {
-        legacyShift = true;  // default pair already contains the aux layer
+        cad::param::RawModelAccess::replaceLayersRaw(doc, std::move(restored));
     }
-    // Active layer: stable id string (current format) or a legacy int index.
-    // Default (field missing) = first working layer.
-    const QJsonValue activeVal = docObj["activeLayer"];
-    if (activeVal.isString()) {
-        doc.setActiveLayer(uuidFrom(activeVal.toString()));
-    } else {
-        const int idx = qBound(0, activeVal.toInt(1) + (legacyShift ? 1 : 0),
-                               doc.layerCount() - 1);
-        doc.setActiveLayer(doc.layers()[static_cast<size_t>(idx)].id);
-    }
+    // No "layers" array at all -> keep the default pair created by clear().
 
-    // Blocks (raw, no resolve). Legacy integer layer indices are collected
-    // and remapped to the restored layers' stable ids below.
-    struct LegacyLayerRef { QUuid blockId; int oldIndex; };
-    std::vector<LegacyLayerRef> legacyLayerRefs;
-    for (const auto& v : docObj["blocks"].toArray()) {
-        int legacyIdx = -1;
-        Block b = blockFrom(v.toObject(), warnings, &legacyIdx);
-        const QUuid blockId = doc.addBlockRaw(std::move(b));
-        if (legacyIdx >= 0)
-            legacyLayerRefs.push_back({blockId, legacyIdx});
-    }
+    // Active layer: a stable id string. Anything unresolvable (missing field,
+    // stale id) falls back to the first working layer — never the auxiliary
+    // one, which is not a drafting target.
+    const QUuid activeId = uuidFrom(docObj["activeLayer"].toString());
+    doc.setActiveLayer(doc.layersView().layerIndex(activeId) >= 0 ? activeId
+                                                     : doc.layersView().firstWorkingLayerId());
 
-    // Legacy migration: map old layer indices (shifted above the inserted aux
-    // layer) onto the restored layers' stable ids.
-    for (const auto& ref : legacyLayerRefs) {
-        const int idx = qBound(0, ref.oldIndex + (legacyShift ? 1 : 0),
-                               doc.layerCount() - 1);
-        if (auto* b = doc.blockById(ref.blockId))
-            b->layer = doc.layers()[static_cast<size_t>(idx)].id;
-    }
+    // Blocks (raw, no resolve). Layer references are stable id strings; the
+    // "unknown or missing" validation right below owns every other case.
+    for (const auto& v : docObj["blocks"].toArray())
+        cad::param::RawModelAccess::addBlockRaw(doc, blockFrom(v.toObject(), warnings));
 
     // Validate block layer refs: unknown ids (corrupt file / stale legacy
     // index) fall back to the first working layer, reported one by one
@@ -861,59 +883,59 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
     for (const auto& bc : doc.blocks()) {
         if (bc.layer.isNull())
             continue;  // Missing layer field: addBlock-style defaulting below.
-        if (doc.layerIndex(bc.layer) >= 0)
+        if (doc.layersView().layerIndex(bc.layer) >= 0)
             continue;
         if (warnings)
             warnings->append(QString::fromUtf8("线段块 %1 引用的图层 %2 不存在，已移到第一个工作层")
                                  .arg(bc.name, uuidStr(bc.layer)));
         if (auto* b = doc.blockById(bc.id))
-            b->layer = doc.firstWorkingLayerId();
+            b->layer = doc.layersView().firstWorkingLayerId();
     }
     for (const auto& bc : doc.blocks())
         if (bc.layer.isNull())
             if (auto* b = doc.blockById(bc.id))
-                b->layer = doc.firstWorkingLayerId();
+                b->layer = doc.layersView().firstWorkingLayerId();
 
     // Free points
     for (const auto& v : docObj["freePoints"].toArray())
-        doc.addFreePointRaw(pointFrom(v.toObject(), warnings));
+        cad::param::RawModelAccess::addFreePointRaw(doc, pointFrom(v.toObject(), warnings));
 
     // Attachments (raw, no resolve)
     for (const auto& v : docObj["attachments"].toArray())
-        doc.addAttachmentRaw(attachmentFrom(v.toObject()));
+        cad::param::RawModelAccess::addAttachmentRaw(doc, attachmentFrom(v.toObject()));
 
     // Components (raw restore — offsets trusted verbatim; blocks already added)
     for (const auto& v : docObj["components"].toArray())
-        doc.restoreComponentRaw(componentFrom(v.toObject()));
+        cad::param::RawModelAccess::restoreComponentRaw(doc, componentFrom(v.toObject()));
 
     // Variables
     for (const auto& v : varObj["variables"].toArray())
-        doc.restoreVariableRaw(variableFrom(v.toObject()));
+        cad::param::RawModelAccess::restoreVariableRaw(doc, variableFrom(v.toObject()));
 
     // Formula groups (restore before formulas so membership can be validated)
     for (const auto& v : varObj["formulaGroups"].toArray())
-        doc.restoreFormulaGroupRaw(formulaGroupFrom(v.toObject()));
+        cad::param::RawModelAccess::restoreFormulaGroupRaw(doc, formulaGroupFrom(v.toObject()));
 
     // Formulas
     for (const auto& v : varObj["formulas"].toArray()) {
         auto f = formulaFrom(v.toObject());
         // Drop a dangling group reference (group missing from the file).
-        if (!f.groupId.isNull() && !doc.findFormulaGroup(f.groupId))
+        if (!f.groupId.isNull() && !doc.variablesView().groupById(f.groupId))
             f.groupId = QUuid();
-        doc.restoreFormulaRaw(std::move(f));
+        cad::param::RawModelAccess::restoreFormulaRaw(doc, std::move(f));
     }
 
     // Linked variables
     for (const auto& v : varObj["linkedVars"].toArray())
-        doc.restoreLinkedRaw(linkedFrom(v.toObject()));
+        cad::param::RawModelAccess::restoreLinkedRaw(doc, linkedFrom(v.toObject()));
 
     // Measure variables
     for (const auto& v : varObj["measureVars"].toArray())
-        doc.restoreMeasureRaw(measureFrom(v.toObject()));
+        cad::param::RawModelAccess::restoreMeasureRaw(doc, measureFrom(v.toObject()));
 
     // Angle measure variables
     for (const auto& v : varObj["angleMeasures"].toArray())
-        doc.restoreAngleMeasureRaw(angleMeasureFrom(v.toObject()));
+        cad::param::RawModelAccess::restoreAngleMeasureRaw(doc, angleMeasureFrom(v.toObject()));
 
     // Recompute formulas (syncs parameters + resolves all blocks)
     doc.recomputeFormulas();

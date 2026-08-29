@@ -48,6 +48,22 @@ ParamPoint* ParamDocument::findFreePoint(const QUuid& id)
 
 // --- Blocks ---
 
+bool ParamDocument::blockPointerInRange(const Block* p) const noexcept
+{
+#ifndef NDEBUG
+    // Debug builds: a pointer handed out before a structural mutation points
+    // into a buffer the vector no longer owns. Comparing against the CURRENT
+    // storage catches the common case (a fresh, differently-placed allocation);
+    // it cannot catch a realloc that happens to land at the same address.
+    if (p == nullptr) return false;
+    const Block* first = m_blocks.data();
+    return p >= first && p < first + m_blocks.size();
+#else
+    Q_UNUSED(p);
+    return true;   // release: no bookkeeping, no behaviour change
+#endif
+}
+
 QUuid ParamDocument::addBlock(Block block)
 {
     QUuid id = block.id;
@@ -63,6 +79,7 @@ QUuid ParamDocument::addBlock(Block block)
     block.resolve(m_parameters, m_conditioned);
     m_blockIndex.insert(id, static_cast<int>(m_blocks.size()));
     m_blocks.push_back(std::move(block));
+    bumpStructureEpoch();  // P1-3: m_blocks may have reallocated
     m_followersDirty = true;  // the new block may be a future attachment endpoint
     m_referenceIndexDirty = true;  // its points may be referenced / ref fields set
     emit blockAdded(id);
@@ -77,7 +94,8 @@ void ParamDocument::removeBlock(const QUuid& id)
     if (it == m_blockIndex.end()) return;
 
     const int idx = it.value();
-    m_blocks.erase(m_blocks.begin() + idx);
+    m_blocks.erase(m_blocks.begin() + idx);  // invalidates every Block* past idx
+    bumpStructureEpoch();                    // P1-3
     m_blockIndex.erase(it);
 
     // Rebuild index for elements after the removed one.
@@ -272,6 +290,33 @@ BBox ParamDocument::boundingBoxOf(const QUuid& componentId) const
             box.expand(b->transform.toWorld(pt.resolvedPos));
         }
         // Curve control hulls (conservative): the spans cache carries the bbox.
+        for (const auto& seg : b->segments) {
+            const CurveSpanEntry* e = b->curveSpanEntry(seg.id);
+            if (!e) continue;
+            const geo::Vec2 corners[4] = {
+                b->transform.toWorld(e->bboxMin),
+                b->transform.toWorld(geo::Vec2(e->bboxMax.x, e->bboxMin.y)),
+                b->transform.toWorld(geo::Vec2(e->bboxMin.x, e->bboxMax.y)),
+                b->transform.toWorld(e->bboxMax),
+            };
+            for (const geo::Vec2& p : corners) box.expand(p);
+        }
+    }
+    return box;
+}
+
+BBox ParamDocument::boundingBoxOfBlocks(const QList<QUuid>& blockIds) const
+{
+    // 选集 AABB (旋转选集高亮, 2026-08-27): 与 boundingBoxOf 相同的逐块几何
+    // (resolved 点 + 曲线控制 hull), 并集到任意块集上。
+    BBox box;
+    for (const QUuid& mid : blockIds) {
+        const Block* b = blockById(mid);
+        if (!b) continue;
+        for (const auto& pt : b->points) {
+            if (!pt.resolved) continue;
+            box.expand(b->transform.toWorld(pt.resolvedPos));
+        }
         for (const auto& seg : b->segments) {
             const CurveSpanEntry* e = b->curveSpanEntry(seg.id);
             if (!e) continue;

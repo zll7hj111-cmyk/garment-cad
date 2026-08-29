@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "geometry/Vec2.h"
 
@@ -79,6 +79,11 @@ enum class AutoCurveMode { C2, Hobby };
 /// forced zero curvature). Manual points keep their stored tangents as fixed
 /// constraints. Returns {tangentIn, tangentOut} — at an auto point the two
 /// share a direction but may differ in length (the natural Hobby asymmetry).
+/// Overshoot clamp (P3-2): auto handle lengths are capped at 2.0× their chord
+/// (kMaxHandleRatio in CurveMath.cpp) so fold-back / extrapolated anchors
+/// (interpPercent outside [0,1]) can no longer emit multi-chord-length handles
+/// that loop the curve; normal shapes (ratio 0.3~0.7) are unaffected. Manual
+/// tangents are never clamped.
 /// @param tension   Hobby tension: >1 shortens both handles (tighter curve),
 ///                  <1 lengthens (looser). 1.0 = classic Hobby.
 [[nodiscard]] std::pair<std::vector<Vec2>, std::vector<Vec2>> solveHobbyTangents(
@@ -151,7 +156,8 @@ enum class AutoCurveMode { C2, Hobby };
 [[nodiscard]] double totalArcLength(const std::vector<BezierSpan>& spans);
 
 /// Convert an arc-length distance to a global parameter T.
-/// Uses bisection + Newton refinement. Returns T ∈ [0, spanCount].
+/// Safeguarded Newton within the located span (bisection guards the bracket,
+/// Newton accelerates with speed = |B'(t)|). Returns T ∈ [0, spanCount].
 [[nodiscard]] double arcLengthToParam(const std::vector<BezierSpan>& spans,
                                       double targetS);
 

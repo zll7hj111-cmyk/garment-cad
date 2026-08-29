@@ -133,6 +133,7 @@ void TestRealdocFull::teardownSmoke()
         QStringList warnings;
         QVERIFY(cad::doc::DocumentFile::load(path, *scene->paramDocument(), &err, &warnings));
         QApplication::processEvents();
+        // 手动跑档(GCAD_DOC)的 teardown 冒烟: 等 load 触发的异步清场(重绘/延删), 无可观测谓词, 暂留。
         QTest::qWait(100);
     } // win destroyed here — must not assert
     qInfo() << "teardown smoke ok";

@@ -8,6 +8,8 @@
 #include "parametric/Duplicate.h"
 #include "parametric/LinkedVariable.h"
 #include "parametric/MeasureVariable.h"
+#include "document/commands/ComponentCommands.h"  // AimRelease/DartRelease (RotateBlocksCommand)
+#include "document/commands/CommandIds.h"         // central merge-id enum (P0-2)
 #include "geometry/Vec2.h"
 
 namespace cad::param { class ParamDocument; }
@@ -59,7 +61,7 @@ public:
                      QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
-    int id() const override { return 1001; }
+    int id() const override { return static_cast<int>(CommandId::MoveBlock); }
     bool mergeWith(const QUndoCommand* other) override;
 
 private:
@@ -92,7 +94,7 @@ public:
                        QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
-    int id() const override { return 1003; }
+    int id() const override { return static_cast<int>(CommandId::RotateBlock); }
     bool mergeWith(const QUndoCommand* other) override;
 
 private:
@@ -106,6 +108,49 @@ private:
     QUuid m_newEndTargetPoint;
     QUuid m_releasedAttId;                      ///< Attachment detached by redo().
     cad::param::Attachment m_releasedAttBackup; ///< Snapshot restored by undo().
+};
+
+/// Rotate a SELECTION SET S of blocks as one rigid transform about an
+/// arbitrary pivot (旋转重设计 2026-08-27, ROTATE_REDESIGN_DESIGN.md §2.6):
+///
+///   - Every block in S: newTf = rigid rotation of oldTf by deltaRad.
+///   - Cross-boundary follower attachments (from ∈ S, to ∉ S): DEMOTED to
+///     angleOnly (拆开保留位置跟随) instead of deleted, and their SHADOW
+///     baseline offset accumulates the delta — the dragged pose is preserved,
+///     the leader itself untouched, formulas stay alive. Undo restores the
+///     full welded attachment verbatim + baselineOffsetDeg = old.
+///   - Released endTargets / dart references pointing OUTSIDE S: cleared in
+///     redo, restored verbatim in undo (原「组件整组旋转」D7 快照语义;
+///     该模态已删除 2026-08-29, 释放快照通道由本命令保留).
+class RotateBlocksCommand : public QUndoCommand
+{
+public:
+    struct ShadowAtt {
+        QUuid attId;
+        cad::param::Attachment demoted; ///< Full pre-demotion attachment snapshot.
+        double oldOffset = 0.0;         ///< baselineOffsetDeg before / after.
+        double newOffset = 0.0;
+    };
+
+    RotateBlocksCommand(cad::param::ParamDocument* doc,
+                        const QHash<QUuid, cad::param::Transform2D>& oldTf,
+                        const QHash<QUuid, cad::param::Transform2D>& newTf,
+                        std::vector<ShadowAtt> shadowAtts,
+                        std::vector<cad::param::Attachment> releasedAtts,
+                        std::vector<cad::cmd::AimRelease> releasedTargets,
+                        std::vector<cad::cmd::DartRelease> releasedDarts,
+                        QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QHash<QUuid, cad::param::Transform2D> m_oldTf;
+    QHash<QUuid, cad::param::Transform2D> m_newTf;
+    std::vector<ShadowAtt> m_shadowAtts;
+    std::vector<cad::param::Attachment> m_releasedAtts;
+    std::vector<cad::cmd::AimRelease> m_releasedTargets;
+    std::vector<cad::cmd::DartRelease> m_releasedDarts;
 };
 
 /// Add the clones produced by a Ctrl+drag quick copy (快捷复制) as ONE
@@ -188,7 +233,8 @@ private:
 
 /// 端点延长量 (延长线, EXTEND_LINE_DESIGN.md): 设置线段起/终点的延长量
 /// (数值 mm / 公式 cm 域, >=0)。原参数化/公式一律保留 —— 延长量是叠加参数。
-/// redo/undo 都显式 +geometryEpoch (本体不变但可视尾巴变 → 画布重绘铁律) +
+/// redo/undo 都显式 touchGeometry() (本体不变但可视尾巴变 → 画布重绘铁律; P1-1
+/// 起 epoch 是 Block 私有字段, 唯一 bump 入口 = Block::touchGeometry()) +
 /// resolveAll (跟随线/交点/测量联动)。
 class SetSegmentExtendCommand : public QUndoCommand
 {
@@ -215,6 +261,110 @@ private:
     QUuid m_segmentId;
     Values m_oldValues;
     Values m_newValues;
+};
+
+/// 线段换向 (角度基准视角切换, 用户拍板 2026-08): 交换线段 start/end 身份,
+/// 并把"驱动端"Polar 约束搬到另一物理端 (角度 +180 补偿), 换向后几何零跳变、
+/// 修改长度/角度变为驱动另一端。物理延长尾巴不动 (extendStart/End 随端点
+/// 角色互换); 宿主辅助点仅翻转 interpFromEnd (求解坐标系等价, 位置不变)。
+/// v2 放开 + 自动补偿 (世界姿态/位置零跳变):
+///   · 基准段消费者 (Polar refSegmentId=本段) —— 角度 +180 / 公式包裹;
+///   · 相对交点宿主 (射线角相对段方向) —— interAngle +180 / 公式包裹;
+///   · 跟随连接 —— followerAngle +180·k 补偿 (k = 自身 localDir 与角度基准
+///     方向的翻转次数, 两次翻转相互抵消; angleIndependent 不驱动旋转不补偿);
+///   · 被连接 + 旧档空角度基准点 —— 回填 angleRefPointId = 旧终点 (其出方向
+///     = 原 start→end 基准, 精确等价);
+///   · 曲线 —— 过点反序 + 切线互换取反 + 弦上锚点 percent→1−p / offset 取反。
+/// v1 资格仍拒绝: 桥/省道/终点指向、角度测量引用 (start→end 是测量基准)、
+/// 端点被块内其他线段共享、非"锚 Free + 驱动 Polar(ref=另一端)"标准结构、
+/// 滑轨模式连接 (局部系快照会镜像)、需补偿的弧长模式连接 (πr 不可参数化表达)。
+class ReverseSegmentCommand : public QUndoCommand
+{
+public:
+    /// 资格检查: 可换向返回 true; 否则 reason 带中文原因 (UI 置灰提示)。
+    static bool canReverse(cad::param::ParamDocument* doc,
+                           const QUuid& blockId, const QUuid& segmentId,
+                           QString* reason = nullptr);
+
+    ReverseSegmentCommand(cad::param::ParamDocument* doc,
+                          const QUuid& blockId, const QUuid& segmentId,
+                          QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    /// 端点约束快照 (换向只动这两个点的驱动结构; 曲线时含切线)。
+    struct PointSnapshot {
+        cad::param::PointConstraint constraint{};
+        cad::geo::Vec2  freePos;
+        QUuid  refPointId;
+        double distance = 0.0;
+        double angle    = 0.0;
+        QUuid  refSegmentId;
+        QString distanceFormula;
+        QString angleFormula;
+        bool   interpFromEnd = false;
+        geo::Vec2 tangentIn;    ///< 原存储切线 (undo 恢复; 直线恒零向量, 无害)。
+        geo::Vec2 tangentOut;
+        bool   autoTangent = true;  ///< 原自动切线标志 (冻结后恢复)。
+    };
+
+    /// v2: 方向基准消费者快照 (Polar refSegmentId / 相对交点, +180 补偿)。
+    struct ConsumerSnapshot {
+        QUuid pointId;
+        double angle = 0.0;
+        QString angleFormula;
+        double interAngle = 0.0;
+        QString interAngleFormula;
+    };
+
+    /// v2: 曲线过点快照。Hobby 自动切线求解不保证换序对称 (实测弧长漂移),
+    /// 换向 = 从曲线缓存捕获"同解"有效切线 → 镜像后冻结为手动 (与
+    /// BreakSegmentCommand 打断冻结同范式), undo 恢复原 autoTangent/切线。
+    struct CurveAnchorSnapshot {
+        QUuid pointId;
+        bool autoTangent = true;      ///< 原标志 (undo 恢复)。
+        geo::Vec2 tangentIn;          ///< 原存储切线 (undo 恢复)。
+        geo::Vec2 tangentOut;
+        geo::Vec2 effTangentIn;       ///< 换向前解算有效切线 (冻结源)。
+        geo::Vec2 effTangentOut;
+        double interpPercent = 0.0;
+        double interpOffsetDist = 0.0;
+    };
+
+    /// v2: 连接补偿快照 (跟随角 +180·k / 旧档角度基准点回填 oldEnd)。
+    struct AttachmentSnapshot {
+        QUuid attId;
+        bool compensateAngle = false;  ///< k 为奇数且角度被驱动 → followerAngle +180
+        bool backfill = false;         ///< 旧档空角度基准点 → 回填旧终点 id
+        double followerAngle = 0.0;
+        QString followerAngleFormula;
+        QUuid angleRefPointId;         ///< 原值 (可能为空, undo 恢复空 = 旧档语义)
+    };
+
+    void applyState(bool reversed);
+
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    QUuid m_segmentId;
+    QUuid m_oldStartId;
+    QUuid m_oldEndId;
+    PointSnapshot m_oldStart;
+    PointSnapshot m_oldEnd;
+    std::vector<std::pair<QUuid, bool>> m_auxFromEnd;  ///< 宿主辅助点 (id, 原 interpFromEnd).
+    std::vector<QUuid> m_passPoints;                   ///< 曲线过点原序 (undo 恢复).
+    std::vector<ConsumerSnapshot> m_consumers;
+    std::vector<CurveAnchorSnapshot> m_curveAnchors;
+    bool m_curveCacheValid = false;   ///< 曲线缓存捕获成功 (span 数 = 过点数+1)。
+    geo::Vec2 m_effStartTangentOut;   ///< 曲线端点同解有效切线 (缓存捕获, 冻结源)。
+    geo::Vec2 m_effEndTangentIn;
+    std::vector<geo::Vec2> m_innerEffIn;   ///< 内部锚点同解有效切线 (过点序)。
+    std::vector<geo::Vec2> m_innerEffOut;
+    std::vector<AttachmentSnapshot> m_attComp;
+    double m_extendStartMm = 0.0;
+    QString m_extendStartFormula;
+    double m_extendEndMm = 0.0;
+    QString m_extendEndFormula;
 };
 
 /// Add an auxiliary (Interpolated) point to a host segment.
@@ -341,7 +491,9 @@ private:
 };
 
 /// Edit a curve anchor's tangent handles (manual Bézier handles). Stores the
-/// before/after tangentIn/tangentOut/autoTangent so a handle drag undoes cleanly.
+/// before/after tangentIn/tangentOut/autoTangent AND tangentLocked so a handle
+/// drag undoes cleanly — an Alt+drag (尖角模式) flips tangentLocked to false
+/// persistently inside the drag, so undo must restore the pre-drag lock state.
 class SetCurveTangentCommand : public QUndoCommand
 {
 public:
@@ -349,6 +501,7 @@ public:
                            const QUuid& blockId, const QUuid& pointId,
                            const cad::geo::Vec2& oldTanIn, const cad::geo::Vec2& oldTanOut, bool oldAuto,
                            const cad::geo::Vec2& newTanIn, const cad::geo::Vec2& newTanOut, bool newAuto,
+                           bool oldLocked, bool newLocked,
                            QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
@@ -361,6 +514,75 @@ private:
     cad::geo::Vec2 m_newTanIn, m_newTanOut;
     bool m_oldAuto;
     bool m_newAuto;
+    bool m_oldLocked = true;
+    bool m_newLocked = true;
+};
+
+/// P0-3 (ARCHITECTURE_REVIEW): 释放曲线锚点的跟随连接。此前的写路径
+/// (SegmentAnchorTab 的「释放」按钮) 直改 pt->followBlockId/PointId/followOffset
+/// + resolveAll(), 完全绕过 undo —— 命令化后撤销可恢复跟随关系。
+class ReleaseCurveFollowCommand : public QUndoCommand
+{
+public:
+    ReleaseCurveFollowCommand(cad::param::ParamDocument* doc,
+                              const QUuid& blockId, const QUuid& pointId,
+                              QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    QUuid m_pointId;
+    QUuid m_oldFollowBlockId;
+    QUuid m_oldFollowPointId;
+    cad::geo::Vec2 m_oldFollowOffset;
+};
+
+/// P0-3 (ARCHITECTURE_REVIEW): LinePropertyDialog 主表单会话命令。对话框
+/// live-apply 直写 seg/端点字段靠打开时快照兜底 —— 关闭确认后这些修改不进
+/// undo 栈（Ctrl+Z 撤不掉）。按 SegmentEditBarCommand 同款「live 编辑 +
+/// 确认时推一步命令」模式收口: oldProps = 打开时快照, newProps = 确认时模型
+/// 状态; undo 恢复打开状态, redo 重放确认状态。
+class SetLinePropertiesCommand : public QUndoCommand
+{
+public:
+    struct Props {
+        QString name;
+        cad::param::SegmentRole role = cad::param::SegmentRole::Outline;
+        bool showName = true;
+        bool showLength = true;
+        bool visible = true;
+        QColor color;
+        cad::param::LineStyle lineStyle = cad::param::LineStyle::Solid;
+        double weight = 0.0;
+        QString lengthFormula;
+        double distance = 0.0;         ///< End-point distance (polar), mm.
+        QString distanceFormula;       ///< End-point distance formula.
+        QString startName, startAnno;
+        bool startShowName = false;
+        QString endName, endAnno;
+        bool endShowName = false;
+        bool operator==(const Props& o) const;
+        bool operator!=(const Props& o) const { return !(*this == o); }
+    };
+
+    SetLinePropertiesCommand(cad::param::ParamDocument* doc,
+                             const QUuid& blockId, const QUuid& segmentId,
+                             Props oldProps, Props newProps,
+                             QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    static bool apply(cad::param::ParamDocument* doc,
+                      cad::param::Block* b, cad::param::Segment* s,
+                      const Props& p);
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    QUuid m_segmentId;
+    Props m_oldProps;
+    Props m_newProps;
 };
 
 /// Snapshot of the status-bar edit strip's mutable state (SegmentEditBar):

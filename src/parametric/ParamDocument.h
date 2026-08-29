@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QObject>
 #include <QUuid>
@@ -13,6 +13,7 @@
 #include "parametric/Attachment.h"
 #include "parametric/ParamPoint.h"
 #include "parametric/Resolver.h"
+#include "parametric/ExpressionEvaluator.h"
 #include "parametric/Variable.h"
 #include "parametric/FormulaVariable.h"
 #include "parametric/FormulaGroup.h"
@@ -27,6 +28,21 @@ namespace cad::param {
 class LayerRegistry;
 class VariableStore;
 class MeasurementStore;
+/// Trusted-pipeline accessor for the silent-restore (*Raw) API — the only
+/// friend allowed to call it. See parametric/ParamDocumentRaw.h (P1-2).
+struct RawModelAccess;
+/// 按域分组的只读窄接口视图 (B1 门面分组试点) — 完整定义见 parametric/BlockView.h。
+class BlocksView;
+/// 按域分组的只读窄接口视图 — 附着域 (B2)，见 parametric/AttachmentsView.h。
+class AttachmentsView;
+/// 按域分组的只读窄接口视图 — 组件域 (B2)，见 parametric/ComponentsView.h。
+class ComponentsView;
+/// 按域分组的只读窄接口视图 — 测量域 (B2)，见 parametric/MeasurementsView.h。
+class MeasurementsView;
+/// 按域分组的只读窄接口视图 — 图层域 (B3)，见 parametric/LayersView.h。
+class LayersView;
+/// 按域分组的只读窄接口视图 — 变量域 (B3)，见 parametric/VariablesView.h。
+class VariablesView;
 
 /// The parametric document holds all Blocks, free points, attachments,
 /// and global parameters. It manages resolve and undo/redo.
@@ -77,8 +93,26 @@ public:
     // --- Block management ---
     QUuid addBlock(Block block);
     void removeBlock(const QUuid& id);
+    /// Mutable accessors return a raw pointer into the blocks vector: it dies
+    /// on the next structural mutation (vector growth / erase / clear). P1-3
+    /// added the guard below — re-fetch per use, never hold across a mutation.
     [[nodiscard]] Block* findBlock(const QUuid& id);
     [[nodiscard]] const Block* findBlock(const QUuid& id) const;
+
+    /// Bumped on every structural change of the block vector (add / remove /
+    /// clear). Handy to invalidate caches keyed on "the set of blocks", and the
+    /// observable counterpart of the pointer-lifetime caveat above (P1-3).
+    ///
+    /// Mid-term the fix is a handle (id + generation) instead of a raw pointer;
+    /// until then treat any `Block*` as valid only until the next mutation.
+    [[nodiscard]] quint64 structureEpoch() const noexcept
+    { return m_structureEpoch; }
+
+    /// Debug-only sanity check: does @p p still point into the CURRENT block
+    /// storage? Catches the classic "held a Block* across addBlock() and the
+    /// vector reallocated" bug — at least when the new buffer lands elsewhere.
+    /// Compiles to `true` in release (no cost, no behaviour change).
+    bool blockPointerInRange(const Block* p) const noexcept;
 
     /// Predicted consequences of removing one block — every counter mirrors
     /// one cascade branch of removeBlock() (删除影响报告). Kept in sync with
@@ -127,14 +161,19 @@ public:
     [[nodiscard]] Block* blockById(const QUuid& id);
     [[nodiscard]] const Block* blockById(const QUuid& id) const;
 
+    /// 按域分组的只读窄接口视图 (B1 门面分组试点): blocks 域读取走
+    /// doc.blocksView().byId()/all()/epoch()/impactOf(), 写路径仍在本门面
+    /// (校验+信号不绕过)。视图无状态 — 契约见 parametric/BlockView.h。
+    [[nodiscard]] BlocksView blocksView() const noexcept;
+
     // --- Components (组件: packaged work groups) ---
     /// Add a component. Validates that every member exists and updates the
     /// reverse block→component index. Emits componentsChanged() +
     /// structureChanged() + documentChanged().
     QUuid addComponent(Component comp);
-    /// Insert a component VERBATIM without validation or signals (deserialize
-    /// / undo replay).
-    void restoreComponentRaw(Component comp);
+    /// (restoreComponentRaw — insert a component VERBATIM without validation or
+    /// signals — is a trusted-pipeline API: see RawModelAccess in
+    /// parametric/ParamDocumentRaw.h, P1-2.)
     /// Dissolve: remove the component record only; members become independent
     /// segments again (their internal attachments revive). Emits
     /// componentsChanged().
@@ -150,12 +189,18 @@ public:
     [[nodiscard]] const Component* componentOfBlock(const QUuid& blockId) const;
     /// World-space AABB over every member's resolved geometry (points + curve hull).
     [[nodiscard]] BBox boundingBoxOf(const QUuid& componentId) const;
+    /// World-space AABB over an arbitrary block set (旋转选集高亮, 2026-08-27):
+    /// same per-block geometry as boundingBoxOf, unioned across @p blockIds.
+    [[nodiscard]] BBox boundingBoxOfBlocks(const QList<QUuid>& blockIds) const;
     /// Expand a seed set to the full component closure: every member of every
     /// component that intersects @p seed. Whole-component drag/rotate and dirty
     /// propagation all ride this single expansion.
     [[nodiscard]] QSet<QUuid> componentClosure(const QSet<QUuid>& seed) const;
     /// Member block owning @p pointId inside @p comp (null id when none).
     [[nodiscard]] QUuid memberOwningPoint(const Component& comp, const QUuid& pointId) const;
+
+    /// 组件域只读窄接口视图 (B2) — 契约见 parametric/ComponentsView.h。
+    [[nodiscard]] ComponentsView componentsView() const noexcept;
 
     // --- Attachment management ---
     /// Add an attachment (follower 跟随线 snaps to leader 基准线).
@@ -209,6 +254,10 @@ public:
     /// PerpLeader 写 slidePerpMm —— 锁轴坐标保持激活时快照。不触发 resolve
     /// (随后的 resolveForDrag / resolveAll 会按新坐标落位)。滑轨未激活时 no-op。
     void updateSlideOffsetsFromCurrent(const QUuid& id);
+    /// 影子偏转角拖动回写 (旋转会话每帧调用, 用户拍板 2026-08-27): 逐条写入
+    /// baselineOffsetDeg (key = attachment id)。不触发 resolve —— 随后的
+    /// resolveForDrag / resolveAll 按新值落位 (与滑轨回写同一拖帧契约)。
+    void updateBaselineOffsets(const QHash<QUuid, double>& offsets);
     /// Expand a seed set of block ids to include every block welded by LOCKED
     /// attachments (递归焊接闭包): dragging any member moves the whole closure
     /// (A锁B、B锁C → 拖A时B、C一起走). Also the basis of the drag-time
@@ -219,10 +268,10 @@ public:
     /// release cascade. Used by MakeGroupCommand to cut K links cheaply
     /// instead of K full re-solves.
     void removeAttachments(const QList<QUuid>& ids);
-    /// Insert attachments VERBATIM without revalidation, resolving once.
-    /// Undo-replay only — the snapshot is the ground truth (快照完整性铁律);
-    /// revalidating restored state would let later edits win the undo race.
-    void addAttachmentsRaw(const std::vector<Attachment>& atts);
+    /// (addAttachmentsRaw — insert attachments VERBATIM without revalidation —
+    /// is a trusted-pipeline API: see RawModelAccess in
+    /// parametric/ParamDocumentRaw.h, P1-2. Snapshot integrity rule: the
+    /// restored snapshot is the ground truth, so it is never revalidated.)
     [[nodiscard]] const std::vector<Attachment>& attachments() const { return m_attachments; }
     /// Find an attachment by id. The mutable overload is the ONLY authorized
     /// in-place attachment edit channel (e.g. welding a follower angle during
@@ -249,6 +298,9 @@ public:
     /// snapshot the affected bridges for undo.
     [[nodiscard]] std::vector<QUuid> bridgesPinnedTo(const QUuid& hostBlockId) const;
 
+    /// 附着域只读窄接口视图 (B2) — 契约见 parametric/AttachmentsView.h。
+    [[nodiscard]] AttachmentsView attachmentsView() const noexcept;
+
     // --- Readable serials ---
     /// Generate a fresh human-readable serial for a point / line.
     [[nodiscard]] QString newPointSerial();
@@ -269,6 +321,10 @@ public:
     void updateVariable(const Variable& var);
     [[nodiscard]] const std::vector<Variable>& variables() const;
     [[nodiscard]] Variable* findVariable(const QUuid& id);
+    [[nodiscard]] const Variable* findVariable(const QUuid& id) const;
+
+    /// 变量域只读窄接口视图 (B3) — 契约见 parametric/VariablesView.h。
+    [[nodiscard]] VariablesView variablesView() const noexcept;
 
     // --- Formula variables ---
     void addFormula(FormulaVariable formula);
@@ -276,6 +332,7 @@ public:
     void updateFormula(const FormulaVariable& formula);
     [[nodiscard]] const std::vector<FormulaVariable>& formulas() const;
     [[nodiscard]] FormulaVariable* findFormula(const QUuid& id);
+    [[nodiscard]] const FormulaVariable* findFormula(const QUuid& id) const;
 
     /// Re-evaluate all formulas against current variables, update cached values,
     /// and sync results into the parameter map + resolve.
@@ -296,6 +353,7 @@ public:
                      int targetLocalIndex);
     [[nodiscard]] const std::vector<FormulaGroup>& formulaGroups() const;
     [[nodiscard]] FormulaGroup* findFormulaGroup(const QUuid& groupId);
+    [[nodiscard]] const FormulaGroup* findFormulaGroup(const QUuid& groupId) const;
 
     // --- Canvas layers (selection/visibility filter + aux calculation layer) ---
     /// The layer registry in DISPLAY ORDER. Element 0 is always the single
@@ -349,6 +407,9 @@ public:
     /// addAttachment() rejects — snap targets must never be connectable
     /// (capture the cursor, then fail to connect = interaction trap).
     [[nodiscard]] bool layerSnappable(const QUuid& layerId) const;
+
+    /// 图层域只读窄接口视图 (B3) — 契约见 parametric/LayersView.h。
+    [[nodiscard]] LayersView layersView() const noexcept;
 
     // --- Layered dirty marking (resolve pipeline optimisation) ---
     /// Mark the layer group (aux vs working) containing layer @p index as
@@ -408,6 +469,9 @@ public:
     [[nodiscard]] MeasureVariable* findMeasureByOwner(const QUuid& ownerBlockId);
     [[nodiscard]] const MeasureVariable* findMeasureByOwner(const QUuid& ownerBlockId) const;
 
+    /// 测量域只读窄接口视图 (B2) — 契约见 parametric/MeasurementsView.h。
+    [[nodiscard]] MeasurementsView measurementsView() const noexcept;
+
     /// Re-measure all measure variables (two-point distances), refresh cached
     /// values, and sync into the parameter map (cm domain).
     /// @param skipAuxSource When true, measurements whose endpoints BOTH sit on
@@ -449,30 +513,14 @@ public:
 
     // --- Serialization support ---
     /// Clear all document data (blocks, attachments, variables, formulas,
-    /// parameters) and reset serial counters. Does NOT clear undo stack.
+    /// parameters) and reset serial counters. P0-1: also clears the undo
+    /// stack, so opening/creating a document can never revive commands whose
+    /// snapshots belong to a previous document.
     void clear();
     /// Serial counter access (for save/restore).
     [[nodiscard]] int pointSeq() const { return m_nextPointSeq; }
     [[nodiscard]] int lineSeq() const { return m_nextLineSeq; }
     void setSerialCounters(int pointSeq, int lineSeq);
-    /// Add a block without resolving or recomputing groups (for batch restore).
-    QUuid addBlockRaw(Block block);
-    /// Add an attachment without resolving (for batch restore).
-    void addAttachmentRaw(Attachment att);
-    /// Add a free point without emitting signals (for batch restore).
-    void addFreePointRaw(ParamPoint pt);
-    // --- Silent batch restore for the variable/measurement sub-domains ---
-    /// (deserializer only — no signals, no recompute/resolve; finishRestore()
-    /// + the caller's resolveAll() own the eventual refresh).
-    void replaceLayersRaw(std::vector<Layer> layers);
-    void restoreVariableRaw(Variable var);
-    void restoreFormulaRaw(FormulaVariable formula);
-    void restoreFormulaGroupRaw(FormulaGroup group);
-    /// Re-insert a formula group at registry position @p index (undo replay).
-    void insertFormulaGroupAt(int index, FormulaGroup group);
-    void restoreLinkedRaw(LinkedVariable lv);
-    void restoreMeasureRaw(MeasureVariable mv);
-    void restoreAngleMeasureRaw(AngleMeasureVariable am);
     /// Emit all UI-refresh signals after a batch restore (deserialization).
     /// Creates canvas items for every restored block and rebuilds the
     /// variable / formula / group panels. Call once, after recomputeFormulas().
@@ -482,7 +530,22 @@ public:
     [[nodiscard]] const std::vector<ResolveDiagnostic>& diagnostics() const
     { return m_diagnostics; }
 
+    /// The document's own expression compile cache (2026-12 P1-5). Every
+    /// resolve pass compiles formulas through it, so bytecode is partitioned
+    /// per document instead of living in a process-wide static — and it is
+    /// released on clear() (new/open). Pass it as EvalContext::cache for
+    /// out-of-band evaluations (commands, previews) on this document.
+    [[nodiscard]] ExpressionCache& expressionCache() { return m_exprCache; }
+
     // --- Undo/Redo ---
+    /// Maximum number of undo steps kept (P2-5). Every command snapshots the
+    /// model — the delete commands even snapshot their whole cascade subgraph
+    /// — so the stack used to grow without bound across a long session. QUndo
+    /// drops the oldest command once this limit is reached.
+    /// Tuning: 150 ≈ several minutes of continuous editing; raise it only
+    /// together with incremental snapshots (the real fix for big documents).
+    static constexpr int kUndoStackLimit = 150;
+
     [[nodiscard]] QUndoStack* undoStack() const { return m_undoStack; }
 
     // --- Internal sub-domain hooks (VariableStore / MeasurementStore) ---
@@ -491,8 +554,9 @@ public:
     void publishParameter(const QString& name, double cmValue);
     /// Remove a parameter entry without resolving.
     void removeParameterEntry(const QString& name);
-    /// Batch-publish parameter entries without resolving (caller resolves once).
-    void publishParamsRaw(const QHash<QString, double>& cmValues);
+    /// (publishParamsRaw — batch-publish entries without resolving — is a
+    /// trusted-pipeline API: see RawModelAccess in
+    /// parametric/ParamDocumentRaw.h, P1-2.)
     /// Aux-layer blocks whose transform can move together with the working
     /// layers — the followers (transitively) of cross-layer attachments.
     /// Empty when there are no cross-layer attachments (fast path). Used by
@@ -532,6 +596,30 @@ signals:
     void componentsChanged();
 
 private:
+    // ── Trusted-pipeline channel (P1-2) ────────────────────────────────────
+    // Silent restore operations: they mutate the model WITHOUT validation,
+    // signals or a resolve pass. They are NOT part of the public facade — the
+    // only way to call them is cad::param::RawModelAccess (see
+    // parametric/ParamDocumentRaw.h), which is the single friend below. The
+    // sanctioned callers are the deserializer, QUndoCommand undo/redo replay
+    // and the drag-cancel snapshot restores in the tools layer.
+    friend struct RawModelAccess;
+
+    QUuid addBlockRaw(Block block);
+    void addAttachmentRaw(Attachment att);
+    void addAttachmentsRaw(const std::vector<Attachment>& atts);
+    void addFreePointRaw(ParamPoint pt);
+    void replaceLayersRaw(std::vector<Layer> layers);
+    void restoreVariableRaw(Variable var);
+    void restoreFormulaRaw(FormulaVariable formula);
+    void restoreFormulaGroupRaw(FormulaGroup group);
+    void insertFormulaGroupAt(int index, FormulaGroup group);
+    void restoreLinkedRaw(LinkedVariable lv);
+    void restoreMeasureRaw(MeasureVariable mv);
+    void restoreAngleMeasureRaw(AngleMeasureVariable am);
+    void restoreComponentRaw(Component comp);
+    void publishParamsRaw(const QHash<QString, double>& cmValues);
+
     QHash<QString, double>       m_parameters;
     QSet<QString>                m_formulaParamNames;  ///< Param names contributed by formula variables.
     QHash<QString, QList<Condition>> m_conditioned;    ///< formulaName -> conditions (standalone semantics).
@@ -543,6 +631,15 @@ private:
     std::vector<Attachment>      m_attachments;
     std::vector<ResolveDiagnostic> m_diagnostics;  ///< Issues from the last resolve pass.
     QUndoStack*                  m_undoStack = nullptr;
+
+    /// Expression bytecode cache owned by this document (P1-5): threaded into
+    /// every Resolver pass via EvalContext::cache, cleared on clear()/reload.
+    ExpressionCache              m_exprCache;
+
+    /// Structural generation of m_blocks (P1-3) — see structureEpoch().
+    quint64                      m_structureEpoch = 0;
+    /// Bump m_structureEpoch (every add/remove/clear of a block).
+    void bumpStructureEpoch() noexcept { ++m_structureEpoch; }
 
     // --- Readable serial counters (monotonic, never reused) ---
     int m_nextPointSeq = 1;
@@ -684,3 +781,12 @@ private:
 };
 
 } // namespace cad::param
+
+// B1 门面分组: blocks 域窄接口视图。放在类定义之后, 内联成员 blocksView()
+// 的定义需要完整的 ParamDocument (定义体在 BlockView.h 中)。
+#include "parametric/BlockView.h"
+#include "parametric/AttachmentsView.h"
+#include "parametric/ComponentsView.h"
+#include "parametric/MeasurementsView.h"
+#include "parametric/LayersView.h"
+#include "parametric/VariablesView.h"

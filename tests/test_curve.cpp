@@ -1,4 +1,4 @@
-#include <QtTest>
+﻿#include <QtTest>
 #include <cmath>
 #include <vector>
 
@@ -37,6 +37,10 @@ private slots:
     void hobbyManualRespected();
     void hobbyTensionEffect();
     void hobbyOvershootVsC2();
+    void hobbyFoldbackHandlesClamped();
+    void hobbyNormalShapeUnclamped();
+    void arcLengthToParamPrecision();
+    void projectHairpinGlobalMin();
 };
 
 // ─── Catmull-Rom tangent ────────────────────────────────────────────────────
@@ -484,6 +488,160 @@ void TestCurve::hobbyOvershootVsC2()
     // No strict arc-length assertion: on this shape Hobby is actually more
     // compact (its endpoints follow the chord), which is a quality win, but
     // the ratio depends on the configuration — printed above for reference.
+}
+
+// P3-2 (CURVE_P3_DESIGN.md, D6/D7/D8): near-180° chord fold-backs (anchors
+// extrapolated past a curve endpoint) made the Hobby velocity formula emit
+// handles several times the chord length and the curve looped. Handles are
+// now clamped to kMaxHandleRatio (2.0) x their chord — assert EVERY auto
+// handle stays within the bound. VERIFICATION of the trip-wire: measured
+// BEFORE the clamp on this exact configuration chord 2 ran cOut = 3.505x and
+// cIn = 5.752x the chord (both > 2.0), so this test genuinely fails on the
+// old code — it is not a vacuous bound. NOTE: the handle vector is the
+// Bézier control offset x 3 (ctrl = P + tan/3), so the assertion is on
+// |tan| = 3*|ctrl - P|, NOT the raw control offset (which would be 3.5/3 =
+// 1.17x and never trip).
+void TestCurve::hobbyFoldbackHandlesClamped()
+{
+    // (0,0) → (100,0) → (50,2): the third chord (50,2)→(150,0) folds back at
+    // ~180° from the second — the pre-fix runaway case (5.752x, see above).
+    std::vector<Vec2> pts = {{0, 0}, {100, 0}, {50, 2}, {150, 0}};
+    const int n = static_cast<int>(pts.size());
+    std::vector<Vec2> tIn(n), tOut(n);
+    std::vector<bool> autoTan(n, true);
+    const auto spans = buildBezierSpans(pts, tIn, tOut, autoTan, 1.0, AutoCurveMode::Hobby);
+    QCOMPARE(static_cast<int>(spans.size()), n - 1);
+
+    constexpr double kMaxHandleRatio = 2.0;   // must mirror CurveMath.cpp
+    double worstRatio = 0.0;
+    for (int k = 0; k < static_cast<int>(spans.size()); ++k) {
+        const double chord = spans[k].p0.distanceTo(spans[k].p3);
+        QVERIFY(chord > 1e-9);
+        const double outLen = (spans[k].ctrl1 - spans[k].p0).length() * 3.0;
+        const double inLen  = (spans[k].p3 - spans[k].ctrl2).length() * 3.0;
+        worstRatio = std::max({worstRatio, outLen / chord, inLen / chord});
+        QVERIFY2(outLen <= kMaxHandleRatio * chord + 1e-9,
+                 "out tangent must stay within the 2.0x-chord handle clamp");
+        QVERIFY2(inLen <= kMaxHandleRatio * chord + 1e-9,
+                 "in tangent must stay within the 2.0x-chord handle clamp");
+        // The clasped chord really hit the clamp (pre-fix it was 5.75x).
+        if (k == 2) {
+            qInfo().noquote() << QStringLiteral(
+                "[curve-p3-2] foldback chord %1 -> out ratio %2, in ratio %3 "
+                "(clamped; pre-fix: 3.505 / 5.752)")
+                .arg(k).arg(outLen / chord, 0, 'f', 3).arg(inLen / chord, 0, 'f', 3);
+        }
+    }
+    qInfo().noquote() << QStringLiteral("[curve-p3-2] foldback worst handle/chord ratio %1")
+        .arg(worstRatio, 0, 'f', 3);
+}
+
+// P3-2 (D9): a typical garment neckline must be bitwise unchanged by the
+// clamp — its handle ratios (0.3~0.7 typical, up to ~1.4 here) never reach
+// 2.0, so the clamp is a no-op and the shape is identical to the pre-fix
+// output. Assert the ratios stay under the threshold AND the curve still
+// passes through every anchor.
+void TestCurve::hobbyNormalShapeUnclamped()
+{
+    // 领口 (neckline) — the same configuration as hobbyOvershootVsC2.
+    std::vector<Vec2> pts = {{0, 0}, {40, 50}, {80, -20}, {140, 30}};
+    const int n = static_cast<int>(pts.size());
+    std::vector<Vec2> tIn(n), tOut(n);
+    std::vector<bool> autoTan(n, true);
+    const auto spans = buildBezierSpans(pts, tIn, tOut, autoTan, 1.0, AutoCurveMode::Hobby);
+
+    constexpr double kMaxHandleRatio = 2.0;
+    double worstRatio = 0.0;
+    for (int k = 0; k < static_cast<int>(spans.size()); ++k) {
+        const double chord = spans[k].p0.distanceTo(spans[k].p3);
+        const double outLen = (spans[k].ctrl1 - spans[k].p0).length() * 3.0;
+        const double inLen  = (spans[k].p3 - spans[k].ctrl2).length() * 3.0;
+        worstRatio = std::max({worstRatio, outLen / chord, inLen / chord});
+    }
+    qInfo().noquote() << QStringLiteral("[curve-p3-2] neckline worst handle/chord ratio %1")
+        .arg(worstRatio, 0, 'f', 4);
+    QVERIFY2(worstRatio < kMaxHandleRatio,
+             "normal neckline ratios (~0.3-1.4) must stay below the clamp threshold");
+    // Interpolation through the anchors is unchanged (clamp is a no-op here).
+    for (int i = 0; i < n; ++i)
+        QVERIFY(evalCurve(spans, static_cast<double>(i)).distanceTo(pts[i]) < 1e-9);
+}
+
+void TestCurve::arcLengthToParamPrecision()
+{
+    // Safeguarded Newton: the located parameter must be mm-accurate (the old
+    // pure-bisection version needed 40 iterations for the same bracket).
+    std::vector<Vec2> pts = {{0, 0}, {10, 8}, {20, -3}, {30, 5}};
+    auto spans = buildCatmullRomSpans(pts);
+    const double total = totalArcLength(spans);
+    QVERIFY(total > 0);
+
+    for (double frac : {0.13, 0.37, 0.5, 0.62, 0.91}) {
+        const double targetS = total * frac;
+        const double T = arcLengthToParam(spans, targetS);
+        // Reference: arc length at T via dense polyline integration.
+        const int spanIdx = std::clamp(static_cast<int>(T), 0,
+                                       static_cast<int>(spans.size()) - 1);
+        const double localT = T - spanIdx;
+        double s = 0.0;
+        for (int i = 0; i < spanIdx; ++i)
+            s += spanArcLength(spans[i]);
+        Vec2 prev = evalBezier(spans[spanIdx], 0.0);
+        constexpr int N = 2000;
+        for (int k = 1; k <= N; ++k) {
+            const Vec2 cur = evalBezier(spans[spanIdx], localT * k / N);
+            s += prev.distanceTo(cur);
+            prev = cur;
+        }
+        QVERIFY2(std::abs(s - targetS) < 1e-3,
+                 "arcLengthToParam must be micrometre-accurate");
+    }
+}
+
+void TestCurve::projectHairpinGlobalMin()
+{
+    // Deep U bend (sleeve-cap-like): a query inside the bend has several
+    // competing LOCAL nearest points (both arms + the bottom). The old
+    // single-start Newton could settle in the wrong basin; the
+    // multi-candidate refinement must find the GLOBAL minimum — verified
+    // against a dense-scan reference.
+    std::vector<Vec2> pts = {{0, 0}, {30, -120}, {60, 0}};
+    auto spans = buildCatmullRomSpans(pts);
+
+    auto reference = [&spans](const Vec2& q) {
+        double bestT = 0.0, bestD = 1e30;
+        constexpr int N = 4000;
+        const double tMax = static_cast<double>(spans.size());
+        for (int k = 0; k <= N; ++k) {
+            const double T = tMax * k / N;
+            const double d = q.distanceTo(evalCurve(spans, T));
+            if (d < bestD) { bestD = d; bestT = T; }
+        }
+        return std::make_pair(bestT, bestD);
+    };
+
+    // On-axis queries have two mirrored equal minima — assert distance only.
+    const Vec2 symmetric[] = {{30, -20}, {30, -60}, {30, -130}};
+    for (const Vec2& q : symmetric) {
+        const auto proj = projectPointOnCurve(q, spans);
+        QVERIFY(proj.valid);
+        const auto [refT, refD] = reference(q);
+        Q_UNUSED(refT);
+        QVERIFY2(std::abs(proj.distance - refD) < 1e-3,
+                 "projection must match the dense-scan global minimum");
+    }
+    // Off-axis queries have a single global minimum — assert t as well.
+    const Vec2 asymmetric[] = {{12, -25}, {48, -95}, {2, -5}};
+    for (const Vec2& q : asymmetric) {
+        const auto proj = projectPointOnCurve(q, spans);
+        QVERIFY(proj.valid);
+        const auto [refT, refD] = reference(q);
+        QVERIFY2(std::abs(proj.distance - refD) < 1e-3,
+                 "projection must match the dense-scan global minimum");
+        const double sampleStep = static_cast<double>(spans.size()) / 4000.0;
+        QVERIFY2(std::abs(proj.t - refT) < 2.0 * sampleStep,
+                 "projection parameter must land in the global basin");
+    }
 }
 
 QTEST_GUILESS_MAIN(TestCurve)

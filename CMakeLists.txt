@@ -123,6 +123,13 @@ add_library(gcad_parametric STATIC
     src/parametric/Segment.h
     src/parametric/Block.h
     src/parametric/Block.cpp
+    # ── P1-2 前半段（B 类）：门面按域分组的只读视图（header-only，委托门面实现）──
+    src/parametric/BlockView.h
+    src/parametric/AttachmentsView.h
+    src/parametric/ComponentsView.h
+    src/parametric/MeasurementsView.h
+    src/parametric/LayersView.h
+    src/parametric/VariablesView.h
     src/parametric/Component.h
     src/parametric/Attachment.h
     src/parametric/AttachmentGraph.h
@@ -179,6 +186,8 @@ add_library(gcad_canvas STATIC
     src/canvas/CanvasAnimator.cpp
     src/canvas/OriginCrosshair.h
     src/canvas/OriginCrosshair.cpp
+    src/canvas/HudItem.h
+    src/canvas/HudItem.cpp
     src/canvas/BlockItem.h
     src/canvas/BlockItem.cpp
     src/canvas/CurveItem.h
@@ -195,8 +204,11 @@ add_library(gcad_document STATIC
     src/document/DocumentSerializer.cpp
     src/document/DocumentFile.h
     src/document/DocumentFile.cpp
+    src/document/FormatMigration.h
+    src/document/FormatMigration.cpp
     src/document/commands/BlockCommands.h
     src/document/commands/BlockCommands.cpp
+    src/document/commands/CommandIds.h
     src/document/commands/ComponentCommands.h
     src/document/commands/ComponentCommands.cpp
     src/document/commands/LayerCommands.h
@@ -213,8 +225,9 @@ add_library(gcad_document STATIC
 target_include_directories(gcad_document PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_document PUBLIC Qt6::Gui miniz gcad_parametric gcad_geometry)
 
-# ─── ui: panels, cards, dialogs, theme (DeleteImpactConfirm is a UI dialog,
-#      so it lives here — document/ must not depend on ui/) ───────────────────
+# ─── ui: panels, cards, dialogs, theme (P1-6: DeleteImpactConfirm is a UI
+#      dialog, so it lives HERE in src/ui/ — document/ must not depend on ui/.
+#      Run tools/check_layering.py to keep it that way) ───────────────────────
 add_library(gcad_ui STATIC
     src/ui/VariableCard.h
     src/ui/VariableCard.cpp
@@ -238,6 +251,8 @@ add_library(gcad_ui STATIC
     src/ui/ConditionDialog.cpp
     src/ui/VariablePanel.h
     src/ui/VariablePanel.cpp
+    src/ui/PanelSubTabBar.h
+    src/ui/PanelSubTabBar.cpp
     src/ui/MeasureTab.h
     src/ui/MeasureTab.cpp
     src/ui/ComponentTab.h
@@ -254,18 +269,55 @@ add_library(gcad_ui STATIC
     src/ui/Theme.cpp
     src/ui/ElaMsgBox.h
     src/ui/ElaDialogButtons.h
-    src/document/DeleteImpactConfirm.h
-    src/document/DeleteImpactConfirm.cpp
+    src/ui/FormScaffold.h
+    src/ui/DeleteImpactConfirm.h
+    src/ui/DeleteImpactConfirm.cpp
+    # ── P2-4: 线段属性对话框及其卡片 （原在 src/tools/，QWidget 归位 ui/）──
+    src/ui/AngleHud.h
+    src/ui/AngleHud.cpp
+    src/ui/LayerFeedback.h
+    src/ui/AuxPointForm.h
+    src/ui/AuxPointForm.cpp
+    src/ui/QuickAuxDialog.h
+    src/ui/QuickAuxDialog.cpp
+    src/ui/MeasureResultDialog.h
+    src/ui/MeasureResultDialog.cpp
+    src/ui/IntersectionForm.h
+    src/ui/IntersectionForm.cpp
+    src/ui/LinePropertyDialog.h
+    src/ui/LinePropertyDialog.cpp
+    src/ui/SegmentAnchorTab.h
+    src/ui/SegmentAnchorTab.cpp
+    src/ui/SegmentAuxTab.h
+    src/ui/SegmentAuxTab.cpp
+    src/ui/SegmentAimCard.h
+    src/ui/SegmentAimCard.cpp
+    src/ui/SegmentConnectionCard.h
+    src/ui/SegmentConnectionCard.cpp
+    src/ui/SegmentConnectionCardBuild.cpp
+    src/ui/SegmentConnectionCardRefresh.cpp
+    src/ui/SegmentConnectionCardConn.cpp
+    src/ui/SegmentConnectionCardDart.cpp
+    src/ui/SegmentAngleCard.h
+    src/ui/SegmentAngleCard.cpp
+    src/ui/SegmentRefCard.h
+    src/ui/SegmentRefCard.cpp
+    src/ui/SegmentExtendCard.h
+    src/ui/SegmentExtendCard.cpp
+    src/ui/PointRefEdit.h
+    src/ui/PointRefEdit.cpp
 )
 target_include_directories(gcad_ui PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_ui PUBLIC
     Qt6::Widgets Qt6::Svg ElaWidgetTools
-    gcad_document gcad_parametric gcad_geometry)
+    gcad_canvas gcad_document gcad_parametric gcad_geometry)
 
 # ─── tools: interactive tools / gestures / snapping ──────────────────────────
 add_library(gcad_tools STATIC
     src/tools/Tool.h
     src/tools/Tool.cpp
+    src/tools/ToolRegistry.h
+    src/tools/ToolRegistry.cpp
     src/tools/ToolManager.h
     src/tools/ToolManager.cpp
     src/tools/ToolSelect.h
@@ -299,39 +351,9 @@ add_library(gcad_tools STATIC
     src/tools/ToolMeasure.cpp
     src/tools/ToolAngleMeasure.h
     src/tools/ToolAngleMeasure.cpp
-    src/tools/AngleHud.h
-    src/tools/AngleHud.cpp
     src/tools/SnapEngine.h
     src/tools/SnapEngine.cpp
-    src/tools/LayerFeedback.h
-    src/tools/AuxPointForm.h
-    src/tools/AuxPointForm.cpp
-    src/tools/QuickAuxDialog.h
-    src/tools/QuickAuxDialog.cpp
-    src/tools/MeasureResultDialog.h
-    src/tools/MeasureResultDialog.cpp
-    src/tools/IntersectionForm.h
-    src/tools/IntersectionForm.cpp
-    src/tools/LinePropertyDialog.h
-    src/tools/LinePropertyDialog.cpp
-    src/tools/SegmentAnchorTab.h
-    src/tools/SegmentAnchorTab.cpp
-    src/tools/SegmentAuxTab.h
-    src/tools/SegmentAuxTab.cpp
-    src/tools/SegmentAimCard.h
-    src/tools/SegmentAimCard.cpp
-    src/tools/SegmentConnectionCard.h
-    src/tools/SegmentConnectionCard.cpp
-    src/tools/SegmentConnectionCardBuild.cpp
-    src/tools/SegmentConnectionCardRefresh.cpp
-    src/tools/SegmentConnectionCardAngle.cpp
-    src/tools/SegmentConnectionCardConn.cpp
-    src/tools/SegmentConnectionCardRefAim.cpp
-    src/tools/SegmentConnectionCardDart.cpp
-    src/tools/SegmentExtendCard.h
-    src/tools/SegmentExtendCard.cpp
-    src/tools/PointRefEdit.h
-    src/tools/PointRefEdit.cpp
+    # 2026-12 面板重设计: 角度/引用线段 自连接卡拆出为独立卡.
 )
 target_include_directories(gcad_tools PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_tools PUBLIC
@@ -366,6 +388,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE gcad_app spdlog::spdlog Tracy::Tra
 # ═════════════════════════════════════════════════════════════════════════════
 enable_testing()
 find_package(Qt6 REQUIRED COMPONENTS Test)
+
+# ── Test: Tool hint completeness (TOOL_SYSTEM_AUDIT H3) ──
+add_executable(test_tool_hints tests/test_tool_hints.cpp)
+target_include_directories(test_tool_hints PRIVATE ${GCAD_SRC})
+target_link_libraries(test_tool_hints PRIVATE gcad_tools Qt6::Core Qt6::Test)
+add_test(NAME test_tool_hints COMMAND test_tool_hints)
 
 # ── Test: ExpressionEvaluator ──
 add_executable(test_expression tests/test_expression.cpp)
@@ -451,6 +479,21 @@ target_include_directories(test_perf PRIVATE ${GCAD_SRC})
 target_link_libraries(test_perf PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_perf COMMAND test_perf)
 
+# ── Test: on-disk format migration chain (P2-1) ──────────────────────────────
+add_executable(test_migration tests/test_migration.cpp)
+target_include_directories(test_migration PRIVATE ${GCAD_SRC})
+target_link_libraries(test_migration PRIVATE gcad_document gcad_parametric
+    Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_migration COMMAND test_migration)
+
+# ── Benchmark: solve-cost scaling (P2-6 quantification: how big before the
+#      GUI-thread solve blows the 60fps frame budget?). Reports, never
+#      asserts on timing — see tests/test_resolve_scale.cpp header.
+add_executable(test_resolve_scale tests/test_resolve_scale.cpp)
+target_include_directories(test_resolve_scale PRIVATE ${GCAD_SRC})
+target_link_libraries(test_resolve_scale PRIVATE gcad_parametric Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_resolve_scale COMMAND test_resolve_scale)
+
 # ── Test: auxiliary-layer rendering (aux point visibility across layer modes) ──
 add_executable(test_aux_layer tests/test_aux_layer.cpp)
 target_include_directories(test_aux_layer PRIVATE ${GCAD_SRC})
@@ -524,6 +567,18 @@ target_link_libraries(test_select_wkey PRIVATE
     gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
     Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_select_wkey COMMAND test_select_wkey)
+
+# ── Test: curve-edit tool Alt+drag tangent unlock (P3-1, CURVE_P3_DESIGN.md) ──
+add_executable(test_curve_edit
+    tests/test_curve_edit.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_curve_edit PRIVATE ${GCAD_SRC})
+target_link_libraries(test_curve_edit PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_curve_edit COMMAND test_curve_edit)
+
 
 # ── Test: rotate-copy (Ctrl+drag in ToolRotate) ──
 add_executable(test_rotate_copy
@@ -606,6 +661,7 @@ add_test(NAME test_log_probe COMMAND test_log_probe)
 foreach(_t IN ITEMS
         test_realdoc_full test_nav_smoke test_aux_layer test_smartpen_aux
         test_measure test_segment_edit_bar test_tool_intersection
-        test_select_wkey test_rotate_copy test_dialog_tabs test_component)
+        test_select_wkey test_curve_edit test_rotate_copy test_dialog_tabs
+        test_component)
     target_link_options(${_t} PRIVATE /INCREMENTAL:NO)
 endforeach()

@@ -13,7 +13,7 @@ AddLayerCommand::AddLayerCommand(cad::param::ParamDocument* doc, const QString& 
 {
     setText(QStringLiteral("新建图层"));
     if (doc)
-        m_oldActive = doc->activeLayer();
+        m_oldActive = doc->layersView().activeLayer();
 }
 
 void AddLayerCommand::redo()
@@ -26,7 +26,7 @@ void AddLayerCommand::redo()
         cad::param::Layer l;
         l.id = m_layerId;
         l.name = m_name;
-        m_doc->insertLayerAt(m_doc->layerCount(), std::move(l));
+        m_doc->insertLayerAt(m_doc->layersView().layerCount(), std::move(l));
     }
     // A newly created layer becomes the active one. Doing it inside redo()
     // (rather than only in the UI slot) means a Ctrl+Y redo of "新建图层"
@@ -52,8 +52,8 @@ RemoveLayerCommand::RemoveLayerCommand(cad::param::ParamDocument* doc, int row,
     setText(QStringLiteral("删除图层"));
     if (!doc)
         return;
-    m_oldActive = doc->activeLayer();
-    const auto& layers = doc->layers();
+    m_oldActive = doc->layersView().activeLayer();
+    const auto& layers = doc->layersView().all();
     if (row >= 0 && row < static_cast<int>(layers.size())) {
         m_layer = layers[static_cast<size_t>(row)];
         for (const auto& b : doc->blocks()) {
@@ -90,7 +90,7 @@ RenameLayerCommand::RenameLayerCommand(cad::param::ParamDocument* doc, int row,
     : QUndoCommand(parent), m_doc(doc), m_newName(newName)
 {
     setText(QStringLiteral("重命名图层"));
-    const auto& layers = doc->layers();
+    const auto& layers = doc->layersView().all();
     if (row >= 0 && row < static_cast<int>(layers.size())) {
         m_layerId = layers[static_cast<size_t>(row)].id;
         m_oldName = layers[static_cast<size_t>(row)].name;
@@ -108,7 +108,7 @@ MoveBlockToLayerCommand::MoveBlockToLayerCommand(cad::param::ParamDocument* doc,
     : QUndoCommand(parent), m_doc(doc), m_blockId(blockId)
 {
     setText(QStringLiteral("移动到其他图层"));
-    const auto& layers = doc->layers();
+    const auto& layers = doc->layersView().all();
     if (row >= 0 && row < static_cast<int>(layers.size()))
         m_newLayer = layers[static_cast<size_t>(row)].id;
     if (const auto* b = doc->findBlock(blockId))
@@ -139,7 +139,7 @@ SetLayerVisibleCommand::SetLayerVisibleCommand(cad::param::ParamDocument* doc,
     : QUndoCommand(parent), m_doc(doc), m_layerId(layerId), m_newVisible(visible)
 {
     setText(visible ? QStringLiteral("显示图层") : QStringLiteral("隐藏图层"));
-    m_oldVisible = doc->layerVisible(layerId);
+    m_oldVisible = doc->layersView().layerVisible(layerId);
 }
 
 void SetLayerVisibleCommand::redo()

@@ -18,6 +18,7 @@
 #include "parametric/LayerRegistry.h"
 #include "parametric/VariableStore.h"
 #include "parametric/MeasurementStore.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::param {
 
@@ -28,12 +29,14 @@ void ParamDocument::removeVariable(const QUuid& id) { m_variableStore->removeVar
 void ParamDocument::updateVariable(const Variable& var) { m_variableStore->updateVariable(var); }
 const std::vector<Variable>& ParamDocument::variables() const { return m_variableStore->variables(); }
 Variable* ParamDocument::findVariable(const QUuid& id) { return m_variableStore->findVariable(id); }
+const Variable* ParamDocument::findVariable(const QUuid& id) const { return m_variableStore->findVariable(id); }
 
 void ParamDocument::addFormula(FormulaVariable formula) { m_variableStore->addFormula(std::move(formula)); }
 void ParamDocument::removeFormula(const QUuid& id) { m_variableStore->removeFormula(id); }
 void ParamDocument::updateFormula(const FormulaVariable& formula) { m_variableStore->updateFormula(formula); }
 const std::vector<FormulaVariable>& ParamDocument::formulas() const { return m_variableStore->formulas(); }
 FormulaVariable* ParamDocument::findFormula(const QUuid& id) { return m_variableStore->findFormula(id); }
+const FormulaVariable* ParamDocument::findFormula(const QUuid& id) const { return m_variableStore->findFormula(id); }
 void ParamDocument::recomputeFormulas() { m_variableStore->recomputeFormulas(); }
 
 void ParamDocument::addFormulaGroup(FormulaGroup group) { m_variableStore->addFormulaGroup(std::move(group)); }
@@ -45,6 +48,7 @@ void ParamDocument::moveFormula(const QUuid& formulaId, const QUuid& targetGroup
 { m_variableStore->moveFormula(formulaId, targetGroupId, targetLocalIndex); }
 const std::vector<FormulaGroup>& ParamDocument::formulaGroups() const { return m_variableStore->formulaGroups(); }
 FormulaGroup* ParamDocument::findFormulaGroup(const QUuid& groupId) { return m_variableStore->findFormulaGroup(groupId); }
+const FormulaGroup* ParamDocument::findFormulaGroup(const QUuid& groupId) const { return m_variableStore->findFormulaGroup(groupId); }
 
 // --- Facade forwarding: canvas layers ---
 
@@ -123,5 +127,41 @@ void ParamDocument::restoreMeasureRaw(MeasureVariable mv)
 { m_measureStore->addMeasureRaw(std::move(mv)); }
 void ParamDocument::restoreAngleMeasureRaw(AngleMeasureVariable am)
 { m_measureStore->addAngleMeasureRaw(std::move(am)); }
+
+// --- Trusted-pipeline channel (P1-2) -------------------------------------
+// The *Raw members above are PRIVATE; RawModelAccess is the single friend that
+// may call them, so every silent-restore site names the trust explicitly.
+QUuid RawModelAccess::addBlockRaw(ParamDocument& doc, Block block)
+{ return doc.addBlockRaw(std::move(block)); }
+void RawModelAccess::addAttachmentRaw(ParamDocument& doc, Attachment att)
+{ doc.addAttachmentRaw(std::move(att)); }
+void RawModelAccess::addAttachmentsRaw(ParamDocument& doc,
+                                       const std::vector<Attachment>& atts)
+{ doc.addAttachmentsRaw(atts); }
+void RawModelAccess::addFreePointRaw(ParamDocument& doc, ParamPoint pt)
+{ doc.addFreePointRaw(std::move(pt)); }
+void RawModelAccess::replaceLayersRaw(ParamDocument& doc, std::vector<Layer> layers)
+{ doc.replaceLayersRaw(std::move(layers)); }
+void RawModelAccess::restoreVariableRaw(ParamDocument& doc, Variable var)
+{ doc.restoreVariableRaw(std::move(var)); }
+void RawModelAccess::restoreFormulaRaw(ParamDocument& doc, FormulaVariable formula)
+{ doc.restoreFormulaRaw(std::move(formula)); }
+void RawModelAccess::restoreFormulaGroupRaw(ParamDocument& doc, FormulaGroup group)
+{ doc.restoreFormulaGroupRaw(std::move(group)); }
+void RawModelAccess::insertFormulaGroupAt(ParamDocument& doc, int index,
+                                          FormulaGroup group)
+{ doc.insertFormulaGroupAt(index, std::move(group)); }
+void RawModelAccess::restoreLinkedRaw(ParamDocument& doc, LinkedVariable lv)
+{ doc.restoreLinkedRaw(std::move(lv)); }
+void RawModelAccess::restoreMeasureRaw(ParamDocument& doc, MeasureVariable mv)
+{ doc.restoreMeasureRaw(std::move(mv)); }
+void RawModelAccess::restoreAngleMeasureRaw(ParamDocument& doc,
+                                            AngleMeasureVariable am)
+{ doc.restoreAngleMeasureRaw(std::move(am)); }
+void RawModelAccess::restoreComponentRaw(ParamDocument& doc, Component comp)
+{ doc.restoreComponentRaw(std::move(comp)); }
+void RawModelAccess::publishParamsRaw(ParamDocument& doc,
+                                      const QHash<QString, double>& cmValues)
+{ doc.publishParamsRaw(cmValues); }
 
 } // namespace cad::param

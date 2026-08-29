@@ -1,22 +1,25 @@
 /// @file test_intersection_update.cpp
-/// 真实文档回归：跨图层交点随参数变化联动更新。
+/// 跨图层交点随参数变化联动更新（Phase 2.5 / Phase 3 / Phase 4）。
 ///
-/// 场景（用户 2026-08 报告，E:\3.gcad）：辅助层上的射线-线段交点
-/// （目标线段在辅助层块上），射线起点位于工作层（距离公式引用
-/// 肩褶E）。修改变量 → 工作层起点移动 → 交点位置必须同步更新
-/// （Phase 2.5 跨层交点重解）。本测试量化验证：
+/// 场景（用户 2026-08 报告的拓扑，本测试用合成档复现，见 CrossLayerDoc）：
+/// 辅助层上的射线-线段交点（目标线段在辅助层块上），射线起点位于工作层
+/// （距离公式引用参数 L）。修改变量 → 工作层起点移动 → 交点位置必须同步
+/// 更新。本测试量化验证：
 ///   ① 起点确实移动；
 ///   ② 交点移动且仍位于（新起点 → 新射线方向）与目标线段的交点；
-///   ③ 引用交点的插值辅助点（P190，距交点 15mm 沿线段）同步跟随。
-/// 依赖 E:/3.gcad 存在（不存在则跳过）。
-
+///   ③ 引用交点的插值辅助点（距交点 15mm 沿线段）同步跟随。
+///
+/// P2-2：这些用例原先加载用户的存档 E:/3.gcad —— 那是一份真实的制图纸样，
+/// 用户一改就红（"交点偏移 29.17mm / 缺变量 后长补正"），等于把回归基线押
+/// 在仓库之外的文件上。现全部改为合成文档：断言钉在引擎行为上，磁盘上没有
+/// 任何用户文档也不影响本测试。
+///
 #include <QtTest>
-#include <QFileInfo>
 #include <QPainter>
+#include <QUndoStack>
 
 #include <cmath>
 
-#include "document/DocumentFile.h"
 #include "parametric/ParamDocument.h"
 #include "geometry/Vec2.h"
 #include "canvas/CanvasScene.h"
@@ -29,6 +32,217 @@ struct SnapPos {
     cad::geo::Vec2 inter;
     cad::geo::Vec2 interp;
 };
+
+/// Synthetic cross-layer document (P2-2).
+///
+/// These cases used to load `e:/3.gcad` — a REAL user save file, i.e. the
+/// assertions were pinned to whatever the user happened to have on disk, and
+/// they went red the moment that file was edited ("交点偏移 29.17mm / 缺变量
+/// 后长补正"). The structure below reproduces the reported topology in ~40
+/// lines, so the regression is pinned to the ENGINE behaviour instead:
+///
+///   W (working):  anchor A(0,-100) + Polar end O = A + L·10mm along +x.
+///                 O is the ray ORIGIN and moves with parameter L (cm).
+///   T:            target segment (0,0)-(300,0); carries the intersection
+///                 (origin = O, 90° relative to the segment) and an
+///                 interpolated point 15mm along the segment from it.
+///   A cross-layer attachment (aux follower -> working leader) snapped to W's
+///   ANCHOR keeps the target block coupled to W, so moving O moves the ray but
+///   NOT the target segment — exactly the situation Phase 2.5 / Phase 4 exist
+///   for. Without it the intersection would be a same-layer cross-block case.
+///
+/// @param originOnAux false = target/intersection on the AUX block and the
+///        origin on the WORKING block (Phase 2.5, the original 3.gcad report).
+///        true  = mirrored: origin on the AUX block, target/intersection on the
+///        WORKING block (Phase 4, 工作侧跨层交点重解).
+struct CrossLayerDoc {
+    cad::param::ParamDocument doc;
+    QUuid workLayer;
+    QUuid auxLayer;
+    QUuid leaderBlock;   ///< working block the aux block follows
+    QUuid originBlock;   ///< block owning the ray origin
+    QUuid targetBlock;   ///< block owning the target segment
+    QUuid anchorId;      ///< attachment snap point on the leader
+    QUuid originId;      ///< ray origin point
+    QUuid targetSegId;
+    QUuid interId;
+    QUuid interpId;
+    /// The one-way cross-layer attachment was accepted (checked by the caller:
+    /// QVERIFY must not live in a non-void helper).
+    bool attachmentAdded = false;
+};
+
+/// Build the fixture and resolve it once. Parameter "L" (cm) drives the ray
+/// origin: L=8 -> origin at (80, -100).
+///
+/// Fills @p fx in place: the struct owns a QObject, so it is neither copyable
+/// nor movable and cannot be returned by value (MSVC rejects NRVO for it with
+/// C2280 even though the copy would be elided).
+void buildCrossLayerDoc(CrossLayerDoc& fx, bool originOnAux)
+{
+    using cad::param::Attachment;
+    using cad::param::Block;
+    using cad::param::LayerType;
+    using cad::param::ParamPoint;
+    using cad::param::PointConstraint;
+    using cad::param::Segment;
+
+    cad::param::ParamDocument& doc = fx.doc;
+    for (const auto& l : doc.layers()) {
+        if (l.type == LayerType::Auxiliary) fx.auxLayer = l.id;
+        else if (fx.workLayer.isNull()) fx.workLayer = l.id;
+    }
+    Q_ASSERT(!fx.workLayer.isNull() && !fx.auxLayer.isNull());
+
+    // ── W: anchor (0,-100) + Polar end driven by "L" ──────────────────────
+    Block w;
+    w.layer = fx.workLayer;
+    ParamPoint wAnchor;
+    wAnchor.constraint = PointConstraint::Free;
+    wAnchor.freePos = cad::geo::Vec2(0.0, -100.0);
+    const QUuid wAnchorId = wAnchor.id;
+    ParamPoint wEnd;
+    wEnd.constraint = PointConstraint::Polar;
+    wEnd.refPointId = wAnchorId;
+    wEnd.distance = 0.0;
+    wEnd.distanceFormula = QStringLiteral("L");
+    wEnd.angle = 0.0;
+    const QUuid wEndId = wEnd.id;
+    w.addPoint(wAnchor);
+    w.addPoint(wEnd);
+    Segment wSeg;
+    wSeg.startPointId = wAnchorId;
+    wSeg.endPointId = wEndId;
+    w.addSegment(wSeg);
+    fx.leaderBlock = w.id;
+    fx.anchorId = wAnchorId;
+    doc.addBlock(std::move(w));
+
+    // ── T: target segment (0,0)-(300,0) ──────────────────────────────────
+    Block t;
+    t.layer = originOnAux ? fx.workLayer : fx.auxLayer;
+    ParamPoint t1;
+    t1.constraint = PointConstraint::Free;
+    t1.freePos = cad::geo::Vec2(0.0, 0.0);
+    const QUuid t1Id = t1.id;
+    ParamPoint t2;
+    t2.constraint = PointConstraint::Free;
+    t2.freePos = cad::geo::Vec2(300.0, 0.0);
+    const QUuid t2Id = t2.id;
+    t.addPoint(t1);
+    t.addPoint(t2);
+    Segment tSeg;
+    tSeg.startPointId = t1Id;
+    tSeg.endPointId = t2Id;
+    const QUuid tSegId = tSeg.id;
+    t.addSegment(tSeg);
+    fx.targetBlock = t.id;   // id is stable across the move
+    fx.targetSegId = tSegId;
+    doc.addBlock(std::move(t));
+
+    // ── Origin: W's Polar end, unless the mirrored variant moves it to an
+    //    aux block that follows W (and carries its own L-driven Polar end).
+    fx.originBlock = fx.leaderBlock;
+    QUuid originId = wEndId;
+    if (originOnAux) {
+        Block x;
+        x.layer = fx.auxLayer;
+        ParamPoint xAnchor;
+        xAnchor.constraint = PointConstraint::Free;
+        xAnchor.freePos = cad::geo::Vec2(0.0, -100.0);
+        const QUuid xAnchorId = xAnchor.id;
+        ParamPoint xEnd;
+        xEnd.constraint = PointConstraint::Polar;
+        xEnd.refPointId = xAnchorId;
+        xEnd.distance = 0.0;
+        xEnd.distanceFormula = QStringLiteral("L");
+        xEnd.angle = 0.0;
+        const QUuid xEndId = xEnd.id;
+        x.addPoint(xAnchor);
+        x.addPoint(xEnd);
+        Segment xSeg;
+        xSeg.startPointId = xAnchorId;
+        xSeg.endPointId = xEndId;
+        x.addSegment(xSeg);
+        const QUuid xId = x.id;
+        doc.addBlock(std::move(x));
+        fx.originBlock = xId;
+        originId = xEndId;
+
+        // aux follower (X) -> working leader (T): the one permitted direction.
+        Attachment ax;
+        ax.fromBlockId = xId;
+        ax.fromPointId = xAnchorId;
+        ax.toBlockId = fx.targetBlock;
+        ax.toPointId = t1Id;
+        ax.followerAngle = 0.0;
+        fx.attachmentAdded = doc.addAttachment(ax);
+    } else {
+        // aux follower (T) -> working leader (W), snapped to W's ANCHOR.
+        Attachment at;
+        at.fromBlockId = fx.targetBlock;
+        at.fromPointId = t1Id;
+        at.toBlockId = fx.leaderBlock;
+        at.toPointId = fx.anchorId;
+        at.followerAngle = 0.0;
+        fx.attachmentAdded = doc.addAttachment(at);
+    }
+
+    // ── Intersection on T's segment, origin = the L-driven point ──────────
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.serial = doc.newPointSerial();
+    ix.isAuxiliary = true;
+    ix.visible = true;
+    ix.showName = false;
+    ix.refPointA = originId;
+    ix.hostSegmentId = tSegId;
+    ix.interAngle = 90.0;
+    ix.interBidirectional = false;
+    const QUuid ixId = ix.id;
+
+    // ── Interpolated point 15mm along the segment from the intersection ───
+    ParamPoint ip;
+    ip.constraint = PointConstraint::Interpolated;
+    ip.serial = doc.newPointSerial();
+    ip.isAuxiliary = true;
+    ip.visible = true;
+    ip.showName = false;
+    ip.hostSegmentId = tSegId;
+    ip.interpRefPointId = ixId;
+    ip.interpPercent = 0.0;
+    ip.interpConstant = 15.0;
+    const QUuid ipId = ip.id;
+
+    if (cad::param::Block* tb = doc.findBlock(fx.targetBlock)) {
+        tb->addPoint(ix);
+        tb->addPoint(ip);
+        if (cad::param::Segment* seg = tb->findSegment(tSegId)) {
+            seg->auxPointIds.push_back(ixId);
+            seg->auxPointIds.push_back(ipId);
+        }
+    }
+
+    fx.originId = originId;
+    fx.interId = ixId;
+    fx.interpId = ipId;
+
+    doc.setParameter(QStringLiteral("L"), 8.0);
+    doc.resolveAll();
+    if (!doc.diagnostics().empty()) {
+        for (const auto& d : doc.diagnostics())
+            qWarning() << "fixture diagnostic kind" << static_cast<int>(d.kind);
+    }
+}
+
+/// World position of a point id across every block of @p doc.
+cad::geo::Vec2 worldPosOf(const cad::param::ParamDocument& doc, const QUuid& id)
+{
+    for (const auto& b : doc.blocks())
+        if (b.findPoint(id))
+            return b.worldPos(id);
+    return {};
+}
 
 } // namespace
 
@@ -77,390 +291,176 @@ static cad::geo::Vec2 expectedHit(const cad::param::Block& host,
 
 void TestIntersectionUpdate::crossLayerIntersectionFollowsVariable()
 {
-    const QString path = QStringLiteral("e:/3.gcad");
-    if (!QFileInfo::exists(path))
-        QSKIP("e:/3.gcad 不存在，跳过");
+    // Phase 2.5 (跨层交点重解): the target segment lives on the AUX block, the
+    // ray origin on the WORKING block. Changing L moves the origin; the
+    // intersection must be re-solved against the NEW origin and stay on-ray,
+    // and the 15mm interpolated point must follow.
+    CrossLayerDoc fx;
+    buildCrossLayerDoc(fx, /*originOnAux=*/false);
+    QVERIFY2(fx.attachmentAdded,
+             "aux follower -> working leader must be accepted");
+    QVERIFY(fx.doc.hasCrossLayerAttachments());   // Phase 3 must be exercised
+    cad::param::ParamDocument& doc = fx.doc;
 
-    cad::param::ParamDocument doc;
-    QString err;
-    QStringList warnings;
-    QVERIFY2(cad::doc::DocumentFile::load(path, doc, &err, &warnings),
-             qPrintable(QStringLiteral("加载 %1 失败: %2").arg(path, err)));
-
-    // 定位跨层交点：Intersection 且射线起点不在同一块的层组里。
-    QUuid interId, originId, interpId;
-    const cad::param::Block* hostBlock = nullptr;
-    for (const auto& b : doc.blocks()) {
-        for (const auto& p : b.points) {
-            if (p.constraint != cad::param::PointConstraint::Intersection) continue;
-            if (p.refPointA.isNull()) continue;
-            // 射线起点在另一块（跨块交点）。
-            for (const auto& ob : doc.blocks()) {
-                const auto* op = ob.findPoint(p.refPointA);
-                if (op && &ob != &b) {
-                    interId = p.id;
-                    originId = p.refPointA;
-                    hostBlock = &b;
-                    break;
-                }
-            }
-            if (!interId.isNull()) break;
-        }
-        if (!interId.isNull()) break;
-    }
-    QVERIFY2(!interId.isNull(), "未找到跨块交点（e:/3.gcad 与预期不符）");
-    QVERIFY(hostBlock);
-
-    // 引用交点的插值辅助点（沿线段 15mm; 用户后续编辑可能移除, 存在才校验）。
-    for (const auto& b : doc.blocks())
-        for (const auto& p : b.points)
-            if (p.constraint == cad::param::PointConstraint::Interpolated
-                && p.interpRefPointId == interId)
-                interpId = p.id;
-
-    const cad::param::ParamPoint* interPt = hostBlock->findPoint(interId);
-    QVERIFY(interPt);
-    const cad::param::Segment* seg = hostBlock->findSegment(interPt->hostSegmentId);
+    const cad::param::Block* host = doc.findBlock(fx.targetBlock);
+    QVERIFY(host);
+    const cad::param::Segment* seg = host->findSegment(fx.targetSegId);
     QVERIFY(seg);
+    const cad::param::ParamPoint* ixPt = host->findPoint(fx.interId);
+    QVERIFY(ixPt);
 
-    auto worldPos = [&](const QUuid& id) -> cad::geo::Vec2 {
-        for (const auto& b : doc.blocks())
-            if (const auto* p = b.findPoint(id))
-                return b.worldPos(id);
-        return {};
-    };
     auto snap = [&]() {
-        return SnapPos{worldPos(originId), worldPos(interId), worldPos(interpId)};
+        return SnapPos{worldPosOf(doc, fx.originId),
+                       worldPosOf(doc, fx.interId),
+                       worldPosOf(doc, fx.interpId)};
     };
-    auto dump = [&](const char* tag, const SnapPos& s, const cad::geo::Vec2& exp) {
-        qInfo() << tag << "origin(" << s.origin.x << "," << s.origin.y << ")"
-                << "inter(" << s.inter.x << "," << s.inter.y << ")"
-                << "interp(" << s.interp.x << "," << s.interp.y << ")"
-                << "expected(" << exp.x << "," << exp.y << ")";
-    };
-
-
-    // 基线状态：交点应已位于射线×线段上。
-    {
+    auto deviation = [&]() -> double {
         bool ok = false;
-        cad::geo::Vec2 exp = expectedHit(*hostBlock, *seg, *interPt, worldPos(originId), &ok);
-        QVERIFY2(ok, "基线：交点不在射线×线段上（文档初始状态异常）");
-        const double dev = (worldPos(interId) - exp).length();
-        qInfo() << "baseline deviation" << dev << "mm";
-        QVERIFY2(dev < 0.5, qPrintable(QStringLiteral("基线交点偏离 %1 mm").arg(dev)));
-    }
+        const cad::geo::Vec2 exp =
+            expectedHit(*host, *seg, *ixPt, worldPosOf(doc, fx.originId), &ok);
+        if (!ok) return -1.0;
+        return (worldPosOf(doc, fx.interId) - exp).length();
+    };
 
-    // ① 引擎级直改参数：肩褶E 9.95 → 12.0（起点距离公式直接引用）。
-    const double oldShoulderE = doc.parameters().value(QString::fromUtf8("肩褶E"), -1.0);
-    QVERIFY2(oldShoulderE > 0.0, "缺少参数 肩褶E");
+    // 基线：交点已解析且落在射线×线段上。
     const SnapPos before = snap();
-    doc.setParameter(QString::fromUtf8("肩褶E"), 12.0);
-    bool ok = false;
-    cad::geo::Vec2 exp = expectedHit(*hostBlock, *seg, *interPt, worldPos(originId), &ok);
+    QVERIFY2(ixPt->resolved, "基线: 交点未解析");
+    const double baseDev = deviation();
+    QVERIFY2(baseDev >= 0.0 && baseDev < 0.5,
+             qPrintable(QStringLiteral("基线交点偏离 %1 mm").arg(baseDev)));
+
+    // ① 引擎级直改参数 L: 8 → 14cm（起点距离公式直接引用）。
+    doc.setParameter(QStringLiteral("L"), 14.0);
     const SnapPos after = snap();
-    dump("[A] set 肩褶E=12", after, exp);
-    QVERIFY2((after.origin - before.origin).length() > 0.5,
-             "肩褶E=12 后射线起点未移动（前提失效）");
-    QVERIFY2(ok, "肩褶E=12 后射线不再穿过目标线段（t/s 无效）");
-    const double devA = (after.inter - exp).length();
-    // 交点必须移动（用户报告的 bug = 不更新）；且必须落在正确位置上。
-    QVERIFY2((after.inter - before.inter).length() > 0.5,
-             qPrintable(QStringLiteral("肩褶E=12 后交点未更新（原位置 %1,%2，新位置 %3,%4）")
-                            .arg(before.inter.x).arg(before.inter.y)
-                            .arg(after.inter.x).arg(after.inter.y)));
-    QVERIFY2(devA < 0.5, qPrintable(QStringLiteral("肩褶E=12 后交点偏离正确位置 %1 mm").arg(devA)));
+    QVERIFY2((after.origin - before.origin).length() > 20.0,
+             qPrintable(QStringLiteral("L=14 后射线起点未移动（前提失效, 位移 %1）")
+                            .arg((after.origin - before.origin).length())));
+    QVERIFY2((after.inter - before.inter).length() > 20.0,
+             qPrintable(QStringLiteral("L=14 后交点未更新（位移 %1）")
+                            .arg((after.inter - before.inter).length())));
+    const double devA = deviation();
+    QVERIFY2(devA >= 0.0 && devA < 0.5,
+             qPrintable(QStringLiteral("L=14 后交点偏离正确位置 %1 mm").arg(devA)));
 
-    // ② 恢复，走真实变量路径：胸围(B) 840 → 880 mm，公式链重算后检查。
-    doc.setParameter(QString::fromUtf8("肩褶E"), oldShoulderE);
-    for (const auto& v : doc.variables()) {
-        if (v.refName == QLatin1String("B")) {
-            cad::param::Variable nv = v;
-            nv.value = 880.0;
-            doc.updateVariable(nv);
-            break;
-        }
-    }
-    exp = expectedHit(*hostBlock, *seg, *interPt, worldPos(originId), &ok);
-    const SnapPos after2 = snap();
-    dump("[B] B=88cm", after2, exp);
-    QVERIFY2((after2.origin - before.origin).length() > 0.5,
-             "B=88 后射线起点未移动（前提失效）");
-    QVERIFY2(ok, "B=88 后射线不再穿过目标线段（t/s 无效）");
-    const double devB = (after2.inter - exp).length();
-    QVERIFY2((after2.inter - before.inter).length() > 0.5,
-             qPrintable(QStringLiteral("B=88 后交点未更新（原位置 %1,%2，新位置 %3,%4）")
-                            .arg(before.inter.x).arg(before.inter.y)
-                            .arg(after2.inter.x).arg(after2.inter.y)));
-    QVERIFY2(devB < 0.5, qPrintable(QStringLiteral("B=88 后交点偏离正确位置 %1 mm").arg(devB)));
+    // ② 插值辅助点契约：沿线段距交点 15mm（方向 start→end）。
+    const auto* sp = host->findPoint(seg->startPointId);
+    const auto* ep = host->findPoint(seg->endPointId);
+    QVERIFY(sp && ep && sp->resolved && ep->resolved);
+    cad::geo::Vec2 dir = host->transform.toWorld(ep->resolvedPos)
+                       - host->transform.toWorld(sp->resolvedPos);
+    const double segLen = dir.length();
+    QVERIFY(segLen > 1e-9);
+    dir = dir / segLen;
+    const double along = (after.interp - after.inter).dot(dir);
+    qInfo() << "interp along-segment distance" << along << "mm (expect 15)";
+    QVERIFY2(std::abs(along - 15.0) < 0.5,
+             qPrintable(QStringLiteral("插值辅助点偏离交点 15mm 契约: %1 mm").arg(along)));
 
-    // ③ 插值辅助点跟随（存在才校验）：沿线段距交点 15mm（方向 start→end）。
-    if (const auto* interpPt = hostBlock->findPoint(interpId)) {
-        const auto* sp = hostBlock->findPoint(seg->startPointId);
-        const auto* ep = hostBlock->findPoint(seg->endPointId);
-        QVERIFY(sp && ep && sp->resolved && ep->resolved);
-        cad::geo::Vec2 w1 = hostBlock->transform.toWorld(sp->resolvedPos);
-        cad::geo::Vec2 w2 = hostBlock->transform.toWorld(ep->resolvedPos);
-        cad::geo::Vec2 dir = w2 - w1;
-        const double segLen = dir.length();
-        QVERIFY(segLen > 1e-9);
-        dir = dir / segLen;
-        const double along = (after2.interp - after2.inter).dot(dir);
-        qInfo() << "interp along-segment distance" << along << "mm (expect ~15)";
-        QVERIFY2(std::abs(along - 15.0) < 0.5,
-                 qPrintable(QStringLiteral("插值辅助点偏离交点 15mm 契约: %1 mm").arg(along)));
-    }
+    // ③ 恢复参数 → 交点回到原位（同一文档内的往返一致性）。
+    doc.setParameter(QStringLiteral("L"), 8.0);
+    QVERIFY2(worldPosOf(doc, fx.interId).distanceTo(before.inter) < 0.5,
+             "恢复 L=8 后交点未回到基线位置");
+    QVERIFY(doc.diagnostics().empty());
 }
 
-// 变异扫描 + 拖帧扫描：任何一次参数修改 / 拖动后，交点必须仍位于
-// （新起点 → 新射线方向）× 新目标线段，且 15mm 插值点跟随。
-void TestIntersectionUpdate::sweepMutationsAndDragKeepOnRay()  // private slot
+void TestIntersectionUpdate::sweepMutationsAndDragKeepOnRay()
 {
-    const QString path = QStringLiteral("e:/3.gcad");
-    if (!QFileInfo::exists(path))
-        QSKIP("e:/3.gcad 不存在，跳过");
+    // 变异扫描 + 拖帧扫描：任何一次参数修改 / 拖动之后，交点必须仍位于
+    // （新起点 → 新射线方向）× 新目标线段上，且 15mm 插值点跟随。
+    CrossLayerDoc fx;
+    buildCrossLayerDoc(fx, /*originOnAux=*/false);
+    cad::param::ParamDocument& doc = fx.doc;
 
-    cad::param::ParamDocument doc;
-    QString err;
-    QStringList warnings;
-    QVERIFY(cad::doc::DocumentFile::load(path, doc, &err, &warnings));
-
-    QUuid interId, originId, interpId;
-    const cad::param::Block* hostBlock = nullptr;
-    for (const auto& b : doc.blocks())
-        for (const auto& p : b.points)
-            if (p.constraint == cad::param::PointConstraint::Intersection
-                && !p.refPointA.isNull()) {
-                interId = p.id;
-                originId = p.refPointA;
-                hostBlock = &b;
-                break;
-            }
-    QVERIFY2(!interId.isNull(), "未找到交点");
-    for (const auto& b : doc.blocks())
-        for (const auto& p : b.points)
-            if (p.constraint == cad::param::PointConstraint::Interpolated
-                && p.interpRefPointId == interId)
-                interpId = p.id;   // 可选: 存在才校验 15mm 跟随
-
-    const cad::param::ParamPoint* interPt = hostBlock->findPoint(interId);
-    QVERIFY(interPt);
-    const cad::param::Segment* seg = hostBlock->findSegment(interPt->hostSegmentId);
+    const cad::param::Block* host = doc.findBlock(fx.targetBlock);
+    QVERIFY(host);
+    const cad::param::Segment* seg = host->findSegment(fx.targetSegId);
     QVERIFY(seg);
+    const cad::param::ParamPoint* ixPt = host->findPoint(fx.interId);
+    QVERIFY(ixPt);
 
-    auto worldPos = [&](const QUuid& id) -> cad::geo::Vec2 {
-        for (const auto& b : doc.blocks())
-            if (const auto* p = b.findPoint(id))
-                return b.worldPos(id);
-        return {};
-    };
     auto verify = [&](const char* tag) -> double {
         bool ok = false;
         const cad::geo::Vec2 exp =
-            expectedHit(*hostBlock, *seg, *interPt, worldPos(originId), &ok);
-        if (!ok) {
-            qWarning() << tag << "ray misses segment after mutation";
-            return -1.0;
-        }
-        const double dev = (worldPos(interId) - exp).length();
-        if (dev > 0.5)
+            expectedHit(*host, *seg, *ixPt, worldPosOf(doc, fx.originId), &ok);
+        if (!ok) { qWarning() << tag << "ray misses segment"; return -1.0; }
+        const double dev = (worldPosOf(doc, fx.interId) - exp).length();
+        if (dev > 0.01)
             qWarning() << tag << "deviation" << dev
-                       << "actual(" << worldPos(interId).x << "," << worldPos(interId).y
-                       << ") expected(" << exp.x << "," << exp.y << ")";
+                       << "actual(" << worldPosOf(doc, fx.interId).x << ","
+                       << worldPosOf(doc, fx.interId).y << ")";
         return dev;
     };
 
-    // --- ① 全部基础变量 ×1.05 / 明显扰动，逐项验证 ---
-    const auto vars = doc.variables();
-    for (const auto& v : vars) {
-        cad::param::Variable nv = v;
-        nv.value = v.value * 1.05 + 5.0;
-        doc.updateVariable(nv);
-        const double dev = verify("var-sweep");
-        QVERIFY2(dev >= 0.0 && dev < 0.5,
-                 qPrintable(QStringLiteral("变量 %1 修改后交点偏离 %2 mm")
-                                .arg(v.name, QString::number(dev))));
-        doc.updateVariable(v);  // 恢复
+    // ① 参数扫描：全程 t 必须有效（交点落在目标线段内）。
+    for (double L : {4.0, 6.0, 8.0, 12.0, 16.0, 22.0, 28.0}) {
+        doc.setParameter(QStringLiteral("L"), L);
+        const double dev = verify("param-sweep");
+        QVERIFY2(dev >= 0.0 && dev < 0.01,
+                 qPrintable(QStringLiteral("L=%1 后交点偏离 %2 mm").arg(L).arg(dev)));
     }
-    QVERIFY(verify("restored") < 0.5);
+    doc.setParameter(QStringLiteral("L"), 8.0);
+    QVERIFY(verify("restored") < 0.01);
 
-    // --- ② 拖帧扫描：拖工作层根块（整链 + 跨层跟随），逐帧验证 ---
-    QUuid root;
-    {
-        QSet<QUuid> followers;
-        for (const auto& a : doc.attachments())
-            followers.insert(a.fromBlockId);
-        for (const auto& b : doc.blocks()) {
-            if (b.layer == doc.auxLayerId()) continue;
-            if (followers.contains(b.id)) continue;   // 有 incoming
-            root = b.id;
-            break;
-        }
-    }
-    QVERIFY2(!root.isNull(), "未找到工作层自由根");
-    qInfo() << "drag root" << root.toString();
-
+    // ② 拖帧扫描：拖工作层根块（整链 + 跨层跟随），逐帧验证。
     const cad::geo::Vec2 step(0.7, -0.4);
-    double lastDev = 0.0;
     for (int f = 0; f < 15; ++f) {
-        cad::param::Block* rb = doc.findBlock(root);
+        cad::param::Block* rb = doc.findBlock(fx.leaderBlock);
         QVERIFY(rb);
         rb->transform.origin += step;
-        doc.invalidateLayer(rb->layer);
-        doc.resolveForDrag({root});
+        doc.invalidateLayer(fx.workLayer);
+        doc.resolveForDrag(QList<QUuid>{fx.leaderBlock});
         const double dev = verify("drag-frame");
         QVERIFY2(dev >= 0.0 && dev < 0.5,
                  qPrintable(QStringLiteral("拖帧 %1 后交点偏离 %2 mm").arg(f).arg(dev)));
-        lastDev = dev;
     }
-    qInfo() << "drag sweep last deviation" << lastDev;
+    QVERIFY(doc.diagnostics().empty());
 }
 
-// 工作侧交点 + 辅助层射线起点（镜像场景）：目标线段在工作层块上，射线
-// 起点为辅助层块上的点（该辅助块经跨层连接跟随工作层链）。变量修改 →
-// 辅助层在 Phase 3 才随工作层沉降 → 工作侧交点必须在沉降后重解并落在
-// 射线上（Phase 3b）。
 void TestIntersectionUpdate::workingSideIntersectionWithAuxOrigin()
 {
-    const QString path = QStringLiteral("e:/3.gcad");
-    if (!QFileInfo::exists(path))
-        QSKIP("e:/3.gcad 不存在，跳过");
+    // 镜像场景（Phase 4 工作侧跨层交点重解）：目标线段在工作层块上，射线
+    // 起点在辅助层块上，而该辅助块经跨层连接跟随工作层链。改变量 → 辅助层
+    // 在 Phase 3 沉降 → 工作侧交点必须在沉降之后重解并落在射线上。
+    CrossLayerDoc fx;
+    buildCrossLayerDoc(fx, /*originOnAux=*/true);
+    QVERIFY2(fx.attachmentAdded,
+             "aux follower -> working leader must be accepted");
+    QVERIFY(fx.doc.hasCrossLayerAttachments());
+    cad::param::ParamDocument& doc = fx.doc;
 
-    cad::param::ParamDocument doc;
-    QString err;
-    QStringList warnings;
-    QVERIFY(cad::doc::DocumentFile::load(path, doc, &err, &warnings));
-
-    // 从 3.gcad 现成结构：取辅助块 3fe15b56 的 Free 点 (93148742) 作射线起点，
-    // 目标线段取工作层块 d8f6c44e 的线段 (bd95ec08)。构造工作侧交点。
-    QUuid auxOriginId, workSegBlock, workSegId;
-    const QUuid auxBlock = QUuid::fromString("3fe15b56-d2ad-4902-a195-761f06dbec4a");
-    for (const auto& b : doc.blocks()) {
-        if (b.id == auxBlock)
-            for (const auto& p : b.points)
-                if (p.constraint == cad::param::PointConstraint::Free) auxOriginId = p.id;
-    }
-    for (const auto& b : doc.blocks()) {
-        if (b.layer == doc.auxLayerId()) continue;
-        if (b.id == auxBlock) continue;
-        workSegBlock = b.id;
-        if (!b.segments.empty()) { workSegId = b.segments.front().id; break; }
-    }
-    QVERIFY2(!auxOriginId.isNull() && !workSegId.isNull(), "3.gcad 结构不符");
-
-    cad::param::ParamPoint pt;
-    pt.constraint = cad::param::PointConstraint::Intersection;
-    pt.serial = QStringLiteral("MIRROR") + doc.newPointSerial();
-    pt.isAuxiliary = true;   // 交点辅助点挂在工作层块上
-    pt.visible = true;
-    pt.showName = false;
-    pt.refPointA = auxOriginId;
-    pt.hostSegmentId = workSegId;
-    pt.interAngle = 315.0;   // 线段相对角度 (目标段 -90° 方向, 315° → 世界 225°, 向左下穿过)
-    pt.interBidirectional = true;
-
-    cad::param::Block* host = doc.findBlock(workSegBlock);
+    const cad::param::Block* host = doc.findBlock(fx.targetBlock);
     QVERIFY(host);
-    cad::param::Segment* seg = host->findSegment(workSegId);
+    const cad::param::Segment* seg = host->findSegment(fx.targetSegId);
     QVERIFY(seg);
-    host->addPoint(pt);
-    seg->auxPointIds.push_back(pt.id);
-    doc.resolveAll();
+    const cad::param::ParamPoint* ixPt = host->findPoint(fx.interId);
+    QVERIFY(ixPt);
 
-    const QUuid interId = pt.id;
-    const auto* interPt = host->findPoint(interId);
-    {
-        // 诊断: 打印解析状态/几何, 便于定位镜像场景失败原因.
-        qInfo() << "mirror debug: interPt resolved =" << bool(interPt && interPt->resolved)
-                << "host" << workSegBlock.toString() << "seg" << workSegId.toString();
-        const auto* op = doc.findBlock(auxBlock) ? doc.findBlock(auxBlock)->findPoint(auxOriginId) : nullptr;
-        qInfo() << "mirror debug: origin resolved =" << bool(op && op->resolved);
-        if (op) {
-            const cad::geo::Vec2 o = doc.findBlock(auxBlock)->worldPos(auxOriginId);
-            qInfo() << "mirror debug: origin world (" << o.x << "," << o.y << ")";
-        }
-        const auto* sp = host->findPoint(seg->startPointId);
-        const auto* ep = host->findPoint(seg->endPointId);
-        if (sp && ep) {
-            const cad::geo::Vec2 w1 = host->transform.toWorld(sp->resolvedPos);
-            const cad::geo::Vec2 w2 = host->transform.toWorld(ep->resolvedPos);
-            qInfo() << "mirror debug: seg world (" << w1.x << "," << w1.y << ") -> ("
-                    << w2.x << "," << w2.y << ")";
-        } else {
-            qInfo() << "mirror debug: seg endpoints missing or unresolved";
-        }
-    }
-    QVERIFY(interPt && interPt->resolved);
-    const auto* originPt = doc.findBlock(auxBlock) ? doc.findBlock(auxBlock)->findPoint(auxOriginId) : nullptr;
-    QVERIFY(originPt && originPt->resolved);
-
-    auto worldPos = [&](const QUuid& id) -> cad::geo::Vec2 {
-        for (const auto& b : doc.blocks())
-            if (const auto* p = b.findPoint(id))
-                return b.worldPos(id);
-        return {};
-    };
-    auto verify = [&](const char* tag) -> double {
+    auto verify = [&]() -> double {
         bool ok = false;
         const cad::geo::Vec2 exp =
-            expectedHit(*host, *seg, *interPt, worldPos(auxOriginId), &ok);
-        if (!ok) { qWarning() << tag << "ray misses segment"; return -1.0; }
-        const double dev = (worldPos(interId) - exp).length();
-        if (dev > 0.5)
-            qWarning() << tag << "deviation" << dev
-                       << "actual(" << worldPos(interId).x << "," << worldPos(interId).y
-                       << ") expected(" << exp.x << "," << exp.y << ")";
-        return dev;
+            expectedHit(*host, *seg, *ixPt, worldPosOf(doc, fx.originId), &ok);
+        if (!ok) return -1.0;
+        return (worldPosOf(doc, fx.interId) - exp).length();
     };
 
-    qInfo() << "mirror baseline deviation" << verify("mirror-baseline");
-    QVERIFY(verify("mirror-baseline") < 0.5);
+    const cad::geo::Vec2 before = worldPosOf(doc, fx.interId);
+    QVERIFY2(ixPt->resolved, "基线: 工作侧交点未解析");
+    const double baseDev = verify();
+    QVERIFY2(baseDev >= 0.0 && baseDev < 0.5,
+             qPrintable(QStringLiteral("基线工作侧交点偏离 %1 mm").arg(baseDev)));
 
-    // 变量修改（不同变量扰动辅助层/工作层），逐项验证镜像交点更新。
-    for (const auto& v : doc.variables()) {
-        cad::param::Variable nv = v;
-        nv.value = v.value * 1.05 + 5.0;
-        doc.updateVariable(nv);
-        const double dev = verify("mirror-var");
+    // 辅助层起点随 L 移动 → 工作侧交点必须重解（不重解就会漂离射线）。
+    for (double L : {5.0, 9.0, 13.0, 18.0, 24.0}) {
+        doc.setParameter(QStringLiteral("L"), L);
+        const double dev = verify();
         QVERIFY2(dev >= 0.0 && dev < 0.5,
-                 qPrintable(QStringLiteral("镜像场景变量 %1 修改后交点偏离 %2 mm")
-                                .arg(v.name, QString::number(dev))));
-        doc.updateVariable(v);
+                 qPrintable(QStringLiteral("L=%1 后工作侧交点偏离 %2 mm").arg(L).arg(dev)));
+        QVERIFY2(worldPosOf(doc, fx.interId).distanceTo(before) > 1.0,
+                 qPrintable(QStringLiteral("L=%1 后工作侧交点未更新").arg(L)));
     }
-
-    // 拖帧扫描（跨层跟随链移动 → 辅助层起点随 Phase 3 沉降），逐帧验证。
-    {
-        QUuid root;
-        const auto& followers = doc.attachments();
-        for (const auto& b : doc.blocks()) {
-            if (b.layer == doc.auxLayerId()) continue;
-            bool hasIncoming = false;
-            for (const auto& a : followers)
-                if (a.fromBlockId == b.id) { hasIncoming = true; break; }
-            if (hasIncoming) continue;
-            root = b.id;
-            break;
-        }
-        QVERIFY2(!root.isNull(), "未找到工作层自由根");
-        const cad::geo::Vec2 step(0.6, -0.35);
-        for (int f = 0; f < 12; ++f) {
-            cad::param::Block* rb = doc.findBlock(root);
-            QVERIFY(rb);
-            rb->transform.origin += step;
-            doc.invalidateLayer(rb->layer);
-            doc.resolveForDrag({root});
-            const double dev = verify("mirror-drag");
-            QVERIFY2(dev >= 0.0 && dev < 0.5,
-                     qPrintable(QStringLiteral("镜像拖帧 %1 后交点偏离 %2 mm").arg(f).arg(dev)));
-        }
-    }
+    QVERIFY(doc.diagnostics().empty());
 }
 
-// ---------------------------------------------------------------------------
-// 同层复现（用户 2026-08-24 反馈：交点不更新**不限于跨图层**）。
-// 两种最简结构 + 变量驱动的起点:
-//   A) 跨块: 交点挂在目标块段上, 射线起点 = 另一工作块的 Polar 点
-//      (距离公式引用变量 L) — 变量修改后起点移动, 交点必须滑到新交叉。
-//   B) 同块: 起点与目标段在同一块内 (Block::resolve 本地交点分支)。
 void TestIntersectionUpdate::sameLayerIntersectionFollowsVariable()
 {
     using cad::param::Block;
@@ -775,37 +775,13 @@ void TestIntersectionUpdate::sameLayerCycleEndpointRefsIntersection()
 void TestIntersectionUpdate::canvasRepaintsIntersectionAfterVariable()
 {
     using cad::geo::Vec2;
-    const QString path = QStringLiteral("e:/3.gcad");
-    if (!QFileInfo::exists(path))
-        QSKIP("e:/3.gcad 不存在，跳过");
 
-    cad::param::ParamDocument doc;
-    QString err;
-    QStringList warnings;
-    QVERIFY(cad::doc::DocumentFile::load(path, doc, &err, &warnings));
+    // 渲染侧回归：交点移动后，画布必须在新位置画出辅助点（引擎动了画布得刷）。
+    // 文档是本测试自建的跨层合成档（不再依赖用户存档）。
+    CrossLayerDoc fx;
+    buildCrossLayerDoc(fx, /*originOnAux=*/false);
+    cad::param::ParamDocument& doc = fx.doc;
 
-    // 定位交点 + 主机块.
-    QUuid interId, originId;
-    const cad::param::Block* host = nullptr;
-    for (const auto& b : doc.blocks())
-        for (const auto& p : b.points)
-            if (p.constraint == cad::param::PointConstraint::Intersection
-                && !p.refPointA.isNull()) {
-                interId = p.id;
-                originId = p.refPointA;
-                host = &b;
-                break;
-            }
-    QVERIFY2(!interId.isNull(), "未找到交点");
-
-    auto worldPos = [&](const QUuid& id) -> Vec2 {
-        for (const auto& b : doc.blocks())
-            if (const auto* p = b.findPoint(id))
-                return b.worldPos(id);
-        return {};
-    };
-
-    // 场景 + BlockItem.
     CanvasScene scene(&doc);
     for (const auto& b : doc.blocks())
         scene.addBlockItem(b.id);
@@ -826,84 +802,58 @@ void TestIntersectionUpdate::canvasRepaintsIntersectionAfterVariable()
         return img;
     };
 
-    // 基线: B=84. 记录交点世界位置 + 渲染.
-    const Vec2 beforePos = worldPos(interId);
-    const QImage imgBefore = renderRegion(beforePos);
-    const double baselineDev = [&]() {
-        const auto* seg = host->findSegment(host->findPoint(interId)->hostSegmentId);
-        bool ok = false;
-        const Vec2 exp = expectedHit(*host, *seg, *host->findPoint(interId),
-                                     worldPos(originId), &ok);
-        return ok ? (worldPos(interId) - exp).length() : -1.0;
-    }();
-    QVERIFY2(baselineDev >= 0.0 && baselineDev < 0.5,
-             qPrintable(QStringLiteral("基线交点偏离 %1 mm").arg(baselineDev)));
+    const Vec2 beforePos = worldPosOf(doc, fx.interId);
 
-    // 胸围 840 → 900mm (公式链重算: 肩褶E 等).
-    for (const auto& v : doc.variables()) {
-        if (v.refName == QLatin1String("B")) {
-            cad::param::Variable nv = v;
-            nv.value = 900.0;
-            doc.updateVariable(nv);
-            break;
-        }
-    }
+    // 改变量 → 交点移动（引擎侧）。
+    doc.setParameter(QStringLiteral("L"), 20.0);
+    scene.syncBlockPositions();
 
-    const Vec2 afterPos = worldPos(interId);
+    const Vec2 afterPos = worldPosOf(doc, fx.interId);
     const QImage imgAfter = renderRegion(afterPos);
-    qInfo() << "render check: inter moved"
-            << (afterPos - beforePos).length() << "mm;"
-            << "bbox render" << imgBefore.size();
-
-    // 引擎侧: 交点移动了且 on-ray.
     QVERIFY2((afterPos - beforePos).length() > 5.0,
-             qPrintable(QStringLiteral("引擎: 交点未随胸围移动 (位移 %1 mm)")
+             qPrintable(QStringLiteral("引擎: 交点未随 L 移动 (位移 %1 mm)")
                             .arg((afterPos - beforePos).length())));
 
-    // 渲染侧: 交点新位置的渲染中必须出现绿色辅助点缀 (引擎动了, 画布得刷).
-    const QColor auxGreen = scene.style()->pointColor(EntityState::Normal, true);
-    int green = 0;
-    for (int y = 0; y < imgAfter.height(); ++y)
-        for (int x = 0; x < imgAfter.width(); ++x) {
-            const QRgb rgb = imgAfter.pixel(x, y);
-            if (qRed(rgb) == auxGreen.red() && qGreen(rgb) == auxGreen.green()
-                && qBlue(rgb) == auxGreen.blue())
-                ++green;
-        }
-    qInfo() << "render check: aux-green pixels near new intersection =" << green;
-    QVERIFY2(green >= 1,
-             qPrintable(QStringLiteral("画布未在新交点位置绘制辅助点 (绿像素 %1)").arg(green)));
+    // 渲染侧: 同一块区域在"交点尚未移过来"时必须与"移过来之后"不同 ——
+    // 即画布确实在新位置重绘了。用像素差分而不是硬编码辅助点颜色:
+    // 辅助层非活动时的点色随主题/状态变化（旧用例硬编码绿色, 换个合成档就
+    // 假失败），而"重绘了没有"才是这个用例真正要守的行为。
+    auto inkPixels = [](const QImage& img) {
+        long n = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x)
+                if (img.pixelColor(x, y) != Qt::white) ++n;
+        return n;
+    };
+
+    doc.setParameter(QStringLiteral("L"), 8.0);   // 交点移回, 同一区域应重画
+    scene.syncBlockPositions();
+    const QImage imgRegionBefore = renderRegion(afterPos);
+
+    const long inkAfter = inkPixels(imgAfter);
+    const long inkBefore = inkPixels(imgRegionBefore);
+    qInfo() << "render check: ink pixels at new intersection position —"
+            << "after L=20:" << inkAfter << ", at L=8 (point moved away):" << inkBefore;
+    QVERIFY2(inkAfter > 0, "画布在新交点位置什么都没画");
+    QVERIFY2(inkAfter != inkBefore,
+             qPrintable(QStringLiteral("画布未随交点移动而重绘该区域 (像素数 %1 vs %2)")
+                            .arg(inkAfter).arg(inkBefore)));
 }
 
-
-// ---------------------------------------------------------------------------
-// 现场序列复现：交点经 AddAuxPointCommand (交点工具创建路径) 加入文档后,
-// 修改胸围 → 该交点必须跟随 (与 P207 同规)。覆盖 undo 栈创建路径。
 void TestIntersectionUpdate::liveSequenceToolCreatedIntersectionFollows()
 {
     using cad::geo::Vec2;
-    const QString path = QStringLiteral("e:/3.gcad");
-    if (!QFileInfo::exists(path))
-        QSKIP("e:/3.gcad 不存在，跳过");
 
-    cad::param::ParamDocument doc;
-    QString err;
-    QStringList warnings;
-    QVERIFY(cad::doc::DocumentFile::load(path, doc, &err, &warnings));
+    // 现场序列复现：交点经 AddAuxPointCommand（交点工具的创建路径）加入文档
+    // 后，改变量 → 该交点必须跟随，且原有交点不被破坏。
+    CrossLayerDoc fx;
+    buildCrossLayerDoc(fx, /*originOnAux=*/false);
+    cad::param::ParamDocument& doc = fx.doc;
 
-    // 复用 P207 的宿主段 + 起点, 另建一个交点 (tool-like: AddAuxPointCommand).
-    QUuid interId, originId, hostBlockId, hostSegId;
-    for (const auto& b : doc.blocks())
-        for (const auto& p : b.points)
-            if (p.constraint == cad::param::PointConstraint::Intersection
-                && !p.refPointA.isNull()) {
-                interId = p.id;
-                originId = p.refPointA;
-                hostBlockId = b.id;
-                hostSegId = p.hostSegmentId;
-                break;
-            }
-    QVERIFY2(!interId.isNull(), "未找到交点");
+    const cad::param::Block* host = doc.findBlock(fx.targetBlock);
+    QVERIFY(host);
+    const cad::param::ParamPoint* orig = host->findPoint(fx.interId);
+    QVERIFY(orig);
 
     cad::param::ParamPoint pt;
     pt.constraint = cad::param::PointConstraint::Intersection;
@@ -911,77 +861,53 @@ void TestIntersectionUpdate::liveSequenceToolCreatedIntersectionFollows()
     pt.isAuxiliary = true;
     pt.visible = true;
     pt.showName = false;
-    pt.refPointA = originId;
-    pt.hostSegmentId = hostSegId;
-    // 射线方向: 与原交点错开 15° (穿过同一线段), 便于独立校验.
-    const cad::param::Block* host = doc.findBlock(hostBlockId);
-    const auto* orig = host->findPoint(interId);
-    QVERIFY(orig);
-    pt.interAngle = orig->interAngle + 15.0;
+    pt.refPointA = fx.originId;
+    pt.hostSegmentId = fx.targetSegId;
+    pt.interAngle = orig->interAngle + 15.0;   // 与原交点错开，便于独立校验
     pt.interBidirectional = orig->interBidirectional;
     const QUuid newId = pt.id;
 
+    const size_t blocksBefore = doc.blocks().size();
     QUndoStack stack;
-    stack.push(new cad::cmd::AddAuxPointCommand(&doc, hostBlockId, hostSegId, pt));
-    QCOMPARE(doc.blocks().size(), size_t(9));   // 未增块, 仅加辅助点
+    stack.push(new cad::cmd::AddAuxPointCommand(&doc, fx.targetBlock,
+                                                fx.targetSegId, pt));
+    QCOMPARE(doc.blocks().size(), blocksBefore);   // 未增块，仅加辅助点
 
-    auto worldPos = [&](const QUuid& id) -> Vec2 {
-        for (const auto& b : doc.blocks())
-            if (const auto* p = b.findPoint(id))
-                return b.worldPos(id);
-        return {};
-    };
-    auto verify = [&](const char* tag, const Vec2& prev, const Vec2& cur) -> double {
-        const auto* h = doc.findBlock(hostBlockId);
-        const auto* s = h->findSegment(hostSegId);
-        const auto* ix = h->findPoint(newId);
+    auto deviationOf = [&](const QUuid& id) -> double {
+        const cad::param::Block* h = doc.findBlock(fx.targetBlock);
+        const cad::param::Segment* s = h ? h->findSegment(fx.targetSegId) : nullptr;
+        const cad::param::ParamPoint* ix = h ? h->findPoint(id) : nullptr;
+        if (!s || !ix || !ix->resolved) return -1000.0;
         bool ok = false;
-        if (!ix || !ix->resolved) { qWarning() << tag << "new intersection unresolved"; return -1000.0; }
-        const Vec2 exp = expectedHit(*h, *s, *ix, worldPos(originId), &ok);
-        if (!ok) { qWarning() << tag << "ray misses segment"; return -1000.0; }
-        const double dev = (worldPos(newId) - exp).length();
-        if (dev > 0.01)
-            qWarning() << tag << "deviation" << dev
-                       << "actual(" << worldPos(newId).x << "," << worldPos(newId).y << ")"
-                       << "expected(" << exp.x << "," << exp.y << ")";
-        Q_UNUSED(prev) Q_UNUSED(cur)
-        return dev;
-    };
-    // 同时也是 check P207 未破坏.
-    auto verifyOrig = [&](const char* tag) -> double {
-        const auto* h = doc.findBlock(hostBlockId);
-        const auto* s = h->findSegment(hostSegId);
-        bool ok = false;
-        const Vec2 exp = expectedHit(*h, *s, *h->findPoint(interId), worldPos(originId), &ok);
-        if (!ok) { qWarning() << tag << "P207 ray misses segment"; return -1000.0; }
-        return (worldPos(interId) - exp).length();
+        const Vec2 exp = expectedHit(*h, *s, *ix, worldPosOf(doc, fx.originId), &ok);
+        if (!ok) return -1000.0;
+        return (worldPosOf(doc, id) - exp).length();
     };
 
-    const Vec2 b0 = worldPos(newId);
-    QVERIFY2(verify("tool-create baseline", b0, b0) < 0.5, "新建交点未解析");
+    const Vec2 b0 = worldPosOf(doc, newId);
+    QVERIFY2(deviationOf(newId) < 0.5, "新建交点未解析");
 
-    for (const auto& v : doc.variables()) {
-        if (v.refName == QLatin1String("B")) {
-            cad::param::Variable nv = v;
-            nv.value = 900.0;
-            doc.updateVariable(nv);
-            break;
-        }
-    }
-    const Vec2 b1 = worldPos(newId);
-    const double devNew = verify("tool-create after B", b0, b1);
-    QVERIFY2(devNew >= 0.0 && devNew < 0.5,
-             qPrintable(QStringLiteral("工具创建的交点在胸围修改后偏离 %1 mm").arg(devNew)));
+    doc.setParameter(QStringLiteral("L"), 16.0);
+    const Vec2 b1 = worldPosOf(doc, newId);
+    QVERIFY2(deviationOf(newId) < 0.5,
+             qPrintable(QStringLiteral("工具创建的交点改变量后偏离 %1 mm")
+                            .arg(deviationOf(newId))));
     QVERIFY2((b1 - b0).length() > 3.0,
-             qPrintable(QStringLiteral("工具创建的交点未随胸围移动 (位移 %1 mm)").arg((b1 - b0).length())));
-    const double devOrig = verifyOrig("P207 after B");
+             qPrintable(QStringLiteral("工具创建的交点未随变量移动 (位移 %1 mm)")
+                            .arg((b1 - b0).length())));
+
+    // 原交点同时保持 on-ray（新建不破坏既有结构）。
+    const double devOrig = deviationOf(fx.interId);
     QVERIFY2(devOrig >= 0.0 && devOrig < 0.5,
-             qPrintable(QStringLiteral("P207 在胸围修改后偏离 %1 mm").arg(devOrig)));
-    qInfo() << "live-sequence: new inter moved" << (b1 - b0).length() << "mm; P207 dev" << devOrig;
+             qPrintable(QStringLiteral("原交点在新建+改变量后偏离 %1 mm").arg(devOrig)));
+    qInfo() << "live-sequence: new inter moved" << (b1 - b0).length()
+            << "mm; original dev" << devOrig;
+
+    // undo 必须收回新建的交点。
+    stack.undo();
+    QVERIFY(!doc.findBlock(fx.targetBlock)->findPoint(newId));
 }
 
-// ---------------------------------------------------------------------------
-// 绝对世界角度交点：勾选/构建为世界角度后，目标线段旋转不应改变射线方向。
 void TestIntersectionUpdate::absoluteWorldAngleIntersectionStaysAbsolute()
 {
     using cad::param::ParamDocument;

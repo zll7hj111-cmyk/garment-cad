@@ -117,7 +117,9 @@ private:
 };
 
  
-/// 组件整组旋转快照字段：被释放的外部 endTarget（成员指向组外点）。
+/// 选集旋转 (RotateBlocksCommand) 释放快照字段：被释放的外部 endTarget
+/// （块指向选集 S 外的点）。原「组件整组旋转」(2026-12, W 键) 模态已删除
+/// (2026-08-29)，快照结构由泛化的 RotateBlocksCommand 沿用。
 struct AimRelease
 {
     QUuid blockId;
@@ -127,7 +129,8 @@ struct AimRelease
     QString endTargetOffsetFormula;
 };
 
-/// 组件整组旋转快照字段：被降级/释放的省道线（start/ref 引用组外点）。
+/// 选集旋转 (RotateBlocksCommand) 释放快照字段：被降级/释放的省道线
+/// （start/ref 引用选集 S 外的点）。
 struct DartRelease
 {
     QUuid blockId;
@@ -140,35 +143,6 @@ struct DartRelease
     QString dartOffsetFormula;
     double dartAngleDeg = 90.0;
     QString dartAngleFormula;
-};
-
-/// 组件整组旋转 (旋转工具 W 键, 2026-12 用户拍板): 全体成员绕任意锚点 rigid
-/// 旋转 (rotation += delta, origin = pivot + (origin - pivot).rotated(delta)).
-/// 整组旋转开始前释放的外部约束 (组件级 attachment / 成员线对组外 leader 的
-/// attachment / 成员指向组外点的 endTarget / 引用组外点的省道线) 由命令
-/// restore-then-replay: undo 原样恢复 (快照完整性铁律).
-class RotateComponentCommand : public QUndoCommand
-{
-public:
-    RotateComponentCommand(cad::param::ParamDocument* doc,
-                           const QUuid& componentId,
-                           const QHash<QUuid, cad::param::Transform2D>& oldTf,
-                           const QHash<QUuid, cad::param::Transform2D>& newTf,
-                           const std::vector<cad::param::Attachment>& releasedAtts,
-                           const std::vector<AimRelease>& releasedTargets,
-                           const std::vector<DartRelease>& releasedDarts,
-                           QUndoCommand* parent = nullptr);
-    void redo() override;
-    void undo() override;
-
-private:
-    cad::param::ParamDocument* m_doc;
-    QUuid m_componentId;
-    QHash<QUuid, cad::param::Transform2D> m_oldTf;
-    QHash<QUuid, cad::param::Transform2D> m_newTf;
-    std::vector<cad::param::Attachment> m_releasedAtts;
-    std::vector<AimRelease> m_releasedTargets;
-    std::vector<DartRelease> m_releasedDarts;
 };
 
 } // namespace cad::cmd

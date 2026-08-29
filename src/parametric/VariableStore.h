@@ -32,6 +32,7 @@ public:
     void updateVariable(const Variable& var);
     [[nodiscard]] const std::vector<Variable>& variables() const { return m_variables; }
     [[nodiscard]] Variable* findVariable(const QUuid& id);
+    [[nodiscard]] const Variable* findVariable(const QUuid& id) const;
 
     // --- Formula variables ---
     void addFormula(FormulaVariable formula);
@@ -39,6 +40,7 @@ public:
     void updateFormula(const FormulaVariable& formula);
     [[nodiscard]] const std::vector<FormulaVariable>& formulas() const { return m_formulas; }
     [[nodiscard]] FormulaVariable* findFormula(const QUuid& id);
+    [[nodiscard]] const FormulaVariable* findFormula(const QUuid& id) const;
 
     /// Re-evaluate all formulas against current variables, update cached values,
     /// and push the results into the document's parameter map + resolve.
@@ -59,6 +61,7 @@ public:
                      int targetLocalIndex);
     [[nodiscard]] const std::vector<FormulaGroup>& formulaGroups() const { return m_formulaGroups; }
     [[nodiscard]] FormulaGroup* findFormulaGroup(const QUuid& groupId);
+    [[nodiscard]] const FormulaGroup* findFormulaGroup(const QUuid& groupId) const;
 
     // --- Silent raw mutations (trusted callers only: deserializer / undo
     // replay). No signals, no recompute — the caller's pipeline owns the

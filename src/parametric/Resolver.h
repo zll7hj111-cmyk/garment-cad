@@ -13,6 +13,7 @@
 namespace cad::param {
 
 class Block;
+class ExpressionCache;
 struct Attachment;
 struct EvalContext;
 struct ParamPoint;
@@ -29,6 +30,16 @@ struct ResolveDiagnostic {
     Kind kind;
     QUuid attachmentId;  ///< Offending attachment (null for global issues).
 };
+
+/// Budget of every bounded fixpoint loop in the resolver (Resolver.cpp and
+/// ParamDocumentResolver.cpp — attachment settle, cross-block intersections,
+/// endpoint aims, dart lines, cross-layer phases, component follow). Each loop
+/// breaks early on the first round that makes no progress, so EXHAUSTING the
+/// budget means the geometry was STILL MOVING on the final allowed round: the
+/// pass did not reach a fixed point and reports NotConverged instead of
+/// silently shipping a half-settled pose. Single definition point — never
+/// re-type the literal in a loop.
+constexpr int kMaxSettleRounds = 4;
 
 /// Resolves the full dependency chain across all Blocks and Attachments.
 /// Usage: call resolveAll() after any parameter change.
@@ -70,6 +81,9 @@ public:
     ///                    reference (same semantics as out-of-scope blocks).
     ///                    Null = full resolve (default). The set is treated as
     ///                    an intersection with the layer @p scope.
+    /// @param exprCache   Compile cache for this pass's formula evaluation
+    ///                    (document-owned). Null = the thread-local fallback
+    ///                    (ExpressionEvaluator::defaultCache()).
     static void resolveAll(std::vector<Block>& blocks,
                            const std::vector<Attachment>& attachments,
                            const QHash<QString, double>& params = {},
@@ -77,7 +91,8 @@ public:
                            std::vector<ResolveDiagnostic>* diagnostics = nullptr,
                            Scope scope = Scope::All,
                            const QUuid& auxLayerId = QUuid(),
-                           const QSet<QUuid>* affectedOnly = nullptr);
+                           const QSet<QUuid>* affectedOnly = nullptr,
+                           ExpressionCache* exprCache = nullptr);
 
 private:
     /// Process a single attachment: position and rotate the from-block

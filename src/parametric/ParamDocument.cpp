@@ -46,6 +46,13 @@ ParamDocument::ParamDocument(QObject* parent)
             this, &ParamDocument::measureVarsChanged);
     connect(m_measureStore.get(), &MeasurementStore::angleMeasureVarsChanged,
             this, &ParamDocument::angleMeasureVarsChanged);
+
+    // P2-5: bound the history. Commands carry FULL model snapshots (and a
+    // delete command snapshots its whole cascade subgraph), so an unbounded
+    // stack grows without limit in a long editing session. 150 steps is far
+    // beyond any realistic "I want that back" reach, and QUndoStack drops the
+    // oldest command on its own once the limit is hit.
+    m_undoStack->setUndoLimit(kUndoStackLimit);
 }
 
 ParamDocument::~ParamDocument() = default;

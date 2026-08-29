@@ -3,9 +3,12 @@
 #include <QString>
 #include <QStringList>
 #include <QHash>
+#include <deque>
 #include <vector>
 
 namespace cad::param {
+
+class ExpressionCache;
 
 /// Tiny recursive-descent evaluator for arithmetic expressions.
 /// Supports: + - * / ^ ( ), unary +/-, decimal numbers, and identifiers
@@ -26,10 +29,16 @@ namespace cad::param {
 /// tighter than unary minus: -2^2 == -(2^2).
 ///
 /// Performance: each unique expression text is compiled ONCE into compact
-/// stack-machine bytecode and cached process-wide (identical text always
-/// yields identical bytecode, so the cache never needs invalidation).
-/// Subsequent evaluate() calls execute the cached bytecode directly,
-/// skipping normalization, tokenization and parse-tree construction.
+/// stack-machine bytecode and cached (identical text always yields identical
+/// bytecode, so a cache entry never needs invalidation). Subsequent
+/// evaluate() calls execute the cached bytecode directly, skipping
+/// normalization, tokenization and parse-tree construction.
+///
+/// WHICH cache is used is now explicit (2026-12 P1-5): the compile cache is a
+/// first-class object (ExpressionCache) owned by the document / pass, not a
+/// process-wide static. Context-free callers still get one via
+/// defaultCache(), which is THREAD-LOCAL — no shared mutable global state, so
+/// a future worker-thread solver cannot race on the cache.
 class ExpressionEvaluator
 {
 public:
@@ -69,11 +78,16 @@ public:
         QString standaloneName;      ///< Valid when isStandalone.
     };
 
-    /// Compile an expression (or fetch its cached bytecode). The returned
-    /// reference stays valid until the compile cache is reset by pathological
-    /// growth (~8192 unique expression texts) — callers must re-fetch per
-    /// call rather than hold the reference across resets.
+    /// Compile an expression (or fetch its cached bytecode) from the
+    /// CONTEXT-FREE fallback cache (defaultCache()). Prefer an explicit
+    /// ExpressionCache (document- or pass-owned) when one is available —
+    /// see cacheFor(EvalContext*).
     static const Compiled& compiled(const QString& expression);
+
+    /// Context-free fallback cache: thread-local, so no cross-thread sharing.
+    /// Used only by callers that have no document/pass context (UI validation,
+    /// one-shot command evaluations, tests).
+    static ExpressionCache& defaultCache();
 
     /// Execute compiled bytecode against a variable map (fast path).
     /// @p normLookup Optional case-folding index (lower(name) -> exact key),
@@ -101,6 +115,10 @@ public:
     [[nodiscard]] static QString standaloneIdentifier(const QString& expression);
 
 private:
+    /// ExpressionCache drives compilation on behalf of its owner (it is the
+    /// only non-member allowed to build bytecode).
+    friend class ExpressionCache;
+
     explicit ExpressionEvaluator(QString normalizedText);
 
     void compile(Compiled& out);
@@ -128,11 +146,69 @@ private:
 /// Nesting-depth limit for the recursive-descent parser.
 constexpr int kMaxParseDepth = 128;
 
+/// Compile cache: expression text -> bytecode. Replaces the old process-wide
+/// static (2026-12 P1-5) with an INSTANCE the owner controls — a document owns
+/// one and threads it through every resolve pass, so its bytecode is
+/// partitioned per document and released on document close/reload.
+///
+/// Reference stability (this is the whole point): entries live in a deque and
+/// are NEVER erased or moved, so a `const Compiled&` handed out earlier stays
+/// valid for the lifetime of the cache. The old static cache reset its entire
+/// store on hitting 8192 entries, silently dangling every reference it had
+/// already handed out (the header could only warn "callers must re-fetch").
+/// The growth guard here instead opens a NEW generation: the old one is
+/// retired (no longer searched or inserted) but stays allocated, so live
+/// references keep pointing at valid memory.
+class ExpressionCache
+{
+public:
+    ExpressionCache() { m_generations.emplace_back(); }
+
+    /// Compile @p expression, or return the cached bytecode. The returned
+    /// reference is stable for the lifetime of this cache.
+    [[nodiscard]] const ExpressionEvaluator::Compiled& compiled(const QString& expression);
+
+    /// Drop every cached entry, reclaiming the memory. Only safe at a
+    /// lifecycle boundary (document clear/close) — references handed out
+    /// earlier are invalidated, so never call it mid-pass.
+    void clear() { m_generations.clear(); m_generations.emplace_back(); }
+
+    /// Entries in the LIVE generation (retired ones are no longer reachable).
+    [[nodiscard]] int size() const
+    { return static_cast<int>(m_generations.back().store.size()); }
+
+    /// Number of generations (1 = never hit the growth guard). Diagnostics.
+    [[nodiscard]] int generationCount() const
+    { return static_cast<int>(m_generations.size()); }
+
+private:
+    /// Max entries in the live generation before a new one is opened. Sizing:
+    /// a real document holds at most a few hundred distinct formulas; the guard
+    /// only exists so live-typing validation (one distinct text per keystroke)
+    /// cannot grow a single generation without bound.
+    static constexpr int kMaxLiveEntries = 8192;
+
+    struct Generation {
+        QHash<QString, int> index;
+        std::deque<ExpressionEvaluator::Compiled> store;
+    };
+
+    /// [0 .. n-2] retired (kept alive only so old references stay valid),
+    /// back() = live generation. std::deque never moves existing elements on
+    /// push_back, so Generation references survive appends.
+    std::deque<Generation> m_generations;
+};
+
 /// Per-pass evaluation memo. Create ONE instance per resolve pass (during
 /// which the variable map is guaranteed unchanged) and thread it through
 /// ConditionEngine::evaluate: identical expression texts then execute only
 /// once per pass no matter how many points/attachments reference them.
 struct EvalContext {
+    /// Compile cache for this pass. Null = use ExpressionEvaluator's
+    /// thread-local fallback (ExpressionEvaluator::defaultCache()). Resolve
+    /// passes run with the owning document's cache, so bytecode is partitioned
+    /// per document and released with it.
+    ExpressionCache* cache = nullptr;
     QHash<QString, ExpressionEvaluator::Result> memo;
     /// Case-folding index: lower(name) -> exact key in the pass's variable
     /// map. Lazily built on first use; a lookup miss falls back to the
@@ -140,5 +216,13 @@ struct EvalContext {
     QHash<QString, QString> normLookup;
     bool normBuilt = false;
 };
+
+/// The cache a formula evaluation should use: the pass's explicit cache when
+/// the caller threaded one through EvalContext, otherwise the thread-local
+/// fallback. Single decision point — no call site picks a cache ad hoc.
+[[nodiscard]] inline ExpressionCache& cacheFor(EvalContext* ctx)
+{
+    return (ctx && ctx->cache) ? *ctx->cache : ExpressionEvaluator::defaultCache();
+}
 
 } // namespace cad::param

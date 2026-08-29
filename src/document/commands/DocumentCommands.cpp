@@ -57,7 +57,7 @@ DeleteBlockCommand::DeleteBlockCommand(cad::param::ParamDocument* doc,
     // layer releases those bridges as independent segments when the host
     // goes away — their pre-deletion state is snapshotted for undo).
     QSet<QUuid> cascade{blockId};
-    for (const QUuid& bridgeId : doc->bridgesPinnedTo(blockId)) {
+    for (const QUuid& bridgeId : doc->attachmentsView().bridgesPinnedTo(blockId)) {
         if (cascade.contains(bridgeId)) continue;
         cascade.insert(bridgeId);
         if (const auto* bridge = doc->findBlock(bridgeId))
@@ -178,13 +178,13 @@ BakeMeasureCopyCommand::BakeMeasureCopyCommand(cad::param::ParamDocument* doc,
     if (!doc) return;
     // The target must be an existing WORKING layer (baking into the aux
     // calculation layer makes no sense).
-    if (targetLayerId.isNull() || doc->layerIndex(targetLayerId) < 0
-        || doc->isAuxLayer(targetLayerId))
+    if (targetLayerId.isNull() || doc->layersView().layerIndex(targetLayerId) < 0
+        || doc->layersView().isAuxLayer(targetLayerId))
         return;
 
     // The hit block must be a measurement line (owns a MeasureVariable).
     const cad::param::MeasureVariable* mv =
-        doc->findMeasureByOwner(sourceMeasureBlockId);
+        doc->measurementsView().measureByOwner(sourceMeasureBlockId);
     const cad::param::Block* src = doc->findBlock(sourceMeasureBlockId);
     if (!src || !mv || src->segments.empty()) return;
 

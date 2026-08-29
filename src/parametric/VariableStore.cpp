@@ -6,6 +6,7 @@
 #include "parametric/ConditionEngine.h"
 #include "parametric/ExpressionEvaluator.h"
 #include "geometry/Units.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::param {
 
@@ -59,6 +60,13 @@ Variable* VariableStore::findVariable(const QUuid& id)
     return (it != m_variables.end()) ? &(*it) : nullptr;
 }
 
+const Variable* VariableStore::findVariable(const QUuid& id) const
+{
+    auto it = std::find_if(m_variables.begin(), m_variables.end(),
+        [&id](const Variable& v) { return v.id == id; });
+    return (it != m_variables.end()) ? &(*it) : nullptr;
+}
+
 // --- Formula variables ---
 
 void VariableStore::addFormula(FormulaVariable formula)
@@ -106,6 +114,13 @@ void VariableStore::updateFormula(const FormulaVariable& formula)
 }
 
 FormulaVariable* VariableStore::findFormula(const QUuid& id)
+{
+    auto it = std::find_if(m_formulas.begin(), m_formulas.end(),
+        [&id](const FormulaVariable& f) { return f.id == id; });
+    return (it != m_formulas.end()) ? &(*it) : nullptr;
+}
+
+const FormulaVariable* VariableStore::findFormula(const QUuid& id) const
 {
     auto it = std::find_if(m_formulas.begin(), m_formulas.end(),
         [&id](const FormulaVariable& f) { return f.id == id; });
@@ -230,6 +245,13 @@ FormulaGroup* VariableStore::findFormulaGroup(const QUuid& groupId)
     return (it != m_formulaGroups.end()) ? &(*it) : nullptr;
 }
 
+const FormulaGroup* VariableStore::findFormulaGroup(const QUuid& groupId) const
+{
+    auto it = std::find_if(m_formulaGroups.begin(), m_formulaGroups.end(),
+        [&groupId](const FormulaGroup& g) { return g.id == groupId; });
+    return (it != m_formulaGroups.end()) ? &(*it) : nullptr;
+}
+
 void VariableStore::clear()
 {
     m_variables.clear();
@@ -306,7 +328,7 @@ void VariableStore::recomputeFormulas()
         if (!v.refName.isEmpty())
             varCm.insert(v.refName, cm);
     }
-    m_doc->publishParamsRaw(varCm);
+    cad::param::RawModelAccess::publishParamsRaw(*m_doc, varCm);
 
     // Base value map (cm): variables under display name + reference name.
     QHash<QString, double> baseMap;

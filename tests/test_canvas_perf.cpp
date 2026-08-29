@@ -20,6 +20,7 @@
 #include <chrono>
 #include <algorithm>
 
+#include "TestHelpers.h"
 #include "canvas/CanvasScene.h"
 #include "parametric/ParamDocument.h"
 #include "tools/SnapEngine.h"
@@ -414,7 +415,7 @@ void TestCanvasPerf::glViewportFrame()
     view.show();
     if (!QTest::qWaitForWindowExposed(&view))
         QSKIP("no window exposed — headless session");
-    QTest::qWait(300);  // GL context creation + first frames
+    cad::test::grabStable(view);  // GL context + 首帧渲染完成(两帧一致), 替代 300ms 墙钟
 
     qInfo().noquote() << QStringLiteral(
         "[canvas-perf] OpenGL context valid: %1")

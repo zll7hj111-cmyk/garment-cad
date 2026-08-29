@@ -10,13 +10,13 @@
 #include <miniz.h>
 
 #include "document/DocumentSerializer.h"
+#include "document/FormatMigration.h"
 #include "parametric/ParamDocument.h"
 
 namespace cad::doc {
 
 namespace {
 
-constexpr int kFormatVersion = 1;
 constexpr const char* kAppVersion = "0.1.0";
 
 /// Build the manifest.json content.
@@ -24,7 +24,7 @@ QByteArray buildManifest()
 {
     QJsonObject obj;
     obj["format"] = "gcad";
-    obj["version"] = kFormatVersion;
+    obj["version"] = cad::doc::kFormatVersion;
     obj["appVersion"] = kAppVersion;
     obj["createdAt"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     obj["modifiedAt"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
@@ -146,13 +146,11 @@ bool DocumentFile::load(const QString& path, cad::param::ParamDocument& doc,
         if (error) *error = QStringLiteral("无效的文件格式（非 gcad）");
         return false;
     }
+    // P2-1: the declared version is walked FORWARD to kFormatVersion by the
+    // registered migration chain before the serializer ever sees the bytes.
+    // A missing "version" field reads as 0 = "predates versioning" and takes
+    // the v0 -> v1 step (layer indices -> stable ids).
     const int version = manifest["version"].toInt();
-    if (version > kFormatVersion) {
-        mz_zip_reader_end(&zip);
-        if (error) *error = QStringLiteral("文件格式版本 %1 不受支持（当前支持 v%2）")
-                                .arg(version).arg(kFormatVersion);
-        return false;
-    }
 
     // Read document.json
     const QByteArray documentData = zipReadFile(zip, "document.json");
@@ -184,7 +182,12 @@ bool DocumentFile::load(const QString& path, cad::param::ParamDocument& doc,
         }
     }
 
-    const QJsonObject root{{"document", docObj}, {"variables", varObj}};
+    QJsonObject root{{"document", docObj}, {"variables", varObj}};
+    QString migrationError;
+    if (!cad::doc::FormatMigration::migrate(version, root, warnings, &migrationError)) {
+        if (error) *error = migrationError;
+        return false;
+    }
     cad::param::DocumentSerializer::deserialize(doc, root, warnings);
 
     return true;

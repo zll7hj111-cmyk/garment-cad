@@ -1,9 +1,10 @@
-#include "AttachmentCommands.h"
+﻿#include "AttachmentCommands.h"
 
 #include <algorithm>
 
 #include "parametric/ParamDocument.h"
 #include "parametric/FollowerAngle.h"
+#include "parametric/ParamDocumentRaw.h"
 
 namespace cad::cmd {
 
@@ -24,7 +25,7 @@ void AddAttachmentCommand::redo()
     // 快照完整性 (用户拍板 2026-09): verbatim 插入, 不经过 addAttachment 的
     // 强制 isLocked=true — undo/redo 必须原样还原用户状态 (与
     // RemoveAttachmentCommand::undo 的 addAttachmentRaw 对称)。
-    m_doc->addAttachmentRaw(m_att);
+    cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_att);
     m_doc->resolveAll();
 }
 
@@ -77,11 +78,11 @@ void RemoveAttachmentCommand::undo()
         m_doc->removeBlock(m_bridge.id);
         m_doc->addBlock(m_bridge);
         for (const auto& a : m_bridgeAtts)
-            m_doc->addAttachmentRaw(a);  // verbatim (keep snapshot isLocked)
+            cad::param::RawModelAccess::addAttachmentRaw(*m_doc, a);  // verbatim (keep snapshot isLocked)
         m_doc->resolveAll();
         return;
     }
-    m_doc->addAttachmentRaw(m_att);  // verbatim (keep snapshot isLocked)
+    cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_att);  // verbatim (keep snapshot isLocked)
     m_doc->resolveAll();
 }
 
@@ -438,7 +439,7 @@ void ReattachAttachmentCommand::redo()
 
     // 先删旧连接, 再以同一 id 原样插入新连接 (保持 isLocked 等快照字面量)。
     m_doc->removeAttachment(m_attId);
-    m_doc->addAttachmentRaw(newAtt);
+    cad::param::RawModelAccess::addAttachmentRaw(*m_doc, newAtt);
     m_doc->resolveAll();
 }
 
@@ -447,7 +448,7 @@ void ReattachAttachmentCommand::undo()
     if (!m_hasOldAtt) return;
     if (auto* a = m_doc->findAttachment(m_attId))
         m_doc->removeAttachment(m_attId);
-    m_doc->addAttachmentRaw(m_oldAtt);
+    cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_oldAtt);
     if (auto* b = m_doc->findBlock(m_oldAtt.fromBlockId)) {
         b->transform.origin = m_oldOrigin;
         b->transform.rotation = m_oldRotation;
@@ -476,14 +477,14 @@ ReconnectAttachmentCommand::ReconnectAttachmentCommand(
 void ReconnectAttachmentCommand::redo()
 {
     m_doc->removeAttachment(m_attId);
-    m_doc->addAttachmentRaw(m_newAtt);
+    cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_newAtt);
     m_doc->resolveAll();
 }
 
 void ReconnectAttachmentCommand::undo()
 {
     m_doc->removeAttachment(m_attId);
-    m_doc->addAttachmentRaw(m_oldAtt);
+    cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_oldAtt);
     if (auto* b = m_doc->findBlock(m_oldAtt.fromBlockId)) {
         b->transform.origin = m_oldOrigin;
         b->transform.rotation = m_oldRotation;
@@ -665,7 +666,8 @@ void SetFollowerAngleCommand::undo()
 bool SetFollowerAngleCommand::mergeWith(const QUndoCommand* other)
 {
     if (other->id() != id()) return false;
-    const auto* cmd = static_cast<const SetFollowerAngleCommand*>(other);
+    const auto* cmd = dynamic_cast<const SetFollowerAngleCommand*>(other);
+    if (!cmd) return false;  // id collision safety net (P0-2): never cast a stranger
     if (cmd->m_attId != m_attId) return false;
     // Only plain numeric drags merge; formula changes are discrete edits.
     if (!m_newFormula.isEmpty() || !cmd->m_newFormula.isEmpty()) return false;
@@ -674,6 +676,39 @@ bool SetFollowerAngleCommand::mergeWith(const QUndoCommand* other)
     m_newMode = cmd->m_newMode;
     m_newArcLength = cmd->m_newArcLength;
     return true;
+}
+
+// ─── SetAttachmentBaselineOffsetCommand ───
+
+SetAttachmentBaselineOffsetCommand::SetAttachmentBaselineOffsetCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId, double newOffsetDeg,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newOffset(newOffsetDeg)
+{
+    setText(QStringLiteral("重置基准偏转"));
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldOffset = a.baselineOffsetDeg;
+            break;
+        }
+    }
+}
+
+void SetAttachmentBaselineOffsetCommand::redo()
+{
+    if (auto* a = m_doc->findAttachment(m_attId))
+        a->baselineOffsetDeg = m_newOffset;
+    m_doc->resolveAll();
+}
+
+void SetAttachmentBaselineOffsetCommand::undo()
+{
+    if (auto* a = m_doc->findAttachment(m_attId))
+        a->baselineOffsetDeg = m_oldOffset;
+    m_doc->resolveAll();
 }
 
 } // namespace cad::cmd

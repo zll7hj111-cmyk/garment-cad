@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cmath>
 #include <numbers>
@@ -46,6 +46,23 @@ inline double normalizeRad(double rad)
     while (rad >  kPi) rad -= 2.0 * kPi;
     while (rad <= -kPi) rad += 2.0 * kPi;
     return rad;
+}
+
+// ─── Arc length ↔ angle conversion (闭合基准, 2026-08 定稿) ────────────────────
+
+/// Convert an arc length (mm) on a circle of the given radius (mm) to the
+/// subtended angle in degrees. The closed-base mapping: 弧长 0 = 0° 折叠,
+/// πr = 180° 开平. Returns 0 for a degenerate (≤ 1e-9) radius.
+inline double arcMmToDeg(double arcMm, double radiusMm)
+{
+    return (radiusMm > 1e-9) ? (arcMm / radiusMm) * 180.0 / kPi : 0.0;
+}
+
+/// Convert an angle in degrees to the arc length (mm) on a circle of the
+/// given radius (mm). Inverse of arcMmToDeg.
+inline double degToArcMm(double deg, double radiusMm)
+{
+    return deg * kPi / 180.0 * radiusMm;
 }
 
 } // namespace cad::geo
