@@ -343,6 +343,22 @@ void MainWindow::setupMenuBar()
             this, &MainWindow::toggleTheme);
     viewMenu->addAction(m_actionToggleTheme);
 
+    // 线段方向基准箭头全局开关 (2026-12): 画布上每段起点→终点的小箭头
+    // (DirectionMarker.h, 换向可见反馈)。纯显示属性, QSettings 记忆跨会话。
+    m_actionToggleDirArrows = new QAction(
+        QString::fromUtf8("线段方向箭头(&A)"), this);
+    m_actionToggleDirArrows->setCheckable(true);
+    m_actionToggleDirArrows->setChecked(
+        QSettings().value(QStringLiteral("view/directionArrows"), true).toBool());
+    if (m_canvasScene)
+        m_canvasScene->setDirectionArrowsEnabled(m_actionToggleDirArrows->isChecked());
+    connect(m_actionToggleDirArrows, &QAction::toggled, this, [this](bool on) {
+        if (m_canvasScene)
+            m_canvasScene->setDirectionArrowsEnabled(on);
+        QSettings().setValue(QStringLiteral("view/directionArrows"), on);
+    });
+    viewMenu->addAction(m_actionToggleDirArrows);
+
     // ===== 帮助菜单 =====
     QMenu* helpMenu = elaMenuBar->addMenu(QString::fromUtf8("帮助(&H)"));
     QAction* aboutAction = helpMenu->addAction(

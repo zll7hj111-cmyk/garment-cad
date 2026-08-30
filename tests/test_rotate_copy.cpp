@@ -197,6 +197,7 @@ private slots:
     void xToggleSwitchesAnchorToEndPoint();
     void clickEndPointSwitchesAnchor();
     void connectedLineXAnchorSwitchBlocked();
+    void independentAngleLineRotatesBlockKeepsPin();
     void endAnchorRotateCopyAttachesToEnd();
     void endAnchorLineFollowsCursor();
     /// 条带「换向」在旋转会话内 = 切换锚心 (2026-12): 转交 ToolRotate 切锚心,
@@ -1956,6 +1957,88 @@ void TestRotateCopy::connectedLineXAnchorSwitchBlocked()
     const Attachment* keep2 = followerAttachmentOf(doc, a.blockId);
     QVERIFY(keep2);
     QVERIFY(std::abs(keep2->followerAngle - 180.0) < 1e-6);
+    QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - 0.0) < 1e-6);
+}
+
+// 回归 (用户报告 2026-12): 勾选「独立角度」后旋转拖动无效 —— 旧实现把
+// 独立角线当普通跟随线进 Connected 模式写 followerAngle, 而 Resolver 对
+// angleIndependent 忽略 followerAngle → 拖了不转。独立角线必须走自由线
+// 旋转 (写块 transform.rotation), 且位置焊点绝不能被"旋转=放弃跟随"释放。
+void TestRotateCopy::independentAngleLineRotatesBlockKeepsPin()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    // B: (200,0)→(300,0); A hangs on B's END, 独立角度 (位置焊死、角度自管)
+    // → A 初始 0° 世界角: (300,0)→(360,0)。
+    const LineSetup b = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+    const LineSetup a = makeLine(doc, 60.0);
+    Attachment conn;
+    conn.fromBlockId = a.blockId;
+    conn.fromPointId = a.startId;
+    conn.toBlockId = b.blockId;
+    conn.toPointId = b.endId;
+    conn.toSegmentId = b.segId;
+    conn.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(conn));
+    doc.setAttachmentAngleIndependent(conn.id, true);
+    doc.resolveAll();
+    QVERIFY(doc.diagnostics().empty());
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - 0.0) < 1e-6);
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    StripBridge bridge(&doc, tm);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 选中 A: 锚 = 挂接端 (起点 300,0) —— 独立角线锚心仍在位置焊点。
+    const QPoint mid = vp(330.0, 0.0);
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoModifier);
+
+    sendConfirm(view);
+    // 绕起点 (300,0) 拖到 (300,−100): 光标角 = atan2(−100,0) = −90°,
+    // 自由线 target = 起始角 0 + 增量 −90 = −90° (与 connectedLineXAnchorSwitchBlocked
+    // 同一次拖动, 世界角 = −90°)。
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(300.0, -100.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(300.0, -100.0), Qt::LeftButton,
+              Qt::NoModifier);
+
+    // 位置焊点保留 (attachment 仍在), 且块自己转了 → 世界角 = −90°。
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment* keep = followerAttachmentOf(doc, a.blockId);
+    QVERIFY(keep);
+    QVERIFY2(keep->angleIndependent, "独立角度标志不得被旋转清除");
+    const Block* blk = doc.findBlock(a.blockId);
+    QVERIFY(blk);
+    QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - (-90.0)) < 1e-6);
+    // 位置焊点不动: A 起点仍在 B 终点 (300,0)。
+    QVERIFY(blk->worldPos(a.startId).distanceTo(Vec2(300.0, 0.0)) < 1e-6);
+
+    // 一步 undo 回 0° (transform 恢复, attachment 不动)。
+    stack.undo();
+    QCOMPARE(doc.attachments().size(), size_t(1));
     QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - 0.0) < 1e-6);
 }
 

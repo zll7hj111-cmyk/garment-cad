@@ -22,6 +22,7 @@
 #include "parametric/Serial.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
 #include "TestHelpers.h"
 
 using namespace cad::param;
@@ -119,6 +120,7 @@ private slots:
     void lengthEditApplies();
     void angleEditApplies();
     void followerAngleEditApplies();
+    void independentAngleEditApplies();
     void multiLineFollowerAttachedToOtherLine();
     void multiLineUndoRestoresOwnLine();
     void bridgeLineReadOnly();
@@ -279,6 +281,62 @@ void TestContextStrip::followerAngleEditApplies()
         if (x.fromBlockId == follower.blockId) { a = &x; break; }
     QVERIFY(a);
     QVERIFY(std::abs(a->followerAngle - 45.0) < 1e-9);
+}
+
+// 回归 (用户报告 2026-12): 勾选「独立角度」后, 条带角度输入失效
+// (旧实现把独立角当成普通跟随线写 followerAngle, 而 Resolver 对
+// angleIndependent 忽略 followerAngle → 输入静默无效)。独立角 = 位置焊死、
+// 角度自管: 条带必须走自由线路径 (改端点 Polar 角)。
+void TestContextStrip::independentAngleEditApplies()
+{
+    ParamDocument doc;
+    const LineRef leader = makeLine(doc);
+    const LineRef follower = makeLine(doc, /*lenMm=*/60.0);
+
+    Attachment att;
+    att.fromBlockId = follower.blockId;
+    att.fromPointId = follower.startId;
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    QVERIFY(doc.addAttachment(att));
+    doc.setAttachmentAngleIndependent(att.id, true);
+    doc.resolveAll();
+
+    // 独立角: 位置仍吸在 leader.end, 角度自管 —— 条带显示世界角 (端点 Polar)。
+    ContextStrip strip(&doc);
+    strip.setPinnedTarget(follower.blockId, follower.segId);
+    QVERIFY(!strip.angleEdit()->text().isEmpty());
+
+    const QUuid followerId = follower.blockId;
+    const QUuid endId = follower.endId;
+    strip.angleEdit()->setText(QStringLiteral("45"));
+    emit strip.angleEdit()->editingFinished();
+    // P2-3: condition wait instead of a 10 ms sleep. 世界角 = rotDeg + 局部角,
+    // 条带字段显示世界角并回写 (targetDeg - rotDeg), 故世界角应到 45°。
+    QVERIFY2(cad::test::waitUntil([&] {
+                 const auto* bb = doc.findBlock(followerId);
+                 const auto* e  = bb ? bb->findPoint(endId) : nullptr;
+                 const auto* s  = bb ? bb->findPoint(bb->segments.front().startPointId) : nullptr;
+                 if (!bb || !e || !s || !s->resolved || !e->resolved) return false;
+                 const double rotDeg = bb->transform.rotation * 180.0 / M_PI;
+                 const double world = cad::geo::normalizeDeg360(e->angle + rotDeg);
+                 return std::abs(world - 45.0) < 1e-9;
+             }),
+             "timed out waiting for the independent-angle edit to reach the model");
+
+    // 附件必须原样保留 (独立角 = 位置连接仍在, 只是角度不跟随)。
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const Attachment* a = nullptr;
+    for (const auto& x : doc.attachments())
+        if (x.fromBlockId == follower.blockId) { a = &x; break; }
+    QVERIFY(a);
+    QVERIFY2(a->angleIndependent, "独立角度标志不得被条带编辑清除");
+    // 局部 Polar 角 = 45 − rotDeg (世界角 = 45), 块旋转保持不动。
+    auto* b = doc.findBlock(follower.blockId);
+    const auto* ep = b->findPoint(follower.endId);
+    QVERIFY(ep);
+    const double rotDeg2 = b->transform.rotation * 180.0 / M_PI;
+    QVERIFY(std::abs(ep->angle - (45.0 - rotDeg2)) < 1e-9);
 }
 
 // 块带两条线段、follower 只锚在 seg1 端点时：编辑 seg2 的角度必须走自由线

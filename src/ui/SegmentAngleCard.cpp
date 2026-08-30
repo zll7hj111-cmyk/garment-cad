@@ -449,7 +449,10 @@ void SegmentAngleCard::applyAngle()
 
     m_editAngle->setStyleSheet(QString());
     m_lblFxAngle->setVisible(!parsed.isNumber && !parsed.formula.isEmpty());
-    populateAngleField();
+    // 不在此处重新 populateAngleField(): 写入后几何尚未重解 (resolveAll 由
+    // 对话框 refreshScene 延后触发), 此时按 resolvedPos 读世界角会拿到**旧值**
+    // 并覆盖用户刚输入的内容 → "输入角度不断跳动" (用户报告 2026-12)。保留
+    // 用户输入, 世界角读数由 onDocResolved (resolved 信号) 在重解后刷新。
     refresh();
     emit changed();
 }

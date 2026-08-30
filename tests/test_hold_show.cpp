@@ -70,6 +70,9 @@ private slots:
     /// 画布方向指示 (2026-12): 换向几何零跳变, 箭头是唯一可见反馈 —— 像素级
     /// 断言换向前后箭头左右镜像。
     void directionChevronFlipsOnReverse();
+    /// 方向基准箭头全局开关 (2026-12): 关闭后箭头整组隐藏 —— 换向前后两次
+    /// 抓帧完全一致 (无箭头 = 换向零可见变化)。
+    void directionArrowsGlobalToggleHidesChevron();
 };
 
 void TestHoldShow::forceNameRevealsSegmentAndPointLabels()
@@ -249,6 +252,40 @@ void TestHoldShow::directionChevronFlipsOnReverse()
              qPrintable(QStringLiteral("箭头差集应在中点附近 (mid %1,%2 diff %3,%4)")
                             .arg(midDev.x()).arg(midDev.y())
                             .arg(dc.x()).arg(dc.y())));
+}
+
+// 方向基准箭头全局开关 (2026-12): 关闭后箭头整组隐藏 —— 换向 (ReverseSegment
+// Command, 几何零跳变) 前后两次抓帧应逐字节一致 (无箭头 = 换向零可见变化),
+// 与 directionChevronFlipsOnReverse (开关开时有差集) 互为镜像。
+void TestHoldShow::directionArrowsGlobalToggleHidesChevron()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    const auto setup = makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    CanvasScene scene(&doc);
+    QVERIFY(scene.directionArrowsEnabled());   // 默认开
+    scene.addBlockItem(setup.blockId);
+
+    // 先关全局开关 (两帧都在关态下抓), 再换向。
+    scene.setDirectionArrowsEnabled(false);
+
+    QGraphicsView view(&scene);
+    view.resize(800, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QImage before = cad::test::grabStable(view);
+
+    // 换向 (几何零跳变): 无箭头 → 画布零变化。
+    QUndoStack stack;
+    stack.push(new cad::cmd::ReverseSegmentCommand(&doc, setup.blockId, setup.segId));
+    QImage after = cad::test::grabStable(view);
+
+    QCOMPARE(before.size(), after.size());
+    bool identical = (before == after);
+    QVERIFY2(identical,
+             "方向箭头全局开关关闭后, 换向不应产生任何像素变化 (箭头已整组隐藏)");
 }
 
 QTEST_MAIN(TestHoldShow)

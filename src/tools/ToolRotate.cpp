@@ -395,7 +395,13 @@ void ToolRotate::rebuildAnchorState()
     if (!ap || !ap->resolved) { clearTarget(); return; }
 
     cad::param::Attachment* att = attachmentAtPoint(m_anchorPointId);
-    if (att) {
+    // 独立角度 (angleIndependent): 位置仍焊在宿主, 但角度自管 —— Resolver
+    // 保留 from.transform.rotation, followerAngle 被忽略。因此旋转**走自由线
+    // 路径** (直接写块 transform), 锚心仍取挂连接端 (位置钉点); 拖帧内 Resolver
+    // 会把 from-point 重新吸回宿主点, 只留下旋转生效 (用户报告 2026-12:
+    // 独立角度线旋转拖动无效, 根因 = 当普通跟随线写 followerAngle 被忽略)。
+    const bool angleIndependent = att && att->angleIndependent;
+    if (att && !angleIndependent) {
         // ── Connected mode: the anchor IS the attachment point, so the
         // rotation edits the follower angle. ──
         m_connected = true;
@@ -414,6 +420,7 @@ void ToolRotate::rebuildAnchorState()
         m_baseArcFormula = att->arcLengthFormula;
     } else {
         // ── Free mode: rotate rigidly about the anchor point. ──
+        // (独立角度连接线同样走这里: 角度账本 = 块 transform.rotation。)
         m_connected = false;
         m_attId = QUuid();
         m_anchorLocal = ap->resolvedPos;
@@ -428,12 +435,16 @@ void ToolRotate::rebuildAnchorState()
     // The pivot moved OFF the follower link (anchor != attachment point): the
     // rotation will RELEASE the link (旋转 = 放弃跟随). Snapshot it now so the
     // release can happen at drag start and be restored by Esc / undo.
+    // 独立角度连接线绝不释放 —— 位置焊点是独立角语义的一部分 (角度自由、
+    // 位置仍被宿主钉住)。
     if (!m_releaseAttHeld) {
         m_releaseAttId = QUuid();
         if (!m_connected) {
             if (auto* fa = followerAttachment()) {
-                m_releaseAttId = fa->id;
-                m_releaseAttBackup = *fa;
+                if (!fa->angleIndependent) {
+                    m_releaseAttId = fa->id;
+                    m_releaseAttBackup = *fa;
+                }
             }
         }
     }

@@ -179,6 +179,8 @@ private:
     QAction*  m_actionToggleAuxLayer = nullptr;
     /// 视图 → 暗色主题 (checkable, mirrors Theme::mode()).
     QAction*  m_actionToggleTheme = nullptr;
+    /// 视图 → 线段方向箭头 (checkable, 画布方向基准箭头全局开关, QSettings 记忆).
+    QAction*  m_actionToggleDirArrows = nullptr;
 
     // File menu actions
     QMenu*    m_recentFilesMenu = nullptr;

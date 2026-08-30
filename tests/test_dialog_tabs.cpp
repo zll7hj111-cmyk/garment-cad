@@ -16,6 +16,7 @@
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasView.h"
 #include "ui/LinePropertyDialog.h"
+#include "ui/SegmentAngleCard.h"
 #include "ui/PointRefEdit.h"
 #include "ui/SegmentAuxTab.h"
 #include "ui/SegmentExtendCard.h"
@@ -26,6 +27,7 @@
 #include "ui/AuxPointForm.h"
 #include "ElaScrollPageArea.h"
 #include "ElaText.h"
+#include "geometry/Angle.h"
 #include "TestHelpers.h"
 
 using namespace cad::param;
@@ -49,6 +51,7 @@ private slots:
     void probeCardTitleColor();        ///< why section titles look washed out (像素探针)
     void endpointCardsSideBySide();    ///< 端点 起点|终点 双微卡并排 (2026-12 去卡框化布局)
     void connectCardUniformHeights();  ///< 连接卡行内控件统一高度/宽度 (用户 2026-12 反馈)
+    void independentAngleInputDoesNotJump();  ///< 独立角输入不回跳 (用户 2026-12 反馈)
 };
 
 namespace {
@@ -681,6 +684,65 @@ void TestDialogTabs::connectCardUniformHeights()
     }
 
     qInfo() << "[uniform] conn card controls all 35px high; ref inputs 150px";
+    delete dlg;
+}
+
+// 回归 (用户报告 2026-12): 独立角度线的角度输入"不断跳动" —— applyAngle
+// 写模型后立即 populateAngleField 按 (尚未重解的) resolvedPos 读回世界角,
+// 拿到旧值覆盖用户刚输入的内容。修复后输入保留, 世界角由 onDocResolved
+// (重解广播) 刷新。
+void TestDialogTabs::independentAngleInputDoesNotJump()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    const LineSetup leader = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+    const LineSetup follower = makeLine(doc, 60.0);
+    Attachment att;
+    att.fromBlockId = follower.blockId;
+    att.fromPointId = follower.startId;
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    QVERIFY(doc.addAttachment(att));
+    doc.setAttachmentAngleIndependent(att.id, true);
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        follower.blockId, follower.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<cad::ui::SegmentAngleCard*>() != nullptr;
+             }),
+             "timed out waiting for SegmentAngleCard* to appear");
+    auto* card = dlg->findChild<cad::ui::SegmentAngleCard*>();
+    QVERIFY(card);
+    ElaLineEdit* edit = card->findChild<ElaLineEdit*>();
+    QVERIFY(edit);
+
+    // 用户输入 45 并回车: 输入必须保留 (不回跳), 模型角度确实改了。
+    edit->setText(QStringLiteral("45"));
+    emit edit->editingFinished();
+
+    const QUuid fid = follower.blockId;
+    QVERIFY2(cad::test::waitUntil([&] {
+                 const auto* b = doc.findBlock(fid);
+                 const auto* e = b ? b->findPoint(follower.endId) : nullptr;
+                 const auto* s = b ? b->findPoint(b->segments.front().startPointId) : nullptr;
+                 if (!b || !e || !s || !s->resolved || !e->resolved) return false;
+                 const double rotDeg = b->transform.rotation * 180.0 / M_PI;
+                 const double world = cad::geo::normalizeDeg360(e->angle + rotDeg);
+                 return std::abs(world - 45.0) < 1e-9;
+             }),
+             "timed out: independent-angle world angle did not reach 45");
+    // 输入不回跳: 编辑框仍是用户输入的值 (旧 bug: 被旧世界角覆盖)。
+    QCOMPARE(edit->text(), QStringLiteral("45"));
+    // 附件原样保留。
+    QCOMPARE(doc.attachments().size(), size_t(1));
     delete dlg;
 }
 

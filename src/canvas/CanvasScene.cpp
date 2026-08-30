@@ -254,6 +254,15 @@ void CanvasScene::setForceShowLength(bool on)
     emit forceShowChanged(m_forceShowName, m_forceShowLength);
 }
 
+void CanvasScene::setDirectionArrowsEnabled(bool on)
+{
+    if (m_directionArrowsEnabled == on) return;
+    m_directionArrowsEnabled = on;
+    // Repaint only: geometry/caches untouched (pure display overlay).
+    for (auto* item : m_blockItems)
+        item->update();
+}
+
 
 void CanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
 {

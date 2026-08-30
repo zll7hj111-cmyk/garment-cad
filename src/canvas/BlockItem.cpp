@@ -144,11 +144,13 @@ void BlockItem::paint(QPainter* painter,
     CanvasAnimator* animator = nullptr;
     const CanvasStyle* style = nullptr;
     bool forceName = false, forceLen = false;  // Hold-to-show (N/M keys).
+    bool dirArrows = true;   // 方向基准箭头全局开关 (2026-12); 无场景时保持画.
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
         animator  = cs->animator();
         style     = cs->style();
         forceName = cs->forceShowName();
         forceLen  = cs->forceShowLength();
+        dirArrows = cs->directionArrowsEnabled();
     }
 
     // A block on a hidden layer is not painted at all (setVisible(false) also
@@ -206,8 +208,9 @@ void BlockItem::paint(QPainter* painter,
 
         // 方向指示 (2026-12): 起点 → 终点 小箭头, 换向 (ReverseSegmentCommand)
         // 后 start/end 互换 → 缓存重算 → 箭头自动翻转 —— 换向几何零跳变,
-        // 这是画布上唯一的"换向可见反馈"。灰显层不画 (同标签)。
-        if (!grayed) {
+        // 这是画布上唯一的"换向可见反馈"。灰显层不画 (同标签); 全局开关
+        // (CanvasScene::directionArrowsEnabled) 关闭时整组隐藏。
+        if (!grayed && dirArrows) {
             QColor dirColor = pp.labelColor;
             if (ghost) dirColor.setAlpha(kGhostAlpha);
             const double ang = std::atan2(lc.p2.y() - lc.p1.y(),

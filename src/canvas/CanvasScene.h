@@ -81,6 +81,12 @@ public:
     void setForceShowName(bool on);
     void setForceShowLength(bool on);
 
+    /// 线段方向基准箭头全局开关 (2026-12): 画布上每段起点→终点的小箭头
+    /// (DirectionMarker.h) 随此开关显隐。纯显示属性 —— 模型/几何缓存不动,
+    /// 只重绘。默认开; 由主窗口 视图 → 线段方向箭头 控制并经 QSettings 记忆。
+    [[nodiscard]] bool directionArrowsEnabled() const { return m_directionArrowsEnabled; }
+    void setDirectionArrowsEnabled(bool on);
+
     /// Transient toast pill anchored at the top-center of the first view
     /// (工具守卫提示, auto-hides after ~1.4 s). Shared by every tool.
     void showToast(const QString& text);
@@ -165,4 +171,5 @@ private:
     // to the model.
     bool m_forceShowName = false;
     bool m_forceShowLength = false;
+    bool m_directionArrowsEnabled = true;  ///< 线段方向基准箭头全局开关 (2026-12).
 };
