@@ -98,10 +98,10 @@ bool ParamDocument::addAttachment(Attachment att)
         return false;
 
     // 新建连接默认勾选「拖动保护」(isLocked=true): 整对移动是默认语义。
-    // 面板取消勾选 = 解焊 (连接保持完整, 拖跟随线可拆散); 仅角度态
-    // (angleOnly) 或滑轨态的置位互斥由 setAttachmentXxx 保持。
+    // 面板取消勾选 = 解焊 (连接保持完整, 拖跟随线可拆散); 滑轨态与
+    // 拆开 (angleOnly) 的置位互斥由 setAttachmentXxx 保持 (2026-xx 起
+    // angleOnly 与 angleIndependent 两维独立, 不再互斥)。
     att.isLocked = true;
-
     m_attachments.push_back(std::move(att));
     if (crossLayer)
         ++m_crossLayerCount;
@@ -214,9 +214,8 @@ void ParamDocument::setAttachmentAngleOnly(const QUuid& id, bool angleOnly)
     it->isLocked = !angleOnly;
     // 拆开 (位置全自由) 与滑轨 (一轴自由) 互斥: 拆开时清除滑轨模式.
     it->slideMode = SlideMode::None;
-    // 仅角度 (位置自由+角度跟随) 与角度独立 (位置钉住+角度自由) 相反。
-    if (angleOnly)
-        it->angleIndependent = false;
+    // 2026-xx 两维独立 (用户拍板): 位置维度与角度维度不再互斥 —— 拆开
+    // (angleOnly) 不碰 angleIndependent (基准点按钮独立控制角度维度)。
     resolveAll();
 }
 
@@ -228,8 +227,9 @@ void ParamDocument::setAttachmentAngleIndependent(const QUuid& id, bool angleInd
         return;
     it->angleIndependent = angleIndependent;
     if (angleIndependent) {
-        // 角度独立 = 位置仍然全连接; 与“仅角度”和“滑轨”互斥。
-        it->angleOnly = false;
+        // 2026-xx 两维独立 (用户拍板): 角度独立只拆角度维度 —— 不再清除
+        // angleOnly (位置维度由连接点按钮独立控制)。滑轨需角度跟随,
+        // 进独立角时清除滑轨模式 (与 slideMode 仍互斥)。
         it->slideMode = SlideMode::None;
     } else {
         // 退出角度独立: 反算当前世界方向对应的 followerAngle, 恢复角度跟随
@@ -269,7 +269,7 @@ void ParamDocument::setAttachmentAngleIndependent(const QUuid& id, bool angleInd
             it->arcLength = 0.0;
             it->arcLengthFormula.clear();
         }
-        it->angleOnly = false;
+        // 2026-xx: 退出独立角只恢复角度维度, 不碰 angleOnly (位置维度独立)。
         it->slideMode = SlideMode::None;
     }
     resolveAll();

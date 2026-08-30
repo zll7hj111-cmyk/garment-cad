@@ -232,7 +232,8 @@ public:
     void setAttachmentAngleOnly(const QUuid& id, bool angleOnly);
     /// 位置吸附保持、角度独立 (用户新需求 2026): 连接仍把 from-point 钉在
     /// leader 点上, 但 Resolver 不再驱动跟随线旋转 —— 本线角度保持自己的
-    /// 当前角度/公式。与 angleOnly (位置自由) 和 slideMode (一轴滑轨) 互斥。
+    /// 当前角度/公式。2026-xx 两维独立 (用户拍板): 与 angleOnly (位置维度)
+    /// 不再互斥, 仅与 slideMode (一轴滑轨) 互斥。
     void setAttachmentAngleIndependent(const QUuid& id, bool angleIndependent);
     /// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): 切换 Attachment 的 slideMode。
     /// 进入滑轨 (AlongLeader / PerpLeader): 先按当前几何快照锁轴坐标

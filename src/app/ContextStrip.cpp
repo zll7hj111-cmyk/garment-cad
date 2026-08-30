@@ -447,7 +447,10 @@ void ContextStrip::refreshFields()
 
     if (!m_angleEdit->hasFocus()) {
         const QSignalBlocker ab(m_angleEdit);
-        if (const cad::param::Attachment* att = findEditAttachment()) {
+        const cad::param::Attachment* att = findEditAttachment();
+        // 独立角度 (angleIndependent): 角度自管 = 世界角, 与自由线同显示
+        // (followerAngle 已被 Resolver 忽略, 显示它会读到陈旧/无意义值)。
+        if (att && !att->angleIndependent) {
             if (att->rotationMode == cad::param::RotationMode::ArcLength) {
                 m_angleEdit->setText(att->arcLengthFormula.isEmpty()
                     ? foldedArcDisplay(att)
@@ -518,11 +521,14 @@ void ContextStrip::refreshChrome()
         m_angleEdit->setReadOnly(isBridge);
     }
 
-    // 单位段: 弧长模式只有跟随连接才有意义; 自由线/桥线禁用。
-    const bool arc = att && att->rotationMode == cad::param::RotationMode::ArcLength;
+    // 单位段: 弧长模式只有跟随连接才有意义; 自由线/桥线/独立角度线禁用
+    // (独立角 = 角度自管, Resolver 忽略 rotationMode, 切 ⌒ 无意义)。
+    const bool arc = att && !att->angleIndependent
+        && att->rotationMode == cad::param::RotationMode::ArcLength;
     m_btnUnitAngle->setChecked(!arc);
     m_btnUnitArc->setChecked(arc);
-    const bool unitEnabled = (att != nullptr) && m_focus == StripFocus::Pinned;
+    const bool unitEnabled = (att != nullptr) && !att->angleIndependent
+                             && m_focus == StripFocus::Pinned;
     m_btnUnitAngle->setEnabled(unitEnabled);
     m_btnUnitArc->setEnabled(unitEnabled);
 
@@ -551,11 +557,28 @@ void ContextStrip::refreshChrome()
     m_btnReverse->setEnabled(canRev);
     m_btnReverse->setToolTip(reason);
 
-    // 状态徽标: 一眼看出这条线受谁驱动。
+    // 状态徽标: 一眼看出这条线受谁驱动 (2026-xx 两维独立: 双拆开 = 自由)。
     if (isBridge) {
         m_badge->setText(QString::fromUtf8("桥线"));
     } else if (seg->isCurve()) {
         m_badge->setText(QString::fromUtf8("曲线"));
+    } else if (att && att->angleIndependent && att->angleOnly) {
+        // 位置与角度都拆开 = 自由线 (attachment 仍存, 但两个维度都不驱动)。
+        m_badge->setText(QString::fromUtf8("自由"));
+    } else if (att && att->angleIndependent) {
+        // 独立角度: 位置仍跟随宿主, 但角度自管 —— 徽标说明这是"独立角"状态。
+        const auto* leader = m_paramDoc->findBlock(att->toBlockId);
+        const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
+        m_badge->setText(leaderSeg
+            ? QString::fromUtf8("独立角 · 位置跟随 %1").arg(cad::param::Serial::tag(leaderSeg->serial))
+            : QString::fromUtf8("独立角"));
+    } else if (att && att->angleOnly) {
+        // 仅角度 (拆开): 位置自由, 角度仍跟随基准线。
+        const auto* leader = m_paramDoc->findBlock(att->toBlockId);
+        const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
+        m_badge->setText(leaderSeg
+            ? QString::fromUtf8("仅角度 · 跟随 %1").arg(cad::param::Serial::tag(leaderSeg->serial))
+            : QString::fromUtf8("仅角度"));
     } else if (att) {
         const auto* leader = m_paramDoc->findBlock(att->toBlockId);
         const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
@@ -668,7 +691,11 @@ void ContextStrip::applyAngle()
     }
 
     auto st = snapshotState();
-    if (const cad::param::Attachment* att = findEditAttachment()) {
+    const cad::param::Attachment* att = findEditAttachment();
+    // 独立角度 (angleIndependent): 位置焊死、角度自管 —— 与自由线同路径,
+    // 改端点 Polar 角而非 followerAngle (Resolver 对 angleIndependent 忽略
+    // followerAngle, 写它 = 静默无效, 用户报告 2026-12)。
+    if (att && !att->angleIndependent) {
         st.attId = att->id;
         if (att->rotationMode == cad::param::RotationMode::ArcLength) {
             st.arcLength = cad::geo::Units::cmToMm(targetDeg);
@@ -694,6 +721,7 @@ void ContextStrip::applyAngle()
         const double anchorOffset = (m_rotateSession && m_rotateAnchorIsEnd) ? 180.0 : 0.0;
         st.endAngle = (targetDeg - anchorOffset) - rotDeg;
         st.endAngleFormula.clear();
+        if (att && att->angleIndependent) st.attId = QUuid();  // 不碰附件
     }
     commitState(std::move(st));
 }

@@ -174,8 +174,9 @@ void SetAttachmentAngleIndependentCommand::redo()
 
     a->angleIndependent = m_newIndependent;
     if (m_newIndependent) {
-        // 角度独立与仅角度/滑轨互斥: 进入时保持“位置钉住 + 角度自由”。
-        a->angleOnly = false;
+        // 2026-xx 两维独立 (用户拍板): 角度独立只拆角度维度 —— 不再清除
+        // angleOnly (位置维度由「连接点」按钮独立控制)。滑轨需角度跟随,
+        // 进独立角时清除滑轨模式 (与 slideMode 仍互斥)。
         a->slideMode = cad::param::SlideMode::None;
     } else {
         // 退出独立角度: 反算当前世界方向对应的 followerAngle, 恢复角度跟随
@@ -215,7 +216,6 @@ void SetAttachmentAngleIndependentCommand::redo()
             a->arcLength = 0.0;
             a->arcLengthFormula.clear();
         }
-        a->angleOnly = false;
         a->slideMode = cad::param::SlideMode::None;
     }
     m_doc->resolveAll();

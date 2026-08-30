@@ -39,7 +39,7 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(6);
 
-    // ── 引用行 (两行结构): 行1 引用线段; 行2 引用点+清除 ──
+    // ── 引用行 (两行结构): 行1 引用线段; 行2 引用点+拆开/重连 ──
     auto* refRow = new QWidget(this);
     auto* refV = new QVBoxLayout(refRow);
     refV->setContentsMargins(0, 0, 0, 0);
@@ -63,16 +63,22 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     lblRefPt->setFixedWidth(kLabelW);
     refPtL->addWidget(lblRefPt);
     m_angleRefPoint = new PointRefEdit(m_doc, refRow);
+    m_angleRefPoint->setObjectName(QStringLiteral("angleRefPointEdit"));
     m_angleRefPoint->setFixedWidth(140);
     m_angleRefPoint->setFixedHeight(kFieldH);
     m_angleRefPoint->setToolTip(QString::fromUtf8(
         "角度引用点，必须属于上方选定的引用线段。"));
     refPtL->addWidget(m_angleRefPoint);
-    m_btnClearAngleRef = new ElaPushButton(QString::fromUtf8("清除"), refRow);
-    m_btnClearAngleRef->setFixedSize(kBtnW, kFieldH);
-    m_btnClearAngleRef->setToolTip(QString::fromUtf8("恢复默认：角度跟随位置宿主线段"));
-    m_btnClearAngleRef->setCursor(Qt::PointingHandCursor);
-    refPtL->addWidget(m_btnClearAngleRef);
+    // 角度维度 拆开/重连 双面按钮 (2026-xx 用户拍板): 拆开 = 角度不再跟随
+    // 基准线 (有连接线·无基准线 = 独立角); 重连 = 恢复角度跟随 (原基准或
+    // 位置宿主, 反算零跳变)。与连接点按钮 (位置维度) 独立。
+    m_btnAngleBase = new ElaPushButton(QString::fromUtf8("拆开"), refRow);
+    m_btnAngleBase->setObjectName(QStringLiteral("angleBaseToggleBtn"));
+    m_btnAngleBase->setFixedSize(kBtnW, kFieldH);
+    m_btnAngleBase->setToolTip(QString::fromUtf8(
+        "拆开 = 角度不再跟随基准线（位置保持吸附）；重连 = 恢复角度跟随"));
+    m_btnAngleBase->setCursor(Qt::PointingHandCursor);
+    refPtL->addWidget(m_btnAngleBase);
     refPtL->addStretch();
     refV->addLayout(refPtL);
     lay->addWidget(refRow);
@@ -108,8 +114,8 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
 
     connect(m_angleRefPoint, &PointRefEdit::pointResolved,
             this, &SegmentRefCard::onAngleRefPointResolved);
-    connect(m_btnClearAngleRef, &QPushButton::clicked,
-            this, &SegmentRefCard::onClearAngleRef);
+    connect(m_btnAngleBase, &QPushButton::clicked,
+            this, &SegmentRefCard::onAngleBaseToggled);
     connect(m_lblAngleRefSeg, &ElaLineEdit::editingFinished,
             this, &SegmentRefCard::onAngleRefSegEdited);
     connect(m_refAimPoint, &PointRefEdit::pointResolved,
@@ -186,8 +192,22 @@ void SegmentRefCard::refresh()
 void SegmentRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
 {
     m_angleRefPoint->setExcludeBlock(m_blockId);
-    m_btnClearAngleRef->setEnabled(att != nullptr
-        && !att->angleRefBlockId.isNull());
+    // 角度维度 拆开/重连 双面按钮 (2026-xx 用户拍板): 有连接即可用;
+    // 拆开 = 有连接线·无基准线 (角度独立), 重连 = 恢复角度跟随。
+    const bool hasAtt = att != nullptr;
+    m_btnAngleBase->setEnabled(hasAtt);
+    m_btnAngleBase->setText(hasAtt && att->angleIndependent
+        ? QString::fromUtf8("重连") : QString::fromUtf8("拆开"));
+    if (hasAtt && att->angleIndependent) {
+        m_btnAngleBase->setToolTip(QString::fromUtf8(
+            "重新连接角度基准：恢复角度跟随（原基准或位置宿主，反算零跳变）"));
+    } else if (hasAtt && att->angleOnly) {
+        m_btnAngleBase->setToolTip(QString::fromUtf8(
+            "拆开角度基准：角度不再跟随基准线（位置维度已拆开 → 自由线）"));
+    } else {
+        m_btnAngleBase->setToolTip(QString::fromUtf8(
+            "拆开角度基准：位置保持吸附，角度不再跟随基准线（有连接线、无基准线）"));
+    }
     if (!att) return;   // 自由态: 保留用户已填的预填内容 (不 clear/不重写)。
 
     {
@@ -264,7 +284,10 @@ void SegmentRefCard::onAngleRefPointResolved(const QUuid& blockId,
     if (segId.isNull()) { refresh(); return; }
     if (blockId == att->fromBlockId) { refresh(); return; }
 
-    if (!att->angleRefSegmentId.isNull()) {
+    // 点必须属于上方选定的引用线段 (双基准一致性)。独立角态 (基准点「拆开」
+    // 后) 旧基准已失效: 直接以新输入点建立新基准 (跳过 belongs 校验, 否则
+    // 陈旧 angleRefSegmentId 会拦截恢复路径)。
+    if (!att->angleIndependent && !att->angleRefSegmentId.isNull()) {
         if (const auto* refSeg = leader->findSegment(att->angleRefSegmentId)) {
             const bool belongs =
                 pointId == refSeg->startPointId || pointId == refSeg->endPointId
@@ -284,20 +307,20 @@ void SegmentRefCard::onAngleRefPointResolved(const QUuid& blockId,
     emit changed();
 }
 
-void SegmentRefCard::onClearAngleRef()
+void SegmentRefCard::onAngleBaseToggled()
 {
     if (!m_doc) return;
     const auto* att = findFollowerAttachment();
     if (!att) { refresh(); return; }
-    if (att->angleRefBlockId.isNull() && att->angleRefSegmentId.isNull()) {
-        refresh();
-        return;
-    }
+    // 角度维度 拆开/重连 (2026-xx 用户拍板): 拆开 = 有连接线·无基准线
+    // (角度独立: 位置保持吸附、角度不再跟随); 重连 = 恢复角度跟随
+    // (SetAttachmentAngleIndependentCommand(false) 反算回原基准/位置宿主)。
+    // 不碰位置维度 (angleOnly) —— 两维独立。
     if (auto* stack = m_doc->undoStack())
-        stack->push(new cad::cmd::SetAttachmentAngleRefCommand(
-            m_doc, att->id, QUuid(), QUuid(), QUuid()));
+        stack->push(new cad::cmd::SetAttachmentAngleIndependentCommand(
+            m_doc, att->id, /*angleIndependent=*/!att->angleIndependent));
     else
-        m_doc->setAttachmentAngleRef(att->id, QUuid(), QUuid(), QUuid());
+        m_doc->setAttachmentAngleIndependent(att->id, !att->angleIndependent);
     refresh();
     emit changed();
 }

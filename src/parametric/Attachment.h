@@ -47,15 +47,21 @@ enum class SlideMode {
 ///                         旧称“构造角”。
 ///   吸附 (Snap)          = 创建连接的动作（SmartPen 起点落在已有点上）。
 ///   拆开 (Detach)        = 解除位置吸附但保留角度跟随（angleOnly=true，
-///                          用户拍板 2026-08：拆开默认保留角度）。彻底断开
-///                          = 删除 Attachment（自由线段，世界角冻结）。
+///                          用户拍板 2026-08：拆开默认保留角度）。
+///   独立角 (angleIndependent) = 位置保持吸附、角度不跟随（用户 2026）。
+///   2026-xx 两维独立 (用户拍板): angleOnly (位置维度) 与 angleIndependent
+///                          (角度维度) 不再互斥 —— 双拆开 = 位置自由 + 角度
+///                          自管 = 自由线 (Resolver 对 angleOnly 无条件放行
+///                          位置、angleIndependent 保持自身旋转)。两维度分别
+///                          由属性面板「连接点」「基准点」的拆开/重连 双面
+///                          按钮控制。
 ///   滑轨 (Slide)         = 抽屉式单向滑动（slideMode + slideAlongMm/
 ///                          slidePerpMm，用户拍板 2026-08）：位置只剩一个
 ///                          自由度 —— 沿基准线局部系 x（沿线滑动）或 y
 ///                          （垂直拉出）—— 角度跟随始终保留。滑轨与
-///                          拆开 (angleOnly) 互斥：进滑轨自动清 angleOnly
-///                          并解除拖动保护（位置必须可滑动）；切回
-///                          None 恢复全连接。
+///                          拆开 (angleOnly)/独立角 互斥：进滑轨自动清
+///                          angleOnly+angleIndependent 并解除拖动保护
+///                          （位置必须可滑动）；切回 None 恢复全连接。
 ///
 /// 约束：每个 Block 至多作为一条连接的跟随线（附着图是一棵树/森林）。
 /// ────────────────────────────────────────────────────────────────────────────
@@ -137,18 +143,21 @@ struct Attachment {
                              ///< 但角度跟随保留 —— Resolver 只驱动跟随线的旋转
                              ///< (基准线方向 + followerAngle), 跳过位置约束, 因此
                              ///< 线段位置自由、平移不动角度、基准线旋转时跟着转。
-                             ///< 所有拆开路径 (拖端点快拆 / 拖跟随线拆散 / 属性面板
-                             ///< 取消「位置吸附」) 统一置位; 彻底断开 = 删除本结构。
-                             ///< angleOnly 与拖动保护互斥 (位置自由 ↔ 焊接语义),
-                             ///< 置位时自动清 isLocked; 与滑轨 (slideMode) 互斥,
-                             ///< 置位时自动清 slideMode。
+                             ///< 拆开路径 (拖端点快拆 / 拖跟随线拆散 / 属性面板
+                             ///< 「连接点」拆开) 统一置位。2026-xx 两维独立:
+                             ///< 与 angleIndependent 不再互斥 (双拆开 = 自由线),
+                             ///< 不自动清 angleIndependent; 与拖动保护互斥 (置位
+                             ///< 自动清 isLocked); 与滑轨 (slideMode) 互斥 (置位
+                             ///< 自动清 slideMode)。
 
     bool angleIndependent = false;  ///< 位置吸附保持、角度独立 (用户新需求 2026):
                                      ///< 连接仍把 from-point 钉在 leader 点上, 但
                                      ///< Resolver 不驱动跟随线旋转 —— 本线角度由
                                      ///< 自己的绝对角度/公式/旋转工具自由控制。
-                                     ///< 与 angleOnly (位置自由+角度跟随) 相反;
-                                     ///< 与 slideMode (角度跟随+一轴滑轨) 互斥。
+                                     ///< 2026-xx 两维独立 (用户拍板): 与 angleOnly
+                                     ///< 不再互斥 (双拆开 = 位置自由+角度自管 = 自由
+                                     ///< 线, Resolver angleOnly 分支无条件放行位置);
+                                     ///< 仍与 slideMode (角度跟随+一轴滑轨) 互斥。
 
     /// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08); 与 angleOnly 互斥.
     SlideMode slideMode = SlideMode::None;

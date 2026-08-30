@@ -12,8 +12,11 @@
 #include "tools/ToolManager.h"
 #include "tools/ToolSelect.h"
 #include "ElaText.h"
+#include "ElaPushButton.h"
 #include "ui/LinePropertyDialog.h"
 #include "ui/SegmentConnectionCard.h"
+#include "ui/SegmentRefCard.h"
+#include "ui/PointRefEdit.h"
 #include "document/commands/AttachmentCommands.h"
 #include "parametric/ParamDocument.h"
 #include "TestHelpers.h"
@@ -58,7 +61,7 @@ private slots:
     // ── 双击打开线条属性面板: 交叉点处活跃层优先 (2026-11 用户报告:
     //    辅助层线段双击时灵时不灵) ──
     void doubleClickCrossingPrefersActiveLayer();
-    // ── 连接卡片新语义 (2026-10 用户拍板) ──
+    // ── 连接卡片两维独立 (2026-xx 用户拍板: 双 拆开/重连 按钮) ──
     void connectionCardNewSemantics();
 };
 
@@ -1689,15 +1692,15 @@ void TestSelectWKey::overlapPickCandidateByIndex()
 }
 
 // ---------------------------------------------------------------------------
-// 连接卡片语义 (用户拍板 2026-08 复旧; SegmentConnectionCard):
-//   · 新建连接默认**焊接** (isLocked=true) — 拖动保护默认勾选, 拖任一端整对
-//     移动不拆; 拆散走 D 键快拆 / 面板取消「拖动保护」。
-//   · 「位置吸附」✗ = 彻底断开 (删 attachment, 位置+角度跟随一并解除);
-//   · 「拖动保护」✓/✗ = 焊接/解焊开关 (checked = isLocked): 取消 = 解除焊接
-//     (连接保持, 拖跟随线可拆散 — 不是仅角度);
-//     仅角度态勾选 = 恢复完整连接 + 重新焊接;
-//   · 断开后记忆最近宿主, 重新勾选「位置吸附」一键恢复 (角度反算无跳变,
-//     重建连接默认焊接).
+// 连接卡片两维独立 (2026-xx 用户拍板): 「连接线段」「独立角度」「连接保护」
+// 复选框与「清除」按钮全删 —— 连接语义 = 两个正交维度的 拆开/重连 双面按钮:
+//   · 连接点按钮 (位置维度): 拆开 = 位置自由 (angleOnly, 角度仍跟随);
+//     重连 = 位置重新吸附回原宿主 + 重新焊接。
+//   · 基准点按钮 (角度维度, SegmentRefCard): 拆开 = 角度不跟随 (独立角);
+//     重连 = 恢复角度跟随 (反算零跳变)。
+//   · 双拆开 = 自由线 (Resolver angleOnly 无条件放行位置、angleIndependent
+//     保持自身旋转 —— 两维不再互斥)。
+// 四态矩阵: 全连接 / 独立角 (位置跟·角度拆) / 仅角度 (位置拆·角度跟) / 自由。
 // ---------------------------------------------------------------------------
 void TestSelectWKey::connectionCardNewSemantics()
 {
@@ -1708,7 +1711,7 @@ void TestSelectWKey::connectionCardNewSemantics()
     auto line   = makeLine(doc, 60.0);
     doc.resolveAll();
 
-    // 建立连接 (用户拍板 2026-08 复旧: 默认勾选拖动保护 = 焊接).
+    // 建立连接 (用户拍板 2026-08 复旧: 新建连接默认焊接).
     cad::param::Attachment att;
     att.fromBlockId = line.blockId;
     att.fromPointId = line.startId;
@@ -1721,144 +1724,176 @@ void TestSelectWKey::connectionCardNewSemantics()
 
     cad::ui::SegmentConnectionCard card(&doc, &scene);
     card.setTarget(line.blockId, line.segId);
+    cad::ui::SegmentRefCard refCard(&doc, &scene);
+    refCard.setTarget(line.blockId, line.segId);
 
-    auto findChk = [&](const QString& prefix) -> QCheckBox* {
-        for (auto* c : card.findChildren<QCheckBox*>())
-            if (c->text().startsWith(prefix)) return c;
+    auto findBtn = [&](QWidget& w, const QString& text) -> ElaPushButton* {
+        for (auto* b : w.findChildren<ElaPushButton*>())
+            if (b->text() == text) return b;
         return nullptr;
     };
-    QCheckBox* chkHost = findChk(QString::fromUtf8("\u8fde\u63a5\u7ebf\u6bb5"));  // 连接线段开关
-    QCheckBox* chkLock = findChk(QString::fromUtf8("\u8fde\u63a5\u4fdd\u62a4"));   // 连接保护
-    QVERIFY(chkHost);
-    QVERIFY(chkLock);
-    // 初始: 完整连接且已焊 → 连接线段 ✓ / 拖动保护 ✓.
-    QVERIFY(chkHost->isChecked());
-    QVERIFY(chkLock->isChecked());
-
-    // 记录断开前跟随线的世界朝向 (重连后必须保持).
-    const auto* blk = doc.findBlock(line.blockId);
-    const Vec2 w1 = blk->transform.toWorld(blk->findPoint(line.startId)->resolvedPos);
-    const Vec2 w2 = blk->transform.toWorld(blk->findPoint(line.endId)->resolvedPos);
-    const double dirBefore = std::atan2(w2.y - w1.y, w2.x - w1.x);
-
-    // 1) 取消「拖动保护」 = 解除焊接 (连接保持完整, 拖跟随线可拆散 —
-    //    不得切换为仅角度).
-    chkLock->setChecked(false);
-    {
-        const auto& a = doc.attachments().front();
-        QVERIFY2(!a.isLocked, "取消拖动保护 = 解除焊接");
-        QVERIFY2(!a.angleOnly, "解焊后仍是完整连接 (不是仅角度)");
-    }
-
-    // 2) 重新勾选「拖动保护」 = 焊接 (isLocked=true, 拖任一端整对移动).
-    chkLock->setChecked(true);
-    {
-        const auto& a = doc.attachments().front();
-        QVERIFY2(a.isLocked, "勾选拖动保护 = 焊接");
-        QVERIFY2(!a.angleOnly, "焊接态仍是完整连接");
-    }
-
-    // 3) 仅角度态 (D 键/拖拆的模型结果) 勾选「拖动保护」 = 恢复完整连接 +
-    //    重新焊接 (命令路径修复: 不得沿用 m_oldLocked=false 而显示
-    //    "✓ 拖动保护但可拖拆").
-    {
-        cad::cmd::SetAttachmentAngleOnlyCommand cmd(&doc,
-            doc.attachments().front().id, /*angleOnly=*/true);
-        cmd.redo();
-        QVERIFY(doc.attachments().front().angleOnly);
-    }
-    card.refresh();   // 直接命令改模型后卡片需同步 (复选框状态回未勾选)
-    QVERIFY(!chkLock->isChecked());
-    chkLock->setChecked(true);
-    {
-        const auto& a = doc.attachments().front();
-        QVERIFY2(!a.angleOnly, "仅角度态勾选拖动保护 = 恢复完整连接");
-        QVERIFY2(a.isLocked, "恢复完整连接必须重新焊接");
-    }
-
-    // 统一状态模型 (用户 2026-12-15 拍板): 无「模式」下拉 —— 跟随/独立线段
-    // 由 Attachment 存在性推导 (标题 + 行形态), 连接开关 = 「位置吸附」复选框。
-    auto hasRowLabel = [&](const QString& text) {
-        for (auto* t : card.findChildren<ElaText*>())
-            if (t->text() == text) return true;
-        return false;
+    auto worldDir = [&](const QUuid& blockId) {
+        const auto* b = doc.findBlock(blockId);
+        const Vec2 p1 = b->transform.toWorld(b->findPoint(line.startId)->resolvedPos);
+        const Vec2 p2 = b->transform.toWorld(b->findPoint(line.endId)->resolvedPos);
+        return std::atan2(p2.y - p1.y, p2.x - p1.x);
+    };
+    auto angleDelta = [](double a, double b) {
+        double d = std::abs(a - b);
+        d = std::fmod(d, 2.0 * M_PI);
+        return d > M_PI ? 2.0 * M_PI - d : d;
+    };
+    auto fromPointWorld = [&](const QUuid& blockId) {
+        const auto* b = doc.findBlock(blockId);
+        return b->transform.toWorld(b->findPoint(line.startId)->resolvedPos);
     };
 
-    // 4) 取消「连接线段」复选框 = 彻底断开 (attachment 删除)。
-    chkHost->setChecked(false);
-    QVERIFY2(doc.attachments().empty(),
-             "取消连接线段 = 彻底断开");
-    // 统一表单: 恒显「连接线段」行 (自由线 = 连接字段为空; 2026-12 去卡框
-    // 化后标签为短词无冒号).
-    QVERIFY2(hasRowLabel(QString::fromUtf8("连接线段")),
-             "连接行标签恒为「连接线段」");
-    // 2026-12 去卡框化: 卡内不再自持标题 —— 恒定「连接」标题由属性页「连接」
-    // 分区标题提供 (LinePropertyDialog), 不做 独立线段/跟随 状态区分。
-    QVERIFY2(!hasRowLabel(QString::fromUtf8("独立线段")),
-             "不得再出现「独立线段」状态标题");
+    // 0) 控件骨架: 连接卡无复选框、无「清除」按钮; 基准点按钮 = 「拆开」。
+    QVERIFY2(card.findChildren<QCheckBox*>().isEmpty(),
+             "连接卡不得再有复选框");
+    QVERIFY2(!findBtn(card, QString::fromUtf8("清除")),
+             "连接卡「清除」按钮已删 (拆开/重连 覆盖断开语义)");
+    ElaPushButton* btnAngleBase = refCard.findChild<ElaPushButton*>(
+        QStringLiteral("angleBaseToggleBtn"));
+    QVERIFY2(btnAngleBase, "基准点按钮 = 角度维度拆开/重连");
+    QCOMPARE(btnAngleBase->text(), QString::fromUtf8("拆开"));
 
-    // 5) 再勾选「连接线段」 = 记忆宿主一键恢复: attachment 重建、目标不变、
-    //    世界朝向反算保持 (零跳变)、默认焊接.
-    chkHost->setChecked(true);
-    QCOMPARE(doc.attachments().size(), size_t(1));
+    // 1) 连接点「拆开」(位置维度): 仅角度 —— 位置自由、角度仍跟随、记忆保留。
+    ElaPushButton* btnDetach = findBtn(card, QString::fromUtf8("拆开"));
+    QVERIFY(btnDetach);
+    QVERIFY(btnDetach->isEnabled());
+    btnDetach->click();
     {
         const auto& a = doc.attachments().front();
-        QCOMPARE(a.toBlockId, leader.blockId);
+        QVERIFY2(a.angleOnly, "连接点拆开 = 位置维度拆开 (仅角度)");
+        QVERIFY2(!a.isLocked, "拆开自动解除焊接");
+        QVERIFY2(!a.angleIndependent, "位置维度拆开不碰角度维度");
+        QCOMPARE(a.toBlockId, leader.blockId);   // 位置记忆保留 (重连回宿主)
         QCOMPARE(a.toPointId, leader.endId);
-        QVERIFY2(a.isLocked, "重建连接默认焊接");
-        const auto* blk2 = doc.findBlock(line.blockId);
-        const Vec2 v1 = blk2->transform.toWorld(blk2->findPoint(line.startId)->resolvedPos);
-        const Vec2 v2 = blk2->transform.toWorld(blk2->findPoint(line.endId)->resolvedPos);
-        const double dirAfter = std::atan2(v2.y - v1.y, v2.x - v1.x);
-        double dAng = std::abs(dirAfter - dirBefore);
-        dAng = std::fmod(dAng, 2.0 * M_PI);
-        if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
-        QVERIFY2(dAng < 1e-9,
-                 qPrintable(QStringLiteral("一键恢复后方向跳变 %1 度")
-                            .arg(dAng * 180.0 / M_PI, 0, 'f', 6)));
+    }
+    card.refresh();
+    QVERIFY2(!findBtn(card, QString::fromUtf8("拆开")),
+             "位置拆开态连接点按钮翻面为「重连」");
+    QCOMPARE(btnAngleBase->text(), QString::fromUtf8("拆开"));  // 角度维度未动
+    const double dirDetached = worldDir(line.blockId);
+
+    // 2) 连接点「重连」(位置维度): 位置回原宿主 + 重新焊接, 方向零跳变。
+    ElaPushButton* btnReconnect = findBtn(card, QString::fromUtf8("重连"));
+    QVERIFY2(btnReconnect, "位置拆开态应显示「重连」");
+    QVERIFY(btnReconnect->isEnabled());
+    btnReconnect->click();
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(!a.angleOnly, "重连 = 位置维度恢复");
+        QVERIFY2(a.isLocked, "重连必须重新焊接");
+        const auto* ldr = doc.findBlock(leader.blockId);
+        const Vec2 hostWorld = ldr->transform.toWorld(
+            ldr->findPoint(leader.endId)->resolvedPos);
+        QVERIFY2(hostWorld.distanceTo(fromPointWorld(line.blockId)) < 1e-6,
+                 "重连后 from-point 必须重新吸附回宿主点");
+        QVERIFY2(angleDelta(worldDir(line.blockId), dirDetached) < 1e-9,
+                 "重连后方向不得跳变");
     }
 
-    // 6) undo 栈覆盖: 断开 (remove) 后 Ctrl+Z 恢复连接.
-    card.setTarget(line.blockId, line.segId);
-    QVERIFY(chkHost->isChecked());
-    chkHost->setChecked(false);
-    QVERIFY(doc.attachments().empty());
-    doc.undoStack()->undo();   // RemoveAttachmentCommand.undo → 连接恢复
-    QCOMPARE(doc.attachments().size(), size_t(1));
-
-    // 7) 断开记忆快照 (用户 2026-12-15 拍板: 模式下拉已删, 快照恢复并入
-    //    「位置吸附」复选框): 取消勾选 = 快照完整连接配置后拆除; 重新勾选 =
-    //    优先原样恢复 (宿主/角度/焊接/公式/角度基准), 且零跳变。
-    card.setTarget(line.blockId, line.segId);
-    QVERIFY(chkHost->isChecked());
-    const auto* blk7 = doc.findBlock(line.blockId);
-    const Vec2 w7a = blk7->transform.toWorld(blk7->findPoint(line.startId)->resolvedPos);
-    const Vec2 w7b = blk7->transform.toWorld(blk7->findPoint(line.endId)->resolvedPos);
-    const double dir7 = std::atan2(w7b.y - w7a.y, w7b.x - w7a.x);
-    const double followerAngle7 = doc.attachments().front().followerAngle;
-
-    chkHost->setChecked(false);      // 断开 → 完整配置进快照
-    QVERIFY(doc.attachments().empty());
-    QVERIFY(!chkHost->isChecked());
-    chkHost->setChecked(true);       // 恢复 → 快照原样回来
-    QCOMPARE(doc.attachments().size(), size_t(1));
+    // 3) 基准点「拆开」(角度维度): 独立角 —— 位置保持吸附、角度不再跟随。
+    refCard.refresh();
+    QCOMPARE(btnAngleBase->text(), QString::fromUtf8("拆开"));
+    QVERIFY(btnAngleBase->isEnabled());
+    btnAngleBase->click();
     {
         const auto& a = doc.attachments().front();
+        QVERIFY2(a.angleIndependent, "基准点拆开 = 角度维度拆开 (独立角)");
+        QVERIFY2(!a.angleOnly, "角度维度拆开不碰位置维度");
+        const auto* ldr = doc.findBlock(leader.blockId);
+        const Vec2 hostWorld = ldr->transform.toWorld(
+            ldr->findPoint(leader.endId)->resolvedPos);
+        QVERIFY2(hostWorld.distanceTo(fromPointWorld(line.blockId)) < 1e-6,
+                 "独立角位置必须仍吸附在宿主点");
+    }
+    refCard.refresh();
+    QCOMPARE(btnAngleBase->text(), QString::fromUtf8("重连"));
+    // 独立角态: 连接点按钮仍可用 (位置维度独立, 可再拆 → 自由)。
+    card.refresh();
+    QVERIFY2(findBtn(card, QString::fromUtf8("拆开"))->isEnabled(),
+             "独立角态连接点按钮应可用 (两维独立)");
+    const double dirIndep = worldDir(line.blockId);
+
+    // 4) 基准点「重连」(角度维度): 恢复角度跟随 (回位置宿主), 方向零跳变。
+    btnAngleBase->click();
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(!a.angleIndependent, "基准点重连 = 角度维度恢复");
+        QVERIFY2(!a.angleOnly, "重连角度不碰位置维度 (仍是全连接)");
+        QVERIFY2(angleDelta(worldDir(line.blockId), dirIndep) < 1e-9,
+                 "恢复角度跟随不得跳线");
+    }
+
+    // 5) 双拆开 = 自由线: 位置自由 + 角度自管 —— 基准线旋转, 本线不动。
+    card.refresh();
+    btnDetach = findBtn(card, QString::fromUtf8("拆开"));
+    btnDetach->click();               // 位置拆开
+    refCard.refresh();
+    btnAngleBase->click();            // 角度拆开
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(a.angleOnly && a.angleIndependent,
+                 "双拆开 = 位置自由 + 角度自管 (自由线)");
+    }
+    const auto* blk = doc.findBlock(line.blockId);
+    const Vec2 originBefore = blk->transform.origin;
+    const double rotBefore = blk->transform.rotation;
+    // 基准线旋转 30°: 自由线不得跟随 (位置与角度都不被驱动)。
+    auto* leaderMut = doc.findBlock(leader.blockId);
+    leaderMut->transform.rotation += 30.0 * M_PI / 180.0;
+    doc.resolveAll();
+    QVERIFY2(blk->transform.origin.distanceTo(originBefore) < 1e-9,
+             "双拆开自由线不得跟随基准线移动");
+    QVERIFY2(std::abs(blk->transform.rotation - rotBefore) < 1e-9,
+             "双拆开自由线角度不得被基准线驱动");
+
+    // 6) 从自由逐步重连 → 全连接 (两条 重连 按钮, 顺序无关, 零跳变)。
+    card.refresh();
+    const double dirFree = worldDir(line.blockId);
+    findBtn(card, QString::fromUtf8("重连"))->click();      // 位置维度
+    QVERIFY2(!doc.attachments().front().angleOnly,
+             "重连位置维度 → 独立角");
+    refCard.refresh();
+    btnAngleBase->click();                                  // 角度维度
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(!a.angleOnly && !a.angleIndependent, "双重重连 = 全连接");
+        QVERIFY2(a.isLocked, "位置重连重新焊接");
+        const auto* ldr = doc.findBlock(leader.blockId);
+        const Vec2 hostWorld = ldr->transform.toWorld(
+            ldr->findPoint(leader.endId)->resolvedPos);
+        QVERIFY2(hostWorld.distanceTo(fromPointWorld(line.blockId)) < 1e-6,
+                 "全连接 from-point 回宿主点");
+        QVERIFY2(angleDelta(worldDir(line.blockId), dirFree) < 1e-9,
+                 "自由→全连接不得跳线");
+    }
+
+    // 7) 全新自由线 (无 attachment): 两个 拆开 按钮禁用; 输入 P# 回车建立连接。
+    auto line2 = makeLine(doc, 50.0);
+    doc.resolveAll();
+    cad::ui::SegmentConnectionCard card2(&doc, &scene);
+    card2.setTarget(line2.blockId, line2.segId);
+    card2.refresh();
+    ElaPushButton* btnDetach2 = findBtn(card2, QString::fromUtf8("拆开"));
+    QVERIFY2(btnDetach2 && !btnDetach2->isEnabled(),
+             "无连接时位置拆开按钮禁用");
+    const auto* ldr7 = doc.findBlock(leader.blockId);
+    const auto* hp7 = ldr7->findPoint(leader.endId);
+    auto* refConn2 = card2.findChild<cad::ui::PointRefEdit*>();
+    QVERIFY(refConn2);
+    refConn2->setText(hp7->serial);
+    QTest::keyClick(refConn2, Qt::Key_Return);
+    QCOMPARE(doc.attachments().size(), size_t(2));
+    {
+        const auto& a = doc.attachments().back();
+        QCOMPARE(a.fromBlockId, line2.blockId);
         QCOMPARE(a.toBlockId, leader.blockId);
         QCOMPARE(a.toPointId, leader.endId);
-        QCOMPARE(a.followerAngle, followerAngle7);
-        QVERIFY2(a.isLocked, "快照恢复必须原样保持焊接");
-        QVERIFY2(!a.angleOnly, "快照恢复不得退化为仅角度");
-        const auto* blk = doc.findBlock(line.blockId);
-        const Vec2 v1 = blk->transform.toWorld(blk->findPoint(line.startId)->resolvedPos);
-        const Vec2 v2 = blk->transform.toWorld(blk->findPoint(line.endId)->resolvedPos);
-        const double dir = std::atan2(v2.y - v1.y, v2.x - v1.x);
-        double dAng = std::abs(dir - dir7);
-        dAng = std::fmod(dAng, 2.0 * M_PI);
-        if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
-        QVERIFY2(dAng < 1e-9,
-                 qPrintable(QStringLiteral("断开快照恢复后方向跳变 %1 度")
-                            .arg(dAng * 180.0 / M_PI, 0, 'f', 6)));
+        QVERIFY2(a.isLocked, "输入 P# 建立连接默认焊接");
     }
 }
 

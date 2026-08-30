@@ -807,7 +807,11 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // followerAngle — but the position constraint is released: the from-point
     // no longer has to land on the leader's point, so the line translates
     // freely while its orientation keeps the relative angle.
-    if (att.angleOnly && !att.angleIndependent) {
+    // 2026-xx 两维独立 (用户拍板): angleOnly 与 angleIndependent 不再互斥 ——
+    // 双拆开 (angleOnly + angleIndependent) = 位置自由 + 角度自管 = 自由线
+    // (rotation 已被上面 angleIndependent 分支保持为自身值, 这里写入同值
+    // 并提前 return, 跳过位置钉点)。
+    if (att.angleOnly) {
         const bool moved = std::abs(newRotation - from.transform.rotation) > 1e-9;
         from.transform.rotation = newRotation;
         return moved;

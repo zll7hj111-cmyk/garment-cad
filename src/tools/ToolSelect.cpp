@@ -1,4 +1,4 @@
-#include "ToolSelect.h"
+﻿#include "ToolSelect.h"
 #include "ToolManager.h"
 
 #include <QGraphicsSceneMouseEvent>
@@ -1159,7 +1159,8 @@ void ToolSelect::quickDetachSelection()
     // 快拆 = 拆开保留角度 (angleOnly): 位置约束解除、角度仍跟随基准线。
     // 与拖动保护 (isLocked) 无关 — 拆开会自动清锁 (位置自由 ↔ 焊接互斥,
     // setAttachmentAngleOnly 内部处理)。桥线 pin 无角度语义, 跳过
-    // (彻底断开走「清除」)。已经是 angleOnly 的连接无需再拆。
+    // (彻底自由走面板双拆开: 连接点拆开 + 基准点拆开)。已经是 angleOnly
+    // 的连接无需再拆。
     QList<QUuid> toDetach;
     for (const QUuid& blockId : m_selection) {
         for (const auto& att : m_paramDoc->attachments()) {
