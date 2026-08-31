@@ -1,4 +1,4 @@
-# DESIGN — Pattern Workbench（打版工作台）
+﻿# DESIGN — Pattern Workbench（打版工作台）
 
 <!-- impeccable:design-schema 1 -->
 
@@ -29,7 +29,7 @@ Canvas tokens: `src/canvas/CanvasStyle.h/.cpp` kept in sync with ThemeTokens by 
 
 1. **Type hue ≠ semantic hue.** Card type identity comes from the piece palette (variable=piece1, formula=piece2, measure/angle=piece3, linked=piece4). Semantic colors appear only where they mean status (snap=success, protected=warning, error=danger, attachment=teal). The old formula-green/measure-amber/linked-teal type colors are gone.
 2. **No hardcoded colors outside token tables.** All card accent bars, layer bars, HUD overlays, badge fills, dialog inline styles and menu icons read from `Theme::tokens()` or `CanvasStyle` — verified by audit: non-theme hex count dropped from 125 to near zero in the refactored files.
-3. **Dark mode is first-class.** Default theme is Dark; every restyled surface was checked for the light-island failure (FormulaCard, ConditionDialog, AngleHud, GroupBadge, LayerPanel bars).
+3. **Dark mode is first-class.** Default theme is Light (2026-08 用户拍板，见 DECISIONS.md「默认主题」条目——本稿 2026-08-09 写于拍板前，此处订正); every restyled surface was checked for the light-island failure (FormulaCard, ConditionDialog, AngleHud, GroupBadge, LayerPanel bars).
 4. **Hierarchy by scale.** Type scale steps carry emphasis; color never does the job of size.
 5. **State phases carry text labels.** Any state conveyed by color also carries a label or glyph (cyclorama discipline).
 
@@ -42,6 +42,9 @@ Canvas tokens: `src/canvas/CanvasStyle.h/.cpp` kept in sync with ThemeTokens by 
 - **HUD** (AngleHud): theme-aware floating overlay — reads background/text/valid/invalid colors from the owning scene's CanvasStyle instead of hardcoded dark.
 
 ## Status
+
+> ⚠️ **部分过时（2026-09-01 订正）**：本稿为 2026-08-09 视觉设计稿，视觉语言（piece 调色板/字号阶梯/暗色适配）仍有效；
+> 与现状不符处：默认主题已拍板为 Light（见 DECISIONS.md）、AngleHud 已随 CONTEXT_STRIP 二期删除。
 
 - 2026-08-09: framework layer complete (tokens, stylesheet engine, canvas sync, card/dialog/HUD/badge/icons token migration) + dark-mode line adaptation (`displayColor`); 19/19 tests green. Pending: pixel-level review vs the approved comp, remaining hardcoded tool-layer colors (MarqueeGesture/ToolMeasure/ToolCurveEdit preview hues) if the review requires.
 - Direction contract review: `.impeccable/critique/src-ui-2026-08-09.md` (baseline 29/40), comp: `.impeccable/mocks/decision/pattern-workbench-v3` (approved direction).

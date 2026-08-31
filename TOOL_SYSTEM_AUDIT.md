@@ -1,4 +1,6 @@
-# 工具（Tool）链路系统性代码审查报告
+﻿# 工具（Tool）链路系统性代码审查报告
+
+> 状态：**审查报告（2026-08-29）**。所列问题已全部落地修复（2026-12 收尾，见 AGENTS.md 开发规范区）；本文档留作历史档案，问题清单不再逐项有效。
 
 - 审查日期：2026-08-29
 - 审查范围：`src/tools`（12,822 行 / 27 文件）、`src/app/MainWindow.*`、`src/app/ToolDockStyle.h`、`src/ui/AngleHud.*`、`src/canvas/InputDispatcher.h`
