@@ -57,7 +57,7 @@ ctest
 - **按影响面选测试（2026-12 拍板）**：纯 geometry → test_curve + test_expression；parametric 引擎 → test_resolver + test_commands + test_serializer + test_migration；序列化 → test_serializer + test_migration；工具/UI → 对应 test_select_wkey / test_rotate_copy / test_context_strip / test_dialog_tabs 等；跨模块大改/收尾 → 全量 ctest。单测：`ctest -R <名>`。
 - **回归基线（判"是不是我引入的红"先看这里）**：2 红 = 既有基线（test_serializer::bridgeAuxPointSnappableAndAttachable + test_component::dragComponentLeaderCurveFollowStable）；环境漂移红 = test_intersection_update 全部 + test_extend::savedDocFormulaStartExtendRenders（依赖活档 E:/3.gcad，非代码回归）；GUI 时序抖动 = test_dialog_tabs::switchBackAfterTyping / test_aux_layer / test_rotate_copy / test_select_wkey（整批偶发失败，单跑即过）。用例清单与详情见 CONVENTIONS.md。
 - 不进 ctest 需手动跑：test_realdoc_perf、test_realdoc_full（env `GCAD_DOC`）、test_nav_smoke。
-- **守卫脚本**：`python tools/check_layering.py`（新增跨层 include 前先跑）；`python tools/check_hardcoded_colors.py`（新增硬编码颜色前先想 token）；`python tools/check_test_fixtures.py`（回归基线不许放仓库之外，禁绝对路径）。
+- **守卫脚本已进 ctest（2026-09）**：`check_layering`（新增跨层 include 前先跑）/ `check_hardcoded_colors`（新增硬编码颜色前先想 token）/ `check_test_fixtures`（回归基线不许放仓库之外，禁绝对路径）——全量 ctest 即覆盖，无需再手动单独跑；单跑：`ctest -R check_`。CI（GitHub Actions）已接入，push/PR 自动全量 ctest（排除 2 个既有基线红）。
 - **GUI 测试等待**：禁止固定 `QTest::qWait(N)` 占位；用 TestHelpers.h 三件套 waitUntil/grabStable/settle（断言"值变了"→waitUntil；"没变"→settle）。
 - **磁盘格式版本与迁移**：kFormatVersion 唯一定义点在 src/document/FormatMigration.h；改格式 = bump 常量 + 写 migrateVNToVN+1 + registry() 加一行；链路有缺口拒绝加载。回归：test_migration + test_serializer。
 - 性能探针：PerfProbe.h，`GCAD_PROFILE=1`；点击链路日志 `e:\garment-cad\gcad_click_log.txt`。
