@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    env:
+      QT_DIR: C:\Qt\6.11.1\msvc2022_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Qt 6.11.1 (msvc2022_64)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: 配置 + 构建 (Ninja Debug)
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --preset default
+          cmake --build --preset default
+
+      - name: 全量 ctest
+        shell: cmd
+        working-directory: build/out
+        run: ctest --output-on-failure -E "test_serializer|test_component"

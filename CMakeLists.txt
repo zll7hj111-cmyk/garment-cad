@@ -383,6 +383,21 @@ target_link_libraries(${PROJECT_NAME} PRIVATE gcad_app spdlog::spdlog Tracy::Tra
 enable_testing()
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
+# ── 守卫脚本进 ctest（2026-09）：分层/测试夹具/硬编码颜色三守卫秒级完成，
+#    全量 ctest 即覆盖，无需再手动单独跑。脚本以仓库根为工作目录（脚本内部
+#    用 __file__ 定位仓库，不依赖 CWD，此处仅统一输出路径）。 ──────────────
+add_test(NAME check_layering
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_layering.py)
+add_test(NAME check_test_fixtures
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_test_fixtures.py)
+add_test(NAME check_hardcoded_colors
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_hardcoded_colors.py)
+set_tests_properties(check_layering check_test_fixtures check_hardcoded_colors
+    PROPERTIES RUN_SERIAL TRUE)
+
 # ── Test: Tool hint completeness (TOOL_SYSTEM_AUDIT H3) ──
 add_executable(test_tool_hints tests/test_tool_hints.cpp)
 target_include_directories(test_tool_hints PRIVATE ${GCAD_SRC})
