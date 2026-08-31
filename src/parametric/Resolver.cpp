@@ -347,28 +347,49 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // bridgesMoved records whether ANY bridge actually changed position — Step 5
     // only needs to re-settle when a bridge moved (otherwise the forest settled
     // in Step 3 is still valid and the extra settle pass is pure waste).
+    //
+    // Pin index: bridge id -> its pin attachments, built in ONE pass over the
+    // attachment list. The old per-bridge full scan was O(bridges × attachments)
+    // per resolve pass (× the outer fixpoint rounds) — the single biggest
+    // quadratic in documents with many bridges.
+    struct Pin { QUuid fromPointId; geo::Vec2 hostWorld; };
+    QHash<QUuid, std::vector<Pin>> pinsByBridge;
+    for (const auto& att : attachments) {
+        if (!att.isPin) continue;
+        // Report dangling pins only for in-scope bridges — the exact reach of
+        // the old per-bridge scan (pins on non-bridge/frozen blocks were
+        // silently ignored there).
+        const auto reportIfBridge = [&]() {
+            auto fromIt = blockIndex.find(att.fromBlockId);
+            return fromIt != blockIndex.end()
+                && blocks[fromIt.value()].isBridge
+                && inScope(blocks[fromIt.value()]);
+        };
+        auto toIt = blockIndex.find(att.toBlockId);
+        if (toIt == blockIndex.end()) {
+            if (reportIfBridge())
+                report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
+            continue;
+        }
+        const Block& host = blocks[toIt.value()];
+        const ParamPoint* hp = host.findPoint(att.toPointId);
+        if (!hp || !hp->resolved) {
+            if (reportIfBridge())
+                report(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
+            continue;
+        }
+        pinsByBridge[att.fromBlockId].push_back(
+            {att.fromPointId, host.worldPos(att.toPointId)});
+    }
+
     bool bridgesMoved = false;
     for (auto& bridge : blocks) {
         if (!bridge.isBridge) continue;
         if (!inScope(bridge)) continue;  // frozen group
 
-        struct Pin { QUuid fromPointId; geo::Vec2 hostWorld; };
-        std::vector<Pin> pins;
-        for (const auto& att : attachments) {
-            if (!att.isPin || att.fromBlockId != bridge.id) continue;
-            auto toIt = blockIndex.find(att.toBlockId);
-            if (toIt == blockIndex.end()) {
-                report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
-                continue;
-            }
-            const Block& host = blocks[toIt.value()];
-            const ParamPoint* hp = host.findPoint(att.toPointId);
-            if (!hp || !hp->resolved) {
-                report(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
-                continue;
-            }
-            pins.push_back({att.fromPointId, host.worldPos(att.toPointId)});
-        }
+        const auto pinsIt = pinsByBridge.constFind(bridge.id);
+        if (pinsIt == pinsByBridge.constEnd()) continue;
+        const std::vector<Pin>& pins = pinsIt.value();
         // A healthy bridge always has both pins (ParamDocument releases broken
         // ones as independent segments); mid-construction states are skipped
         // silently.

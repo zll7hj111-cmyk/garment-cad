@@ -1025,6 +1025,10 @@ geo::Vec2 Block::effectiveLocalPos(const QUuid& pointId) const
     // 该端点所属段的延长量 × 本体出方向。无延长/非端点 = 本体位。
     const ParamPoint* pt = findPoint(pointId);
     if (!pt) return geo::Vec2::zero();
+    // 无延长（绝大多数文档的常态）：本体位即有效位，跳过逐段扫描。
+    // 与旧行为等价：m_extendEval 为空时下面的循环也必然找不到匹配段。
+    if (m_extendEval.isEmpty())
+        return pt->resolvedPos;
     for (const auto& seg : segments) {
         auto it = m_extendEval.constFind(seg.id);
         if (it == m_extendEval.constEnd()) continue;
