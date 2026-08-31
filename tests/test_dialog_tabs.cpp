@@ -17,9 +17,9 @@
 #include "canvas/CanvasView.h"
 #include "ui/LinePropertyDialog.h"
 #include "ui/SegmentAngleCard.h"
+#include "ui/SegmentRefCard.h"
 #include "ui/PointRefEdit.h"
 #include "ui/SegmentAuxTab.h"
-#include "ui/SegmentExtendCard.h"
 #include "ui/SegmentConnectionCard.h"
 #include "ElaComboBox.h"
 #include "ElaPushButton.h"
@@ -49,9 +49,11 @@ private slots:
     void switchBackLargeDoc();         ///< heavy document: freeze magnitude
     void probeTabHitArea();            ///< which widget owns the tab-bar pixels
     void probeCardTitleColor();        ///< why section titles look washed out (像素探针)
-    void endpointCardsSideBySide();    ///< 端点 起点|终点 双微卡并排 (2026-12 去卡框化布局)
+    void endpointCardsStacked();    ///< 端点 起点|终点 双微卡上下堆叠 (2026-xx §3)
     void connectCardUniformHeights();  ///< 连接卡行内控件统一高度/宽度 (用户 2026-12 反馈)
     void independentAngleInputDoesNotJump();  ///< 独立角输入不回跳 (用户 2026-12 反馈)
+    void followerAngleModeToggleToArc();  ///< REPRO: 跟随角 → 弧长 切换 (用户报告切换不了)
+    void endConnectionRowAndBadge();  ///< 终点连接行 + 桥接线 badge + 端点微卡摘要 (2026-xx 每端完整连接)
 };
 
 namespace {
@@ -118,7 +120,9 @@ void TestDialogTabs::switchBackAfterTyping()
              "timed out waiting for QTabWidget* to appear");
     auto* tabs = dlg->findChild<QTabWidget*>();
     QVERIFY(tabs);
-    QCOMPARE(tabs->count(), 4);
+    // 2026-08: 「点连接」只读 tab 已删 (属性页连接分区覆盖其内容), 3 枚 =
+    // 属性 / 锚点 / 辅助点。
+    QCOMPARE(tabs->count(), 3);
 
     // ── 0→2 (属性 → 辅助点): baseline ──
     QElapsedTimer t0;
@@ -517,38 +521,44 @@ void TestDialogTabs::probeCardTitleColor()
     auto dump = [](const QString& tag, ElaText* t) {
         if (!t) { qInfo().noquote() << tag << "= null"; return; }
         const QImage img = t->grab().toImage();
-        const double dpr = img.devicePixelRatio();
+        // 文字像素 = alpha>0 (透明底); 统计 最暗 / 平均明度 / 实心占比。
+        qint64 sumL = 0, solid = 0, n = 0;
         QColor darkest(255, 255, 255);
         for (int y = 0; y < img.height(); ++y)
             for (int x = 0; x < img.width(); ++x) {
                 const QColor c = img.pixelColor(x, y);
+                if (c.alpha() == 0) continue;
                 if (c.lightness() < darkest.lightness()) darkest = c;
+                sumL += c.lightness();
+                if (c.lightness() < 90) ++solid;
+                ++n;
             }
         qInfo().noquote()
             << tag
             << "| text=" << t->text()
-            << "| obj=" << t->objectName()
-            << "| sheet=" << t->styleSheet().replace('\n', ' ')
-            << "| palWin=" << t->palette().color(QPalette::WindowText).name()
-            << "| palTxt=" << t->palette().color(QPalette::Text).name()
-            << QStringLiteral("| grab(%1x%2 dpr=%3) darkest=%4")
-                   .arg(img.width()).arg(img.height()).arg(dpr).arg(darkest.name());
+            << "| font=" << t->font().family() << "w" << t->font().weight()
+            << "px" << t->font().pixelSize()
+            << "| darkest=" << darkest.name()
+            << QStringLiteral("| textPx=%1 avgL=%2 solid(%3%)")
+                   .arg(n).arg(n ? sumL / n : 0).arg(n ? 100 * solid / n : 0);
     };
 
     for (auto* t : dlg->findChildren<ElaText*>()) {
         if (t->text() == QString::fromUtf8("几何"))
             dump(QStringLiteral("TITLE-几何"), t);
+        if (t->text() == QString::fromUtf8("连接"))
+            dump(QStringLiteral("TITLE-连接"), t);
         if (t->text() == QString::fromUtf8("长度"))
             dump(QStringLiteral("LABEL-长度"), t);
+        if (t->text() == QString::fromUtf8("连接线段"))
+            dump(QStringLiteral("LABEL-连接线段"), t);
     }
     delete dlg;
 }
 
-/// 回归：端点 起点|终点 双微卡并排 (2026-12 去卡框化重设计: 原「延长|外观」
-/// 并排契约随布局重构迁移 —— 延长并入几何分区行组, 外观成独立分区; 「左右
-/// 各一个气泡」的语义由端点双微卡继承)。两卡必须在同一行、等高、左右相邻
-/// (起点在左、终点在右); 延长行组仍在属性页可见。
-void TestDialogTabs::endpointCardsSideBySide()
+/// 回归：端点 起点|终点 双微卡上下堆叠 (2026-xx §3: 两个端点组之间夹朝向箭头)。
+/// 起点卡在上、终点卡在下、等宽; 朝向箭头在两者之间。
+void TestDialogTabs::endpointCardsStacked()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -565,57 +575,54 @@ void TestDialogTabs::endpointCardsSideBySide()
         line.blockId, line.segId, &doc, &scene, &view);
     dlg->show();
 
-    auto* startCard = dlg->findChild<QFrame*>(QStringLiteral("startPointCard"));
-    auto* endCard = dlg->findChild<QFrame*>(QStringLiteral("endPointCard"));
+    // 2026-08-31 重设计: 端点组去灰底卡框 → 容器为无样式 QWidget (objectName 契约不变)。
+    auto* startCard = dlg->findChild<QWidget*>(QStringLiteral("startPointCard"));
+    auto* endCard = dlg->findChild<QWidget*>(QStringLiteral("endPointCard"));
     QVERIFY(startCard);
     QVERIFY(endCard);
     QVERIFY(startCard->isVisibleTo(dlg));
     QVERIFY(endCard->isVisibleTo(dlg));
-    // 布局落定 = 双微卡到达最终几何 (同行为主判据); waitUntil 等待, 已落定时立即返回。
+    // 布局落定 = 双微卡到达最终几何 (上下堆叠为主判据); waitUntil 等待。
     QVERIFY2(cad::test::waitUntil([&] {
         const QRect a(startCard->mapTo(dlg, QPoint(0, 0)), startCard->size());
         const QRect b(endCard->mapTo(dlg, QPoint(0, 0)), endCard->size());
-        return std::abs(a.top() - b.top()) <= 1
-               && std::abs(a.height() - b.height()) <= 1
-               && a.right() < b.left();
+        return std::abs(a.width() - b.width()) <= 1
+               && a.bottom() < b.top();
     }), "端点双微卡布局未落定");
 
     const QRect gS(startCard->mapTo(dlg, QPoint(0, 0)), startCard->size());
     const QRect gE(endCard->mapTo(dlg, QPoint(0, 0)), endCard->size());
 
-    // 同一行、等高 (QHBoxLayout 垂直拉伸), 1px 舍入容差。
-    QVERIFY2(std::abs(gS.top() - gE.top()) <= 1,
+    // 上下堆叠 (QVBoxLayout 水平拉伸): 起点在上、终点在下、等宽。
+    QVERIFY2(std::abs(gS.width() - gE.width()) <= 1,
              qPrintable(QStringLiteral(
-                 "endpoint cards must share the same row "
-                 "(start top %1, end top %2)").arg(gS.top()).arg(gE.top())));
-    QVERIFY2(std::abs(gS.height() - gE.height()) <= 1,
+                 "endpoint cards must have equal widths "
+                 "(start %1, end %2)").arg(gS.width()).arg(gE.width())));
+    QVERIFY2(gS.bottom() < gE.top(),
              qPrintable(QStringLiteral(
-                 "endpoint cards must have equal heights "
-                 "(start %1, end %2)").arg(gS.height()).arg(gE.height())));
-    // 左右相邻: 起点在左、终点在右, 不重叠。
-    QVERIFY2(gS.right() < gE.left(),
-             qPrintable(QStringLiteral(
-                 "start card must sit left of end card "
-                 "(start right %1, end left %2)")
-                 .arg(gS.right()).arg(gE.left())));
+                 "start card must sit above end card "
+                 "(start bottom %1, end top %2)")
+                 .arg(gS.bottom()).arg(gE.top())));
 
     qInfo().noquote() << QStringLiteral(
         "[endpoint-cards] start geo (dlg) %1x%2 @%3,%4; end %5x%6 @%7,%8")
         .arg(gS.width()).arg(gS.height()).arg(gS.x()).arg(gS.y())
         .arg(gE.width()).arg(gE.height()).arg(gE.x()).arg(gE.y());
 
-    // 延长行组 (并入几何分区) 仍在属性页可见。
-    auto* extCard = dlg->findChild<cad::ui::SegmentExtendCard*>(
-        QStringLiteral("extendCard"));
-    QVERIFY(extCard);
-    QVERIFY(extCard->isVisibleTo(dlg));
+    // 延长量 (2026-xx, §6.2) 已并入端点双微卡: 起/终各一栏输入框仍可见。
+    auto* startExt = dlg->findChild<QLineEdit*>(QStringLiteral("startExtendEdit"));
+    auto* endExt = dlg->findChild<QLineEdit*>(QStringLiteral("endExtendEdit"));
+    QVERIFY(startExt);
+    QVERIFY(endExt);
+    QVERIFY(startExt->isVisibleTo(dlg));
+    QVERIFY(endExt->isVisibleTo(dlg));
 
     delete dlg;
 }
 
 /// 回归：连接卡「输入框大小不一」 (用户 2026-12 反馈) —— 行内控件统一高
-/// 35px (ElaLineEdit/ElaComboBox 原生值, ElaPushButton/PointRefEdit 已对齐),
-/// 点引用输入统一宽 150px (列对齐)。
+/// 30px (2026-xx 紧凑化, ElaLineEdit/ElaComboBox 原生值, PointRefEdit 已对齐),
+/// 点引用输入统一宽 140px (列对齐)。
 void TestDialogTabs::connectCardUniformHeights()
 {
     ParamDocument doc;
@@ -656,14 +663,14 @@ void TestDialogTabs::connectCardUniformHeights()
     auto* card = dlg->findChild<cad::ui::SegmentConnectionCard*>();
     QVERIFY(card);
 
-    // ① 行内控件统一高度 35px。
+    // ① 行内控件统一高度 30px (2026-xx 紧凑化, 与状态栏对齐)。
     int badH = 0;
     for (auto* w : card->findChildren<QWidget*>()) {
         const bool isInput =
             qobject_cast<ElaLineEdit*>(w) || qobject_cast<cad::ui::PointRefEdit*>(w)
             || qobject_cast<ElaPushButton*>(w) || qobject_cast<ElaComboBox*>(w);
         if (!isInput) continue;
-        if (w->height() != 35 && w->y() >= 0) {   // 布局后高度应为 35
+        if (w->height() != 30 && w->y() >= 0) {   // 布局后高度应为 30
             ++badH;
             qInfo() << "[uniform] bad height:" << w->metaObject()->className()
                     << w->height() << w->geometry();
@@ -683,7 +690,7 @@ void TestDialogTabs::connectCardUniformHeights()
                                 .arg(refBad)));
     }
 
-    qInfo() << "[uniform] conn card controls all 35px high; ref inputs 150px";
+    qInfo() << "[uniform] conn card controls all 30px high; ref inputs 140px";
     delete dlg;
 }
 
@@ -743,6 +750,199 @@ void TestDialogTabs::independentAngleInputDoesNotJump()
     QCOMPARE(edit->text(), QStringLiteral("45"));
     // 附件原样保留。
     QCOMPARE(doc.attachments().size(), size_t(1));
+    delete dlg;
+}
+
+// REPRO (用户报告 2026-12): 「跟随角度」状态下点 ∠/⌒ 切换不到弧长模式。
+// 逐步验证: 数值跟随角 → 弧长; 弧长 → 角度; 公式跟随角 → 弧长 (应被拒, 设计如此)。
+void TestDialogTabs::followerAngleModeToggleToArc()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    const LineSetup leader = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+    const LineSetup follower = makeLine(doc, 60.0);
+    Attachment att;
+    att.fromBlockId = follower.blockId;
+    att.fromPointId = follower.startId;
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    att.followerAngle = 45.0;   // 非零跟随角: 0° 折叠重叠, 弧长换算恒为 0, 无法区分"切换成功"
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    QCOMPARE(doc.attachments().front().rotationMode,
+             cad::param::RotationMode::Angle);
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        follower.blockId, follower.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<cad::ui::SegmentAngleCard*>() != nullptr;
+             }),
+             "timed out waiting for SegmentAngleCard* to appear");
+    auto* card = dlg->findChild<cad::ui::SegmentAngleCard*>();
+    QVERIFY(card);
+
+    auto modeButton = [&]() -> QPushButton* {
+        for (auto* b : card->findChildren<QPushButton*>())
+            if (b->text() == QStringLiteral("∠")
+                || b->text() == QStringLiteral("⌒"))
+                return b;
+        return nullptr;
+    };
+
+    // ① 数值跟随角 → 弧长: 点 ⌒ 按钮后必须切到 ArcLength, 且换算正确
+    // (45°·(60mm 半径) = π/4·60 ≈ 47.12mm)。
+    {
+        QPushButton* btn = modeButton();
+        QVERIFY2(btn, "mode button (∠/⌒) not found");
+        QVERIFY2(btn->isEnabled(), "mode button disabled in 跟随角 state");
+        QCOMPARE(btn->text(), QStringLiteral("∠"));
+        btn->click();
+        const auto* a = &doc.attachments().front();
+        QVERIFY2(a->rotationMode == cad::param::RotationMode::ArcLength,
+                 qPrintable(QStringLiteral("跟随角→弧长切换失败, rotationMode=%1")
+                                .arg(static_cast<int>(a->rotationMode))));
+        QVERIFY2(std::abs(a->arcLength - 45.0 * M_PI / 180.0 * 60.0) < 1e-6,
+                 "弧长换算错误");
+    }
+
+    // ② 弧长 → 角度: 反向切换必须同样工作, 反算回 45°。
+    {
+        QPushButton* btn = modeButton();
+        QVERIFY2(btn, "mode button lost after ①");
+        QCOMPARE(btn->text(), QStringLiteral("⌒"));
+        btn->click();
+        const auto* a = &doc.attachments().front();
+        QVERIFY2(a->rotationMode == cad::param::RotationMode::Angle,
+                 "弧长→角度切换失败");
+        // 反算回 45°: 容差 0.1° —— 输入框回显是 2 位小数的 cm 值 ("4.71"),
+        // 经显示截断往返会损失 ~0.02° (45°→4.71cm→44.98°), 属既有显示精度。
+        QVERIFY2(std::abs(a->followerAngle - 45.0) < 0.1, "角度反算错误");
+    }
+
+    // ③ 公式跟随角 → 弧长 (2026-12 用户拍板: 公式驱动可切换, 且公式
+    // **原样搬移不乘换算系数** —— "一个公式只会在一种模式下表达, 用户
+    // 选择哪个模式, 公式就按哪个模式求值")。
+    {
+        ElaLineEdit* edit = card->findChild<ElaLineEdit*>();
+        QVERIFY(edit);
+        edit->setText(QStringLiteral("30+15"));
+        emit edit->editingFinished();
+        const auto* a = &doc.attachments().front();
+        QVERIFY2(a->rotationMode == cad::param::RotationMode::Angle
+                     && !a->followerAngleFormula.isEmpty(),
+                 "formula not applied to follower angle");
+        QPushButton* btn = modeButton();
+        btn->click();
+        const auto* a2 = &doc.attachments().front();
+        QVERIFY2(a2->rotationMode == cad::param::RotationMode::ArcLength,
+                 "公式驱动跟随角→弧长切换失败 (2026-12 起应可切)");
+        QVERIFY2(a2->arcLengthFormula == QStringLiteral("30+15"),
+                 "公式必须原样保留, 不得乘换算系数/烘焙成数值");
+        QCOMPARE(btn->text(), QStringLiteral("⌒"));
+    }
+
+    delete dlg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 终点连接行 + 桥接线 badge + 端点微卡摘要 (2026-xx 每端完整连接):
+//   · 方案 A: 端点双微卡的只读连接行存在 (startPointConn/endPointConn)。
+//   · 终点连接 (桥接落点缺省): 输入目标 P# → badge「终点指向」+ 终点卡「指向」。
+//   · 双端连接 = 桥接线: 起点连接行输入 leader P# → badge「桥接线」+
+//     基准线卡 (SegmentRefCard) 隐藏 + 起点卡「跟随」。
+// ─────────────────────────────────────────────────────────────────────────
+void TestDialogTabs::endConnectionRowAndBadge()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);                       // leader (100mm @200,0) + line (60mm 自由)
+    const auto hostB = makeLine(doc, 80.0, Vec2(160.0, 60.0));   // 终点目标宿主
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<cad::ui::SegmentConnectionCard*>() != nullptr;
+             }),
+             "timed out waiting for SegmentConnectionCard");
+    auto* card = dlg->findChild<cad::ui::SegmentConnectionCard*>();
+
+    // 方案 A: 端点双微卡的只读连接行存在 (双卡同构 → 等高契约保持)。
+    auto* startConn = dlg->findChild<ElaText*>(QStringLiteral("startPointConn"));
+    auto* endConn = dlg->findChild<ElaText*>(QStringLiteral("endPointConn"));
+    QVERIFY(startConn && endConn);
+
+    auto hasHint = [&](const QString& prefix) {
+        for (auto* t : dlg->findChildren<ElaText*>())
+            if (t->text().startsWith(prefix)) return true;
+        return false;
+    };
+
+    // ① 终点连接 (桥接落点缺省): 输入目标 P# 回车 → badge 终点指向 + 终点卡摘要。
+    auto* endPointEdit = card->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("endConnPointEdit"));
+    QVERIFY2(endPointEdit, "终点连接点输入框 (endConnPointEdit) 必须存在");
+    const auto* hb = doc.findBlock(hostB.blockId);
+    const auto* bp = hb->findPoint(hostB.endId);
+    endPointEdit->setText(bp->serial);
+    QTest::keyClick(endPointEdit, Qt::Key_Return);
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return hasHint(QString::fromUtf8("终点指向"));
+             }),
+             "自由线 + 终点指向 → badge 应为「终点指向」");
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return endConn->text().contains(QString::fromUtf8("指向"));
+             }),
+             "终点微卡应显示「指向」摘要");
+    QVERIFY2(doc.findBlock(line.blockId)->endTargetPointId == hostB.endId,
+             "终点连接写入 endTarget");
+
+    // ② 双端连接 = 桥接线: 起点连接行输入 leader P# → badge 桥接线 + 基准线
+    //    卡隐藏 + 起点卡「跟随」。
+    auto* startPointEdit = card->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("connPointEdit"));
+    QVERIFY2(startPointEdit, "起点连接点输入框 (connPointEdit) 必须存在");
+    const auto* ldrBlk = doc.findBlock(doc.blocks().at(0).id);   // 第一条 = leader
+    const auto& ldrSeg = ldrBlk->segments.front();
+    const auto* lp = ldrBlk->findPoint(ldrSeg.endPointId);
+    startPointEdit->setText(lp->serial);
+    QTest::keyClick(startPointEdit, Qt::Key_Return);
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return hasHint(QString::fromUtf8("桥接线"));
+             }),
+             "双端连接 → badge 应为「桥接线」");
+    auto* refCard = dlg->findChild<cad::ui::SegmentRefCard*>();
+    QVERIFY(refCard);
+    // 2026-09 规则表: 桥接线方向段 (点1/点2/[独立]) 隐藏, 对齐点段保留
+    // (显示默认进点 + 禁用, 无进点语义)。
+    auto* alignEdit = refCard->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("alignPointEdit"));
+    auto* p1Edit = refCard->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("angleRefPointEdit"));
+    QVERIFY2(alignEdit && p1Edit, "对齐点/点1 输入框必须存在");
+    QVERIFY2(cad::test::waitUntil([&] { return !p1Edit->isVisible(); }),
+             "双端连接 → 方向段 (点1) 隐藏 (角度由两点决定)");
+    QVERIFY2(!refCard->isHidden(), "桥接线: 对齐点段保留 (整卡不隐藏)");
+    QVERIFY2(!alignEdit->isEnabled(), "桥接线: 无进点语义 → 对齐点禁用");
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return startConn->text().contains(QString::fromUtf8("跟随"));
+             }),
+             "起点微卡应显示「跟随」摘要");
+
     delete dlg;
 }
 

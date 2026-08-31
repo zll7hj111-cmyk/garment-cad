@@ -278,7 +278,9 @@ void ParamDocument::setAttachmentAngleIndependent(const QUuid& id, bool angleInd
 void ParamDocument::setAttachmentAngleRef(const QUuid& id,
                                           const QUuid& refBlockId,
                                           const QUuid& refSegmentId,
-                                          const QUuid& refPointId)
+                                          const QUuid& refPointId,
+                                          const QUuid& ref2BlockId,
+                                          const QUuid& ref2PointId)
 {
     auto it = std::find_if(m_attachments.begin(), m_attachments.end(),
         [&id](const Attachment& a) { return a.id == id; });
@@ -286,12 +288,16 @@ void ParamDocument::setAttachmentAngleRef(const QUuid& id,
         return;
     if (it->angleRefBlockId == refBlockId
         && it->angleRefSegmentId == refSegmentId
-        && it->angleRefPointId == refPointId)
+        && it->angleRefPointId == refPointId
+        && it->angleRef2BlockId == ref2BlockId
+        && it->angleRef2PointId == ref2PointId)
         return;
 
     it->angleRefBlockId = refBlockId;
     it->angleRefSegmentId = refSegmentId;
     it->angleRefPointId = refPointId;
+    it->angleRef2BlockId = ref2BlockId;
+    it->angleRef2PointId = ref2PointId;
     // 有独立角度基准时取消“角度独立”，角度由指定线段约束。
     it->angleIndependent = false;
 
@@ -306,7 +312,18 @@ void ParamDocument::setAttachmentAngleRef(const QUuid& id,
             if (const Block* rb = blockById(refBlockId))
                 refBlock = rb;
         }
-        if (!refBlockId.isNull() && !refSegmentId.isNull()) {
+        if (!ref2BlockId.isNull() && !ref2PointId.isNull()) {
+            // 两点连线方向 (PANEL_REDESIGN §6.4): 点1→点2, 与 Resolver
+            // applyAttachment 两点分支同解 (点未解析时回落位置宿主出口方向)。
+            const Block* rb2 = blockById(ref2BlockId);
+            const ParamPoint* p1 = refBlock->findPoint(refPointId);
+            const ParamPoint* p2 = rb2 ? rb2->findPoint(ref2PointId) : nullptr;
+            if (p1 && p2 && p1->resolved && p2->resolved) {
+                const auto w1 = refBlock->transform.toWorld(p1->resolvedPos);
+                const auto w2 = rb2->transform.toWorld(p2->resolvedPos);
+                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+            }
+        } else if (!refBlockId.isNull() && !refSegmentId.isNull()) {
             const Segment* seg = refBlock->findSegment(refSegmentId);
             if (seg) {
                 if (!refPointId.isNull()) {
@@ -629,6 +646,58 @@ void ParamDocument::degradeOrphanedIntersections()
             }
         }
     }
+}
+
+// ─── effectiveAngleRefWorld (2026-09 审核 F0) ─────────────────────────────
+// 有效角度基准方向 —— 与 Resolver::applyAttachment 的 refWorld 计算逐位同构
+// (Resolver.cpp:725-769), 供读数/反算/可视化等消费方复用。声明见
+// FollowerAngle.h (本文件已 include, 无需动 CMake)。
+
+double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
+{
+    const Block* to = doc ? doc->findBlock(att.toBlockId) : nullptr;
+    if (!to) return 0.0;
+
+    double refWorld = to->transform.rotation
+                    + to->exitDirectionAtPoint(att.toPointId, att.toSegmentId);
+
+    if (!att.angleRefBlockId.isNull()) {
+        const Block* ref = doc->findBlock(att.angleRefBlockId);
+        if (ref) {
+            if (!att.angleRef2BlockId.isNull() && !att.angleRef2PointId.isNull()) {
+                const Block* ref2 = doc->findBlock(att.angleRef2BlockId);
+                const ParamPoint* p1 = ref->findPoint(att.angleRefPointId);
+                const ParamPoint* p2 = ref2 ? ref2->findPoint(att.angleRef2PointId)
+                                            : nullptr;
+                if (p1 && p2 && p1->resolved && p2->resolved) {
+                    const geo::Vec2 w1 = ref->transform.toWorld(p1->resolvedPos);
+                    const geo::Vec2 w2 = ref2->transform.toWorld(p2->resolvedPos);
+                    refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+                }
+            } else if (!att.angleRefPointId.isNull()) {
+                const ParamPoint* rp = ref->findPoint(att.angleRefPointId);
+                if (rp && rp->resolved) {
+                    refWorld = ref->transform.rotation
+                             + ref->exitDirectionAtPoint(
+                                   att.angleRefPointId, att.angleRefSegmentId);
+                }
+            } else if (!att.angleRefSegmentId.isNull()) {
+                const Segment* refSeg = ref->findSegment(att.angleRefSegmentId);
+                if (refSeg) {
+                    const ParamPoint* rsp = ref->findPoint(refSeg->startPointId);
+                    const ParamPoint* rep = ref->findPoint(refSeg->endPointId);
+                    if (rsp && rep && rsp->resolved && rep->resolved) {
+                        // 旧档/未选点: 保持历史行为, 用 start->end 世界方向。
+                        refWorld = ref->transform.rotation
+                                 + ref->directionAtPoint(refSeg->startPointId);
+                    }
+                }
+            }
+        }
+    }
+
+    refWorld += att.baselineOffsetDeg * M_PI / 180.0;
+    return refWorld;
 }
 
 } // namespace cad::param

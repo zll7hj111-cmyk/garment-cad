@@ -41,8 +41,8 @@ QString toHtml(const QString& serial)
         return QString();
     const QString pfx = prefix(serial);
     const QString tg  = tag(serial);
-    return QStringLiteral("<span style=\"color:#9a9a9a;\">%1</span>"
-                          "<span style=\"color:#d40000; font-weight:bold;\">%2</span>")
+    // parametric 层富文本固定色——分层铁律禁止引用 ui 主题 token
+    return QStringLiteral("<span style=\"color:#9a9a9a;\">%1</span><span style=\"color:#d40000; font-weight:bold;\">%2</span>")  // color-allow: 双固定色（灰前缀+红串号, 串号语义色不随主题）
         .arg(pfx.toHtmlEscaped(), tg.toHtmlEscaped());
 }
 

@@ -280,6 +280,7 @@ QJsonObject segmentJson(const Segment& s) {
         {"id", uuidStr(s.id)},
         {"serial", s.serial},
         {"name", s.name},
+        {"annotation", s.annotation},  // Optional since v12 (便利贴注释, 缺省空串)
         {"type", segmentTypeStr(s.type)},
         {"role", segmentRoleStr(s.role)},
         {"startPointId", uuidStr(s.startPointId)},
@@ -309,6 +310,7 @@ Segment segmentFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     s.id = uuidFrom(o["id"].toString());
     s.serial = o["serial"].toString();
     s.name = o["name"].toString();
+    s.annotation = o["annotation"].toString();  // Optional, 老档缺省空串
     bool recType = true, recRole = true, recStyle = true;
     s.type = segmentTypeFrom(o["type"].toString(), &recType);
     s.role = segmentRoleFrom(o["role"].toString(), &recRole);
@@ -327,7 +329,7 @@ Segment segmentFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     s.extendEndMm = std::max(0.0, o["extendEndMm"].toDouble(0.0));
     s.extendEndFormula = o["extendEndFormula"].toString();
     s.lineStyle = lineStyleFrom(o["lineStyle"].toString(), &recStyle);
-    s.color = QColor(o["color"].toString("#1e1e1e"));
+    s.color = QColor(o["color"].toString("#1e1e1e"));  // color-allow: 磁盘旧档缺省线色回退（数据契约，非样式）
     s.weight = o["weight"].toDouble(1.2);
     s.visible = o["visible"].toBool(true);
     s.showName = o["showName"].toBool();
@@ -361,6 +363,7 @@ QJsonObject blockJson(const Block& b) {
         {"rotation", b.transform.rotation},
         {"isClosed", b.isClosed},
         {"isBridge", b.isBridge},
+        {"lengthAuto", b.lengthAuto},
         {"layer", uuidStr(b.layer)},
         {"endTargetBlockId", uuidStr(b.endTargetBlockId)},
         {"endTargetPointId", uuidStr(b.endTargetPointId)},
@@ -387,6 +390,7 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     b.transform.rotation = o["rotation"].toDouble();
     b.isClosed = o["isClosed"].toBool();
     b.isBridge = o["isBridge"].toBool();  // Optional since v3 — defaults to false.
+    b.lengthAuto = o["lengthAuto"].toBool();  // Optional since v12 — defaults to false.
     // Layer reference: always a stable Layer::id string. Integer indices are
     // a v0 (pre-id) shape and are rewritten by FormatMigration::migrateV0ToV1
     // before this function ever runs — anything non-string here is corruption
@@ -426,6 +430,8 @@ QJsonObject attachmentJson(const Attachment& a) {
           {"angleRefBlockId", uuidStr(a.angleRefBlockId)},
           {"angleRefSegmentId", uuidStr(a.angleRefSegmentId)},
             {"angleRefPointId", uuidStr(a.angleRefPointId)},
+            {"angleRef2BlockId", uuidStr(a.angleRef2BlockId)},
+            {"angleRef2PointId", uuidStr(a.angleRef2PointId)},
         {"followerAngle", a.followerAngle},
         {"followerAngleFormula", a.followerAngleFormula},
         {"rotationMode", static_cast<int>(a.rotationMode)},
@@ -453,6 +459,8 @@ Attachment attachmentFrom(const QJsonObject& o) {
     a.angleRefBlockId = uuidFrom(o["angleRefBlockId"].toString());  // Optional
     a.angleRefSegmentId = uuidFrom(o["angleRefSegmentId"].toString());  // Optional
     a.angleRefPointId = uuidFrom(o["angleRefPointId"].toString());  // Optional
+    a.angleRef2BlockId = uuidFrom(o["angleRef2BlockId"].toString());  // Optional since v12
+    a.angleRef2PointId = uuidFrom(o["angleRef2PointId"].toString());  // Optional since v12
     a.toPointId = uuidFrom(o["toPointId"].toString());
     // Optional since v2 — legacy documents leave it null (scan fallback).
     a.toSegmentId = uuidFrom(o["toSegmentId"].toString());

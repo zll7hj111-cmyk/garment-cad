@@ -1,4 +1,4 @@
-#include "ui/SegmentConnectionCard.h"
+﻿#include "ui/SegmentConnectionCard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,9 +7,7 @@
 #include <QHBoxLayout>
 #include "ElaText.h"
 #include "ElaLineEdit.h"
-#include "ElaPushButton.h"
 #include <QSignalBlocker>
-#include <QComboBox>
 #include <QVBoxLayout>
 
 #include "parametric/ParamDocument.h"
@@ -18,23 +16,20 @@
 #include "parametric/AttachmentGraph.h"
 #include "parametric/ConditionEngine.h"
 #include "parametric/FollowerAngle.h"
-#include "parametric/Serial.h"
-#include "geometry/Units.h"
-#include "geometry/Angle.h"
 #include "canvas/CanvasScene.h"
 #include "ui/PointRefEdit.h"
 #include "ui/LayerFeedback.h"
 #include "document/commands/AttachmentCommands.h"
-#include "ui/Theme.h"
+#include "document/commands/BlockCommands.h"
 
 namespace cad::ui {
 
-
 // ── 连接生命周期：建立 / 重定向 / 拆开↔重连 (位置维度) / ──
-// 滑轨模式与偏移 (2026-08 拆分)。
 // 2026-xx: 「连接线段」复选框与「清除」按钮已删 —— 连接 = 输入 P#,
 // 断开/恢复 = 连接点「拆开/重连」(位置维度) + 基准点「拆开/重连」(角度维度,
-// SegmentRefCard), 两维独立。
+// SegmentRefCard), 两维独立。滑轨/影子偏转已上移 LinePropertyDialog。
+// 2026-08: 「连接线段」框改用 PointRefEdit 统一解析 (同名弹窗消歧/红闪反馈),
+// 旧匿名 resolveSegmentInput (静默取首个命中) 已删。
 
 void SegmentConnectionCard::onConnPointResolved(const QUuid& blockId,
                                                 const QUuid& pointId)
@@ -112,7 +107,7 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
         m_doc->refreshSlideOffsets(att->id);
 
     refresh();
-    emit changed(ChangeKind::Retargeted);
+    emit changed();
 }
 
 void SegmentConnectionCard::onConnectToResolved(const QUuid& blockId, const QUuid& pointId)
@@ -150,58 +145,133 @@ void SegmentConnectionCard::onConnectToResolved(const QUuid& blockId, const QUui
     // 引用预填自动落库已移至 SegmentRefCard::refresh (2026-12 面板重设计)。
 
     refresh();
-    emit changed(ChangeKind::Connected);
+    emit changed();
 }
 
-// 连接行「连接线段」编辑: 输入 L#/P# 名 → 已有连接=重定向; 自由线=填入连接点.
-void SegmentConnectionCard::onLeaderSegEdited()
+// 「连接线段」框 (PointRefEdit) 解析成功: L#/名称 → 线段起点, 或 P# → 该点。
+// 已有连接 = 重定向; 自由线 = 预填到「连接点」框 (回车才建立, 零意外突变)。
+void SegmentConnectionCard::onLeaderSegResolved(const QUuid& blockId,
+                                                const QUuid& pointId)
 {
     if (!m_doc) return;
-    const QString text = m_lblLeaderRef->text().trimmed();
-    if (text.isEmpty()) return;
-
-    QUuid blkId, segId, ptId;
-    bool found = false;
-    for (const auto& b : m_doc->blocks()) {
-        if (b.id == m_blockId) continue;
-        for (const auto& s : b.segments) {
-            const QString label = cad::param::Serial::tag(s.serial);
-            if (label.compare(text, Qt::CaseInsensitive) == 0
-                || (!s.name.isEmpty() && s.name == text)) {
-                blkId = b.id; segId = s.id;
-                ptId = s.startPointId;
-                found = true;
-                break;
-            }
-        }
-        if (found) break;
-    }
-    if (!found) {
-        for (const auto& b : m_doc->blocks()) {
-            if (b.id == m_blockId) continue;
-            for (const auto& p : b.points) {
-                const QString label = cad::param::Serial::tag(p.serial);
-                if (label.compare(text, Qt::CaseInsensitive) == 0
-                    || (!p.name.isEmpty() && p.name == text)) {
-                    const QUuid s = b.exitSegmentAtPoint(p.id);
-                    if (!s.isNull()) {
-                        blkId = b.id; segId = s; ptId = p.id;
-                        found = true;
-                    }
-                    break;
-                }
-            }
-            if (found) break;
-        }
-    }
-    if (!found) { refreshCard(); return; }
-
     if (const auto* att = findFollowerAttachment()) {
-        onTargetResolved(blkId, ptId);
+        onTargetResolved(blockId, pointId);
     } else {
-        m_refConnPoint->setPoint(blkId, ptId);
+        m_refConnPoint->setPoint(blockId, pointId);
         refreshCard();
     }
+}
+
+// ── 终点连接行 actions (2026-xx 每端完整连接) ────────────────────────────────
+// 引擎载体 = Block::endTarget 终点指向 (Resolver Step 7)。建立/重定向统一走
+// ConnectEndCommand (长度模式「自动」时发布测量 M_xxx 驱动长度); 拆开/重连/
+// 偏移编辑走 SetEndTargetCommand。双端连接 = 桥接线 (角度/基准线互斥)。
+
+void SegmentConnectionCard::onEndConnPointResolved(const QUuid& blockId,
+                                                   const QUuid& pointId)
+{
+    if (!m_doc) return;
+    auto* block = m_doc->findBlock(m_blockId);
+    if (!block) return;
+
+    // 自连 / 目标缺失 / 跨层守卫 → 拒绝并回显。
+    const auto* targetBlk = m_doc->findBlock(blockId);
+    const bool bad = blockId == m_blockId || !targetBlk
+        || !targetBlk->findPoint(pointId);
+    if (!bad && m_doc->isAuxBlock(*targetBlk) != m_doc->isAuxBlock(*block)) {
+        refreshEndRow(block);
+        return;  // 跨辅助层/工作层指向拒绝 (与旧 SegmentRefCard 同规)
+    }
+    if (bad) { refreshEndRow(block); return; }
+
+    // 长度模式「自动」= 桥接落点 (发布测量驱动长度); 「指定」= 仅指向。
+    const bool bridgeLand = block->lengthAuto;
+    if (auto* stack = m_doc->undoStack()) {
+        stack->push(new cad::cmd::ConnectEndCommand(
+            m_doc, m_blockId, m_segmentId, blockId, pointId,
+            block->endTargetPointId.isNull() ? 0.0 : block->endTargetOffset,
+            bridgeLand));
+    } else {
+        block->endTargetBlockId = blockId;
+        block->endTargetPointId = pointId;
+        block->endTargetOffset = 0.0;
+        block->endTargetOffsetFormula.clear();
+        m_doc->resolveAll();
+    }
+    refresh();
+    emit changed();
+}
+
+// 终点行「连接线段」框 (PointRefEdit) 解析成功 → 统一走终点连接点入口。
+void SegmentConnectionCard::onEndLeaderSegResolved(const QUuid& blockId,
+                                                   const QUuid& pointId)
+{
+    if (!m_doc) return;
+    // 统一走连接点入口 (已有指向 = 重定向; 自由 = 建立)。
+    onEndConnPointResolved(blockId, pointId);
+}
+
+void SegmentConnectionCard::onEndOffsetEdited()
+{
+    if (!m_doc) return;
+    auto* block = m_doc->findBlock(m_blockId);
+    if (!block || block->endTargetPointId.isNull()) { refreshEndRow(block); return; }
+
+    const QString raw = m_editEndOffset->text().trimmed();
+    bool isNum = false;
+    const double val = raw.toDouble(&isNum);
+    if (!isNum && !raw.isEmpty()) { refreshEndRow(block); return; }  // 仅数值
+    const double offset = isNum ? val : 0.0;
+    if (std::abs(offset - block->endTargetOffset) < 1e-9) { refreshEndRow(block); return; }
+
+    if (auto* stack = m_doc->undoStack()) {
+        stack->push(new cad::cmd::SetEndTargetCommand(
+            m_doc, m_blockId, block->endTargetBlockId, block->endTargetPointId,
+            offset));
+    } else {
+        block->endTargetOffset = offset;
+        block->endTargetOffsetFormula.clear();
+        m_doc->resolveAll();
+    }
+    refresh();
+    emit changed();
+}
+
+void SegmentConnectionCard::onEndDetachClicked()
+{
+    if (!m_doc) return;
+    auto* block = m_doc->findBlock(m_blockId);
+    if (!block) return;
+
+    const bool hasEnd = !block->endTargetPointId.isNull();
+    if (hasEnd) {
+        // 拆开: 记忆目标 → 清指向 (测量保留, 长度公式不动)。
+        m_endMemBlock = block->endTargetBlockId;
+        m_endMemPoint = block->endTargetPointId;
+        m_endMemOffset = block->endTargetOffset;
+        if (auto* stack = m_doc->undoStack()) {
+            stack->push(new cad::cmd::SetEndTargetCommand(
+                m_doc, m_blockId, QUuid(), QUuid(), 0.0));
+        } else {
+            block->endTargetBlockId = QUuid();
+            block->endTargetPointId = QUuid();
+            block->endTargetOffset = 0.0;
+            m_doc->resolveAll();
+        }
+    } else if (!m_endMemBlock.isNull() && m_doc->findBlock(m_endMemBlock)) {
+        // 重连: 恢复到记忆目标。
+        if (auto* stack = m_doc->undoStack()) {
+            stack->push(new cad::cmd::SetEndTargetCommand(
+                m_doc, m_blockId, m_endMemBlock, m_endMemPoint, m_endMemOffset));
+        } else {
+            block->endTargetBlockId = m_endMemBlock;
+            block->endTargetPointId = m_endMemPoint;
+            block->endTargetOffset = m_endMemOffset;
+            m_doc->resolveAll();
+        }
+    }
+    refresh();
+    emit changed();
 }
 
 // 拆开/重连 双面按钮 (位置维度, 2026-xx 用户拍板两维独立):
@@ -221,108 +291,7 @@ void SegmentConnectionCard::onDetachClicked()
     else
         m_doc->setAttachmentAngleOnly(att->id, !att->angleOnly);
     refresh();
-    emit changed(ChangeKind::ConnectionModeChanged);
-}
-
-void SegmentConnectionCard::onShadowResetClicked()
-{
-    // 影子偏转归零 (§2.6, 2026-08-27): offset → 0, 本线物理转向与基准当前
-    // 方向对齐; SetAttachmentBaselineOffsetCommand 一步 undo。
-    if (!m_doc) return;
-    const auto* att = findFollowerAttachment();
-    if (!att || std::abs(att->baselineOffsetDeg) <= 1e-9) { refresh(); return; }
-    if (auto* stack = m_doc->undoStack())
-        stack->push(new cad::cmd::SetAttachmentBaselineOffsetCommand(
-            m_doc, att->id, 0.0));
-    else {
-        if (auto* mut = m_doc->findAttachment(att->id))
-            mut->baselineOffsetDeg = 0.0;
-        m_doc->resolveAll();
-    }
-    refresh();
-    emit changed(ChangeKind::ConnectionModeChanged);
-}
-
-void SegmentConnectionCard::onSlideModeChanged(int index)
-{
-    if (!m_doc) return;
-    const cad::param::Attachment* att = findFollowerAttachment();
-    if (!att || att->angleOnly || att->angleIndependent) { refreshCard(); return; }  // 拆开/独立角态禁用
-
-    // Combo order mirrors cad::param::SlideMode (None=0 / AlongLeader=1 /
-    // PerpLeader=2).
-    const auto mode = static_cast<cad::param::SlideMode>(index);
-    if (att->slideMode == mode) { refreshCard(); return; }
-    m_doc->setAttachmentSlideMode(att->id, mode);
-    refreshCard();
-    emit changed(ChangeKind::SlideModeChanged);
-}
-
-void SegmentConnectionCard::onSlideOffsetEdited()
-{
-    if (!m_doc) return;
-    const cad::param::Attachment* att = findFollowerAttachment();
-    // 拆开/独立角态滑轨输入禁用 (refreshUnifiedState 已置灰; 防御拒绝).
-    if (!att || att->angleOnly || att->angleIndependent) { refreshCard(); return; }
-
-    // 留空 = 0 (tooltip 承诺: "留空/0 表示不偏移") —— 只填一轴也是合法输入
-    // (用户 2026-12 反馈: 只填「水平」回车后无任何生效痕迹, 原实现要求两轴
-    // 都能解析, 留空直接 return + refreshCard 清空输入框 → 静默无效)。
-    // 数值或公式 (cm 域, 用户 2026-12 提问): 纯数字 = 数值 (clear 公式); 其他 = 公式
-    // (公式优先, 与长度/延长/角度卡同约定; 输入框 .00 只是数值回显)。
-    const QString aRaw = m_editSlideAlong->text().trimmed();
-    const QString pRaw = m_editSlidePerp->text().trimmed();
-    bool okA = false, okP = false;
-    const double alongCm = aRaw.isEmpty() ? 0.0 : aRaw.toDouble(&okA);
-    const double perpCm  = pRaw.isEmpty() ? 0.0 : pRaw.toDouble(&okP);
-    const bool aFormula = !aRaw.isEmpty() && !okA;   // 非数字 = 公式
-    const bool pFormula = !pRaw.isEmpty() && !okP;
-    // 卡片使用 CM，存储为 mm。
-    const double along = cad::geo::Units::cmToMm(alongCm);
-    const double perp  = cad::geo::Units::cmToMm(perpCm);
-
-    // 有值 (数值或公式) 即算该轴生效; 双轴都空/0 = 退回全连接。
-    const bool hasAlong = !aRaw.isEmpty();
-    const bool hasPerp  = !pRaw.isEmpty();
-
-    cad::param::SlideMode mode = cad::param::SlideMode::None;
-    if (hasAlong || hasPerp) {
-        if (hasAlong && !hasPerp)
-            mode = cad::param::SlideMode::AlongLeader;
-        else if (!hasAlong && hasPerp)
-            mode = cad::param::SlideMode::PerpLeader;
-        else
-            mode = att->slideMode != cad::param::SlideMode::None
-                ? att->slideMode : cad::param::SlideMode::AlongLeader;
-    }
-
-    if (att->slideMode != mode)
-        m_doc->setAttachmentSlideMode(att->id, mode);
-
-    auto* mut = m_doc->findAttachment(att->id);
-    if (mut) {
-        if (aFormula) {
-            mut->slideAlongFormula = aRaw;
-        } else {
-            mut->slideAlongFormula.clear();
-            mut->slideAlongMm = along;
-        }
-        if (pFormula) {
-            mut->slidePerpFormula = pRaw;
-        } else {
-            mut->slidePerpFormula.clear();
-            mut->slidePerpMm = perp;
-        }
-        m_doc->resolveAll();
-    }
-    refreshCard();
-    // 不 emit changed(SlideModeChanged): 该信号经 changed → LinePropertyDialog::
-    // onConnCardChanged 链会令对话框析构期触发 Qt 6.11 assertObjectType 断言
-    // ("class destructor may have already run", 滑轨输入回车后关闭属性对话框必崩;
-    // 空槽也复现, 实证为信号发放本身)。画布刷新不需要它: 上方的 resolveAll() →
-    // ParamDocument::resolved → CanvasScene 观察者链自动同步; 对话框的卡片
-    // refreshCard() 已就地刷新; onConnCardChanged 对 SlideModeChanged 本就只走
-    // default no-op 分支。
+    emit changed();
 }
 
 } // namespace cad::ui

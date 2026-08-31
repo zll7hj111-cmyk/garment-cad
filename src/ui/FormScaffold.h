@@ -20,6 +20,24 @@ namespace cad::ui {
 inline const QString kPlaceholderAngleOrFormula = QStringLiteral("数值(°)或公式");
 inline const QString kPlaceholderCmOrFormula   = QStringLiteral("数值(cm)或公式");
 
+/// 扁平 chip 按钮样式 (原外观分区同款, 2026-xx 起全线条属性对话框按钮统一):
+/// 透明底 + 1px 细边 + 2px 圆角 + 11px 紧凑字 (与状态栏紧凑化对齐)。
+/// **只适用于原生 QPushButton** —— ElaPushButton 自绘 (drawRoundedRect +
+/// 阴影 + 底边线), 不吃 QSS 背景/边框。
+inline QString chipButtonStyle()
+{
+    const auto& t = cad::ui::Theme::tokens();
+    return QStringLiteral(
+        "QPushButton { border:1px solid %1; border-radius:2px;"
+        " background:transparent; color:%2; padding:2px 8px; font-size:11px; }"
+        "QPushButton:hover { background:%3; }"
+        "QPushButton:checked { background:%4; border-color:%5; color:%6; }"
+        "QPushButton:disabled { color:%7; }")
+        .arg(t.border.name(), t.text2.name(), t.surface2.name(),
+             t.accentTint.name(), t.borderStrong.name(), t.text1.name(),
+             t.text3.name());
+}
+
 /// 工具表单群统一骨架 (ui-redesign-2026-08 §4.5/§5.5, P2 落地)。
 ///
 /// 覆盖「锚点/辅助点/交点/测量结果」等独立工具表单的公共结构：

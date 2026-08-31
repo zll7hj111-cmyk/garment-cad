@@ -726,6 +726,15 @@ void TestSerializer::attachmentsRoundTrip()
         // 滑轨公式 (Optional since v7): 两轴公式原样往返.
         mut->slideAlongFormula = QStringLiteral("肩宽/2");
         mut->slidePerpFormula = QStringLiteral("3*2");
+        // 基准影子偏转角 (Optional since v11) + 角度基准两点化
+        // (angleRef2, Optional since v12): 全链唯一"公式链之外的隐式旋转
+        // 账本", 往返必须逐位存活 (2026-09 审核 F4)。
+        mut->baselineOffsetDeg = 12.5;
+        mut->angleRefBlockId = src.blocks().front().id;
+        mut->angleRefSegmentId = src.blocks().front().segments.front().id;
+        mut->angleRefPointId = src.blocks().front().segments.front().startPointId;
+        mut->angleRef2BlockId = src.blocks().at(1).id;
+        mut->angleRef2PointId = src.blocks().at(1).segments.front().endPointId;
     }
 
     QJsonObject json = DocumentSerializer::serialize(src);
@@ -751,6 +760,13 @@ void TestSerializer::attachmentsRoundTrip()
     QVERIFY(qFuzzyCompare(da.slidePerpMm, -3.25));
     QCOMPARE(da.slideAlongFormula, QStringLiteral("肩宽/2"));
     QCOMPARE(da.slidePerpFormula, QStringLiteral("3*2"));
+    QVERIFY2(qFuzzyCompare(da.baselineOffsetDeg, 12.5),
+             "baselineOffsetDeg must survive serialization (v11)");
+    QCOMPARE(da.angleRefBlockId, sa.angleRefBlockId);
+    QCOMPARE(da.angleRefSegmentId, sa.angleRefSegmentId);
+    QCOMPARE(da.angleRefPointId, sa.angleRefPointId);
+    QCOMPARE(da.angleRef2BlockId, sa.angleRef2BlockId);
+    QCOMPARE(da.angleRef2PointId, sa.angleRef2PointId);
 }
 
 void TestSerializer::bridgeRoundTrip()

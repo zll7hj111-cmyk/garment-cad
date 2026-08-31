@@ -2,10 +2,9 @@
 
 #include <QUuid>
 
+#include <QPushButton>
 #include <QWidget>
 
-class ElaLineEdit;
-class ElaPushButton;
 class ElaText;
 
 namespace cad::param {
@@ -20,15 +19,19 @@ namespace cad::ui {
 
 class PointRefEdit;
 
-/// 「引用」行组 (2026-12 去卡框化, 原 SegmentConnectionCard 的引用/指向
-/// 两行抽出): ①基准线/基准点 —— 角度基准 (双基准, 可与他线线段方向对比);
-/// ②指向点/偏移 —— 终点方向约束。自由态引用行保持预填 (连入自动落库为角度
-/// 基准, refresh 触发一次); 无连接时按钮禁用。
-/// 2026-xx 用户拍板 (两维独立): 「独立角度」复选框与「清除」已删 —— 基准点
-/// 按钮 = 角度维度的 拆开/重连 双面开关: 拆开 = 有连接线·无基准线 (角度独立,
-/// 位置保持吸附、角度不再跟随); 重连 = 恢复角度跟随 (反算回原基准/位置宿主,
-/// 零跳变)。与连接点按钮 (位置维度, SegmentConnectionCard) 独立。
-/// 纯行组 (无边框/无标题), 嵌入属性页「连接」分区。
+/// 「对齐点 + 方向」两段式行 (PANEL_REDESIGN_DESIGN §3/§6.4; 2026-12 文案 v2
+/// 用户拍板; 2026-09 设计修正: 对齐点从只读 tag 改为可输入):
+///   对齐点【P3】  方向：点1【p2】→点2【p1】  [独立]
+/// · 对齐点 = 本线段的哪个端点钉在目标点上 (Attachment::fromPointId) ——
+///   只允许本线端点 (P3/P4 互选), 输入即重设吸附端 + 反算角度零跳变。
+///   **与换向 (进出身份) 完全无关**: fromPointId 由连接语义决定, 不随
+///   start/end 翻转 (旧实现绑 startPointId 的只读 tag, 换向后乱跳)。
+/// · 点1/点2 是**任意两个点**, 两点连线即基准方向; 自动态 (跟随所连的线)
+///   回显 目标点 P2 与 宿主线段另一端 P1, 留空则退化为单点出口方向。
+/// · [独立] 按钮 (checkable): 勾选 = 角度改用世界角度 (输入框清空+禁用,
+///   模型保留原 ref 字段作唯一缓存); 再点 = 还原上次内容 (反算零跳变)。
+/// 终点指向 (终点连接) 生效时旋转由 Resolver Step 7 驱动, 角度基准无意义
+/// → 整行隐藏 (互斥)。纯行组 (无边框), 嵌入属性页「摆放」角度区。
 class SegmentRefCard : public QWidget
 {
     Q_OBJECT
@@ -39,40 +42,40 @@ public:
 
     /// 切换编辑目标 (对话框 setTarget 时同步)。
     void setTarget(const QUuid& blockId, const QUuid& segmentId);
-    /// 从模型全量刷新 (引用填充 + 指向填充 + 启用态 + 预填自动落库)。
+    /// 从模型全量刷新 (锚点 tag/点回填/启用态/预填自动落库/终点指向隐藏)。
     void refresh();
 
 signals:
-    /// 角度基准 / 终点指向 已变更 —— 对话框刷新画布 (及角度卡灰态)。
+    /// 角度基准已变更 —— 对话框刷新画布 (及角度卡灰态)。
     void changed();
 
 private:
     void onAngleRefPointResolved(const QUuid& blockId, const QUuid& pointId);
-    /// 角度维度 拆开/重连 (独立角 ↔ 恢复跟随)。
-    void onAngleBaseToggled();
-    void onAngleRefSegEdited();
-    void onAimTargetResolved(const QUuid& blockId, const QUuid& pointId);
-    void onAimOffsetApply();
-    void onClearAim();
+    void onAngleRefPoint2Resolved(const QUuid& blockId, const QUuid& pointId);
+    /// 对齐点 (2026-09 设计修正): 本线段的哪个端点钉在目标点上 —— 写
+    /// Attachment::fromPointId + 反算 followerAngle 零跳变。与换向自动解耦
+    /// （fromPointId 由连接语义决定, 不随 start/end 身份翻转）。
+    void onAlignPointResolved(const QUuid& blockId, const QUuid& pointId);
+    /// 本线自身成员/重复点1 等非法基准输入: toast 明示拒绝理由 + 对齐点
+    /// tag 红色闪烁 (不静默刷回 —— 静默刷回 = "点2 填不进"假象, 2026-09)。
+    void rejectRefInput(const QString& reason);
+    /// [独立] 按钮: 独立角 ↔ 恢复跟随 (还原上次基准, 反算零跳变)。
+    void onIndependentToggled(bool checked);
 
     [[nodiscard]] const cad::param::Attachment* findFollowerAttachment() const;
     void refreshAngleRefRow(const cad::param::Attachment* att);
-    void refreshAimRow(const cad::param::Block* block);
-    [[nodiscard]] QString leaderRefLabel(const cad::param::Attachment& att) const;
 
     cad::param::ParamDocument* m_doc = nullptr;
-    CanvasScene* m_scene = nullptr;
+    CanvasScene* m_scene = nullptr;   ///< 拒绝反馈 toast (点2 非法输入, 2026-09).
     QUuid m_blockId;
     QUuid m_segmentId;
 
-    // 引用行: [基准线][L#/P#][基准点][P#][拆开/重连].
-    ElaLineEdit*  m_lblAngleRefSeg = nullptr;
-    PointRefEdit* m_angleRefPoint = nullptr;
-    ElaPushButton* m_btnAngleBase = nullptr;   ///< 角度维度 拆开/重连 双面按钮.
-    // 指向行: [指向点][P#][偏移(°)][值][清除].
-    PointRefEdit*  m_refAimPoint = nullptr;
-    ElaLineEdit*   m_editAimOffset = nullptr;
-    ElaPushButton* m_btnClearAim = nullptr;
+    // 两段式行: 对齐点【PointRefEdit】  方向：点1【PointRefEdit】→点2【PointRefEdit】 [独立]
+    PointRefEdit* m_alignPointEdit = nullptr;   ///< 对齐点 (本线端点, 可输入).
+    ElaText*      m_lblDirWord = nullptr;       ///< "方向：" 标签 (endTarget 时隐藏).
+    PointRefEdit* m_angleRefPoint = nullptr;  ///< 点1.
+    PointRefEdit* m_angleRefPoint2 = nullptr; ///< 点2.
+    QPushButton* m_btnIndependent = nullptr;  ///< [独立] checkable.
 };
 
 } // namespace cad::ui

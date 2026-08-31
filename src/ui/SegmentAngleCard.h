@@ -2,10 +2,10 @@
 
 #include <QUuid>
 
+#include <QPushButton>
 #include <QWidget>
 
 class ElaLineEdit;
-class ElaPushButton;
 class ElaText;
 
 namespace cad::param {
@@ -49,14 +49,10 @@ signals:
     void changed();
     /// 输入文本变化 —— 对话框重启 debounce。
     void angleEdited();
-    /// 线段已换向 —— 对话框全量重填 (端点微卡 P1/P2 标签互换) + 刷画布。
-    void reversed();
 
 private:
     void onAngleDirty();
     void onModeToggle();
-    void onReverseClicked();
-    void refreshBasisRow();
     void onDocResolved();
     void populateAngleField();
     void updateWorldAngleLabel(const cad::param::Attachment& att);
@@ -73,9 +69,7 @@ private:
     ElaLineEdit*  m_editAngle  = nullptr;
     ElaText*      m_lblFollowValue = nullptr;  ///< 公式当前计算值 (objectName followValueLabel).
     ElaText*      m_lblWorldAngle = nullptr;   ///< "= 绝对角度 xx°" / "= 世界角度 xx°".
-    ElaPushButton* m_btnAngleMode = nullptr;   ///< ∠/⌒ 切换 (几何保持).
-    ElaText*      m_lblBasisValue = nullptr;  ///< 角度基准 "P1 → P2" (起点→终点).
-    ElaPushButton* m_btnReverse = nullptr;    ///< 换向 (交换角度基准视角).
+    QPushButton* m_btnAngleMode = nullptr;   ///< ∠/⌒ 切换 (几何保持).
 };
 
 } // namespace cad::ui

@@ -614,7 +614,7 @@ void MainWindow::refreshStatusBarChrome()
     const auto& tk = cad::ui::Theme::tokens();
     // danger 实心 badge (§6.5): 红底白字, 直角纪律 radius 2px。
     m_diagBadge->setStyleSheet(QStringLiteral(
-        "QToolButton { background: %1; color: #FFFFFF; border: none;"
+        "QToolButton { background: %1; color: #FFFFFF; border: none;"  // color-allow: danger 实心徽章白字——danger 底已两模式可读，白字跨模式固定（token 无 white）
         "  border-radius: 2px; padding: 1px 8px; font-size: 11px; font-weight: 600; }"
         "QToolButton:hover { background: %2; }")
         .arg(tk.danger.name(), tk.danger.darker(110).name()));
@@ -1146,11 +1146,13 @@ void MainWindow::setupPages()
     connect(m_pageTabs, &QTabBar::currentChanged,
             this, &MainWindow::onPageTabChanged);
 
-    // 编辑条带 (§4.6): 画布下方的独立条带 —— accentTint 底 + accentStrong
-    // 描边, 与坐标/缩放/诊断信息视觉分离。宿主上下文属性条 (CONTEXT_STRIP):
+    // 编辑条带 (§4.6): 画布下方的独立条带 —— 宿主上下文属性条 (CONTEXT_STRIP):
     // 悬停线段 = 只读预览, 点击锁定 = 可编辑 (选择/智能笔/旋转三工具共用)。
+    // 2026-08 豁免全局 QSS: objectName 由 editBand 改为 stripBand —— 全局
+    // QWidget#editBand 黄底/描边规则不再命中（条带视觉按"全局规则不存在"
+    // 精调；用户拍板仅条带复原、其余程序走全局样式）。
     m_editBand = new QWidget(this);
-    m_editBand->setObjectName(QStringLiteral("editBand"));
+    m_editBand->setObjectName(QStringLiteral("stripBand"));
     m_editBand->setAttribute(Qt::WA_StyledBackground, true);  // QSS 底色/描边生效
     auto* bandLay = new QHBoxLayout(m_editBand);
     bandLay->setContentsMargins(6, 4, 10, 4);

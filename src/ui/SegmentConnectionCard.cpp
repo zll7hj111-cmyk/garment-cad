@@ -8,7 +8,6 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
-#include "parametric/Serial.h"
 #include "canvas/CanvasScene.h"
 
 namespace cad::ui {
@@ -26,12 +25,8 @@ SegmentConnectionCard::SegmentConnectionCard(cad::param::ParamDocument* doc,
 
     // ── 各行构建 (SegmentConnectionCardBuild.cpp) ──
     buildConnRow(lay);
-    buildSlideRow();
-    buildShadowRow();
-    buildDartRow();
-    lay->addWidget(m_slideRow);
-    lay->addWidget(m_shadowRow);
-    lay->addWidget(m_dartRow);
+    buildEndRow(lay);
+    lay->addWidget(m_endRow);
 
     connectSignals();
 }
@@ -40,6 +35,10 @@ void SegmentConnectionCard::setTarget(const QUuid& blockId, const QUuid& segment
 {
     m_blockId = blockId;
     m_segmentId = segmentId;
+    // 换线时清终点拆开记忆 (记忆只属于当前编辑目标的生命周期)。
+    m_endMemBlock = QUuid();
+    m_endMemPoint = QUuid();
+    m_endMemOffset = 0.0;
     refresh();
 }
 
@@ -59,42 +58,16 @@ const cad::param::Attachment* SegmentConnectionCard::findFollowerAttachment() co
     return nullptr;
 }
 
-QString SegmentConnectionCard::leaderRefLabel(const cad::param::Attachment& att) const
-{
-    if (!m_doc) return QString();
-
-    QString segPart;
-    const cad::param::Block* leader = m_doc->findBlock(att.toBlockId);
-    if (leader) {
-        const cad::param::Segment* lseg = leader->findSegment(att.toSegmentId);
-        if (lseg) {
-            segPart = cad::param::Serial::tag(lseg->serial);
-            if (!lseg->name.isEmpty())
-                segPart += QStringLiteral("·") + lseg->name;
-        }
-    }
-    return segPart.isEmpty() ? QStringLiteral("?") : segPart;
-}
-
 void SegmentConnectionCard::refreshCard()
 {
     if (!m_doc) return;
     cad::param::Block* block = m_doc->findBlock(m_blockId);
-    cad::param::Segment* seg = block ? block->findSegment(m_segmentId) : nullptr;
 
     const cad::param::Attachment* att = findFollowerAttachment();
 
-    // 省道线 (用户拍板 2026-08): 起点 A 已挂、终点 = B 偏移解算 — 独立于附件
-    // 体系。角度反算只读、d/β 可改、B 所在线段只读不修改（单向挂靠）。
-    if (block && block->isDart()) {
-        showDartState(*block, seg);
-        return;
-    }
-    m_dartRow->setVisible(false);
-
     // 统一表单: 无状态区分 (用户 2026-12-15 拍板), 行集与标题恒定;
     // 自由线 = 连接字段为空的同一张卡。
-    refreshUnifiedState(att, block, seg);
+    refreshUnifiedState(att, block);
 }
 
 } // namespace cad::ui

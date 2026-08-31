@@ -1,4 +1,4 @@
-#include "Theme.h"
+﻿#include "Theme.h"
 
 #include <QApplication>
 #include <QFont>
@@ -94,20 +94,26 @@ ThemeTokens ThemeTokens::dark()
 }
 
 // ---------------------------------------------------------------------------
-// Stylesheet generation (ElaTheme-driven tail)
+// Stylesheet generation (global design tail)
 // ---------------------------------------------------------------------------
 //
-// ElaWidgetTools paints its own widgets from ElaTheme colors, so the global
-// stylesheet is reduced to a small tail for the few plain-Qt widgets that
-// remain in the app (QListWidget pickers, dividers, tooltips) plus the
-// semantic-text object-name rules that ElaText's transparent instance style
-// does not override (QSS color wins over ElaText's forced palette).
+// 2026-08 教训：这份"全局样式表"从写下第一天起就因 Theme::apply 里的
+// qobject_cast<QWidget*> 失败而从未安装（见 TROUBLESHOOTING「全局样式表从未
+// 被安装」条目）——全程序的视觉实际是各控件的实例级 setStyleSheet 调出来的。
+// 修复安装后全部规则"苏醒"：程序整体走全局设计样式（用户拍板），但
+// **ContextStrip 编辑条带例外** —— 它的控件曾按"全局规则不存在"精调
+// （11px 实例字号），苏醒的 QWidget 兜底字号把标签放大变丑。豁免方式 =
+// 条带内部 objectName 改用 strip 前缀（stripSerial/stripField/stripNote，
+// 不命中全局 ID 规则）+ 无实例样式的标签补 font-size:11px 实例钉死 +
+// editBand 改名（黄底规则失配）。全局规则今后新增时注意勿命中 strip 前缀。
 
 QString Theme::buildStylesheet(const ThemeTokens& t)
 {
     QString s = QStringLiteral(R"QSS(
 /* ============================================================
    WildWind Pattern theme tail - Endfield Industrial CAD Style
+   （条带 ContextStrip 已豁免：其内部 objectName 均为 strip* 前缀，
+     不会命中下方任何 ID/类规则；QWidget 兜底字号被各控件实例钉回）
    ============================================================ */
 
 QWidget {
@@ -121,15 +127,21 @@ QWidget {
 QFrame#divider { background: @border; border: none; max-height: 1px; min-height: 1px; }
 QFrame#accentBar { background: @accent; border: none; }
 
-/* ── 编辑条带 (§4.6): 状态栏上方的独立「创建后编辑/预输入」条带 ── */
-QWidget#editBand {
-    background: @accentTint; border: 1px solid @accentStrong; border-radius: 2px;
+/* ── 线条属性面板端点徽章 (PANEL_REDESIGN §10.5): P#/P# 墨底黄字, 串号徽章同语言 ── */
+ElaText#endpointBadge {
+    background-color: @text1; color: @accent; font-weight: 600; padding: 1px 6px;
 }
 
-/* ── 串号徽章 (§5.3): 墨底 + accent 黄字, 图纸编号感 ── */
-QLabel#serialBadge {
-    background-color: @text1; color: @accent; font-weight: 600; padding: 0 6px;
+/* ── 端点组朝向轴: 1px 虚线竖线, 连接 P1/P2 徽章 (纯装饰, QSS 统一管理主题色) ── */
+QFrame#endpointAxis {
+    background: transparent; border: none;
+    border-left: 1px dashed @borderStrong;
 }
+
+/* ── 编辑条带 / 串号徽章: 死规则已删 (2026-08-31) ──────────
+   曾为 editBand / serialBadge 留档的全局规则已删除: 条带对象
+   已改 stripBand / stripSerial 豁免, 规则永不命中 = 死代码。
+   豁免约定见上方头注释; 新增全局规则勿命中 strip* 前缀。 */
 
 /* ── 上下文属性条连接角度会话 (二期): 公式解析失败 → 角度框红边提示 ── */
 QLineEdit#angleEdit[angleInvalid="true"] {
@@ -199,7 +211,9 @@ QScrollBar::handle:horizontal:hover { background: @text2; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
-/* ── Tooltip ─────────────────────────────────────────────── */
+/* ── Tooltip (2026-08 修复: 黑 tooltip) ────────────────────
+   颜色约定：亮色 = 深底浅字（tooltipBg #0D1117 / tooltipFg #F8FAFC），
+   暗色 = 浅底深字。 */
 
 QToolTip {
     background: @tooltipBg; color: @tooltipFg;
@@ -208,6 +222,10 @@ QToolTip {
 }
 )QSS");
 
+    // 坑: @tooltipFg 曾漏替换 → QSS 颜色声明非法, 文字取回调色板深色,
+    // 叠加 @tooltipBg 黑底 → "提示纯黑、字完全看不清" (用户 2026-12 反馈)。
+    s.replace(QStringLiteral("@tooltipFg"),    t.tooltipFg.name());
+    s.replace(QStringLiteral("@tooltipBg"),    t.tooltipBg.name());
     s.replace(QStringLiteral("@surface2"),     t.surface2.name());  // before @surface
     s.replace(QStringLiteral("@surface"),      t.surface.name());
     s.replace(QStringLiteral("@borderStrong"), t.borderStrong.name());  // before @border
@@ -215,15 +233,10 @@ QToolTip {
     s.replace(QStringLiteral("@text1"),        t.text1.name());
     s.replace(QStringLiteral("@text2"),        t.text2.name());
     s.replace(QStringLiteral("@text3"),        t.text3.name());
-    s.replace(QStringLiteral("@accentStrong"), t.accentStrong.name());  // before @accent
     s.replace(QStringLiteral("@accentTint"),   t.accentTint.name());    // before @accent
     s.replace(QStringLiteral("@accent"),       t.accent.name());
     s.replace(QStringLiteral("@onAccent"),     t.onAccent.name());
     s.replace(QStringLiteral("@danger"),       t.danger.name());
-    // 坑: @tooltipFg 曾漏替换 → QSS 颜色声明非法, 文字取回调色板深色,
-    // 叠加 @tooltipBg 黑底 → "提示纯黑、字完全看不清" (用户 2026-12 反馈)。
-    s.replace(QStringLiteral("@tooltipFg"),    t.tooltipFg.name());
-    s.replace(QStringLiteral("@tooltipBg"),    t.tooltipBg.name());
     return s;
 }
 
@@ -343,8 +356,15 @@ void Theme::apply(ThemeMode mode)
         theme->setThemeMode(mode == ThemeMode::Dark ? ElaThemeType::Dark
                                                     : ElaThemeType::Light);
 
-    // setStyleSheet is a QWidget member — call through the app instance.
-    if (auto* app = qobject_cast<QWidget*>(QApplication::instance()))
+    // App-level stylesheet: QApplication has its own setStyleSheet member
+    // (qapplication.h) — NOT a QWidget cast! The old
+    // qobject_cast<QWidget*>(QApplication::instance()) always returned null
+    // (QApplication derives from QGuiApplication, not QWidget), so the global
+    // stylesheet was NEVER installed: QToolTip/QListWidget/dimText rules were
+    // silently dead. Tooltips then fell back to the palette/native path —
+    // inside the translucent ElaDialog they rendered as an unreadable black
+    // box (user report 2026-08). Cast via QApplication instead.
+    if (auto* app = qobject_cast<QApplication*>(QApplication::instance()))
         app->setStyleSheet(buildStylesheet(s_tokens));
 }
 

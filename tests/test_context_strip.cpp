@@ -142,6 +142,10 @@ private slots:
     void basisShowsSerialTagsAndReverseFlips();
     // ── 旋转会话锚心 (2026-12: 旋转工具换向 = 切换锚心) ──
     void rotateAnchorStateFlipsBasisAndRoutesReverse();
+    // ── 连接维度 拆开/重连 双面按钮 (2026-xx 用户拍板) ──
+    void connectionDimDetachButtons();
+    // ── 锁定态 °/⌒ 单位切换 (用户报告"跟随角度切不到弧长") ──
+    void pinnedUnitToggleFlipsFollowerMode();
 };
 
 void TestContextStrip::fillPopulatesFields()
@@ -156,7 +160,8 @@ void TestContextStrip::fillPopulatesFields()
     const auto* seg = b->findSegment(l.segId);
     QVERIFY(seg);
     // ID shows the human-friendly tag only (L1), never the random prefix.
-    auto* idLabel = strip.findChild<QLabel*>(QStringLiteral("serialBadge"));
+    // (2026-08: objectName serialBadge → stripSerial, 条带豁免全局 QSS。)
+    auto* idLabel = strip.findChild<QLabel*>(QStringLiteral("stripSerial"));
     QVERIFY(idLabel);
     QCOMPARE(idLabel->text(), cad::param::Serial::tag(seg->serial));
     QVERIFY(!idLabel->text().contains("k") && !idLabel->text().contains("a"));
@@ -444,9 +449,12 @@ void TestContextStrip::bridgeLineReadOnly()
 {
     ParamDocument doc;
     const LineRef l = makeLine(doc);
-    // Simulate a bridge/measure line: length driven by a formula.
+    // 真桥线: isBridge 标志 + 长度由测量公式驱动 (2026-12 用户拍板: 只有
+    // 真桥线锁输入, 普通线 lengthFormula 不再算桥 —— 旧实现按公式非空拦截,
+    // 输入变量后整条锁死 = 错误设计)。
     auto* b = doc.findBlock(l.blockId);
     auto* seg = b->findSegment(l.segId);
+    b->isBridge = true;
     seg->lengthFormula = QStringLiteral("M_1");
     if (auto* ep = b->findPoint(l.endId))
         ep->distanceFormula = QStringLiteral("M_1");
@@ -458,6 +466,19 @@ void TestContextStrip::bridgeLineReadOnly()
     QVERIFY2(strip.angleEdit()->isReadOnly(), "bridge angle must be read-only");
     // Name stays editable.
     QVERIFY(!strip.nameEdit()->isReadOnly());
+
+    // 对照: 普通线 + 长度公式 = 可编辑 (2026-12 拍板, 输入变量不锁输入)。
+    ParamDocument doc2;
+    const LineRef l2 = makeLine(doc2);
+    auto* b2 = doc2.findBlock(l2.blockId);
+    auto* seg2 = b2->findSegment(l2.segId);
+    seg2->lengthFormula = QStringLiteral("10+5");
+    ContextStrip strip2(&doc2);
+    strip2.setPinnedTarget(l2.blockId, l2.segId);
+    QVERIFY2(!strip2.lengthEdit()->isReadOnly(),
+             "普通线长度公式不得锁输入 (2026-12 用户拍板)");
+    QVERIFY2(!strip2.angleEdit()->isReadOnly(),
+             "普通线长度公式不得锁角度输入 (2026-12 用户拍板)");
 }
 
 void TestContextStrip::escEmitsCancelOnCreation()
@@ -894,6 +915,145 @@ void TestContextStrip::rotateAnchorStateFlipsBasisAndRoutesReverse()
     strip.reverseButton()->click();
     QVERIFY(!routed);
     QCOMPARE(stack.count(), 1);   // 普通换向: push ReverseSegmentCommand
+}
+
+// ── 连接维度 拆开/重连 双面按钮 (2026-xx 用户拍板): 位置 (连接) 与角度
+// (基准) 两个正交维度的开关, 与属性对话框「连接」「基准」按钮同语义;
+// 两维互不清除对方, 双拆开 = 自由线 ──
+void TestContextStrip::connectionDimDetachButtons()
+{
+    ParamDocument doc;
+    const LineRef leader = makeLine(doc);
+    const LineRef follower = makeLine(doc, /*lenMm=*/60.0);
+
+    Attachment att;
+    att.fromBlockId = follower.blockId;
+    att.fromPointId = follower.startId;
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    ContextStrip strip(&doc);
+    strip.setPinnedTarget(follower.blockId, follower.segId);
+
+    auto* posBtn = strip.posDetachButton();
+    auto* angBtn = strip.angleDetachButton();
+    QVERIFY(posBtn);
+    QVERIFY(angBtn);
+
+    auto attFor = [&]() -> const Attachment* {
+        for (const auto& x : doc.attachments())
+            if (x.fromBlockId == follower.blockId) return &x;
+        return nullptr;
+    };
+
+    // 0) 全连接: 两按钮可用, 均为「拆开」面。
+    QVERIFY(posBtn->isEnabled());
+    QVERIFY(angBtn->isEnabled());
+    QCOMPARE(posBtn->text(), QString::fromUtf8("拆开"));
+    QCOMPARE(angBtn->text(), QString::fromUtf8("拆开"));
+
+    // 1) 连接拆开 (位置维度): angleOnly, 不碰角度维度。
+    posBtn->click();
+    QVERIFY2(attFor() && attFor()->angleOnly, "连接拆开 = 位置维度拆开");
+    QVERIFY2(!attFor()->angleIndependent, "位置维度拆开不碰角度维度");
+    QCOMPARE(posBtn->text(), QString::fromUtf8("重连"));
+    QCOMPARE(angBtn->text(), QString::fromUtf8("拆开"));  // 角度维度未动
+
+    // 2) 连接重连: 位置回宿主 + 重新焊接。
+    posBtn->click();
+    QVERIFY2(!attFor()->angleOnly, "连接重连 = 位置维度恢复");
+    QVERIFY2(attFor()->isLocked, "重连重新焊接");
+
+    // 3) 基准拆开 (角度维度): angleIndependent, 不碰位置维度。
+    angBtn->click();
+    QVERIFY2(attFor()->angleIndependent, "基准拆开 = 角度维度拆开");
+    QVERIFY2(!attFor()->angleOnly, "角度维度拆开不碰位置维度");
+    QCOMPARE(angBtn->text(), QString::fromUtf8("重连"));
+
+    // 4) 基准重连: 恢复角度跟随。
+    angBtn->click();
+    QVERIFY2(!attFor()->angleIndependent, "基准重连 = 角度维度恢复");
+
+    // 5) 双拆开 = 自由线: 位置自由 + 角度自管 —— 基准线旋转, 本线不动。
+    posBtn->click();
+    angBtn->click();
+    QVERIFY2(attFor()->angleOnly && attFor()->angleIndependent,
+             "双拆开 = 位置自由 + 角度自管 (自由线)");
+    const auto* fb = doc.findBlock(follower.blockId);
+    const cad::geo::Vec2 originBefore = fb->transform.origin;
+    auto* lb = doc.findBlock(leader.blockId);
+    lb->transform.rotation += 30.0 * M_PI / 180.0;
+    doc.resolveAll();
+    QVERIFY2(fb->transform.origin.distanceTo(originBefore) < 1e-9,
+             "双拆开自由线不得跟随基准线移动");
+
+    // 6) 自由线 (无附件): 两按钮禁用。
+    const LineRef free = makeLine(doc, 50.0);
+    ContextStrip strip2(&doc);
+    strip2.setPinnedTarget(free.blockId, free.segId);
+    QVERIFY(!strip2.posDetachButton()->isEnabled());
+    QVERIFY(!strip2.angleDetachButton()->isEnabled());
+}
+
+// REPRO (用户报告 2026-12): 「跟随角度」锁定态点 ⌒ 切不到弧长模式。
+// 数值跟随角: 条带 °/⌒ 必须几何保持切换 (角度 45° → 弧长 45°·r; 反向回 45°)。
+void TestContextStrip::pinnedUnitToggleFlipsFollowerMode()
+{
+    ParamDocument doc;
+    const LineRef leader = makeLine(doc);
+    const LineRef follower = makeLine(doc, /*lenMm=*/60.0);
+
+    Attachment att;
+    att.fromBlockId = follower.blockId;
+    att.fromPointId = follower.startId;
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    att.followerAngle = 45.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    ContextStrip strip(&doc);
+    strip.setPinnedTarget(follower.blockId, follower.segId);
+    QVERIFY(strip.unitArcButton()->isEnabled());
+
+    // ① 角度 → 弧长: 45°·(60mm 半径) = π/4·60 ≈ 47.12mm。
+    strip.unitArcButton()->click();
+    const Attachment* a = nullptr;
+    for (const auto& x : doc.attachments())
+        if (x.fromBlockId == follower.blockId) { a = &x; break; }
+    QVERIFY(a);
+    QVERIFY2(a->rotationMode == cad::param::RotationMode::ArcLength,
+             "跟随角 → 弧长 条带切换失败");
+    QVERIFY2(std::abs(a->arcLength - 45.0 * M_PI / 180.0 * 60.0) < 1e-6,
+             "弧长换算错误");
+
+    // ② 弧长 → 角度: 反算回 45°。
+    strip.unitAngleButton()->click();
+    const Attachment* a2 = nullptr;
+    for (const auto& x : doc.attachments())
+        if (x.fromBlockId == follower.blockId) { a2 = &x; break; }
+    QVERIFY(a2);
+    QVERIFY2(a2->rotationMode == cad::param::RotationMode::Angle,
+             "弧长 → 角度 条带切换失败");
+    QVERIFY2(std::abs(a2->followerAngle - 45.0) < 1e-6, "角度反算错误");
+
+    // ③ 公式驱动的跟随角 (2026-12 用户拍板: 可切换, 公式**原样搬移**不乘
+    // 换算系数 —— 公式语义跟随当前模式)。
+    auto* mut = doc.findAttachment(a2->id);
+    mut->followerAngleFormula = QStringLiteral("30+15");
+    doc.resolveAll();
+    strip.unitArcButton()->click();
+    const Attachment* a3 = nullptr;
+    for (const auto& x : doc.attachments())
+        if (x.fromBlockId == follower.blockId) { a3 = &x; break; }
+    QVERIFY2(a3->rotationMode == cad::param::RotationMode::ArcLength,
+             "公式驱动跟随角→弧长 条带切换失败 (2026-12 起应可切)");
+    QVERIFY2(a3->arcLengthFormula == QStringLiteral("30+15"),
+             "公式必须原样保留, 不得乘换算系数/烘焙成数值");
+    // 徽标应显示当前模式 (Ela 选中态不可见, 靠文字区分)。
+    QVERIFY(strip.badgeText().contains(QString::fromUtf8("弧长")));
 }
 
 QTEST_MAIN(TestContextStrip)

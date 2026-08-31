@@ -118,6 +118,8 @@ public:
                                  const QUuid& newRefBlockId,
                                  const QUuid& newRefSegmentId,
                                  const QUuid& newRefPointId = QUuid(),
+                                 const QUuid& newRef2BlockId = QUuid(),
+                                 const QUuid& newRef2PointId = QUuid(),
                                  QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
@@ -128,9 +130,13 @@ private:
     QUuid m_newRefBlockId;
     QUuid m_newRefSegmentId;
     QUuid m_newRefPointId;
+    QUuid m_newRef2BlockId;
+    QUuid m_newRef2PointId;
     QUuid m_oldRefBlockId;
     QUuid m_oldRefSegmentId;
     QUuid m_oldRefPointId;
+    QUuid m_oldRef2BlockId;
+    QUuid m_oldRef2PointId;
     bool m_oldAngleIndependent = false;
     bool m_oldAngleOnly = false;
     cad::param::SlideMode m_oldSlideMode = cad::param::SlideMode::None;
@@ -168,6 +174,32 @@ private:
     bool m_hasOldAtt = false;
     cad::geo::Vec2 m_oldOrigin;
     double m_oldRotation = 0.0;
+};
+
+/// 设置对齐点 (2026-09 设计修正): 本线段的哪个端点钉在目标点上 —— 只改
+/// Attachment::fromPointId (同块点互换), 并按当前基准方向反算 followerAngle
+/// 保零跳变。**与换向 (start/end 身份) 完全无关**: fromPointId 由连接语义
+/// 决定, 不随 ReverseSegmentCommand 翻转。undo 恢复旧 fromPointId 与角度。
+class SetAlignPointCommand : public QUndoCommand
+{
+public:
+    SetAlignPointCommand(cad::param::ParamDocument* doc,
+                         const QUuid& attId,
+                         const QUuid& newFromPointId,
+                         QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_attId;
+    QUuid m_newFromPointId;
+    QUuid m_oldFromPointId;
+    double m_oldFollowerAngle = 0.0;
+    QString m_oldFollowerFormula;
+    cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
+    double m_oldArcLength = 0.0;
+    QString m_oldArcFormula;
 };
 
 /// 仅角度线拖端点重挂 (用户报告 2026-12: 使用了引用线段但无连接线段的线,
@@ -321,6 +353,37 @@ private:
     QUuid m_attId;
     double m_oldOffset = 0.0;
     double m_newOffset = 0.0;
+};
+
+/// 滑轨偏移面板编辑 (2026-09 审核收口): 摆放区「滑轨」两轴输入 (数值或公式)
+/// 与派生模式 (AlongLeader/PerpLeader/None) 一步落盘 —— 此前 onSlideOffsetEdited
+/// 直改附件不进 undo, 会话外 Ctrl+Z 撤不掉。redo/undo 均 resolve (独立命令,
+/// 与拖动回写 SetSlideOffsetsCommand 的"同宏不 resolve"约定不同)。
+class SetAttachmentSlideOffsetsCommand : public QUndoCommand
+{
+public:
+    SetAttachmentSlideOffsetsCommand(cad::param::ParamDocument* doc,
+                                     const QUuid& attId,
+                                     cad::param::SlideMode newMode,
+                                     double newAlongMm, const QString& newAlongFormula,
+                                     double newPerpMm, const QString& newPerpFormula,
+                                     QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_attId;
+    cad::param::SlideMode m_newMode;
+    double m_newAlongMm = 0.0;
+    QString m_newAlongFormula;
+    double m_newPerpMm = 0.0;
+    QString m_newPerpFormula;
+    cad::param::SlideMode m_oldMode = cad::param::SlideMode::None;
+    double m_oldAlongMm = 0.0;
+    QString m_oldAlongFormula;
+    double m_oldPerpMm = 0.0;
+    QString m_oldPerpFormula;
 };
 
 } // namespace cad::cmd

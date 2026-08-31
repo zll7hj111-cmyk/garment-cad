@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>线条属性面板 · 重设计方案对比</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; }
+  body { background: #e8eaed; min-height: 100vh; }
+
+  /* ============ 切换器 ============ */
+  .switcher {
+    position: sticky; top: 0; z-index: 100;
+    background: #1f2329; color: #fff;
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 24px;
+  }
+  .switcher .title { font-size: 14px; opacity: .7; margin-right: 16px; }
+  .switcher button {
+    background: transparent; color: #bbb; border: 1px solid #444;
+    padding: 7px 18px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    transition: all .15s;
+  }
+  .switcher button:hover { color: #fff; border-color: #888; }
+  .switcher button.active { background: #4c8dff; color: #fff; border-color: #4c8dff; }
+  .switcher .note { margin-left: auto; font-size: 12px; opacity: .5; }
+
+  .stage { display: flex; justify-content: center; padding: 40px 20px 60px; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
+  .design { display: none; }
+  .design.active { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; }
+
+  .anno { max-width: 300px; padding-top: 8px; }
+  .anno h3 { font-size: 16px; margin-bottom: 12px; color: #222; }
+  .anno li { font-size: 13px; color: #555; line-height: 1.9; margin-left: 18px; }
+  .anno .tag { display: inline-block; background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 1px 8px; font-size: 12px; color: #666; margin-bottom: 6px; }
+
+  /* ================================================================
+     方案 A —— 现代检查器风（Figma / Linear 风格，浅色）
+     ================================================================ */
+  .panelA {
+    width: 400px; background: #ffffff; border-radius: 12px;
+    box-shadow: 0 8px 40px rgba(0,0,0,.14); overflow: hidden;
+    font-size: 13px; color: #2b2f36;
+  }
+  .panelA .p-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px; border-bottom: 1px solid #eceef1;
+  }
+  .panelA .p-head .icon {
+    width: 28px; height: 28px; border-radius: 8px; background: #eef3ff;
+    display: flex; align-items: center; justify-content: center; font-size: 15px;
+  }
+  .panelA .p-head .name { font-weight: 600; font-size: 14px; }
+  .panelA .p-head .id { font-size: 11px; color: #98a0ab; font-family: Consolas, monospace; }
+  .panelA .p-head .winbtns { margin-left: auto; display: flex; gap: 6px; }
+  .panelA .p-head .winbtns span {
+    width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center;
+    justify-content: center; color: #98a0ab; cursor: pointer; font-size: 13px;
+  }
+  .panelA .p-head .winbtns span:hover { background: #f1f3f5; color: #444; }
+
+  .panelA .tabs { display: flex; padding: 10px 16px 0; gap: 4px; border-bottom: 1px solid #eceef1; }
+  .panelA .tabs div {
+    padding: 8px 14px; font-size: 13px; color: #7a828e; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .panelA .tabs div.on { color: #2f6fed; border-color: #2f6fed; font-weight: 600; }
+  .panelA .tabs .badge { background: #eef3ff; color: #2f6fed; border-radius: 8px; font-size: 10px; padding: 1px 6px; margin-left: 4px; }
+
+  .panelA .body { padding: 16px; max-height: 640px; overflow-y: auto; }
+  .panelA .sec { margin-bottom: 20px; }
+  .panelA .sec-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .08em; color: #98a0ab;
+    text-transform: uppercase; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+  }
+  .panelA .sec-title::after { content: ""; flex: 1; height: 1px; background: #eceef1; }
+
+  .panelA .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .panelA .row label { width: 52px; flex-shrink: 0; color: #7a828e; font-size: 12px; }
+  .panelA input[type=text], .panelA .num {
+    flex: 1; min-width: 0; border: 1px solid #dde1e6; border-radius: 7px;
+    padding: 7px 10px; font-size: 13px; color: #2b2f36; background: #fff; outline: none;
+  }
+  .panelA input:focus { border-color: #2f6fed; box-shadow: 0 0 0 3px rgba(47,111,237,.12); }
+  .panelA .hint-input { position: relative; flex: 1; display: flex; gap: 8px; }
+  .panelA .picker-chip {
+    width: 30px; height: 30px; border: 1px solid #dde1e6; border-radius: 7px;
+    display: flex; align-items: center; justify-content: center; color: #7a828e; cursor: pointer; flex-shrink: 0;
+  }
+  .panelA .picker-chip:hover { border-color: #2f6fed; color: #2f6fed; }
+
+  .panelA .seg { display: flex; background: #f1f3f5; border-radius: 8px; padding: 3px; gap: 2px; flex: 1; }
+  .panelA .seg span {
+    flex: 1; text-align: center; padding: 5px 0; border-radius: 6px; font-size: 12px;
+    color: #7a828e; cursor: pointer; white-space: nowrap;
+  }
+  .panelA .seg span.on { background: #fff; color: #2b2f36; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+
+  .panelA .linetypes { display: flex; gap: 8px; flex: 1; }
+  .panelA .linetypes .lt {
+    flex: 1; height: 34px; border: 1.5px solid #dde1e6; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; background: #fff;
+  }
+  .panelA .linetypes .lt.on { border-color: #2f6fed; background: #f4f8ff; }
+  .panelA .linetypes svg { width: 70%; }
+
+  .panelA .thickness { display: flex; align-items: center; gap: 6px; flex: 1; }
+  .panelA .thickness .t { display: flex; background: #f1f3f5; border-radius: 8px; padding: 3px; gap: 2px; }
+  .panelA .thickness .t span { padding: 5px 12px; border-radius: 6px; font-size: 12px; color: #7a828e; cursor: pointer; }
+  .panelA .thickness .t span.on { background: #fff; color: #2b2f36; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .panelA .stepper { display: flex; align-items: center; border: 1px solid #dde1e6; border-radius: 7px; overflow: hidden; }
+  .panelA .stepper input { width: 44px; border: none; text-align: center; padding: 6px 0; font-size: 13px; outline: none; }
+  .panelA .stepper button { border: none; background: #f7f8fa; width: 24px; height: 30px; cursor: pointer; color: #7a828e; }
+
+  .panelA .colorrow { display: flex; align-items: center; gap: 8px; flex: 1; }
+  .panelA .swatch { width: 30px; height: 30px; border-radius: 7px; background: #1e1e1e; border: 1px solid rgba(0,0,0,.12); cursor: pointer; }
+  .panelA .hex { font-family: Consolas, monospace; font-size: 12px; color: #7a828e; }
+
+  .panelA .endpoint {
+    border: 1px solid #eceef1; border-radius: 10px; padding: 12px; margin-bottom: 10px; background: #fafbfc;
+  }
+  .panelA .endpoint .ep-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .panelA .endpoint .ep-dot { width: 8px; height: 8px; border-radius: 50%; background: #2f6fed; }
+  .panelA .endpoint .ep-name { font-weight: 600; font-size: 12px; }
+  .panelA .endpoint .ep-vis { margin-left: auto; font-size: 11px; color: #98a0ab; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .panelA .conn {
+    flex: 1; display: flex; align-items: center; gap: 6px; border: 1px dashed #c9d2ff;
+    background: #f4f7ff; color: #5570c9; border-radius: 7px; padding: 7px 10px; font-size: 12px; cursor: pointer;
+  }
+  .panelA .ghostbtn {
+    border: 1px solid #dde1e6; background: #fff; border-radius: 7px; padding: 6px 12px;
+    font-size: 12px; color: #7a828e; cursor: pointer; flex-shrink: 0;
+  }
+  .panelA .ghostbtn:hover { color: #d33; border-color: #f0c0c0; }
+
+  .panelA .derived {
+    background: #f7f8fa; border-radius: 8px; padding: 9px 12px; font-size: 12px;
+    color: #7a828e; display: flex; justify-content: space-between; align-items: center; margin-top: 6px;
+  }
+  .panelA .derived b { color: #2b2f36; font-family: Consolas, monospace; }
+
+  .panelA .p-foot {
+    display: flex; gap: 10px; padding: 12px 16px; border-top: 1px solid #eceef1; background: #fafbfc;
+  }
+  .panelA .p-foot .btn-p {
+    flex: 1; background: #2f6fed; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 0; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .panelA .p-foot .btn-s {
+    background: #fff; color: #7a828e; border: 1px solid #dde1e6; border-radius: 8px;
+    padding: 9px 16px; font-size: 13px; cursor: pointer;
+  }
+
+  /* ================================================================
+     方案 B —— 深色专业 CAD 风（Blender / 工业软件风）
+     ================================================================ */
+  .panelB {
+    width: 380px; background: #23262b; border-radius: 10px; overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0,0,0,.3); font-size: 12px; color: #d4d8dd;
+  }
+  .panelB .p-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: #1b1d21; border-bottom: 1px solid #101214;
+  }
+  .panelB .p-head .name { font-weight: 600; font-size: 13px; }
+  .panelB .p-head .id { color: #6b7280; font-family: Consolas, monospace; font-size: 11px; }
+  .panelB .p-head .winbtns { margin-left: auto; display: flex; gap: 4px; color: #8a919b; }
+  .panelB .p-head .winbtns span { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; }
+  .panelB .p-head .winbtns span:hover { background: #33373d; color: #fff; }
+
+  .panelB .tabs { display: flex; background: #1b1d21; padding: 0 10px; }
+  .panelB .tabs div { padding: 9px 14px; font-size: 12px; color: #8a919b; cursor: pointer; border-bottom: 2px solid transparent; }
+  .panelB .tabs div.on { color: #6ea8ff; border-color: #6ea8ff; }
+
+  .panelB .body { padding: 12px 14px; max-height: 640px; overflow-y: auto; }
+  .panelB .sec {
+    background: #2b2f35; border: 1px solid #363b42; border-radius: 8px;
+    margin-bottom: 10px; overflow: hidden;
+  }
+  .panelB .sec-title {
+    display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+    background: #31363d; font-size: 11px; font-weight: 700; letter-spacing: .06em; color: #aeb5bf;
+    cursor: pointer; user-select: none;
+  }
+  .panelB .sec-title .arrow { font-size: 9px; color: #6b7280; }
+  .panelB .sec-body { padding: 10px 12px; }
+  .panelB .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .panelB .row:last-child { margin-bottom: 0; }
+  .panelB .row label { width: 46px; flex-shrink: 0; color: #8a919b; font-size: 11px; }
+  .panelB input[type=text], .panelB .num {
+    flex: 1; min-width: 0; background: #1f2226; border: 1px solid #3a3f46; border-radius: 5px;
+    padding: 6px 8px; font-size: 12px; color: #e2e6ea; outline: none;
+  }
+  .panelB input:focus { border-color: #6ea8ff; }
+  .panelB .num-wrap { flex: 1; display: flex; align-items: center; gap: 5px; }
+  .panelB .unit { color: #6b7280; font-size: 11px; }
+  .panelB .seg { display: flex; background: #1f2226; border: 1px solid #3a3f46; border-radius: 5px; overflow: hidden; flex: 1; }
+  .panelB .seg span { flex: 1; text-align: center; padding: 5px 0; font-size: 11px; color: #8a919b; cursor: pointer; border-right: 1px solid #3a3f46; }
+  .panelB .seg span:last-child { border-right: none; }
+  .panelB .seg span.on { background: #3d5a94; color: #fff; }
+
+  .panelB .linetypes { display: flex; gap: 6px; flex: 1; }
+  .panelB .linetypes .lt {
+    flex: 1; height: 30px; background: #1f2226; border: 1px solid #3a3f46; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .panelB .linetypes .lt.on { border-color: #6ea8ff; background: #2a3444; }
+  .panelB .linetypes svg { width: 70%; }
+
+  .panelB .swatch { width: 26px; height: 26px; border-radius: 5px; background: #1e1e1e; border: 1px solid #3a3f46; cursor: pointer; }
+  .panelB .hex { font-family: Consolas, monospace; font-size: 11px; color: #8a919b; }
+
+  .panelB .endpoint {
+    background: #24272c; border: 1px solid #363b42; border-left: 3px solid #6ea8ff;
+    border-radius: 6px; padding: 10px; margin-bottom: 8px;
+  }
+  .panelB .endpoint:last-child { margin-bottom: 0; }
+  .panelB .endpoint .ep-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 11px; }
+  .panelB .endpoint .ep-name { font-weight: 700; color: #aeb5bf; }
+  .panelB .endpoint .ep-vis { margin-left: auto; color: #6b7280; cursor: pointer; }
+  .panelB .conn {
+    flex: 1; background: #1f2226; border: 1px solid #3a3f46; border-radius: 5px;
+    padding: 6px 8px; font-size: 11px; color: #6b7280; font-family: Consolas, monospace; cursor: pointer;
+  }
+  .panelB .ghostbtn {
+    background: #31363d; border: 1px solid #3a3f46; color: #aeb5bf; border-radius: 5px;
+    padding: 5px 10px; font-size: 11px; cursor: pointer; flex-shrink: 0;
+  }
+  .panelB .derived { font-size: 11px; color: #6b7280; padding: 6px 2px 0; font-family: Consolas, monospace; }
+  .panelB .derived b { color: #9ecb7d; }
+
+  .panelB .p-foot { display: flex; gap: 8px; padding: 10px 14px; background: #1b1d21; border-top: 1px solid #101214; }
+  .panelB .btn-p { flex: 1; background: #3d5a94; color: #fff; border: none; border-radius: 5px; padding: 8px 0; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .panelB .btn-s { background: #31363d; color: #aeb5bf; border: 1px solid #3a3f46; border-radius: 5px; padding: 8px 14px; font-size: 12px; cursor: pointer; }
+
+  /* ================================================================
+     方案 C —— 清爽卡片风（Ant Design / 企业后台风）
+     ================================================================ */
+  .panelC {
+    width: 420px; background: #f5f7fa; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0,0,0,.12); font-size: 13px; color: #303133;
+  }
+  .panelC .p-head {
+    display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: #fff;
+    border-bottom: 1px solid #ebeef5;
+  }
+  .panelC .p-head .name { font-weight: 600; font-size: 15px; }
+  .panelC .p-head .tag-id {
+    background: #f0f2f5; color: #909399; font-size: 11px; border-radius: 4px;
+    padding: 2px 8px; font-family: Consolas, monospace;
+  }
+  .panelC .p-head .winbtns { margin-left: auto; display: flex; gap: 8px; color: #909399; }
+  .panelC .p-head .winbtns span { cursor: pointer; }
+  .panelC .p-head .winbtns span:hover { color: #303133; }
+
+  .panelC .tabs { display: flex; gap: 20px; padding: 0 18px; background: #fff; border-bottom: 1px solid #ebeef5; }
+  .panelC .tabs div { padding: 10px 2px; font-size: 13px; color: #909399; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .panelC .tabs div.on { color: #409eff; border-color: #409eff; font-weight: 600; }
+
+  .panelC .body { padding: 14px; max-height: 620px; overflow-y: auto; }
+  .panelC .card {
+    background: #fff; border-radius: 8px; border: 1px solid #ebeef5;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .panelC .card-title {
+    font-size: 13px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .panelC .card-title .dot { width: 4px; height: 14px; border-radius: 2px; background: #409eff; }
+  .panelC .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .panelC .row:last-child { margin-bottom: 0; }
+  .panelC .row label { width: 52px; flex-shrink: 0; color: #909399; font-size: 12px; }
+  .panelC input[type=text] {
+    flex: 1; min-width: 0; border: 1px solid #dcdfe6; border-radius: 4px;
+    padding: 7px 10px; font-size: 13px; color: #303133; outline: none; background: #fff;
+  }
+  .panelC input:focus { border-color: #409eff; }
+  .panelC .radio { display: flex; gap: 0; border: 1px solid #dcdfe6; border-radius: 4px; overflow: hidden; }
+  .panelC .radio span { padding: 6px 14px; font-size: 12px; color: #606266; cursor: pointer; border-right: 1px solid #dcdfe6; background: #fff; }
+  .panelC .radio span:last-child { border-right: none; }
+  .panelC .radio span.on { background: #409eff; color: #fff; border-color: #409eff; }
+
+  .panelC .linetypes { display: flex; gap: 8px; flex: 1; }
+  .panelC .linetypes .lt {
+    flex: 1; height: 32px; border: 1px solid #dcdfe6; border-radius: 4px; background: #fff;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .panelC .linetypes .lt.on { border-color: #409eff; box-shadow: 0 0 0 2px rgba(64,158,255,.15); }
+  .panelC .linetypes svg { width: 70%; }
+
+  .panelC .swatch { width: 28px; height: 28px; border-radius: 4px; background: #1e1e1e; border: 1px solid #dcdfe6; cursor: pointer; }
+  .panelC .hex { font-family: Consolas, monospace; font-size: 12px; color: #909399; }
+
+  .panelC .endpoint {
+    border: 1px solid #ebeef5; border-radius: 6px; padding: 12px; margin-bottom: 10px;
+    background: #fafafa; position: relative;
+  }
+  .panelC .endpoint .ep-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .panelC .endpoint .ep-badge {
+    background: #409eff; color: #fff; font-size: 11px; font-weight: 700;
+    border-radius: 4px; padding: 1px 7px;
+  }
+  .panelC .endpoint .ep-vis { margin-left: auto; font-size: 12px; color: #909399; cursor: pointer; }
+  .panelC .conn {
+    flex: 1; border: 1px solid #dcdfe6; background: #fff; border-radius: 4px;
+    padding: 7px 10px; font-size: 12px; color: #909399; cursor: pointer;
+  }
+  .panelC .linkbtn { color: #409eff; font-size: 12px; cursor: pointer; flex-shrink: 0; background: none; border: none; }
+  .panelC .derived { font-size: 12px; color: #909399; margin-top: 8px; }
+  .panelC .derived b { color: #303133; font-family: Consolas, monospace; }
+
+  .panelC .p-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 18px; background: #fff; border-top: 1px solid #ebeef5; }
+  .panelC .btn-p { background: #409eff; color: #fff; border: none; border-radius: 4px; padding: 8px 20px; font-size: 13px; cursor: pointer; }
+  .panelC .btn-s { background: #fff; color: #606266; border: 1px solid #dcdfe6; border-radius: 4px; padding: 8px 20px; font-size: 13px; cursor: pointer; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.15); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <span class="title">线条属性面板 · 重设计方案</span>
+  <button class="active" onclick="show(0,this)">方案 A · 现代检查器</button>
+  <button onclick="show(1,this)">方案 B · 深色专业 CAD</button>
+  <button onclick="show(2,this)">方案 C · 清爽卡片</button>
+  <span class="note">三套方案仅为视觉/布局演示，控件内容与原面板一致</span>
+</div>
+
+<div class="stage">
+
+  <!-- ==================== 方案 A ==================== -->
+  <div class="design active">
+    <div class="panelA">
+      <div class="p-head">
+        <div class="icon">📐</div>
+        <div>
+          <div class="name">线条属性</div>
+          <div class="id">me5eqL1</div>
+        </div>
+        <div class="winbtns"><span>📌</span><span>—</span><span>✕</span></div>
+      </div>
+      <div class="tabs">
+        <div class="on">属性</div>
+        <div>锚点<span class="badge">2</span></div>
+        <div>辅助点</div>
+      </div>
+      <div class="body">
+
+        <div class="sec">
+          <div class="sec-title">本线</div>
+          <div class="row">
+            <label>名称</label>
+            <div class="hint-input">
+              <input type="text" placeholder='名称，如 "肩线" "侧缝"'>
+              <div class="picker-chip" title="从画布拾取">⌖</div>
+            </div>
+          </div>
+          <div class="row">
+            <label>类型</label>
+            <div class="seg"><span class="on">轮廓线</span><span>内部线</span><span>辅助线</span></div>
+          </div>
+          <div class="row">
+            <label>线型</label>
+            <div class="linetypes">
+              <div class="lt on"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#2b2f36" stroke-width="2"/></svg></div>
+              <div class="lt"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#2b2f36" stroke-width="2" stroke-dasharray="7 4"/></svg></div>
+              <div class="lt"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#2b2f36" stroke-width="2" stroke-dasharray="2 4"/></svg></div>
+            </div>
+          </div>
+          <div class="row">
+            <label>粗细</label>
+            <div class="thickness">
+              <div class="t"><span>细</span><span class="on">中</span><span>粗</span></div>
+              <div class="stepper"><input value="1.2"><button>−</button><button>+</button></div>
+            </div>
+          </div>
+          <div class="row">
+            <label>颜色</label>
+            <div class="colorrow">
+              <div class="swatch"></div>
+              <span class="hex">#1E1E1E</span>
+            </div>
+          </div>
+          <div class="row">
+            <label>显示</label>
+            <div class="seg"><span>名称</span><span>长度</span><span class="on">可见</span></div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title">摆放</div>
+          <div class="row">
+            <label>长度</label>
+            <input type="text" value="35.37" style="max-width:80px">
+            <div class="seg" style="max-width:150px"><span>自动</span><span class="on">指定</span></div>
+            <button class="ghostbtn" style="color:#2f6fed;border-color:#c9d2ff">填入</button>
+          </div>
+          <div class="derived"><span>当前实际长度</span><b>35.37 cm</b></div>
+          <div class="row" style="margin-top:10px">
+            <label>滑轨</label>
+            <div class="num-wrap" style="display:flex;gap:6px;flex:1;align-items:center">
+              <span style="font-size:11px;color:#98a0ab">沿向</span><input type="text" value="0" style="max-width:70px">
+              <span style="font-size:11px;color:#98a0ab">垂直</span><input type="text" value="0" style="max-width:70px">
+            </div>
+          </div>
+
+          <div class="endpoint" style="margin-top:10px">
+            <div class="ep-head">
+              <div class="ep-dot"></div><span class="ep-name">端点 P1</span>
+              <span class="ep-vis">👁 显示</span>
+            </div>
+            <div class="row"><label>名称</label>
+              <div class="hint-input"><input type="text" placeholder='名称，如 "肩点"'><div class="picker-chip">⌖</div></div>
+            </div>
+            <div class="row"><label>延长量</label><input type="text" value="0" style="max-width:80px"></div>
+            <div class="row"><label>连接到</label>
+              <div class="conn">🔗 P#/L#/名称…（点击后在画布上拾取）</div>
+              <button class="ghostbtn">拆开</button>
+            </div>
+          </div>
+
+          <div class="endpoint">
+            <div class="ep-head">
+              <div class="ep-dot"></div><span class="ep-name">端点 P2</span>
+              <span class="ep-vis">👁 显示</span>
+            </div>
+            <div class="row"><label>名称</label>
+              <div class="hint-input"><input type="text" placeholder='名称，如 "颈点"'><div class="picker-chip">⌖</div></div>
+            </div>
+            <div class="row"><label>延长量</label><input type="text" value="0" style="max-width:80px"></div>
+            <div class="row"><label>连接到</label>
+              <div class="conn">🔗 P#/L#/名称…（点击后在画布上拾取）</div>
+              <button class="ghostbtn">拆开</button>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:10px">
+            <label>角度</label>
+            <input type="text" value="278.3" style="max-width:90px">
+          </div>
+          <div class="derived"><span>= 世界角度</span><b>278.3°</b><span style="cursor:pointer">✏️</span></div>
+          <div class="row" style="margin-top:8px">
+            <label>基准</label>
+            <span style="font-size:11px;color:#98a0ab">以点1 → 点2 的方向为角度基准</span>
+            <button class="ghostbtn" style="margin-left:auto">独立</button>
+          </div>
+          <div class="row">
+            <label>影子偏转</label>
+            <input type="text" value="0" style="max-width:90px">
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title">按需组</div>
+          <div style="font-size:12px;color:#98a0ab">未加入任何组</div>
+        </div>
+
+      </div>
+      <div class="p-foot">
+        <button class="btn-s">撤销全部</button>
+        <button class="btn-p">关闭</button>
+      </div>
+    </div>
+
+    <div class="anno">
+      <span class="tag">推荐 · 与 Qt Widgets 落地兼容性好</span>
+      <h3>方案 A · 现代检查器</h3>
+      <ul>
+        <li><b>分区标题 + 分隔线</b>，本线 / 摆放 / 按需组层级一眼可辨</li>
+        <li><b>P1 / P2 端点独立卡片</b>，蓝点标记，解决原面板 P1/P2 挤在一起的问题</li>
+        <li>「连接到」改为<b>虚线高亮拾取按钮</b>，不再是像禁用态的灰输入框</li>
+        <li>线型用<b>真实线条预览</b>，下拉类型改分段按钮，少一次点击</li>
+        <li>「当前实际长度 / 世界角度」改成<b>派生值灰条</b>，和可编辑字段区分开</li>
+        <li>选中态统一为<b>白底浮起</b>，替代原来的浅黄底</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ==================== 方案 B ==================== -->
+  <div class="design">
+    <div class="panelB">
+      <div class="p-head">
+        <span class="name">线条属性</span>
+        <span class="id">me5eqL1</span>
+        <div class="winbtns"><span>📌</span><span>—</span><span>✕</span></div>
+      </div>
+      <div class="tabs">
+        <div class="on">属性</div><div>锚点 2</div><div>辅助点</div>
+      </div>
+      <div class="body">
+
+        <div class="sec">
+          <div class="sec-title"><span class="arrow">▼</span>本线</div>
+          <div class="sec-body">
+            <div class="row"><label>名称</label><input type="text" placeholder='名称，如 "肩线" "侧缝"'></div>
+            <div class="row"><label>类型</label>
+              <div class="seg"><span class="on">轮廓线</span><span>内部线</span><span>辅助线</span></div>
+            </div>
+            <div class="row"><label>线型</label>
+              <div class="linetypes">
+                <div class="lt on"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#d4d8dd" stroke-width="2"/></svg></div>
+                <div class="lt"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#d4d8dd" stroke-width="2" stroke-dasharray="7 4"/></svg></div>
+                <div class="lt"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#d4d8dd" stroke-width="2" stroke-dasharray="2 4"/></svg></div>
+              </div>
+            </div>
+            <div class="row"><label>粗细</label>
+              <div class="seg" style="max-width:140px;flex:none"><span>细</span><span class="on">中</span><span>粗</span></div>
+              <input type="text" value="1.2" style="max-width:56px;flex:none">
+            </div>
+            <div class="row"><label>颜色</label>
+              <div class="swatch"></div><span class="hex">#1E1E1E</span>
+            </div>
+            <div class="row"><label>显示</label>
+              <div class="seg"><span>名称</span><span>长度</span><span class="on">可见</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title"><span class="arrow">▼</span>摆放</div>
+          <div class="sec-body">
+            <div class="row"><label>长度</label>
+              <div class="num-wrap">
+                <input type="text" value="35.37" style="max-width:70px;flex:none"><span class="unit">cm</span>
+                <div class="seg" style="max-width:110px"><span>自动</span><span class="on">指定</span></div>
+              </div>
+            </div>
+            <div class="row"><label>滑轨</label>
+              <div class="num-wrap">
+                <span class="unit">沿向</span><input type="text" value="0" style="max-width:56px;flex:none">
+                <span class="unit">垂直</span><input type="text" value="0" style="max-width:56px;flex:none">
+              </div>
+            </div>
+
+            <div class="endpoint">
+              <div class="ep-head"><span class="ep-name">P1</span><span class="ep-vis">👁</span></div>
+              <div class="row"><label>名称</label><input type="text" placeholder='如 "肩点"'></div>
+              <div class="row"><label>延长量</label><input type="text" value="0" style="max-width:70px;flex:none"></div>
+              <div class="row"><label>连接到</label><div class="conn">P#/L#/名称…</div><button class="ghostbtn">拆开</button></div>
+            </div>
+            <div class="endpoint">
+              <div class="ep-head"><span class="ep-name">P2</span><span class="ep-vis">👁</span></div>
+              <div class="row"><label>名称</label><input type="text" placeholder='如 "颈点"'></div>
+              <div class="row"><label>延长量</label><input type="text" value="0" style="max-width:70px;flex:none"></div>
+              <div class="row"><label>连接到</label><div class="conn">P#/L#/名称…</div><button class="ghostbtn">拆开</button></div>
+            </div>
+
+            <div class="row" style="margin-top:8px"><label>角度</label>
+              <input type="text" value="278.3" style="max-width:80px;flex:none"><span class="unit">°</span>
+            </div>
+            <div class="derived">= 世界角度 <b>278.3°</b> · 基准: 点1→点2 [独立]</div>
+            <div class="row" style="margin-top:6px"><label>影子偏转</label>
+              <input type="text" value="0" style="max-width:80px;flex:none"><span class="unit">°</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title"><span class="arrow">▶</span>按需组</div>
+        </div>
+
+      </div>
+      <div class="p-foot">
+        <button class="btn-s">撤销全部</button>
+        <button class="btn-p">关闭</button>
+      </div>
+    </div>
+
+    <div class="anno">
+      <span class="tag">适合 · 长时间制图的专业用户</span>
+      <h3>方案 B · 深色专业 CAD</h3>
+      <ul>
+        <li>参考 Blender / AutoCAD 的<b>可折叠分区</b>，分区可以收起，信息密度高</li>
+        <li>整体面板<b>更窄（380px）</b>，适合停靠在画布侧边</li>
+        <li>P1/P2 端点用<b>左侧蓝条卡片</b>区分，结构清晰</li>
+        <li>数字输入框普遍变窄，<b>单位外露</b>（cm / °），专业感强</li>
+        <li>派生值（世界角度）用<b>等宽绿字</b>，一眼认出是计算结果</li>
+        <li>深色主题在低光环境/长时间工作下更护眼；若整个软件是浅色主题则不建议单独用</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ==================== 方案 C ==================== -->
+  <div class="design">
+    <div class="panelC">
+      <div class="p-head">
+        <span class="name">线条属性</span>
+        <span class="tag-id">me5eqL1</span>
+        <div class="winbtns"><span>📌</span><span>—</span><span>✕</span></div>
+      </div>
+      <div class="tabs">
+        <div class="on">属性</div><div>锚点</div><div>辅助点</div>
+      </div>
+      <div class="body">
+
+        <div class="card">
+          <div class="card-title"><span class="dot"></span>本线</div>
+          <div class="row"><label>名称</label><input type="text" placeholder='名称，如 "肩线" "侧缝"'></div>
+          <div class="row"><label>类型</label>
+            <div class="radio"><span class="on">轮廓线</span><span>内部线</span><span>辅助线</span></div>
+          </div>
+          <div class="row"><label>线型</label>
+            <div class="linetypes">
+              <div class="lt on"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#303133" stroke-width="2"/></svg></div>
+              <div class="lt"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#303133" stroke-width="2" stroke-dasharray="7 4"/></svg></div>
+              <div class="lt"><svg viewBox="0 0 60 10"><line x1="0" y1="5" x2="60" y2="5" stroke="#303133" stroke-width="2" stroke-dasharray="2 4"/></svg></div>
+            </div>
+          </div>
+          <div class="row"><label>粗细</label>
+            <div class="radio"><span>细</span><span class="on">中</span><span>粗</span></div>
+            <input type="text" value="1.2" style="max-width:64px;flex:none">
+          </div>
+          <div class="row"><label>颜色</label>
+            <div class="swatch"></div><span class="hex">#1E1E1E</span>
+          </div>
+          <div class="row"><label>显示</label>
+            <div class="radio"><span>名称</span><span>长度</span><span class="on">可见</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="dot"></span>摆放</div>
+          <div class="row"><label>长度</label>
+            <input type="text" value="35.37" style="max-width:80px;flex:none">
+            <div class="radio"><span>自动</span><span class="on">指定</span></div>
+            <button class="linkbtn">填入</button>
+          </div>
+          <div class="row"><label>滑轨</label>
+            <span style="font-size:12px;color:#909399">沿向</span><input type="text" value="0" style="max-width:64px;flex:none">
+            <span style="font-size:12px;color:#909399">垂直</span><input type="text" value="0" style="max-width:64px;flex:none">
+          </div>
+
+          <div class="endpoint" style="margin-top:10px">
+            <div class="ep-head"><span class="ep-badge">P1</span><span class="ep-vis">👁 显示</span></div>
+            <div class="row"><label>名称</label><input type="text" placeholder='名称，如 "肩点"'></div>
+            <div class="row"><label>延长量</label><input type="text" value="0" style="max-width:80px;flex:none"></div>
+            <div class="row"><label>连接到</label><div class="conn">P#/L#/名称…</div><button class="linkbtn">拆开</button></div>
+          </div>
+          <div class="endpoint">
+            <div class="ep-head"><span class="ep-badge">P2</span><span class="ep-vis">👁 显示</span></div>
+            <div class="row"><label>名称</label><input type="text" placeholder='名称，如 "颈点"'></div>
+            <div class="row"><label>延长量</label><input type="text" value="0" style="max-width:80px;flex:none"></div>
+            <div class="row"><label>连接到</label><div class="conn">P#/L#/名称…</div><button class="linkbtn">拆开</button></div>
+          </div>
+
+          <div class="row" style="margin-top:10px"><label>角度</label>
+            <input type="text" value="278.3" style="max-width:90px;flex:none">
+            <button class="linkbtn">独立基准</button>
+          </div>
+          <div class="derived">以点1 → 点2 方向为基准 · = 世界角度 <b>278.3°</b></div>
+          <div class="row" style="margin-top:8px"><label>影子偏转</label>
+            <input type="text" value="0" style="max-width:90px;flex:none">
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="dot"></span>按需组</div>
+          <div style="font-size:12px;color:#909399">未加入任何组</div>
+        </div>
+
+      </div>
+      <div class="p-foot">
+        <button class="btn-s">撤销全部</button>
+        <button class="btn-p">关闭</button>
+      </div>
+    </div>
+
+    <div class="anno">
+      <span class="tag">适合 · 喜欢留白、清爽风格的用户</span>
+      <h3>方案 C · 清爽卡片</h3>
+      <ul>
+        <li>每个分区是<b>独立白卡片</b>浮在浅灰底上，边界最清晰</li>
+        <li>按钮风格完全统一为 <b>Ant Design 式 radio 组</b>，选中态是实心蓝，语义最明确</li>
+        <li>P1/P2 端点用<b>蓝色徽章</b>标识，「拆开」是文字链接，弱化次要操作</li>
+        <li>底部按钮<b>右对齐</b>，符合常规对话框习惯</li>
+        <li>面板最宽（420px），空间最宽松；代价是占用画布侧边空间较多</li>
+        <li>与 Element / AntD 类组件库风格一致，将来若做 Web 版几乎零成本迁移</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  function show(i, btn) {
+    document.querySelectorAll('.design').forEach((d, idx) => d.classList.toggle('active', idx === i));
+    document.querySelectorAll('.switcher button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+</script>
+</body>
+</html>

@@ -241,10 +241,15 @@ public:
     /// angleOnly 并解除拖动保护 (位置必须可滑动)。切回 None: 恢复完整连接
     /// 位置锚点与角度基准分离 (用户需求 2026): 设置角度参考线段/点。
     /// refBlockId/refSegmentId/refPointId 为空 = 恢复默认 (角度跟随位置宿主)。
+    /// ref2BlockId/ref2PointId 非空 = 两点连线方向 (点1→点2) 为角度基准
+    /// (PANEL_REDESIGN §6.4; 引擎两点分支要求 refBlockId 非空, 调用方保证);
+    /// ref2 为空时清空既有 ref2 字段 (与 SetAttachmentAngleRefCommand 同步)。
     void setAttachmentAngleRef(const QUuid& id,
                                const QUuid& refBlockId,
                                const QUuid& refSegmentId,
-                               const QUuid& refPointId = QUuid());
+                               const QUuid& refPointId = QUuid(),
+                               const QUuid& ref2BlockId = QUuid(),
+                               const QUuid& ref2PointId = QUuid());
     /// (angleOnly=false, 重新焊接 isLocked=true)。Resolves once.
     void setAttachmentSlideMode(const QUuid& id, cad::param::SlideMode mode);
     /// 重快照滑轨锁轴坐标 (重定向基准线指向点后调用): 按当前几何把

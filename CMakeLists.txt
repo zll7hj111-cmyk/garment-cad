@@ -255,6 +255,8 @@ add_library(gcad_ui STATIC
     src/ui/PanelSubTabBar.cpp
     src/ui/MeasureTab.h
     src/ui/MeasureTab.cpp
+    src/ui/NoteButton.h
+    src/ui/NoteButton.cpp
     src/ui/ComponentTab.h
     src/ui/ComponentTab.cpp
     src/ui/FormulaTabModel.h
@@ -289,20 +291,15 @@ add_library(gcad_ui STATIC
     src/ui/SegmentAnchorTab.cpp
     src/ui/SegmentAuxTab.h
     src/ui/SegmentAuxTab.cpp
-    src/ui/SegmentAimCard.h
-    src/ui/SegmentAimCard.cpp
     src/ui/SegmentConnectionCard.h
     src/ui/SegmentConnectionCard.cpp
     src/ui/SegmentConnectionCardBuild.cpp
     src/ui/SegmentConnectionCardRefresh.cpp
     src/ui/SegmentConnectionCardConn.cpp
-    src/ui/SegmentConnectionCardDart.cpp
     src/ui/SegmentAngleCard.h
     src/ui/SegmentAngleCard.cpp
     src/ui/SegmentRefCard.h
     src/ui/SegmentRefCard.cpp
-    src/ui/SegmentExtendCard.h
-    src/ui/SegmentExtendCard.cpp
     src/ui/PointRefEdit.h
     src/ui/PointRefEdit.cpp
 )

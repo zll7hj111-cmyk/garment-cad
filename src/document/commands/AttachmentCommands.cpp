@@ -181,33 +181,12 @@ void SetAttachmentAngleIndependentCommand::redo()
     } else {
         // 退出独立角度: 反算当前世界方向对应的 followerAngle, 恢复角度跟随
         // 时不会跳线。若原来有公式/弧长模式则清掉, 以反算值为准。
+        // 有效基准方向 = 与 Resolver 同构 (两点基准/影子偏转一并生效,
+        // 2026-09 审核 F6) —— 此前退出独立角的反算漏了 angleRef2。
         const auto* from = m_doc->findBlock(a->fromBlockId);
         const auto* to = m_doc->findBlock(a->toBlockId);
         if (from && to) {
-            // 若设置了独立角度基准, 退出角度独立后仍应回到那条基准。
-            const auto* refBlock = to;
-            double refWorld = to->transform.rotation
-                + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
-            if (!a->angleRefBlockId.isNull()) {
-                if (const auto* rb = m_doc->findBlock(a->angleRefBlockId))
-                    refBlock = rb;
-            }
-            if (!a->angleRefBlockId.isNull() && !a->angleRefSegmentId.isNull()) {
-                if (const auto* seg = refBlock->findSegment(a->angleRefSegmentId)) {
-                    if (!a->angleRefPointId.isNull()) {
-                        if (const auto* rp = refBlock->findPoint(a->angleRefPointId);
-                            rp && rp->resolved) {
-                            refWorld = refBlock->transform.rotation
-                                     + refBlock->exitDirectionAtPoint(
-                                           a->angleRefPointId, a->angleRefSegmentId);
-                        }
-                    } else if (const auto* sp = refBlock->findPoint(seg->startPointId);
-                               sp && sp->resolved) {
-                        refWorld = refBlock->transform.rotation
-                                 + refBlock->directionAtPoint(seg->startPointId);
-                    }
-                }
-            }
+            const double refWorld = cad::param::effectiveAngleRefWorld(m_doc, *a);
             const double localDir = from->directionAtPoint(a->fromPointId);
             a->followerAngle = cad::param::backSolveFollowerAngle(
                 from->transform.rotation, localDir, refWorld);
@@ -244,6 +223,7 @@ SetAttachmentAngleRefCommand::SetAttachmentAngleRefCommand(
     cad::param::ParamDocument* doc, const QUuid& attId,
     const QUuid& newRefBlockId, const QUuid& newRefSegmentId,
     const QUuid& newRefPointId,
+    const QUuid& newRef2BlockId, const QUuid& newRef2PointId,
     QUndoCommand* parent)
     : QUndoCommand(parent)
     , m_doc(doc)
@@ -251,6 +231,8 @@ SetAttachmentAngleRefCommand::SetAttachmentAngleRefCommand(
     , m_newRefBlockId(newRefBlockId)
     , m_newRefSegmentId(newRefSegmentId)
     , m_newRefPointId(newRefPointId)
+    , m_newRef2BlockId(newRef2BlockId)
+    , m_newRef2PointId(newRef2PointId)
 {
     setText(QStringLiteral("修改角度基准"));
 
@@ -259,6 +241,8 @@ SetAttachmentAngleRefCommand::SetAttachmentAngleRefCommand(
             m_oldRefBlockId = a.angleRefBlockId;
             m_oldRefSegmentId = a.angleRefSegmentId;
             m_oldRefPointId = a.angleRefPointId;
+            m_oldRef2BlockId = a.angleRef2BlockId;
+            m_oldRef2PointId = a.angleRef2PointId;
             m_oldAngleIndependent = a.angleIndependent;
             m_oldAngleOnly = a.angleOnly;
             m_oldSlideMode = a.slideMode;
@@ -281,47 +265,18 @@ void SetAttachmentAngleRefCommand::redo()
     a->angleRefBlockId = m_newRefBlockId;
     a->angleRefSegmentId = m_newRefSegmentId;
     a->angleRefPointId = m_newRefPointId;
+    a->angleRef2BlockId = m_newRef2BlockId;
+    a->angleRef2PointId = m_newRef2PointId;
     // 设置了独立角度基准时取消“角度独立”，因为角度现在受另一条线段约束。
     a->angleIndependent = false;
 
     // 反算当前世界方向对应的 followerAngle，避免切换角度基准时跳线。
+    // 有效基准方向 = 与 Resolver 同构 (两点基准/影子偏转一并生效, 2026-09
+    // 审核 F6) —— 此前 redo 反算漏了 angleRef2 与 baselineOffsetDeg。
     const auto* from = m_doc->findBlock(a->fromBlockId);
     const auto* to = m_doc->findBlock(a->toBlockId);
     if (from && to) {
-        double refWorld;
-        const auto* refBlock = to;
-        if (!m_newRefBlockId.isNull()) {
-            const auto* rb = m_doc->findBlock(m_newRefBlockId);
-            if (rb) refBlock = rb;
-        }
-        if (!a->angleRefBlockId.isNull() && !a->angleRefSegmentId.isNull()) {
-            if (const auto* seg = refBlock->findSegment(a->angleRefSegmentId)) {
-                if (!a->angleRefPointId.isNull()) {
-                    const auto* rp = refBlock->findPoint(a->angleRefPointId);
-                    if (rp && rp->resolved)
-                        refWorld = refBlock->transform.rotation
-                                 + refBlock->exitDirectionAtPoint(
-                                       a->angleRefPointId, a->angleRefSegmentId);
-                    else
-                        refWorld = to->transform.rotation
-                                 + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
-                } else {
-                    const auto* sp = refBlock->findPoint(seg->startPointId);
-                    if (sp && sp->resolved)
-                        refWorld = refBlock->transform.rotation
-                                 + refBlock->directionAtPoint(seg->startPointId);
-                    else
-                        refWorld = to->transform.rotation
-                                 + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
-                }
-            } else {
-                refWorld = to->transform.rotation
-                         + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
-            }
-        } else {
-            refWorld = to->transform.rotation
-                     + to->exitDirectionAtPoint(a->toPointId, a->toSegmentId);
-        }
+        const double refWorld = cad::param::effectiveAngleRefWorld(m_doc, *a);
         const double localDir = from->directionAtPoint(a->fromPointId);
         a->followerAngle = cad::param::backSolveFollowerAngle(
             from->transform.rotation, localDir, refWorld);
@@ -340,6 +295,8 @@ void SetAttachmentAngleRefCommand::undo()
     a->angleRefBlockId = m_oldRefBlockId;
     a->angleRefSegmentId = m_oldRefSegmentId;
     a->angleRefPointId = m_oldRefPointId;
+    a->angleRef2BlockId = m_oldRef2BlockId;
+    a->angleRef2PointId = m_oldRef2PointId;
     a->angleIndependent = m_oldAngleIndependent;
     a->angleOnly = m_oldAngleOnly;
     a->slideMode = m_oldSlideMode;
@@ -453,6 +410,54 @@ void ReattachAttachmentCommand::undo()
         b->transform.origin = m_oldOrigin;
         b->transform.rotation = m_oldRotation;
     }
+    m_doc->resolveAll();
+}
+
+// ─── SetAlignPointCommand (对齐点, 2026-09 设计修正) ───
+
+SetAlignPointCommand::SetAlignPointCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId,
+    const QUuid& newFromPointId, QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newFromPointId(newFromPointId)
+{
+    setText(QStringLiteral("设置对齐点"));
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldFromPointId = a.fromPointId;
+            m_oldFollowerAngle = a.followerAngle;
+            m_oldFollowerFormula = a.followerAngleFormula;
+            m_oldRotationMode = a.rotationMode;
+            m_oldArcLength = a.arcLength;
+            m_oldArcFormula = a.arcLengthFormula;
+            break;
+        }
+    }
+}
+
+void SetAlignPointCommand::redo()
+{
+    auto* a = m_doc->findAttachment(m_attId);
+    if (!a || a->fromPointId == m_newFromPointId) return;
+    // 只改吸附端: 本线方向 (start→end) 与角度基准均不变, 跟随角/公式原样
+    // 存活 —— Resolver 在重解时把新对齐点钉回目标点 (origin 平移落位),
+    // 旋转零跳变。公式驱动的角度表达式不能被覆盖 (2026-09 设计修正)。
+    a->fromPointId = m_newFromPointId;
+    m_doc->resolveAll();
+}
+
+void SetAlignPointCommand::undo()
+{
+    auto* a = m_doc->findAttachment(m_attId);
+    if (!a) return;
+    a->fromPointId = m_oldFromPointId;
+    a->followerAngle = m_oldFollowerAngle;
+    a->followerAngleFormula = m_oldFollowerFormula;
+    a->rotationMode = m_oldRotationMode;
+    a->arcLength = m_oldArcLength;
+    a->arcLengthFormula = m_oldArcFormula;
     m_doc->resolveAll();
 }
 
@@ -708,6 +713,60 @@ void SetAttachmentBaselineOffsetCommand::undo()
 {
     if (auto* a = m_doc->findAttachment(m_attId))
         a->baselineOffsetDeg = m_oldOffset;
+    m_doc->resolveAll();
+}
+
+// ─── SetAttachmentSlideOffsetsCommand (2026-09 审核收口) ───
+
+SetAttachmentSlideOffsetsCommand::SetAttachmentSlideOffsetsCommand(
+    cad::param::ParamDocument* doc, const QUuid& attId,
+    cad::param::SlideMode newMode,
+    double newAlongMm, const QString& newAlongFormula,
+    double newPerpMm, const QString& newPerpFormula,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_attId(attId)
+    , m_newMode(newMode)
+    , m_newAlongMm(newAlongMm)
+    , m_newAlongFormula(newAlongFormula)
+    , m_newPerpMm(newPerpMm)
+    , m_newPerpFormula(newPerpFormula)
+{
+    setText(QStringLiteral("滑轨偏移"));
+    for (const auto& a : doc->attachments()) {
+        if (a.id == attId) {
+            m_oldMode = a.slideMode;
+            m_oldAlongMm = a.slideAlongMm;
+            m_oldAlongFormula = a.slideAlongFormula;
+            m_oldPerpMm = a.slidePerpMm;
+            m_oldPerpFormula = a.slidePerpFormula;
+            break;
+        }
+    }
+}
+
+void SetAttachmentSlideOffsetsCommand::redo()
+{
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->slideMode = m_newMode;
+        a->slideAlongMm = m_newAlongMm;
+        a->slideAlongFormula = m_newAlongFormula;
+        a->slidePerpMm = m_newPerpMm;
+        a->slidePerpFormula = m_newPerpFormula;
+    }
+    m_doc->resolveAll();
+}
+
+void SetAttachmentSlideOffsetsCommand::undo()
+{
+    if (auto* a = m_doc->findAttachment(m_attId)) {
+        a->slideMode = m_oldMode;
+        a->slideAlongMm = m_oldAlongMm;
+        a->slideAlongFormula = m_oldAlongFormula;
+        a->slidePerpMm = m_oldPerpMm;
+        a->slidePerpFormula = m_oldPerpFormula;
+    }
     m_doc->resolveAll();
 }
 

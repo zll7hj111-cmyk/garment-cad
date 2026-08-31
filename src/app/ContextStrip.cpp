@@ -2,6 +2,7 @@
 
 #include <cmath>
 
+#include <QButtonGroup>
 #include <QHBoxLayout>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -15,15 +16,18 @@
 #include "ElaPushButton.h"
 
 #include "ui/Theme.h"
+#include "ui/FormScaffold.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Segment.h"
 #include "parametric/Attachment.h"
 #include "parametric/Serial.h"
 #include "parametric/ConditionEngine.h"
+#include "parametric/FollowerAngle.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/AttachmentCommands.h"
 
 namespace cad::app {
 namespace {
@@ -72,52 +76,70 @@ void ContextStrip::buildUi()
 {
     auto* lay = new QHBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
-    lay->setSpacing(6);
+    lay->setSpacing(4);
 
-    // 串号徽章: 等宽, 图纸编号感 (配色走全局 QSS QLabel#serialBadge)。
-    m_idLabel = new ElaText(QString(), 12, this);
-    m_idLabel->setObjectName(QStringLiteral("serialBadge"));
-    m_idLabel->setStyleSheet(QStringLiteral("%1 font-size: 11px;")
+    // 紧凑化 (2026-xx 用户拍板: 条带控件偏大): 行高 35→30、标签 12→11、
+    // 输入定宽收窄, 给「连接/基准」两个维度按钮腾位。
+    constexpr int kFieldH = 30;
+
+    // 串号徽章: 等宽, 图纸编号感。objectName 用 strip 前缀 —— 2026-08 豁免
+    // 全局 QSS (QWidget 兜底字号/serialBadge 墨底规则会把条带放大变丑),
+    // 条带视觉按"全局规则不存在"精调, 见 Theme::buildStylesheet 头注释。
+    m_idLabel = new ElaText(QString(), 11, this);
+    m_idLabel->setObjectName(QStringLiteral("stripSerial"));
+    m_idLabel->setStyleSheet(QStringLiteral("%1 font-size: 10px;")
                                  .arg(cad::ui::ThemeTokens::kMonospaceFamily));
     lay->addWidget(m_idLabel);
 
     // 字段标签只用于排版, 不需要持有 (文本恒定)。
     auto addField = [this, lay](const QString& caption, ElaLineEdit*& edit, int width,
                                 const QString& placeholder) {
-        auto* label = new ElaText(caption, 12, this);
-        label->setObjectName(QStringLiteral("mutedText"));
+        auto* label = new ElaText(caption, 11, this);
+        label->setObjectName(QStringLiteral("stripField"));
+        // 全局 QWidget 兜底字号 13px 在此钉回 11px (实例样式优先于应用级)。
+        label->setStyleSheet(QStringLiteral("font-size: 11px;"));
         lay->addWidget(label);
         edit = new ElaLineEdit(this);
         edit->setPlaceholderText(placeholder);
+        edit->setFixedHeight(kFieldH);
         edit->setMaximumWidth(width);
-        edit->setStyleSheet(cad::ui::ThemeTokens::kMonospaceFamily);
+        edit->setStyleSheet(QStringLiteral("%1 font-size: 11px;")
+                                .arg(cad::ui::ThemeTokens::kMonospaceFamily));
         lay->addWidget(edit);
     };
 
-    addField(QString::fromUtf8("名称:"), m_nameEdit, 150,
+    addField(QString::fromUtf8("名称:"), m_nameEdit, 120,
              QString::fromUtf8("线段名称"));
     m_nameEdit->setObjectName(QStringLiteral("nameEdit"));
-    addField(QString::fromUtf8("长度(cm):"), m_lenEdit, 110,
+    addField(QString::fromUtf8("长度(cm):"), m_lenEdit, 80,
              QString::fromUtf8("数值或公式"));
     m_lenEdit->setObjectName(QStringLiteral("lenEdit"));
-    addField(QString::fromUtf8("角度:"), m_angleEdit, 100,
+    addField(QString::fromUtf8("角度:"), m_angleEdit, 70,
              QString::fromUtf8("数值或公式"));
     m_angleEdit->setObjectName(QStringLiteral("angleEdit"));
 
-    // 单位分段 (° | ⌒): 写 attachment.rotationMode。checkable + 互斥，
-    // 选中态交给 Ela 主题表现，不硬编码颜色。
+    // 单位分段 (° | ⌒): 写 attachment.rotationMode。原生 QPushButton +
+    // chipButtonStyle —— ElaPushButton 自绘不吃 QSS 且 paintEvent 没有
+    // isChecked 分支 (选中态完全不渲染, 用户报告 2026-12「状态栏看不出
+    // 处于什么模式」); chip 样式带 :checked 实底, 选中一眼可见。QButtonGroup
+    // 互斥防两钮同时选中。
     auto* unitBox = new QWidget(this);
     auto* unitLay = new QHBoxLayout(unitBox);
     unitLay->setContentsMargins(0, 0, 0, 0);
     unitLay->setSpacing(0);
-    m_btnUnitAngle = new ElaPushButton(QString::fromUtf8("°"), unitBox);
-    m_btnUnitArc = new ElaPushButton(QString::fromUtf8("⌒"), unitBox);
+    const QString unitChip = cad::ui::chipButtonStyle();
+    m_btnUnitAngle = new QPushButton(QString::fromUtf8("°"), unitBox);
+    m_btnUnitArc = new QPushButton(QString::fromUtf8("⌒"), unitBox);
+    m_unitGroup = new QButtonGroup(this);
+    m_unitGroup->setExclusive(true);
     for (auto* b : {m_btnUnitAngle, m_btnUnitArc}) {
         b->setObjectName(QStringLiteral("unitSegment"));
         b->setCheckable(true);
-        b->setFixedSize(38, 35);
+        b->setFixedSize(32, kFieldH);
+        b->setStyleSheet(unitChip);
         b->setCursor(Qt::PointingHandCursor);
         unitLay->addWidget(b);
+        m_unitGroup->addButton(b);
     }
     m_btnUnitAngle->setToolTip(QString::fromUtf8("角度模式（度）"));
     m_btnUnitArc->setToolTip(QString::fromUtf8("弧长模式（cm）"));
@@ -127,9 +149,42 @@ void ContextStrip::buildUi()
             this, [this] { onUnitToggled(true); });
     lay->addWidget(unitBox);
 
+    // ── 连接维度 拆开/重连 (2026-xx 用户拍板): 与属性对话框「连接」「基准」
+    // 两按钮同语义 —— 位置维度 (连接) 与角度维度 (基准) 正交独立, 双拆开 =
+    // 自由线。标签列在按钮外 (与 名称:/长度(cm): 同款 mutedText), 按钮只显示
+    // 两字面 拆开/重连 —— 11px 紧凑字体装得下 (2026-xx 反馈: 五字长文本 +
+    // Ela 默认字号导致溢出)。Pinned + 有附件时可用 (refreshChrome 控制)。──
+    auto addDimToggle = [this, lay](const QString& caption, ElaPushButton*& btn,
+                                    const QString& objectName, const QString& tip) {
+        auto* label = new ElaText(caption, 11, this);
+        label->setObjectName(QStringLiteral("stripField"));
+        label->setStyleSheet(QStringLiteral("font-size: 11px;"));
+        lay->addWidget(label);
+        btn = new ElaPushButton(QString::fromUtf8("拆开"), this);
+        btn->setObjectName(objectName);
+        btn->setFixedSize(46, kFieldH);
+        btn->setStyleSheet(QStringLiteral("font-size: 11px;"));
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setToolTip(tip);
+        lay->addWidget(btn);
+    };
+    addDimToggle(QString::fromUtf8("连接:"), m_btnPosDetach,
+                 QStringLiteral("posDetachBtn"),
+                 QString::fromUtf8("位置维度：拆开 = 解除位置吸附（角度仍跟随基准线）；"
+                                   "重连 = 位置重新吸附回原宿主并重新焊接"));
+    addDimToggle(QString::fromUtf8("基准:"), m_btnAngleDetach,
+                 QStringLiteral("angleDetachBtn"),
+                 QString::fromUtf8("角度维度：拆开 = 角度不再跟随基准线（独立角，位置保持吸附）；"
+                                   "重连 = 恢复角度跟随（反算零跳变）"));
+    connect(m_btnPosDetach, &QAbstractButton::clicked,
+            this, &ContextStrip::onPosDetachClicked);
+    connect(m_btnAngleDetach, &QAbstractButton::clicked,
+            this, &ContextStrip::onAngleDetachClicked);
+
     m_btnReverse = new ElaPushButton(QString::fromUtf8("换向"), this);
     m_btnReverse->setObjectName(QStringLiteral("reverseBtn"));
-    m_btnReverse->setFixedSize(58, 35);
+    m_btnReverse->setFixedSize(46, kFieldH);
+    m_btnReverse->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_btnReverse->setCursor(Qt::PointingHandCursor);
     connect(m_btnReverse, &QAbstractButton::clicked,
             this, &ContextStrip::onReverseClicked);
@@ -137,19 +192,23 @@ void ContextStrip::buildUi()
 
     m_btnBasis = new ElaPushButton(QString::fromUtf8("起点 → 终点"), this);
     m_btnBasis->setObjectName(QStringLiteral("basisBtn"));
-    m_btnBasis->setFixedSize(110, 35);
+    m_btnBasis->setFixedSize(88, kFieldH);
+    m_btnBasis->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_btnBasis->setToolTip(
         QString::fromUtf8("角度基准：起点 → 终点（换向后驱动另一端）"));
     lay->addWidget(m_btnBasis);
 
-    m_badge = new ElaText(QString(), 12, this);
-    m_badge->setObjectName(QStringLiteral("dimText"));
+    m_badge = new ElaText(QString(), 11, this);
+    m_badge->setObjectName(QStringLiteral("stripNote"));
+    m_badge->setStyleSheet(QStringLiteral("font-size: 11px;"));
     lay->addWidget(m_badge);
 
     lay->addStretch();
 
-    m_hint = new ElaText(QString(), 12, this);
-    m_hint->setObjectName(QStringLiteral("dimText"));
+    m_hint = new ElaText(QString(), 11, this);
+    m_hint->setObjectName(QStringLiteral("stripNote"));
+    m_hint->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    m_hint->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     lay->addWidget(m_hint);
 
     // 名称立即应用; 长度 200ms 防抖 + Enter/失焦立即应用。
@@ -507,7 +566,10 @@ void ContextStrip::refreshChrome()
     if (!block || !seg) return;
 
     const cad::param::Attachment* att = findEditAttachment();
-    const bool isBridge = block->isBridge || !seg->lengthFormula.isEmpty();
+    // 2026-12: 只有真正的桥线 (block->isBridge) 锁输入 —— 旧实现把
+    // !seg->lengthFormula.isEmpty() 也算桥线, 普通线长度/角度输入变量后
+    // 整条被锁死 (用户报告「输入变量后输入栏会被锁定, 错误设计」)。
+    const bool isBridge = block->isBridge;
 
     // 桥线段只读 (设计 §2.3): 桥线长度 = 测量变量、角度 = 被动值, 绝不覆写
     // 测量链接 —— 长度/角度置灰, 名称仍可编辑 (与旧 SegmentEditBar 同规则)。
@@ -531,6 +593,26 @@ void ContextStrip::refreshChrome()
                              && m_focus == StripFocus::Pinned;
     m_btnUnitAngle->setEnabled(unitEnabled);
     m_btnUnitArc->setEnabled(unitEnabled);
+
+    // ── 连接维度 拆开/重连 (2026-xx 用户拍板): 位置 (连接) 与角度 (基准)
+    // 两个正交维度的双面开关, 与属性对话框同语义。Pinned + 有附件 + 非连接
+    // 会话/旋转会话 时可用 (会话内不得突变附件)。──
+    const bool dimEditable = m_focus == StripFocus::Pinned
+        && !m_connectSession && !m_rotateSession;
+    const bool hasAtt = att != nullptr;
+    m_btnPosDetach->setText(hasAtt && att->angleOnly
+        ? QString::fromUtf8("重连") : QString::fromUtf8("拆开"));
+    m_btnPosDetach->setEnabled(hasAtt && dimEditable);
+    m_btnPosDetach->setToolTip(hasAtt && att->angleOnly
+        ? QString::fromUtf8("重新连接：位置重新吸附回原宿主点并重新焊接，角度基准保留")
+        : QString::fromUtf8("拆开位置连接：解除位置吸附（角度仍跟随基准线）；"
+                            "配合基准「拆开」可让位置与角度都自由（自由线）"));
+    m_btnAngleDetach->setText(hasAtt && att->angleIndependent
+        ? QString::fromUtf8("重连") : QString::fromUtf8("拆开"));
+    m_btnAngleDetach->setEnabled(hasAtt && dimEditable);
+    m_btnAngleDetach->setToolTip(hasAtt && att->angleIndependent
+        ? QString::fromUtf8("重新连接角度基准：恢复角度跟随（原基准或位置宿主，反算零跳变）")
+        : QString::fromUtf8("拆开角度基准：角度不再跟随基准线（独立角，位置保持吸附）"));
 
     // 换向: 命令内资格检查为权威, 这里只做预判 (置灰 + 中文原因)。
     // 连接角度会话 (二期) 禁用换向 —— 换向会 push ReverseSegmentCommand,
@@ -558,6 +640,11 @@ void ContextStrip::refreshChrome()
     m_btnReverse->setToolTip(reason);
 
     // 状态徽标: 一眼看出这条线受谁驱动 (2026-xx 两维独立: 双拆开 = 自由)。
+    // 2026-12: 跟随连接追加当前模式 (· 角度 / · 弧长) —— Ela 选中态不可见,
+    // 模式只能靠徽标文字区分 (用户报告「状态栏看不出处于什么模式」)。
+    const QString modeWord = (att && !att->angleIndependent
+                              && att->rotationMode == cad::param::RotationMode::ArcLength)
+        ? QString::fromUtf8(" · 弧长") : QString::fromUtf8(" · 角度");
     if (isBridge) {
         m_badge->setText(QString::fromUtf8("桥线"));
     } else if (seg->isCurve()) {
@@ -577,14 +664,14 @@ void ContextStrip::refreshChrome()
         const auto* leader = m_paramDoc->findBlock(att->toBlockId);
         const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
         m_badge->setText(leaderSeg
-            ? QString::fromUtf8("仅角度 · 跟随 %1").arg(cad::param::Serial::tag(leaderSeg->serial))
-            : QString::fromUtf8("仅角度"));
+            ? QString::fromUtf8("仅角度 · 跟随 %1%2").arg(cad::param::Serial::tag(leaderSeg->serial), modeWord)
+            : QString::fromUtf8("仅角度%1").arg(modeWord));
     } else if (att) {
         const auto* leader = m_paramDoc->findBlock(att->toBlockId);
         const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
         m_badge->setText(leaderSeg
-            ? QString::fromUtf8("跟随 %1").arg(cad::param::Serial::tag(leaderSeg->serial))
-            : QString::fromUtf8("跟随"));
+            ? QString::fromUtf8("跟随 %1%2").arg(cad::param::Serial::tag(leaderSeg->serial), modeWord)
+            : QString::fromUtf8("跟随%1").arg(modeWord));
     } else {
         m_badge->setText(QString::fromUtf8("自由"));
     }
@@ -649,8 +736,10 @@ void ContextStrip::applyLength()
     auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
     if (!block || !seg) return;
 
-    // 桥线长度 = 测量变量, 被动值 —— 绝不覆写测量链接。
-    if (!seg->lengthFormula.isEmpty()) return;
+    // 桥线长度 = 测量变量, 被动值 —— 绝不覆写测量链接 (2026-12: 只拦真桥线,
+    // 普通线长度公式可继续编辑 —— 旧实现按 lengthFormula 非空拦截, 输入变量
+    // 后整条锁死, 用户拍板「错误设计, 不需要锁定」)。
+    if (block->isBridge) return;
 
     const QString text = m_lenEdit->text().trimmed();
     if (text.isEmpty()) return;
@@ -676,7 +765,7 @@ void ContextStrip::applyAngle()
     auto* block = m_paramDoc->findBlock(m_blockId);
     auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
     if (!block || !seg) return;
-    if (!seg->lengthFormula.isEmpty()) return;   // 桥线: 角度同样被动
+    if (block->isBridge) return;   // 桥线: 角度同样被动 (2026-12: 只拦真桥线, 同长度规则)
 
     const QString text = m_angleEdit->text().trimmed();
     if (text.isEmpty()) return;
@@ -746,41 +835,25 @@ void ContextStrip::onUnitToggled(bool wantArc)
                                 : cad::param::RotationMode::Angle;
     if (att->rotationMode == target) return;
 
-    // 公式驱动（角度/弧长表达式）：模式切换只是显示单位变化，绝不换算
-    // 烘焙公式 —— 表达式必须原样保留（与 LinePropertyDialog 同规则; 原
-    // ToolRotate::onHudModeChanged 的同一条保护，一期随 HUD 退场迁到这里）。
-    const bool hasFormula = (att->rotationMode == cad::param::RotationMode::ArcLength)
-        ? !att->arcLengthFormula.isEmpty()
-        : !att->followerAngleFormula.isEmpty();
-    if (hasFormula) {
-        refreshChrome();   // 按钮弹回原模式
-        return;
-    }
-
-    // 几何保持切换 (旧旋转 HUD onHudModeChanged 同解): 切换必须按存储域
-    // α 换算值, 不能只翻单位 —— 否则弧长 3 圈 (≡0° 折叠) 切到角度会显示
-    // 错误数值。当前显示角 = 带符号折角, 先回存储域 [0,360) 再换算。
+    // 几何保持切换 (2026-12: 公式驱动不再拒绝 —— 走共享换算, 公式跨域换算
+    // 保留变量链接、半径烘焙为常数, 见 FollowerAngle.h)。旧条带内联换算只读
+    // 原始存储值, 公式驱动时拿到的是陈旧值 —— 换共享入口后按公式求值。
     const double radius = m_paramDoc->findBlock(m_blockId)
                               ? m_paramDoc->findBlock(m_blockId)
                                     ->segmentLengthAtPoint(att->fromPointId)
                               : 0.0;
-    const double curFoldDeg = (att->rotationMode
-                                   == cad::param::RotationMode::ArcLength)
-        ? ((radius > 1e-9) ? cad::geo::normalizeDeg180(
-                                 cad::geo::arcMmToDeg(att->arcLength, radius))
-                           : 0.0)
-        : cad::geo::normalizeDeg180(att->followerAngle);
-    const double alpha = cad::geo::normalizeDeg360(curFoldDeg);
+    const auto res = cad::param::followerModeSwitchValues(
+        *att, radius, target, m_paramDoc->parameters(), {});
 
     auto st = snapshotState();
     st.attId = att->id;
     st.rotationMode = static_cast<int>(target);
     if (target == cad::param::RotationMode::ArcLength) {
-        st.arcLength = cad::geo::degToArcMm(alpha, radius);
-        st.arcLengthFormula.clear();
+        st.arcLength = res.arcMm;
+        st.arcLengthFormula = res.arcFormula;
     } else {
-        st.followerAngle = alpha;
-        st.followerAngleFormula.clear();
+        st.followerAngle = res.angle;
+        st.followerAngleFormula = res.angleFormula;
     }
     commitState(std::move(st));
 }
@@ -804,6 +877,38 @@ void ContextStrip::onReverseClicked()
     } else {
         cad::cmd::ReverseSegmentCommand cmd(m_paramDoc, m_blockId, m_segmentId);
         cmd.redo();
+    }
+}
+
+// ── 连接维度 拆开/重连 (2026-xx 用户拍板, 与属性对话框「连接」「基准」
+// 两按钮同语义): 位置维度 (angleOnly) 与角度维度 (angleIndependent) 正交
+// 独立, 两维互不清除对方; 双拆开 = 自由线。命令走条带 undo 栈, resolved
+// 信号驱动 refreshFields/refreshChrome 自动回填。──
+
+void ContextStrip::onPosDetachClicked()
+{
+    if (m_focus != StripFocus::Pinned || !m_paramDoc) return;
+    const auto* att = findEditAttachment();
+    if (!att) { refreshChrome(); return; }
+    if (m_undoStack) {
+        m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+            m_paramDoc, att->id, /*angleOnly=*/!att->angleOnly));
+    } else {
+        m_paramDoc->setAttachmentAngleOnly(att->id, !att->angleOnly);
+    }
+}
+
+void ContextStrip::onAngleDetachClicked()
+{
+    if (m_focus != StripFocus::Pinned || !m_paramDoc) return;
+    const auto* att = findEditAttachment();
+    if (!att) { refreshChrome(); return; }
+    if (m_undoStack) {
+        m_undoStack->push(new cad::cmd::SetAttachmentAngleIndependentCommand(
+            m_paramDoc, att->id, /*angleIndependent=*/!att->angleIndependent));
+    } else {
+        m_paramDoc->setAttachmentAngleIndependent(
+            att->id, !att->angleIndependent);
     }
 }
 

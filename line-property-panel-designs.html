@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>线条属性面板 · UI 方案对比</title>
+  <style>
+    :root {
+      --bg: #f5f5f7;
+      --surface: #ffffff;
+      --surface-2: #fafafa;
+      --border: #e0e0e5;
+      --border-strong: #d0d0d8;
+      --text: #1d1d1f;
+      --text-2: #6e6e73;
+      --text-3: #a1a1a6;
+      --accent: #0071e3;
+      --accent-text: #ffffff;
+      --danger: #ff3b30;
+      --success: #34c759;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --shadow-panel: 0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      color: var(--text);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      min-height: 100vh;
+    }
+    .page {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      margin: 0 0 6px;
+      letter-spacing: -0.2px;
+    }
+    .subtitle {
+      color: var(--text-2);
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+    .scheme-tabs {
+      display: flex;
+      gap: 8px;
+      background: var(--surface);
+      padding: 4px;
+      border-radius: var(--radius);
+      border: 0.5px solid var(--border);
+    }
+    .scheme-tab {
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      color: var(--text-2);
+      transition: all 0.15s;
+      border: none;
+      background: transparent;
+      font-size: 13px;
+    }
+    .scheme-tab:hover { color: var(--text); }
+    .scheme-tab.active {
+      background: var(--accent);
+      color: var(--accent-text);
+      font-weight: 500;
+    }
+    .density-toggle {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-left: auto;
+      color: var(--text-2);
+    }
+    .density-toggle button {
+      padding: 6px 12px;
+      border: 0.5px solid var(--border);
+      background: var(--surface);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+    }
+    .density-toggle button.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 500;
+    }
+    .stage {
+      display: none;
+      animation: fadeIn 0.25s ease;
+    }
+    .stage.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+    .design-meta {
+      background: var(--surface);
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      margin-bottom: 20px;
+    }
+    .design-meta h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+    .design-meta p { margin: 0; color: var(--text-2); line-height: 1.6; }
+    .design-meta .tags { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .tag {
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 100px;
+      background: #eef4fc;
+      color: #1d4ed8;
+    }
+
+    .canvas {
+      background: #e8e8ed;
+      border-radius: var(--radius);
+      padding: 40px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 680px;
+    }
+
+    /* ===== 公共面板外壳 ===== */
+    .panel {
+      background: var(--surface);
+      border: 0.5px solid var(--border-strong);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-panel);
+      width: 360px;
+      overflow: hidden;
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 0.5px solid var(--border);
+    }
+    .panel-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .panel-sub { color: var(--text-2); font-weight: 400; }
+    .panel-actions { display: flex; gap: 10px; color: var(--text-3); }
+    .panel-actions span { cursor: pointer; }
+    .panel-tabs {
+      display: flex;
+      border-bottom: 0.5px solid var(--border);
+      padding: 0 12px;
+    }
+    .panel-tab {
+      padding: 10px 14px;
+      color: var(--text-2);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -0.5px;
+    }
+    .panel-tab.active { color: var(--accent); border-color: var(--accent); font-weight: 500; }
+
+    /* ===== 表单元素 ===== */
+    input, select {
+      height: 28px;
+      border: 0.5px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 0 8px;
+      font-size: 13px;
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    input::placeholder { color: var(--text-3); }
+    .btn {
+      height: 28px;
+      padding: 0 12px;
+      border: 0.5px solid var(--border-strong);
+      background: var(--surface-2);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .btn:hover { background: #f0f0f2; }
+    .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+    .btn.ghost { background: transparent; border-color: transparent; }
+    .btn.small { height: 22px; padding: 0 8px; font-size: 12px; }
+    .toggle {
+      display: inline-flex;
+      border: 0.5px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .toggle button {
+      height: 26px;
+      padding: 0 10px;
+      border: none;
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .toggle button.active { background: #fff9c4; font-weight: 500; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: var(--radius-sm);
+      border: 0.5px solid var(--border);
+      background: var(--surface-2);
+      font-size: 12px;
+    }
+    .chip.active { background: #fff9c4; border-color: #e6db74; }
+    .color-swatch {
+      width: 28px; height: 28px;
+      border-radius: var(--radius-sm);
+      border: 0.5px solid var(--border-strong);
+      background: #1e1e1e;
+      cursor: pointer;
+    }
+    .line-preview {
+      height: 28px;
+      border: 0.5px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 10px;
+    }
+    .line-style {
+      width: 100%;
+      height: 2px;
+      background: #1e1e1e;
+      border-radius: 1px;
+    }
+    .line-style.dashed { background: repeating-linear-gradient(90deg, #1e1e1e 0, #1e1e1e 8px, transparent 8px, transparent 14px); }
+    .line-style.dotted { background: repeating-linear-gradient(90deg, #1e1e1e 0, #1e1e1e 2px, transparent 2px, transparent 8px); }
+
+    /* ===== 方案 A：清爽分组卡片 ===== */
+    .scheme-a .panel-body { padding: 16px; }
+    .section {
+      margin-bottom: 18px;
+      padding-bottom: 18px;
+      border-bottom: 0.5px solid var(--border);
+    }
+    .section:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-2);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-bottom: 12px;
+    }
+    .field {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .field:last-child { margin-bottom: 0; }
+    .field-label {
+      width: 64px;
+      color: var(--text-2);
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .field-value { flex: 1; min-width: 0; }
+    .field-row { display: flex; gap: 8px; align-items: center; }
+    .field-row input { flex: 1; }
+    .endpoint-card {
+      background: var(--surface-2);
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .endpoint-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .endpoint-name { font-weight: 600; }
+    .hint { color: var(--text-3); font-size: 12px; }
+    .inline-badge {
+      font-size: 11px;
+      color: var(--text-2);
+      background: var(--surface-2);
+      padding: 2px 8px;
+      border-radius: 100px;
+      border: 0.5px solid var(--border);
+    }
+
+    /* ===== 方案 B：紧凑属性表 ===== */
+    .scheme-b .panel-body { padding: 12px 16px; }
+    .prop-grid {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 10px 12px;
+      align-items: center;
+    }
+    .prop-label {
+      color: var(--text-2);
+      font-size: 13px;
+      justify-self: end;
+      text-align: right;
+    }
+    .prop-value { min-width: 0; }
+    .prop-full { grid-column: 1 / -1; }
+    .subgrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .subgrid-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .divider {
+      height: 0.5px;
+      background: var(--border);
+      margin: 14px 0;
+      grid-column: 1 / -1;
+    }
+    .endpoint-block {
+      grid-column: 1 / -1;
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      margin-bottom: 6px;
+    }
+    .endpoint-block h4 { margin: 0 0 8px; font-size: 13px; }
+
+    /* ===== 方案 C：专业侧边栏 ===== */
+    .scheme-c .panel { width: 320px; }
+    .scheme-c .panel-body { padding: 14px; }
+    .sidebar-group {
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    .sidebar-group-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: var(--surface-2);
+      border-bottom: 0.5px solid var(--border);
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .sidebar-group-body { padding: 12px; }
+    .kv {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 0.5px solid var(--border);
+    }
+    .kv:last-child { border-bottom: none; }
+    .kv-label { color: var(--text-2); }
+    .kv-value { display: flex; align-items: center; gap: 8px; }
+    .endpoint-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .mini-card {
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+    }
+    .mini-card h5 { margin: 0 0 8px; font-size: 12px; color: var(--text-2); }
+
+    /* ===== 方案 D：双栏 + 标签页 ===== */
+    .scheme-d .panel { width: 540px; }
+    .scheme-d .panel-body { padding: 16px; }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .col-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-2);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .d-field {
+      margin-bottom: 12px;
+    }
+    .d-field label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-2);
+      margin-bottom: 4px;
+    }
+    .d-field input, .d-field select { width: 100%; }
+    .d-field-row { display: flex; gap: 8px; }
+    .d-field-row input { flex: 1; }
+    .angle-box {
+      grid-column: 1 / -1;
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      margin-top: 4px;
+    }
+    .angle-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .angle-row:last-child { margin-bottom: 0; }
+
+    /* 密度调节 */
+    .density-comfortable .panel-body { padding: 18px; }
+    .density-comfortable .field { margin-bottom: 12px; }
+    .density-comfortable .section { margin-bottom: 22px; padding-bottom: 22px; }
+    .density-compact .panel-body { padding: 12px 14px; }
+    .density-compact .field { margin-bottom: 8px; }
+    .density-compact .section { margin-bottom: 14px; padding-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>线条属性面板 · UI 方案对比</h1>
+    <p class="subtitle">基于你截图里的字段，做了 4 套重设计。点击上方标签切换方案，右边切换紧凑/舒适密度。</p>
+
+    <div class="toolbar">
+      <div class="scheme-tabs">
+        <button class="scheme-tab active" data-scheme="a">A. 清爽分组</button>
+        <button class="scheme-tab" data-scheme="b">B. 紧凑属性表</button>
+        <button class="scheme-tab" data-scheme="c">C. 专业侧边栏</button>
+        <button class="scheme-tab" data-scheme="d">D. 双栏标签页</button>
+      </div>
+      <div class="density-toggle">
+        <span>密度</span>
+        <button class="density-btn active" data-density="comfortable">舒适</button>
+        <button class="density-btn" data-density="compact">紧凑</button>
+      </div>
+    </div>
+
+    <!-- 方案 A -->
+    <div class="stage active" id="stage-a">
+      <div class="design-meta">
+        <h2>方案 A：清爽分组卡片</h2>
+        <p>把原本混在一起的字段按「本线 / 端点 / 角度」分组，每组用浅色底卡片包裹。标签统一左对齐，操作按钮紧跟字段右侧，减少眼睛跳动。</p>
+        <div class="tags">
+          <span class="tag">信息层级清晰</span>
+          <span class="tag">适合新手</span>
+          <span class="tag">纵向空间略大</span>
+        </div>
+      </div>
+      <div class="canvas density-comfortable" id="canvas-a">
+        <div class="panel scheme-a">
+          <div class="panel-header">
+            <div class="panel-title">线条属性 <span class="panel-sub">· L1</span></div>
+            <div class="panel-actions"><span>⚓</span><span>−</span><span>□</span><span>×</span></div>
+          </div>
+          <div class="panel-tabs">
+            <div class="panel-tab active">属性</div>
+            <div class="panel-tab">锚点</div>
+            <div class="panel-tab">辅助点</div>
+          </div>
+          <div class="panel-body">
+            <div class="section">
+              <div class="section-title">本线</div>
+              <div class="field">
+                <div class="field-label">名称</div>
+                <div class="field-value field-row">
+                  <input type="text" value="" placeholder="名称，如“肩线”“侧缝”" style="flex:1">
+                  <button class="btn ghost">📋</button>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">类型</div>
+                <div class="field-value field-row">
+                  <select style="flex:1"><option>轮廓线</option><option>辅助线</option><option>剪裁线</option></select>
+                  <span class="hint">meSeq:L1</span>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">线型</div>
+                <div class="field-value">
+                  <div class="toggle" style="width:100%">
+                    <button class="active" style="flex:1"><div class="line-style"></div></button>
+                    <button style="flex:1"><div class="line-style dashed"></div></button>
+                    <button style="flex:1"><div class="line-style dotted"></div></button>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">粗细</div>
+                <div class="field-value field-row">
+                  <div class="toggle"><button>细</button><button class="active">中</button><button>粗</button></div>
+                  <input type="number" value="1.2" style="width:60px">
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">颜色</div>
+                <div class="field-value field-row">
+                  <div class="color-swatch"></div>
+                  <input type="text" value="#1E1E1E" style="flex:1">
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">显示</div>
+                <div class="field-value">
+                  <div class="toggle">
+                    <button>名称</button>
+                    <button>长度</button>
+                    <button class="active">可见</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-title">摆放</div>
+              <div class="field">
+                <div class="field-label">长度</div>
+                <div class="field-value field-row">
+                  <input type="number" value="35.37" style="width:70px">
+                  <div class="toggle"><button>自动</button><button class="active">指定</button></div>
+                  <button class="btn">填入</button>
+                  <button class="btn">发布参数</button>
+                  <span class="hint">35.37 cm</span>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">滑轨</div>
+                <div class="field-value field-row">
+                  <span class="hint">沿向</span><input type="number" value="0" style="flex:1">
+                  <span class="hint">垂直</span><input type="number" value="0" style="flex:1">
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-title">端点 P1</div>
+              <div class="endpoint-card">
+                <div class="endpoint-header">
+                  <div class="field-row" style="flex:1">
+                    <span class="endpoint-name">P1</span>
+                    <input type="text" value="" placeholder="名称，如“肩点”" style="flex:1">
+                    <button class="btn ghost">📋</button>
+                    <button class="btn small">显示</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <div class="field-label">延长量</div>
+                  <div class="field-value"><input type="number" value="0" style="width:100%"></div>
+                </div>
+                <div class="field">
+                  <div class="field-label">连接到</div>
+                  <div class="field-value field-row">
+                    <input type="text" value="P#/L#/名称…" style="flex:1">
+                    <button class="btn">拆开</button>
+                  </div>
+                </div>
+                <div style="text-align:center; margin-top:6px"><button class="btn ghost">↑</button></div>
+              </div>
+              <div class="endpoint-card">
+                <div class="endpoint-header">
+                  <div class="field-row" style="flex:1">
+                    <span class="endpoint-name">P2</span>
+                    <input type="text" value="" placeholder="名称，如“颈点”" style="flex:1">
+                    <button class="btn ghost">📋</button>
+                    <button class="btn small">显示</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <div class="field-label">延长量</div>
+                  <div class="field-value"><input type="number" value="0" style="width:100%"></div>
+                </div>
+                <div class="field">
+                  <div class="field-label">连接到</div>
+                  <div class="field-value field-row">
+                    <input type="text" value="P#/L#/名称…" style="flex:1">
+                    <button class="btn">拆开</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-title">角度</div>
+              <div class="field">
+                <div class="field-label">基准</div>
+                <div class="field-value field-row">
+                  <span class="hint">以点1</span>
+                  <input type="text" value="P#/L#/名称…" style="flex:1">
+                  <span class="hint">到点2</span>
+                  <input type="text" value="P#/L#/名称…" style="flex:1">
+                  <button class="btn small">独立</button>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">角度</div>
+                <div class="field-value field-row">
+                  <input type="number" value="278.3" style="width:90px">
+                  <span class="hint">= 世界角度 278.3°</span>
+                  <button class="btn ghost">∠</button>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">影子偏移</div>
+                <div class="field-value"><input type="number" value="0" style="width:90px"></div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-title">按需组</div>
+              <p style="color:var(--text-3); font-size:12px; margin:0">此处展开条件参数、公式变量等高级选项。</p>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:0.5px solid var(--border)">
+            <button class="btn">关闭</button>
+            <button class="btn">撤销全部</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 B -->
+    <div class="stage" id="stage-b">
+      <div class="design-meta">
+        <h2>方案 B：紧凑属性表</h2>
+        <p>把标签和值严格排成两列，像电子表格一样。字段一多也不乱，纵向空间最小，适合属性密集型工作流。</p>
+        <div class="tags">
+          <span class="tag">空间利用率最高</span>
+          <span class="tag">扫描效率高</span>
+          <span class="tag">分组感较弱</span>
+        </div>
+      </div>
+      <div class="canvas density-comfortable" id="canvas-b">
+        <div class="panel scheme-b">
+          <div class="panel-header">
+            <div class="panel-title">线条属性 <span class="panel-sub">· L1</span></div>
+            <div class="panel-actions"><span>⚓</span><span>−</span><span>□</span><span>×</span></div>
+          </div>
+          <div class="panel-tabs">
+            <div class="panel-tab active">属性</div>
+            <div class="panel-tab">锚点</div>
+            <div class="panel-tab">辅助点</div>
+          </div>
+          <div class="panel-body">
+            <div class="prop-grid">
+              <div class="prop-label">名称</div>
+              <div class="prop-value field-row"><input type="text" placeholder="名称，如“肩线”“侧缝”"><button class="btn ghost">📋</button></div>
+
+              <div class="prop-label">类型</div>
+              <div class="prop-value field-row"><select style="flex:1"><option>轮廓线</option></select><span class="hint">meSeq:L1</span></div>
+
+              <div class="prop-label">线型</div>
+              <div class="prop-value">
+                <div class="toggle" style="width:100%"><button class="active" style="flex:1"><div class="line-style"></div></button><button style="flex:1"><div class="line-style dashed"></div></button><button style="flex:1"><div class="line-style dotted"></div></button></div>
+              </div>
+
+              <div class="prop-label">粗细</div>
+              <div class="prop-value field-row"><div class="toggle"><button>细</button><button class="active">中</button><button>粗</button></div><input type="number" value="1.2" style="width:60px"></div>
+
+              <div class="prop-label">颜色</div>
+              <div class="prop-value field-row"><div class="color-swatch"></div><input type="text" value="#1E1E1E" style="flex:1"></div>
+
+              <div class="prop-label">显示</div>
+              <div class="prop-value"><div class="toggle"><button>名称</button><button>长度</button><button class="active">可见</button></div></div>
+
+              <div class="divider"></div>
+
+              <div class="prop-label">长度</div>
+              <div class="prop-value field-row"><input type="number" value="35.37" style="width:70px"><div class="toggle"><button>自动</button><button class="active">指定</button></div><button class="btn">填入</button><button class="btn">发布</button><span class="hint">35.37 cm</span></div>
+
+              <div class="prop-label">滑轨</div>
+              <div class="prop-value"><div class="field-row"><span class="hint">沿向</span><input type="number" value="0"><span class="hint">垂直</span><input type="number" value="0"></div></div>
+
+              <div class="divider"></div>
+
+              <div class="prop-full">
+                <div class="endpoint-block">
+                  <h4>P1 · 端点</h4>
+                  <div class="prop-grid" style="grid-template-columns:60px 1fr; gap:8px 10px">
+                    <div class="prop-label">名称</div>
+                    <div class="prop-value field-row"><input type="text" placeholder="如“肩点”"><button class="btn ghost">📋</button><button class="btn small">显示</button></div>
+                    <div class="prop-label">延长量</div>
+                    <div class="prop-value"><input type="number" value="0"></div>
+                    <div class="prop-label">连接到</div>
+                    <div class="prop-value field-row"><input type="text" value="P#/L#/名称…"><button class="btn">拆开</button></div>
+                  </div>
+                </div>
+                <div class="endpoint-block">
+                  <h4>P2 · 端点</h4>
+                  <div class="prop-grid" style="grid-template-columns:60px 1fr; gap:8px 10px">
+                    <div class="prop-label">名称</div>
+                    <div class="prop-value field-row"><input type="text" placeholder="如“颈点”"><button class="btn ghost">📋</button><button class="btn small">显示</button></div>
+                    <div class="prop-label">延长量</div>
+                    <div class="prop-value"><input type="number" value="0"></div>
+                    <div class="prop-label">连接到</div>
+                    <div class="prop-value field-row"><input type="text" value="P#/L#/名称…"><button class="btn">拆开</button></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="prop-label">角度基准</div>
+              <div class="prop-value"><div class="field-row"><span class="hint">点1</span><input type="text" value="P#/L#/名称…"><span class="hint">点2</span><input type="text" value="P#/L#/名称…"><button class="btn small">独立</button></div></div>
+
+              <div class="prop-label">角度</div>
+              <div class="prop-value field-row"><input type="number" value="278.3" style="width:80px"><span class="hint">= 世界角度 278.3°</span><button class="btn ghost">∠</button></div>
+
+              <div class="prop-label">影子偏移</div>
+              <div class="prop-value"><input type="number" value="0" style="width:80px"></div>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:0.5px solid var(--border)">
+            <button class="btn">关闭</button>
+            <button class="btn">撤销全部</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 C -->
+    <div class="stage" id="stage-c">
+      <div class="design-meta">
+        <h2>方案 C：专业侧边栏</h2>
+        <p>参考 Blender / Figma 的右侧面板：每个区块可折叠，端点并排显示。适合屏幕空间有限、需要同时看画布和属性的场景。</p>
+        <div class="tags">
+          <span class="tag">可折叠区块</span>
+          <span class="tag">横向空间最小</span>
+          <span class="tag">需要学习成本</span>
+        </div>
+      </div>
+      <div class="canvas density-comfortable" id="canvas-c">
+        <div class="panel scheme-c">
+          <div class="panel-header">
+            <div class="panel-title">线条属性 <span class="panel-sub">· L1</span></div>
+            <div class="panel-actions"><span>⚓</span><span>−</span><span>□</span><span>×</span></div>
+          </div>
+          <div class="panel-tabs">
+            <div class="panel-tab active">属性</div>
+            <div class="panel-tab">锚点</div>
+            <div class="panel-tab">辅助点</div>
+          </div>
+          <div class="panel-body">
+            <div class="sidebar-group">
+              <div class="sidebar-group-header"><span>本线</span><span>⌄</span></div>
+              <div class="sidebar-group-body">
+                <div class="kv"><span class="kv-label">名称</span><div class="kv-value"><input type="text" placeholder="肩线"><button class="btn ghost">📋</button></div></div>
+                <div class="kv"><span class="kv-label">类型</span><div class="kv-value"><select><option>轮廓线</option></select><span class="hint">L1</span></div></div>
+                <div class="kv"><span class="kv-label">线型</span><div class="kv-value"><div class="toggle"><button class="active">━</button><button>- -</button><button>···</button></div></div></div>
+                <div class="kv"><span class="kv-label">粗细</span><div class="kv-value"><div class="toggle"><button>细</button><button class="active">中</button><button>粗</button></div><input type="number" value="1.2" style="width:50px"></div></div>
+                <div class="kv"><span class="kv-label">颜色</span><div class="kv-value"><div class="color-swatch"></div><input type="text" value="#1E1E1E" style="width:80px"></div></div>
+                <div class="kv"><span class="kv-label">显示</span><div class="kv-value"><div class="toggle"><button>名</button><button>长</button><button class="active">显</button></div></div></div>
+              </div>
+            </div>
+
+            <div class="sidebar-group">
+              <div class="sidebar-group-header"><span>摆放</span><span>⌄</span></div>
+              <div class="sidebar-group-body">
+                <div class="kv"><span class="kv-label">长度</span><div class="kv-value"><input type="number" value="35.37" style="width:60px"><div class="toggle"><button>自</button><button class="active">指</button></div><button class="btn small">填入</button></div></div>
+                <div class="kv"><span class="kv-label">发布参数</span><div class="kv-value"><button class="btn small">发布参数</button><span class="hint">35.37 cm</span></div></div>
+                <div class="kv"><span class="kv-label">滑轨</span><div class="kv-value"><input type="number" value="0" placeholder="沿向"><input type="number" value="0" placeholder="垂直"></div></div>
+              </div>
+            </div>
+
+            <div class="sidebar-group">
+              <div class="sidebar-group-header"><span>端点</span><span>⌄</span></div>
+              <div class="sidebar-group-body">
+                <div class="endpoint-pair">
+                  <div class="mini-card">
+                    <h5>P1</h5>
+                    <div class="d-field"><label>名称</label><div class="d-field-row"><input type="text" placeholder="肩点"><button class="btn ghost">📋</button></div></div>
+                    <div class="d-field"><label>延长量</label><input type="number" value="0"></div>
+                    <div class="d-field"><label>连接到</label><div class="d-field-row"><input type="text" value="P#/L#…"><button class="btn small">拆</button></div></div>
+                    <div style="text-align:center"><button class="btn ghost">↑</button></div>
+                  </div>
+                  <div class="mini-card">
+                    <h5>P2</h5>
+                    <div class="d-field"><label>名称</label><div class="d-field-row"><input type="text" placeholder="颈点"><button class="btn ghost">📋</button></div></div>
+                    <div class="d-field"><label>延长量</label><input type="number" value="0"></div>
+                    <div class="d-field"><label>连接到</label><div class="d-field-row"><input type="text" value="P#/L#…"><button class="btn small">拆</button></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sidebar-group">
+              <div class="sidebar-group-header"><span>角度</span><span>⌄</span></div>
+              <div class="sidebar-group-body">
+                <div class="kv"><span class="kv-label">基准</span><div class="kv-value"><input type="text" value="P#/L#…" placeholder="点1"><input type="text" value="P#/L#…" placeholder="点2"><button class="btn small">独立</button></div></div>
+                <div class="kv"><span class="kv-label">角度</span><div class="kv-value"><input type="number" value="278.3" style="width:70px"><span class="hint">278.3°</span><button class="btn ghost">∠</button></div></div>
+                <div class="kv"><span class="kv-label">影子偏移</span><div class="kv-value"><input type="number" value="0" style="width:70px"></div></div>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:0.5px solid var(--border)">
+            <button class="btn">关闭</button>
+            <button class="btn">撤销全部</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 D -->
+    <div class="stage" id="stage-d">
+      <div class="design-meta">
+        <h2>方案 D：双栏 + 标签页</h2>
+        <p>把面板加宽到 540px，左侧放「本线 + 角度」，右侧放「P1 / P2 端点」。字段一屏看完，减少滚动，适合大屏工作流。</p>
+        <div class="tags">
+          <span class="tag">一屏尽览</span>
+          <span class="tag">端点对比直观</span>
+          <span class="tag">占用横向空间</span>
+        </div>
+      </div>
+      <div class="canvas density-comfortable" id="canvas-d">
+        <div class="panel scheme-d">
+          <div class="panel-header">
+            <div class="panel-title">线条属性 <span class="panel-sub">· L1</span></div>
+            <div class="panel-actions"><span>⚓</span><span>−</span><span>□</span><span>×</span></div>
+          </div>
+          <div class="panel-tabs">
+            <div class="panel-tab active">属性</div>
+            <div class="panel-tab">锚点</div>
+            <div class="panel-tab">辅助点</div>
+          </div>
+          <div class="panel-body">
+            <div class="two-col">
+              <div>
+                <div class="col-title">本线</div>
+                <div class="d-field"><label>名称</label><div class="d-field-row"><input type="text" placeholder="名称，如“肩线”“侧缝”"><button class="btn ghost">📋</button></div></div>
+                <div class="d-field"><label>类型</label><div class="d-field-row"><select style="flex:1"><option>轮廓线</option></select><span class="hint">meSeq:L1</span></div></div>
+                <div class="d-field"><label>线型</label><div class="toggle" style="width:100%"><button class="active" style="flex:1"><div class="line-style"></div></button><button style="flex:1"><div class="line-style dashed"></div></button><button style="flex:1"><div class="line-style dotted"></div></button></div></div>
+                <div class="d-field"><label>粗细</label><div class="d-field-row"><div class="toggle"><button>细</button><button class="active">中</button><button>粗</button></div><input type="number" value="1.2" style="width:60px"></div></div>
+                <div class="d-field"><label>颜色</label><div class="d-field-row"><div class="color-swatch"></div><input type="text" value="#1E1E1E" style="flex:1"></div></div>
+                <div class="d-field"><label>显示</label><div class="toggle"><button>名称</button><button>长度</button><button class="active">可见</button></div></div>
+
+                <div class="col-title" style="margin-top:20px">摆放</div>
+                <div class="d-field"><label>长度</label><div class="d-field-row"><input type="number" value="35.37" style="width:80px"><div class="toggle"><button>自动</button><button class="active">指定</button></div></div></div>
+                <div class="d-field"><label>滑轨</label><div class="d-field-row"><input type="number" value="0" placeholder="沿向"><input type="number" value="0" placeholder="垂直"></div></div>
+                <div class="d-field"><div class="d-field-row"><button class="btn">填入</button><button class="btn">发布参数</button><span class="hint">35.37 cm</span></div></div>
+              </div>
+
+              <div>
+                <div class="col-title">端点</div>
+                <div class="mini-card" style="margin-bottom:12px">
+                  <h5 style="margin:0 0 10px; font-size:13px">P1</h5>
+                  <div class="d-field"><label>名称</label><div class="d-field-row"><input type="text" placeholder="如“肩点”"><button class="btn ghost">📋</button></div></div>
+                  <div class="d-field"><div class="d-field-row" style="justify-content:flex-end"><button class="btn small">显示</button></div></div>
+                  <div class="d-field"><label>延长量</label><input type="number" value="0"></div>
+                  <div class="d-field"><label>连接到</label><div class="d-field-row"><input type="text" value="P#/L#/名称…"><button class="btn small">拆开</button></div></div>
+                  <div style="text-align:center"><button class="btn ghost">↑</button></div>
+                </div>
+                <div class="mini-card">
+                  <h5 style="margin:0 0 10px; font-size:13px">P2</h5>
+                  <div class="d-field"><label>名称</label><div class="d-field-row"><input type="text" placeholder="如“颈点”"><button class="btn ghost">📋</button></div></div>
+                  <div class="d-field"><div class="d-field-row" style="justify-content:flex-end"><button class="btn small">显示</button></div></div>
+                  <div class="d-field"><label>延长量</label><input type="number" value="0"></div>
+                  <div class="d-field"><label>连接到</label><div class="d-field-row"><input type="text" value="P#/L#/名称…"><button class="btn small">拆开</button></div></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="angle-box">
+              <div class="col-title" style="margin-bottom:10px">角度</div>
+              <div class="angle-row">
+                <span class="hint">以点1</span><input type="text" value="P#/L#/名称…"><span class="hint">到点2</span><input type="text" value="P#/L#/名称…"><button class="btn small">独立</button>
+              </div>
+              <div class="angle-row">
+                <input type="number" value="278.3" style="width:100px"><span class="hint">= 世界角度 278.3°</span><button class="btn ghost">∠</button>
+                <span style="flex:1"></span>
+                <span class="hint">影子偏移</span><input type="number" value="0" style="width:80px">
+              </div>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:0.5px solid var(--border)">
+            <button class="btn">关闭</button>
+            <button class="btn">撤销全部</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:24px; color:var(--text-2); font-size:13px; line-height:1.7">
+      <strong>现有面板的主要问题：</strong><br>
+      1. 信息没有分组边界，「本线 / 摆放 / 端点 / 角度」混在一起；<br>
+      2. 标签宽度不统一，输入框起点忽左忽右，扫描困难；<br>
+      3. 端点 P1/P2 重复字段没有视觉关联，看起来像两条无关记录；<br>
+      4. 操作按钮（填入 / 发布参数 / 拆开）和重要字段挤在同一行，主次不分。<br><br>
+      <strong>怎么选？</strong><br>
+      如果你屏幕小、字段多 → 试试 <strong>方案 B 紧凑属性表</strong>；<br>
+      如果你想要高级感且不惧折叠 → 试试 <strong>方案 C 专业侧边栏</strong>；<br>
+      如果你大屏制图、端点编辑频繁 → 试试 <strong>方案 D 双栏</strong>；<br>
+      如果你想要稳妥、改动最小 → 选 <strong>方案 A 清爽分组</strong>。
+    </div>
+  </div>
+
+  <script>
+    const tabs = document.querySelectorAll('.scheme-tab');
+    const stages = document.querySelectorAll('.stage');
+    const densityBtns = document.querySelectorAll('.density-btn');
+    const canvases = document.querySelectorAll('.canvas');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const scheme = tab.dataset.scheme;
+        stages.forEach(s => s.classList.remove('active'));
+        document.getElementById('stage-' + scheme).classList.add('active');
+      });
+    });
+
+    densityBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        densityBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const density = btn.dataset.density;
+        canvases.forEach(c => {
+          c.classList.remove('density-comfortable', 'density-compact');
+          c.classList.add('density-' + density);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

@@ -99,12 +99,16 @@ private slots:
     // 拆开保留角度 (用户拍板 2026-08: 位置吸附解除, 角度跟随保留)
     void setAttachmentAngleOnly_keepsFollowAngle();
     void setAttachmentAngleOnly_docHelperAndLockedClosure();
+    // 角度基准两点化 (PANEL_REDESIGN §6.4, 2026-08-31 修复「点2 无效」)
+    void angleRefTwoPointBasis_engineAndUndo();
     // 滑轨模式 (抽屉式滑动, 用户拍板 2026-08)
     void slideMode_alongAndPerpConstraints();
     void slideMode_dragOffsetsUndoRedo();
     void slideMode_formulaOverridesNumericAndDragClears();
     // REPRO (曲线点连接跟随)
     void curvePointAttach_followsLeader();
+    // 出端被钉 + 改长度 (2026-09 用户拍板转正): 钉住的端不动, 自由端伸缩
+    void endPinnedLengthEditMovesFreeStart();
 
     // 省道线 (用户拍板 2026-08: 起点挂A、终点 = B 沿线段方向转 β 偏移 d)
     void dartLine_computesEndAndFollows();
@@ -1439,6 +1443,124 @@ void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
 }
 
 // ---------------------------------------------------------------------------
+// 角度基准两点化 (PANEL_REDESIGN §6.4, 2026-08-31 修复「点2 无效」):
+//   · doc API 六参 setAttachmentAngleRef: 点1→点2 连线方向为角度基准, 设置
+//     本身反算零跳变; 平移点2 宿主块后跟随线世界方向 = 新两点方向 (闭合
+//     基准, followerAngle 不变) —— 引擎两点分支此前零测试覆盖;
+//   · SetAttachmentAngleRefCommand 六参重载: undo/redo 全量还原 ref2 字段
+//     与几何 (此前 ref2 无任何测试覆盖且 UI 写入路径失效)。
+// ---------------------------------------------------------------------------
+void TestCommands::angleRefTwoPointBasis_engineAndUndo()
+{
+    auto angDiff = [](double a, double b) {
+        double d = std::abs(a - b);
+        d = std::fmod(d, 2.0 * M_PI);
+        return d > M_PI ? 2.0 * M_PI - d : d;
+    };
+    auto worldDirOf = [](ParamDocument& d, const QUuid& blockId,
+                         const QUuid& p1, const QUuid& p2) {
+        const auto* b = d.findBlock(blockId);
+        const Vec2 w1 = b->worldPos(p1);
+        const Vec2 w2 = b->worldPos(p2);
+        return std::atan2(w2.y - w1.y, w2.x - w1.x);
+    };
+
+    // ── Part 1: doc API 六参 + 引擎两点方向消费 ──
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);    // 宿主 A
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);     // 跟随 B
+    auto [cId, cStart, cEnd, cSeg] =
+        makeLine(doc, 40.0, Vec2(30.0, 80.0));                // 点2 宿主 C
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    const double dirBefore = worldDirOf(doc, bId, bStart, bEnd);
+
+    // 点1 = A 起点, 点2 = C 起点 → 基准 = A.start→C.start 连线方向。
+    doc.setAttachmentAngleRef(att.id, aId, aSeg, aStart, cId, cStart);
+    {
+        const Attachment& a = doc.attachments().front();
+        QCOMPARE(a.angleRefBlockId, aId);
+        QCOMPARE(a.angleRef2BlockId, cId);
+        QCOMPARE(a.angleRef2PointId, cStart);
+        QVERIFY2(!a.angleIndependent, "设置角度基准退出独立角");
+    }
+    QVERIFY2(angDiff(worldDirOf(doc, bId, bStart, bEnd), dirBefore) < 1e-9,
+             "设置两点基准 = 反算零跳变");
+
+    // 平移 C → 两点方向变化 → B 转向新两点方向 (followerAngle 保持不变)。
+    {
+        auto* c = doc.blockById(cId);
+        c->transform.origin = c->transform.origin + Vec2(50.0, -30.0);
+    }
+    doc.resolveAll();
+    {
+        const Vec2 w1 = doc.findBlock(aId)->worldPos(aStart);
+        const Vec2 w2 = doc.findBlock(cId)->worldPos(cStart);
+        const double refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+        const double fA = doc.attachments().front().followerAngle * M_PI / 180.0;
+        QVERIFY2(angDiff(worldDirOf(doc, bId, bStart, bEnd),
+                         refWorld + M_PI - fA) < 1e-9,
+                 "跟随线世界方向 = 点1→点2 连线方向 (闭合基准)");
+    }
+
+    // ── Part 2: 命令 undo/redo 全量还原 (含 ref2 字段) ──
+    ParamDocument doc2;
+    auto [a2, a2s, a2e, a2seg] = makeLine(doc2, 100.0);
+    auto [b2, b2s, b2e, b2seg] = makeLine(doc2, 50.0);
+    auto [c2, c2s, c2e, c2seg] = makeLine(doc2, 40.0, Vec2(30.0, 80.0));
+    for (const auto& b : doc2.blocks())
+        if (auto* mb = doc2.blockById(b.id)) mb->layer = layerIdAt(doc2, 1);
+
+    Attachment att2;
+    att2.fromBlockId = b2; att2.fromPointId = b2s;
+    att2.toBlockId = a2;   att2.toPointId = a2e; att2.toSegmentId = a2seg;
+    att2.followerAngle = 90.0;
+    QVERIFY(doc2.addAttachment(att2));
+    doc2.resolveAll();
+
+    const double fA0 = doc2.attachments().front().followerAngle;
+    const double dir0 = worldDirOf(doc2, b2, b2s, b2e);
+
+    QUndoStack stack;
+    stack.push(new cad::cmd::SetAttachmentAngleRefCommand(
+        &doc2, att2.id, a2, a2seg, a2s, c2, c2s));
+    {
+        const Attachment& a = doc2.attachments().front();
+        QCOMPARE(a.angleRefBlockId, a2);
+        QCOMPARE(a.angleRef2BlockId, c2);
+        QCOMPARE(a.angleRef2PointId, c2s);
+    }
+    QVERIFY2(angDiff(worldDirOf(doc2, b2, b2s, b2e), dir0) < 1e-9,
+             "命令设置两点基准 = 零跳变");
+
+    stack.undo();
+    {
+        const Attachment& a = doc2.attachments().front();
+        QVERIFY2(a.angleRefBlockId.isNull() && a.angleRef2BlockId.isNull(),
+                 "undo 还原 ref1/ref2 全空 (默认自动跟随)");
+        QCOMPARE(a.followerAngle, fA0);
+    }
+    QVERIFY2(angDiff(worldDirOf(doc2, b2, b2s, b2e), dir0) < 1e-9,
+             "undo 几何还原");
+
+    stack.redo();
+    {
+        const Attachment& a = doc2.attachments().front();
+        QCOMPARE(a.angleRefBlockId, a2);
+        QCOMPARE(a.angleRef2BlockId, c2);
+        QCOMPARE(a.angleRef2PointId, c2s);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 拆开保留角度 doc helper: setAttachmentAngleOnly() toggles the mode with the
 // welded/position-free invariant, and lockedClosure() must never weld an
 // angle-only pair back together.
@@ -1903,6 +2025,59 @@ void TestCommands::curvePointAttach_followsLeader()
         QVERIFY((doc.findBlock(cId)->worldPos(cStart)
                  - doc.findBlock(aId)->worldPos(anchorId)).length() < 1e-6);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 出端被钉 + 改长度 (2026-09 用户拍板转正): 长度编辑恒写终点 (出端) 的
+// Polar 距离, 但 Resolver 的位置约束把钉点 (fromPointId) 钉回宿主点 ——
+// 净效果 = 钉住的端世界位置不动, 长度变化全部表现为自由端 (进端) 伸缩。
+// 这是设计行为 (与旋转工具 "start swings, end stays pinned" 同源), 本用例
+// 锁定它, 防止将来被当作反直觉 bug "修掉"。
+// ---------------------------------------------------------------------------
+void TestCommands::endPinnedLengthEditMovesFreeStart()
+{
+    ParamDocument doc;
+    // L1: 宿主, (0,0)→(100,0)。L2: 本线, (100,0)→(160,0), 出端 P4 钉在 L1 终点 P2。
+    const auto leader = makeLine(doc, 100.0);
+    const auto line   = makeLine(doc, 60.0, Vec2(100.0, 0.0));
+    doc.resolveAll();
+
+    Attachment att;
+    att.fromBlockId = line.blockId;
+    att.fromPointId = line.endId;          // 出端 (P4) 被钉住 —— 倒挂配置
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    att.toSegmentId = leader.segId;
+    att.followerAngle = 180.0;             // 沿 L1 直行延续
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    auto* blk = doc.findBlock(line.blockId);
+    const Vec2 p3Before = blk->worldPos(line.startId);
+    const Vec2 p4Before = blk->worldPos(line.endId);
+    QVERIFY((p4Before - doc.findBlock(leader.blockId)->worldPos(leader.endId))
+                .length() < 1e-6);         // 钉点落在宿主点上
+
+    // 改长度 (与 LinePropertyDialog::applyToModel / ContextStrip::applyLength
+    // 同路径: 写终点 Polar 距离)。
+    auto* ep = blk->findPoint(line.endId);
+    ep->distance = 100.0;
+    blk->touchGeometry();
+    doc.resolveAll();
+
+    const Vec2 p3After = blk->worldPos(line.startId);
+    const Vec2 p4After = blk->worldPos(line.endId);
+    // 钉住的出端不动, 自由进端沿本线方向伸缩 60→100mm。
+    QVERIFY2((p4After - p4Before).length() < 1e-6,
+             "钉住的出端世界位置必须不动");
+    QVERIFY2(std::abs((p3After - p3Before).length() - 40.0) < 1e-6,
+             "长度变化全部表现为自由进端伸缩 (60→100mm)");
+    // 伸缩方向 = 本线方向 (start→end, 即 P3→P4 的反向)。
+    const Vec2 dir = (p4Before - p3Before).normalized();
+    const Vec2 moved = p3After - p3Before;
+    QVERIFY2(std::abs(moved.x * dir.y - moved.y * dir.x) < 1e-6 &&
+             moved.x * dir.x + moved.y * dir.y < 0.0,
+             "进端沿本线方向反向伸缩 (远离钉点)");
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <cmath>
+
 #include <QHash>
 #include <QList>
 
@@ -9,6 +11,8 @@
 #include "parametric/ConditionEngine.h"
 
 namespace cad::param {
+
+class ParamDocument;
 
 /// Back-solve the follower angle (followerAngle, degrees) that preserves the
 /// follower's current world direction when attaching to a leader.
@@ -31,6 +35,22 @@ inline double backSolveFollowerAngle(double followerRotRad,
         refWorldRad + cad::geo::kPi - followerRotRad - localDirRad));
 }
 
+/// 有效角度基准方向 (radians) —— 与 Resolver::applyAttachment 的 refWorld
+/// 计算逐位同构 (Resolver.cpp:725-769), 供读数/反算/可视化等消费方复用,
+/// 避免各路径各自实现导致基准语义漂移 (2026-09 审核 F0):
+///   ① 自定义角度基准 (angleRefBlockId 非空): 点1→点2 世界连线方向优先,
+///      其次点1 出口方向, 再次基准线段 start→end 方向;
+///   ② 否则 = 位置宿主 (toBlockId) 在吸附点的出口方向;
+///   ③ 最后叠加基准影子偏转角 baselineOffsetDeg (有效基准 = 真基准 + 影子)。
+/// 滑轨轨道方向 (leaderRefWorld) 刻意不在此列 —— 轨道属于位置宿主, 与
+/// 角度影子无关 (Resolver.cpp:767-768 同注释)。
+///
+/// @param doc    ParamDocument (块查找).
+/// @param att    目标连接.
+/// @return 有效基准方向 (radians); 宿主/基准块缺失时回退 0 (调用方自行兜底)。
+/// 实现见 ParamDocumentAttachments.cpp (需 ParamDocument 完整类型)。
+double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att);
+
 /// Shared 角度↔弧长 double-mode switch write-back (2026-08-28 收口 A3).
 /// Both mode-toggle entries (SegmentAngleCard::onModeToggle / 
 /// ConnectGesture::onAngleModeChanged) previously inlined this conversion.
@@ -40,13 +60,28 @@ inline double backSolveFollowerAngle(double followerRotRad,
 /// @param targetMode The mode being switched INTO.
 /// @param params     Formula evaluation base values (cm domain).
 /// @param condByName Formula conditions.
-/// @return The followerAngle/arcLength pair to write back — exactly one is
-///         meaningful per @p targetMode (the other keeps its old default).
-inline std::pair<double, double> followerModeSwitchValues(
+/// @return The write-back pair for the TARGET mode — exactly one of
+///         angle/arcMm is meaningful per @p targetMode, and the matching
+///         formula field is non-empty when the CURRENT value is formula-driven.
+///         2026-12 用户拍板: 公式在切换时**原样搬移、绝不改写/乘系数**——
+///         "一个表达式只会在一种模式下表达, 用户选择哪个模式, 公式就按
+///         哪个模式求值"。数值字段仍做几何保持换算 (无公式时 45°↔4.71cm
+///         一致); 公式存在时 Resolver 按公式求值, 公式语义跟随当前模式。
+struct FollowerModeSwitchResult
+{
+    double angle = 0.0;    ///< followerAngle write-back (target Angle).
+    double arcMm = 0.0;    ///< arcLength write-back (target ArcLength, mm).
+    QString angleFormula;  ///< target Angle: 源公式原样搬移 (非空 = 公式驱动).
+    QString arcFormula;    ///< target ArcLength: 源公式原样搬移.
+};
+
+inline FollowerModeSwitchResult followerModeSwitchValues(
     const Attachment& att, double radiusMm, RotationMode targetMode,
     const QHash<QString, double>& params,
     const QHash<QString, QList<Condition>>& condByName)
 {
+    FollowerModeSwitchResult out;
+
     // Effective angle (degrees) of the CURRENT mode, preserving geometry.
     double curDeg = att.followerAngle;
     if (att.rotationMode == RotationMode::ArcLength) {
@@ -67,9 +102,15 @@ inline std::pair<double, double> followerModeSwitchValues(
     // historical mode-toggle exactly — the effective angle may come from a raw
     // formula value outside [0, 360°), and fmod keeps the signed remainder
     // (multi-turn/negative folds) that normalize would collapse.
-    if (targetMode == RotationMode::ArcLength)
-        return {0.0, cad::geo::degToArcMm(std::fmod(curDeg, 360.0), radiusMm)};
-    return {curDeg, 0.0};
+    if (targetMode == RotationMode::ArcLength) {
+        out.arcMm = cad::geo::degToArcMm(std::fmod(curDeg, 360.0), radiusMm);
+        // 公式原样搬移 (用户拍板 2026-12: 不乘换算系数, 语义跟随当前模式)。
+        out.arcFormula = att.followerAngleFormula;
+    } else {
+        out.angle = curDeg;
+        out.angleFormula = att.arcLengthFormula;
+    }
+    return out;
 }
 
 } // namespace cad::param

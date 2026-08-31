@@ -8,6 +8,7 @@
 
 #include "parametric/ParamDocument.h"
 #include "parametric/AngleMeasureVariable.h"
+#include "parametric/Serial.h"
 #include "geometry/Angle.h"
 #include "parametric/ParamDocumentRaw.h"
 
@@ -352,6 +353,7 @@ bool applySegmentProps(cad::param::Segment* s,
         if (dst != src) { dst = src; changed = true; }
     };
     upd(s->name, p.name);
+    upd(s->annotation, p.annotation);
     upd(s->role, p.role);
     upd(s->lineStyle, p.lineStyle);
     upd(s->color, p.color);
@@ -381,6 +383,7 @@ SetSegmentPropertyCommand::SetSegmentPropertyCommand(
     if (auto* b = doc->findBlock(blockId)) {
         if (auto* s = b->findSegment(segmentId)) {
             m_oldProps.name = s->name;
+            m_oldProps.annotation = s->annotation;
             m_oldProps.role = s->role;
             m_oldProps.lineStyle = s->lineStyle;
             m_oldProps.color = s->color;
@@ -473,6 +476,181 @@ void SetSegmentExtendCommand::undo()
         auto* s = b->findSegment(m_segmentId);
         if (apply(s, m_oldValues))
             b->touchGeometry();
+    }
+    m_doc->resolveAll();
+}
+
+// ─── SetEndTargetCommand (终点连接 = 终点指向) ───
+
+void SetEndTargetCommand::apply(cad::param::Block* b, const QUuid& tb,
+                                const QUuid& tp, double off,
+                                const QString& offFormula)
+{
+    b->endTargetBlockId = tb;
+    b->endTargetPointId = tp;
+    b->endTargetOffset = off;
+    b->endTargetOffsetFormula = offFormula;
+}
+
+SetEndTargetCommand::SetEndTargetCommand(cad::param::ParamDocument* doc,
+                                         const QUuid& blockId,
+                                         const QUuid& targetBlockId,
+                                         const QUuid& targetPointId,
+                                         double offsetDeg,
+                                         QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_blockId(blockId)
+    , m_newBlock(targetBlockId)
+    , m_newPoint(targetPointId)
+    , m_newOffset(offsetDeg)
+{
+    setText(QStringLiteral("设置终点连接"));
+    if (const auto* b = doc->findBlock(blockId)) {
+        m_oldBlock = b->endTargetBlockId;
+        m_oldPoint = b->endTargetPointId;
+        m_oldOffset = b->endTargetOffset;
+        m_oldOffsetFormula = b->endTargetOffsetFormula;
+    }
+}
+
+void SetEndTargetCommand::redo()
+{
+    if (auto* b = m_doc->findBlock(m_blockId))
+        apply(b, m_newBlock, m_newPoint, m_newOffset, m_newOffsetFormula);
+    m_doc->resolveAll();
+}
+
+void SetEndTargetCommand::undo()
+{
+    if (auto* b = m_doc->findBlock(m_blockId))
+        apply(b, m_oldBlock, m_oldPoint, m_oldOffset, m_oldOffsetFormula);
+    m_doc->resolveAll();
+}
+
+// ─── ConnectEndCommand (终点连接一步 undo: 指向 + 桥接测量) ───
+
+ConnectEndCommand::ConnectEndCommand(cad::param::ParamDocument* doc,
+                                     const QUuid& blockId,
+                                     const QUuid& segmentId,
+                                     const QUuid& targetBlockId,
+                                     const QUuid& targetPointId,
+                                     double offsetDeg, bool bridgeLand,
+                                     QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_blockId(blockId)
+    , m_segmentId(segmentId)
+    , m_targetBlockId(targetBlockId)
+    , m_targetPointId(targetPointId)
+    , m_offsetDeg(offsetDeg)
+    , m_bridgeLand(bridgeLand)
+{
+    setText(QStringLiteral("终点连接"));
+    if (const auto* b = doc->findBlock(blockId)) {
+        m_oldBlock = b->endTargetBlockId;
+        m_oldPoint = b->endTargetPointId;
+        m_oldOffset = b->endTargetOffset;
+        m_oldOffsetFormula = b->endTargetOffsetFormula;
+        if (const auto* s = b->findSegment(segmentId)) {
+            m_oldLengthFormula = s->lengthFormula;
+            if (const auto* ep = b->findPoint(s->endPointId))
+                m_oldEndDistFormula = ep->distanceFormula;
+            // 既有归属测量 (本线自己的桥接测量): 重定向时更新其目标点。
+            if (auto* mv = doc->findMeasureByOwner(blockId)) {
+                if (!s->lengthFormula.isEmpty()
+                    && mv->refName.compare(s->lengthFormula,
+                                           Qt::CaseInsensitive) == 0) {
+                    m_ownerMeasureId = mv->id;
+                    m_oldMeasureBlockB = mv->blockB;
+                    m_oldMeasurePointB = mv->pointB;
+                }
+            }
+        }
+    }
+}
+
+void ConnectEndCommand::redo()
+{
+    auto* b = m_doc->findBlock(m_blockId);
+    auto* s = b ? b->findSegment(m_segmentId) : nullptr;
+    if (!b || !s) return;
+
+    // 1) 终点指向 (含偏移)。
+    SetEndTargetCommand::apply(b, m_targetBlockId, m_targetPointId,
+                               m_offsetDeg, QString());
+
+    // 2) 桥接落点 + 终点 Polar 且无既有长度/距离公式 → 自动发布测量 M_xxx:
+    //    终点 distanceFormula 驱动几何 (精确落点), 线段 lengthFormula 是测量
+    //    线标记 —— 与 SmartPen 桥接创建 (LineFactory::createBridgeLine) 同语义;
+    //    已有公式 = 保持用户公式, 仅指向。
+    auto* ep = b->findPoint(s->endPointId);
+    const bool canDrive = ep
+        && ep->constraint == cad::param::PointConstraint::Polar
+        && ep->distanceFormula.isEmpty() && s->lengthFormula.isEmpty();
+    if (m_bridgeLand && canDrive
+        && !m_targetBlockId.isNull() && !m_targetPointId.isNull()) {
+        const auto* startPt = b->findPoint(s->startPointId);
+        const auto* targetBlk = m_doc->findBlock(m_targetBlockId);
+        const auto* targetPt = targetBlk
+            ? targetBlk->findPoint(m_targetPointId) : nullptr;
+        if (startPt && startPt->resolved && targetPt && targetPt->resolved) {
+            cad::param::MeasureVariable mv;
+            mv.blockA = m_blockId;
+            mv.pointA = s->startPointId;
+            mv.blockB = m_targetBlockId;
+            mv.pointB = m_targetPointId;
+            mv.value = b->transform.toWorld(startPt->resolvedPos)
+                           .distanceTo(targetBlk->transform.toWorld(
+                               targetPt->resolvedPos));
+            mv.name = s->name;
+            mv.refName = QStringLiteral("M_")
+                + cad::param::Serial::randomPrefix().toUpper();
+            mv.ownerBlockId = m_blockId;  // 删线即删测量 (与桥接创建同约定)
+            m_addedMeasureId = mv.id;
+            m_doc->addMeasure(mv);
+            ep->distanceFormula = mv.refName;
+            s->lengthFormula = mv.refName;
+        }
+    } else if (m_bridgeLand && !m_ownerMeasureId.isNull()
+               && !m_targetBlockId.isNull() && !m_targetPointId.isNull()) {
+        // 重定向: 已有归属测量 → 目标点改指新宿主 (终点继续精确落点)。
+        if (auto* mv = m_doc->findMeasure(m_ownerMeasureId)) {
+            mv->blockB = m_targetBlockId;
+            mv->pointB = m_targetPointId;
+            const auto* startPt = b->findPoint(s->startPointId);
+            const auto* targetBlk = m_doc->findBlock(m_targetBlockId);
+            const auto* targetPt = targetBlk
+                ? targetBlk->findPoint(m_targetPointId) : nullptr;
+            if (startPt && startPt->resolved && targetPt && targetPt->resolved)
+                mv->value = b->transform.toWorld(startPt->resolvedPos)
+                                .distanceTo(targetBlk->transform.toWorld(
+                                    targetPt->resolvedPos));
+        }
+    }
+    m_doc->resolveAll();
+}
+
+void ConnectEndCommand::undo()
+{
+    auto* b = m_doc->findBlock(m_blockId);
+    auto* s = b ? b->findSegment(m_segmentId) : nullptr;
+    if (b) {
+        SetEndTargetCommand::apply(b, m_oldBlock, m_oldPoint, m_oldOffset,
+                                   m_oldOffsetFormula);
+        if (s) {
+            s->lengthFormula = m_oldLengthFormula;
+            if (auto* ep = b->findPoint(s->endPointId))
+                ep->distanceFormula = m_oldEndDistFormula;
+        }
+    }
+    if (!m_addedMeasureId.isNull())
+        m_doc->removeMeasure(m_addedMeasureId);
+    if (!m_ownerMeasureId.isNull()) {
+        if (auto* mv = m_doc->findMeasure(m_ownerMeasureId)) {
+            mv->blockB = m_oldMeasureBlockB;
+            mv->pointB = m_oldMeasurePointB;
+        }
     }
     m_doc->resolveAll();
 }
@@ -1375,7 +1553,7 @@ void ReleaseCurveFollowCommand::undo()
 
 bool SetLinePropertiesCommand::Props::operator==(const Props& o) const
 {
-    return name == o.name && role == o.role
+    return name == o.name && annotation == o.annotation && role == o.role
         && showName == o.showName && showLength == o.showLength
         && visible == o.visible && color == o.color
         && lineStyle == o.lineStyle && weight == o.weight
@@ -1384,7 +1562,8 @@ bool SetLinePropertiesCommand::Props::operator==(const Props& o) const
         && startName == o.startName && startAnno == o.startAnno
         && startShowName == o.startShowName
         && endName == o.endName && endAnno == o.endAnno
-        && endShowName == o.endShowName;
+        && endShowName == o.endShowName
+        && lengthAuto == o.lengthAuto;
 }
 
 bool SetLinePropertiesCommand::apply(cad::param::ParamDocument* doc,
@@ -1398,6 +1577,7 @@ bool SetLinePropertiesCommand::apply(cad::param::ParamDocument* doc,
         if (dst != src) { dst = src; changed = true; }
     };
     upd(s->name, p.name);
+    upd(s->annotation, p.annotation);
     upd(s->role, p.role);
     upd(s->showName, p.showName);
     upd(s->showLength, p.showLength);
@@ -1406,6 +1586,7 @@ bool SetLinePropertiesCommand::apply(cad::param::ParamDocument* doc,
     upd(s->lineStyle, p.lineStyle);
     upd(s->weight, p.weight);
     upd(s->lengthFormula, p.lengthFormula);
+    upd(b->lengthAuto, p.lengthAuto);   // 块级长度模式 (2026-09 审核收口)
     if (auto* ep = b->findPoint(s->endPointId)) {
         upd(ep->distance, p.distance);
         upd(ep->distanceFormula, p.distanceFormula);

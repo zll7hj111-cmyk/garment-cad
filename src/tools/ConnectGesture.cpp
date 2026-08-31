@@ -1,4 +1,4 @@
-#include "ConnectGesture.h"
+﻿#include "ConnectGesture.h"
 
 #include <cmath>
 #include <utility>
@@ -624,26 +624,15 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
     mut->toSegmentId = segId;
 
     // 按保留的角度基准方向反算 followerAngle (与 Resolver 的 refWorld
-    // 同构): 当前世界方向零跳变。旧角度基准 = 唯一角度引用线段或新宿主。
-    double refWorld = toBlk->transform.rotation
-        + toBlk->exitDirectionAtPoint(toPointId, segId);
-    if (!mut->angleRefBlockId.isNull()) {
-        if (const auto* rb = m_paramDoc->findBlock(mut->angleRefBlockId)) {
-            if (!mut->angleRefPointId.isNull()
-                && rb->findPoint(mut->angleRefPointId)
-                && rb->findPoint(mut->angleRefPointId)->resolved) {
-                refWorld = rb->transform.rotation
-                    + rb->exitDirectionAtPoint(mut->angleRefPointId,
-                                               mut->angleRefSegmentId);
-            } else if (!mut->angleRefSegmentId.isNull()) {
-                if (const auto* rs = rb->findSegment(mut->angleRefSegmentId)) {
-                    if (const auto* sp = rb->findPoint(rs->startPointId);
-                        sp && sp->resolved)
-                        refWorld = rb->transform.rotation
-                                 + rb->directionAtPoint(rs->startPointId);
-                }
-            }
-        }
+    // 同构, 2026-09 审核 F2): 旧角度基准 = 唯一角度引用线段或新宿主;
+    // 两点基准 (angleRef2) 与影子偏转 (baselineOffsetDeg) 一并生效 ——
+    // 此前只实现点1出口/线段 start→end 两分支, 已填点2 的线重挂后按
+    // 点1出口反算、随后被 Resolver 按两点连线驱动 → 方向差跳变。
+    double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, *mut);
+    if (mut->angleRefBlockId.isNull()) {
+        // 无自定义基准: 反算基准 = 新宿主出方向 (与 Resolver 回退一致)。
+        refWorld = toBlk->transform.rotation
+            + toBlk->exitDirectionAtPoint(toPointId, segId);
     }
     const double localDir = fromBlk->directionAtPoint(m_connectFromPoint);
     mut->followerAngle = cad::param::backSolveFollowerAngle(
@@ -1086,33 +1075,23 @@ void ConnectGesture::onAngleModeChanged(cad::param::RotationMode mode)
     cad::param::Attachment* att = m_paramDoc->findAttachment(m_editingAttachmentId);
     if (!att) return;
 
-    // 公式驱动（角度/弧长表达式）：模式切换只是显示单位变化，绝不换算
-    // 烘焙公式——表达式必须原样保留（用户要求）。公式存在时拒绝切换。
-    const bool hasFormula =
-        (att->rotationMode == cad::param::RotationMode::ArcLength)
-            ? !att->arcLengthFormula.isEmpty()
-            : !att->followerAngleFormula.isEmpty();
-    if (hasFormula && mode != att->rotationMode) {
-        // 拒绝切换: 条带的单位按钮由宿主经 resolved/refreshChrome 弹回原模式
-        // (条带 onUnitToggled 在 emit 后立即 refreshChrome 兜底)。
-        return;
-    }
-
     // Geometry-preserving switch: compute current effective angle, then
-    // convert to the new mode's value.
+    // convert to the new mode's value. 2026-12: 公式驱动不再拒绝切换 ——
+    // 公式跨域换算保留变量链接 (半径烘焙为常数, FollowerAngle.h); 旧语义
+    // "公式驱动拒绝 °/⌒"已由用户拍板废除。
     const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
     const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
-    const auto [newAngle, newArc] = cad::param::followerModeSwitchValues(
+    const auto res = cad::param::followerModeSwitchValues(
         *att, radius, mode, m_paramDoc->parameters(), {});
 
     if (mode == cad::param::RotationMode::ArcLength) {
         att->rotationMode = cad::param::RotationMode::ArcLength;
-        att->arcLength = newArc;
-        att->arcLengthFormula.clear();
+        att->arcLength = res.arcMm;
+        att->arcLengthFormula = res.arcFormula;
     } else {
         att->rotationMode = cad::param::RotationMode::Angle;
-        att->followerAngle = newAngle;
-        att->followerAngleFormula.clear();
+        att->followerAngle = res.angle;
+        att->followerAngleFormula = res.angleFormula;
     }
     m_angleMode = mode;
     m_paramDoc->resolveAll();

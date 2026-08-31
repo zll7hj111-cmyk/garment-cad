@@ -157,6 +157,10 @@ public:
     ///     length + world angle, and a surviving pin becomes a normal follower
     ///     attachment preserving the current direction.
     bool isBridge = false;
+    /// 长度模式 (2026-xx §6.3): true = 自动 (两端钉死, 长度算出来);
+    /// false = 指定 (起点钉死, 按角度延伸)。自由线/仅起点连接默认 false;
+    /// 桥接线/双端连接恒为 true。用于终点连接时决定是否发布测量驱动长度。
+    bool lengthAuto = false;
 
     /// Resolve all internal point positions based on constraint chain.
     /// @param params       Variable name→value map (cm) for formula evaluation.

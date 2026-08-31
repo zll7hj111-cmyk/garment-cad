@@ -26,6 +26,11 @@ struct Segment {
     QString serial;  ///< Human-readable ID, e.g. "k9x2bL1" (assigned by ParamDocument).
     QString name;  ///< User-defined segment name (e.g. "肩线").
 
+    /// 便利贴注释 (NoteButton, 2026-12): 长文本说明收在悬浮便利贴里, 不在面板
+    /// 上占长输入框。纯备忘 —— 不参与求解、不参与联动。Optional 字段, 老档
+    /// 缺省空串, 零迁移。
+    QString annotation;
+
     SegmentType type = SegmentType::Line;
     SegmentRole role = SegmentRole::Outline;  ///< Semantic role (轮廓/内部/辅助).
 

@@ -9,7 +9,6 @@
 
 #include "ElaText.h"
 #include "ElaLineEdit.h"
-#include "ElaPushButton.h"
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -18,6 +17,7 @@
 #include "parametric/FollowerAngle.h"
 #include "parametric/Serial.h"
 #include "document/commands/BlockCommands.h"
+#include "canvas/CanvasScene.h"   // showToast (公式拒绝切换反馈)
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "ui/Theme.h"
@@ -27,7 +27,7 @@ namespace cad::ui {
 
 namespace {
 constexpr int kLabelW = 64;   ///< 标签列定宽 (2026-12 去卡框化: 短词列).
-constexpr int kFieldH = 35;
+constexpr int kFieldH = 30;   ///< 2026-xx 紧凑化 (35→30, 与状态栏对齐).
 } // namespace
 
 SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc,
@@ -49,57 +49,48 @@ SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc,
     row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(6);
 
-    m_lblCaption = new ElaText(QString::fromUtf8("角度"), 12, this);
+    m_lblCaption = new ElaText(QString::fromUtf8("角度"), 11, this);
     m_lblCaption->setFixedWidth(kLabelW);
     row->addWidget(m_lblCaption);
     m_lblFxAngle = new ElaText(
         QStringLiteral("<i style='color:%1;'>fx</i>")
             .arg(cad::ui::Theme::tokens().text2.name()),
-        12, this);
+        11, this);
     m_lblFxAngle->setVisible(false);
     m_lblFxAngle->setFixedWidth(18);
     row->addWidget(m_lblFxAngle);
     m_editAngle = new ElaLineEdit(this);
     m_editAngle->setFixedWidth(150);
+    m_editAngle->setFixedHeight(kFieldH);
+    m_editAngle->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_editAngle->setPlaceholderText(cad::ui::kPlaceholderAngleOrFormula);
     m_editAngle->setToolTip(QString::fromUtf8(
         "自由线：世界角度；跟随线：构造角。逆时针为正，回车确认"));
     row->addWidget(m_editAngle);
-    m_lblFollowValue = new ElaText(QString(), 12, this);
+    m_lblFollowValue = new ElaText(QString(), 11, this);
     m_lblFollowValue->setObjectName(QStringLiteral("followValueLabel"));
-    m_lblFollowValue->setStyleSheet(QStringLiteral("font-size:11px;"));
+    // 实例样式表必须带 background:transparent —— 否则替换 ElaText 的透明
+    // 背景规则, 细字抗锯齿混成灰 (「盖滤镜」, 同分区标题坑)。
+    m_lblFollowValue->setStyleSheet(
+        QStringLiteral("font-size:11px; background:transparent;"));
     m_lblFollowValue->setVisible(false);
     row->addWidget(m_lblFollowValue);
-    m_lblWorldAngle = new ElaText(QString(), 12, this);
-    m_lblWorldAngle->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_lblWorldAngle = new ElaText(QString(), 11, this);
+    m_lblWorldAngle->setStyleSheet(
+        QStringLiteral("font-size:11px; background:transparent;"));
     m_lblWorldAngle->setVisible(false);
     row->addWidget(m_lblWorldAngle);
-    m_btnAngleMode = new ElaPushButton(this);
+    m_btnAngleMode = new QPushButton(this);
     m_btnAngleMode->setFixedSize(30, kFieldH);
+    m_btnAngleMode->setStyleSheet(cad::ui::chipButtonStyle());
     m_btnAngleMode->setCursor(Qt::PointingHandCursor);
     m_btnAngleMode->setToolTip(QString::fromUtf8("切换角度/弧长模式"));
     row->addWidget(m_btnAngleMode);
     row->addStretch();
     col->addLayout(row);
 
-    // ── 第二行: 角度基准 P1→P2 + 换向按钮 (自由直线可用, 连接/指向线隐藏) ──
-    auto* basisRow = new QHBoxLayout();
-    basisRow->setContentsMargins(0, 0, 0, 0);
-    basisRow->setSpacing(6);
-    auto* lblBasis = new ElaText(QString::fromUtf8("角度基准"), 12, this);
-    lblBasis->setFixedWidth(kLabelW);
-    basisRow->addWidget(lblBasis);
-    m_lblBasisValue = new ElaText(QString(), 12, this);
-    m_lblBasisValue->setStyleSheet(QStringLiteral("font-size:11px;"));
-    basisRow->addWidget(m_lblBasisValue);
-    m_btnReverse = new ElaPushButton(this);
-    m_btnReverse->setFixedSize(58, kFieldH);
-    m_btnReverse->setCursor(Qt::PointingHandCursor);
-    m_btnReverse->setToolTip(QString::fromUtf8(
-        "交换 P1/P2 身份：换向后修改长度/角度驱动另一端，几何位置不变"));
-    basisRow->addWidget(m_btnReverse);
-    basisRow->addStretch();
-    col->addLayout(basisRow);
+    // (2026-xx §3) 旧「角度基准 P1→P2」读数行已删 —— 对齐锚点 [P1] 与基准
+    // 句式由 SegmentRefCard 承担 (换向由朝向箭头表达)。
 
     connect(m_editAngle, &QLineEdit::textChanged,
             this, &SegmentAngleCard::onAngleDirty);
@@ -107,8 +98,6 @@ SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc,
             this, &SegmentAngleCard::applyAngle);
     connect(m_btnAngleMode, &QPushButton::clicked,
             this, &SegmentAngleCard::onModeToggle);
-    connect(m_btnReverse, &QPushButton::clicked,
-            this, &SegmentAngleCard::onReverseClicked);
     connect(m_doc, &cad::param::ParamDocument::resolved,
             this, &SegmentAngleCard::onDocResolved);
 }
@@ -139,8 +128,6 @@ void SegmentAngleCard::refresh()
     const auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
     const auto* att = findFollowerAttachment();
     const bool hasAtt = att != nullptr;
-
-    refreshBasisRow();  // 基准行独立于下方角度分支 (各分支提前 return)
 
     m_lblFollowValue->setVisible(false);
     m_lblFxAngle->setVisible(false);
@@ -247,63 +234,6 @@ void SegmentAngleCard::refresh()
         m_lblFollowValue->setVisible(true);
     }
     updateWorldAngleLabel(*att);
-}
-
-void SegmentAngleCard::refreshBasisRow()
-{
-    if (!m_doc) return;
-    const auto* block = m_doc->blocksView().byId(m_blockId);
-    const auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
-    if (!block || !seg) {
-        m_lblBasisValue->setText(QString());
-        m_btnReverse->setVisible(false);
-        return;
-    }
-
-    // 角度基准视角说明: 驱动方向 = start → end (改长度/角度动终点)。
-    const auto* sp = block->findPoint(seg->startPointId);
-    const auto* ep = block->findPoint(seg->endPointId);
-    const QString basis = (sp && ep)
-        ? QString::fromUtf8("%1 → %2").arg(cad::param::Serial::tag(sp->serial),
-                                           cad::param::Serial::tag(ep->serial))
-        : QString();
-    if (m_lblBasisValue->text() != basis)
-        m_lblBasisValue->setText(basis);
-
-    // 换向资格预判 (命令内逐条拒绝为权威): 桥/省道/指向/滑轨/弧长补偿等
-    // 不合格时隐藏按钮 + tooltip 显示原因。连接 (v2 自动补偿)、曲线 (保形)
-    // 已放开。
-    QString why;
-    const bool ok = !block->isBridge && !block->isDart() &&
-                    block->endTargetPointId.isNull() &&
-                    cad::cmd::ReverseSegmentCommand::canReverse(m_doc, m_blockId,
-                                                                m_segmentId, &why);
-    m_btnReverse->setVisible(ok);
-    m_btnReverse->setText(QString::fromUtf8("换向"));
-    m_btnReverse->setToolTip(ok
-        ? QString::fromUtf8("交换 P1/P2 身份：修改长度/角度将驱动另一端，几何位置不变")
-        : why);
-}
-
-void SegmentAngleCard::onReverseClicked()
-{
-    if (!m_doc) return;
-    QString why;
-    if (!cad::cmd::ReverseSegmentCommand::canReverse(m_doc, m_blockId,
-                                                     m_segmentId, &why)) {
-        if (!why.isEmpty()) m_lblBasisValue->setText(why);
-        return;
-    }
-    if (auto* stack = m_doc->undoStack()) {
-        stack->push(new cad::cmd::ReverseSegmentCommand(m_doc, m_blockId,
-                                                        m_segmentId));
-    } else {
-        cad::cmd::ReverseSegmentCommand cmd(m_doc, m_blockId, m_segmentId);
-        cmd.redo();
-    }
-    populateAngleField();  // 角度输入重填 (+180 换算后的新视角值)
-    refresh();             // 基准行 P1→P2 翻转 + 资格重算
-    emit reversed();       // 对话框: 全量重填端点微卡 + 刷画布
 }
 
 void SegmentAngleCard::populateAngleField()
@@ -472,21 +402,13 @@ void SegmentAngleCard::onModeToggle()
     const auto* att = findFollowerAttachment();
     if (!att || !m_doc) return;
 
-    const QString text = m_editAngle->text().trimmed();
-    if (!text.isEmpty()) {
-        bool isNumber = false;
-        text.toDouble(&isNumber);
-        if (!isNumber) return;   // 公式必须原样保留, 不参与换算.
+    // 未应用的输入先落盘 (数值或公式都经 applyAngle; 公式随后随模式一起
+    // 跨域换算 —— 用户刚输入未回车的公式不能被静默丢弃)。
+    if (!m_editAngle->text().trimmed().isEmpty())
         applyAngle();
-    }
 
     auto* mutAtt = m_doc->findAttachment(att->id);
     if (!mutAtt) return;
-    const bool hasFormula =
-        (mutAtt->rotationMode == cad::param::RotationMode::ArcLength)
-            ? !mutAtt->arcLengthFormula.isEmpty()
-            : !mutAtt->followerAngleFormula.isEmpty();
-    if (hasFormula) return;
 
     auto* blk = m_doc->findBlock(m_blockId);
     double radius = blk ? blk->segmentLengthAtPoint(mutAtt->fromPointId) : 0.0;
@@ -494,15 +416,17 @@ void SegmentAngleCard::onModeToggle()
         (mutAtt->rotationMode == cad::param::RotationMode::Angle)
             ? cad::param::RotationMode::ArcLength
             : cad::param::RotationMode::Angle;
-    const auto [newAngle, newArc] = cad::param::followerModeSwitchValues(
+    // 2026-12: 公式驱动不再拒绝切换 —— 公式跨域换算保留变量链接 (半径烘焙
+    // 为常数), 见 FollowerAngle.h。数值路径保持历史 fmod 语义。
+    const auto res = cad::param::followerModeSwitchValues(
         *mutAtt, radius, target, m_doc->parameters(), {});
     mutAtt->rotationMode = target;
     if (target == cad::param::RotationMode::ArcLength) {
-        mutAtt->arcLength = newArc;
-        mutAtt->arcLengthFormula.clear();
+        mutAtt->arcLength = res.arcMm;
+        mutAtt->arcLengthFormula = res.arcFormula;
     } else {
-        mutAtt->followerAngle = newAngle;
-        mutAtt->followerAngleFormula.clear();
+        mutAtt->followerAngle = res.angle;
+        mutAtt->followerAngleFormula = res.angleFormula;
     }
     m_doc->resolveAll();
     populateAngleField();
@@ -513,11 +437,10 @@ void SegmentAngleCard::onModeToggle()
 void SegmentAngleCard::updateWorldAngleLabel(const cad::param::Attachment& att)
 {
     if (!m_doc) { m_lblWorldAngle->setVisible(false); return; }
-    const auto* leader = m_doc->blocksView().byId(att.toBlockId);
-    if (!leader) { m_lblWorldAngle->setVisible(false); return; }
-
-    const double refWorldDeg = (leader->transform.rotation
-        + leader->exitDirectionAtPoint(att.toPointId, att.toSegmentId))
+    // 有效基准方向 = 与 Resolver 同构 (自定义角度基准/两点连线/影子偏转
+    // 全部生效, 2026-09 审核 F1) —— 此前只取位置宿主出方向, 设了自定义
+    // 基准或影子偏转后读数与线实际方向不符。
+    const double refWorldDeg = cad::param::effectiveAngleRefWorld(m_doc, att)
         * 180.0 / M_PI;
 
     double constDeg;

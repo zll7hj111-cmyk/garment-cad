@@ -107,6 +107,7 @@ private:
     static bool applyAttachment(Block& from, const Attachment& att,
                                 const Block& to,
                                 const Block* angleRef,
+                                const Block* angleRef2,
                                 const QHash<QString, double>& params,
                                 const QHash<QString, QList<Condition>>& conditioned,
                                 std::vector<ResolveDiagnostic>* diagnostics,

@@ -282,6 +282,9 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             };
             addDep(att.toBlockId);
             addDep(att.angleRefBlockId);
+            // 两点角度基准 (§6.4): 点2 所在块必须先结算, 否则两点方向会
+            // 读到陈旧 transform (resolved 标志挡不住刚体位姿过期)。
+            addDep(att.angleRef2BlockId);
         }
 
         // Seed with every in-scope block whose dependencies are already final.
@@ -304,10 +307,17 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                     if (refIt != blockIndex.end())
                         angleRef = &blocks[refIt.value()];
                 }
+                const Block* angleRef2 = nullptr;
+                if (!att.angleRef2BlockId.isNull()) {
+                    auto ref2It = blockIndex.find(att.angleRef2BlockId);
+                    if (ref2It != blockIndex.end())
+                        angleRef2 = &blocks[ref2It.value()];
+                }
                 if (toIt == blockIndex.end()) {
                     report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
                 } else {
                     applyAttachment(blocks[b], att, blocks[toIt.value()], angleRef,
+                                    angleRef2,
                                     params, conditioned, diagnostics, &ctx,
                                     preserveEndTargetRotation);
                     ++settled;
@@ -691,6 +701,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
 bool Resolver::applyAttachment(Block& from, const Attachment& att,
                                const Block& to,
                                 const Block* angleRef,
+                                const Block* angleRef2,
                                const QHash<QString, double>& params,
                                const QHash<QString, QList<Condition>>& conditioned,
                                std::vector<ResolveDiagnostic>* diagnostics,
@@ -715,23 +726,35 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // followerAngle is measured against the separate reference SEGMENT instead of
     // the position leader's exit direction.
     if (!att.angleRefBlockId.isNull() && angleRef) {
-        const Segment* refSeg = angleRef->findSegment(att.angleRefSegmentId);
-        if (refSeg) {
-            if (!att.angleRefPointId.isNull()) {
-                // 使用用户选择的角度基准点的出口方向（与位置连接同构）。
-                const ParamPoint* rp = angleRef->findPoint(att.angleRefPointId);
-                if (rp && rp->resolved) {
-                    refWorld = angleRef->transform.rotation
-                             + angleRef->exitDirectionAtPoint(
-                                   att.angleRefPointId, att.angleRefSegmentId);
-                }
-            } else {
-                const ParamPoint* rsp = angleRef->findPoint(refSeg->startPointId);
-                const ParamPoint* rep = angleRef->findPoint(refSeg->endPointId);
-                if (rsp && rep && rsp->resolved && rep->resolved) {
-                    // 旧档/未选点：保持历史行为，用 start->end 世界方向。
-                    refWorld = angleRef->transform.rotation
-                             + angleRef->directionAtPoint(refSeg->startPointId);
+        // 2026-xx §6.4: 角度基准两点化 —— 点1→点2 的连线方向优先。
+        if (!att.angleRef2BlockId.isNull() && !att.angleRef2PointId.isNull()) {
+            const Block* ref2 = angleRef2;
+            const ParamPoint* p1 = angleRef->findPoint(att.angleRefPointId);
+            const ParamPoint* p2 = ref2 ? ref2->findPoint(att.angleRef2PointId) : nullptr;
+            if (p1 && p2 && p1->resolved && p2->resolved) {
+                const geo::Vec2 w1 = angleRef->transform.toWorld(p1->resolvedPos);
+                const geo::Vec2 w2 = ref2->transform.toWorld(p2->resolvedPos);
+                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+            }
+        } else {
+            const Segment* refSeg = angleRef->findSegment(att.angleRefSegmentId);
+            if (refSeg) {
+                if (!att.angleRefPointId.isNull()) {
+                    // 使用用户选择的角度基准点的出口方向（与位置连接同构）。
+                    const ParamPoint* rp = angleRef->findPoint(att.angleRefPointId);
+                    if (rp && rp->resolved) {
+                        refWorld = angleRef->transform.rotation
+                                 + angleRef->exitDirectionAtPoint(
+                                       att.angleRefPointId, att.angleRefSegmentId);
+                    }
+                } else {
+                    const ParamPoint* rsp = angleRef->findPoint(refSeg->startPointId);
+                    const ParamPoint* rep = angleRef->findPoint(refSeg->endPointId);
+                    if (rsp && rep && rsp->resolved && rep->resolved) {
+                        // 旧档/未选点：保持历史行为，用 start->end 世界方向。
+                        refWorld = angleRef->transform.rotation
+                                 + angleRef->directionAtPoint(refSeg->startPointId);
+                    }
                 }
             }
         }

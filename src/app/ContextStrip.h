@@ -8,6 +8,8 @@
 class ElaText;
 class ElaLineEdit;
 class ElaPushButton;
+class QButtonGroup;
+class QPushButton;
 class QTimer;
 class QUndoStack;
 
@@ -102,8 +104,12 @@ public:
     [[nodiscard]] ElaLineEdit* lengthEdit() const { return m_lenEdit; }
     [[nodiscard]] ElaLineEdit* angleEdit() const { return m_angleEdit; }
     [[nodiscard]] ElaPushButton* reverseButton() const { return m_btnReverse; }
-    [[nodiscard]] ElaPushButton* unitAngleButton() const { return m_btnUnitAngle; }
-    [[nodiscard]] ElaPushButton* unitArcButton() const { return m_btnUnitArc; }
+    [[nodiscard]] QPushButton* unitAngleButton() const { return m_btnUnitAngle; }
+    [[nodiscard]] QPushButton* unitArcButton() const { return m_btnUnitArc; }
+    /// 连接维度 拆开/重连 双面按钮 (位置维度; 与属性对话框「连接」同语义)。
+    [[nodiscard]] ElaPushButton* posDetachButton() const { return m_btnPosDetach; }
+    /// 连接维度 拆开/重连 双面按钮 (角度维度; 与属性对话框「基准」同语义)。
+    [[nodiscard]] ElaPushButton* angleDetachButton() const { return m_btnAngleDetach; }
     /// 状态徽标文本 (跟随 L5 / 自由 / 曲线 / 桥线)。
     [[nodiscard]] QString badgeText() const;
     /// 角度基准读数 (P1 → P2)。
@@ -153,6 +159,10 @@ private:
     [[nodiscard]] bool inputHasFocus() const;
     void onUnitToggled(bool wantArc);
     void onReverseClicked();
+    /// 连接维度 拆开/重连 (位置维度): 拆开 = angleOnly、重连 = 位置回宿主+焊接。
+    void onPosDetachClicked();
+    /// 连接维度 拆开/重连 (角度维度): 拆开 = angleIndependent、重连 = 恢复跟随。
+    void onAngleDetachClicked();
     void returnFocusToCanvas();
 
     cad::param::ParamDocument* m_paramDoc = nullptr;
@@ -181,10 +191,13 @@ private:
     ElaLineEdit*   m_nameEdit = nullptr;
     ElaLineEdit*   m_lenEdit = nullptr;
     ElaLineEdit*   m_angleEdit = nullptr;
-    ElaPushButton* m_btnUnitAngle = nullptr;
-    ElaPushButton* m_btnUnitArc = nullptr;
+    QPushButton*   m_btnUnitAngle = nullptr;   ///< ° (原生 QPushButton: Ela 无 checked 渲染).
+    QPushButton*   m_btnUnitArc = nullptr;     ///< ⌒
+    QButtonGroup*  m_unitGroup = nullptr;      ///< °/⌒ 互斥 (防双选).
     ElaPushButton* m_btnReverse = nullptr;
     ElaPushButton* m_btnBasis = nullptr;
+    ElaPushButton* m_btnPosDetach = nullptr;    ///< 连接·拆开/重连 (位置维度).
+    ElaPushButton* m_btnAngleDetach = nullptr;  ///< 基准·拆开/重连 (角度维度).
     ElaText*       m_badge = nullptr;
     ElaText*       m_hint = nullptr;
     QTimer*        m_debounce = nullptr;

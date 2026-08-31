@@ -97,6 +97,10 @@ struct Attachment {
     /// （与位置连接同构），而不是固定用线段 start→end 方向；为空时兼容旧档，
     /// 回退到引用线段起点方向。
     QUuid angleRefPointId;
+    /// 角度基准第二点 (2026-xx §6.4): 当非空时，角度基准方向 = 点1→点2 的
+    /// 世界连线方向（两点可为任意块上的任意点）。为空时保持旧行为（点1出口方向）。
+    QUuid angleRef2BlockId;
+    QUuid angleRef2PointId;
 
 
     double followerAngle = 0.0;  ///< 跟随角度 in degrees (跟随角度), owned by

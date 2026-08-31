@@ -980,15 +980,19 @@ void TestRotateCopy::modeSwitchKeepsFormula()
         // 条带锁定到 A (角度格可编辑, 单位段可用)。
         QVERIFY(bridge.strip.unitArcButton()->isEnabled());
 
-        // 点 ⌒ 切到弧长模式：公式锁定 → 拒绝，表达式必须原样保留。
+        // 点 ⌒ 切到弧长模式 (2026-12 用户拍板: 公式驱动可切换, 且公式
+        // **原样搬移不乘换算系数**): rotationMode 翻转, arcLengthFormula
+        // 保持 "45" 原样; 数值字段仍做几何保持换算 (45° → 47.12mm)。
         bridge.strip.unitArcButton()->click();
         const Attachment* att = followerAttachmentOf(doc, a.blockId);
         QVERIFY(att);
-        QCOMPARE(att->rotationMode, cad::param::RotationMode::Angle);
-        QCOMPARE(att->followerAngleFormula, QStringLiteral("45"));   // 未被烘焙
+        QCOMPARE(att->rotationMode, cad::param::RotationMode::ArcLength);
+        QCOMPARE(att->arcLengthFormula, QStringLiteral("45"));   // 原样保留
+        QVERIFY2(std::abs(att->arcLength - 45.0 * M_PI / 180.0 * 60.0) < 1e-6,
+                 "数值字段仍按几何保持换算");
     }
 
-    // ── 场景 2：弧长表达式锁定，切到角度模式 → 拒绝且公式保留 ──
+    // ── 场景 2：弧长表达式锁定，切到角度模式 → 公式原样搬移 ──
     {
         ParamDocument doc;
         doc.setActiveLayer(layerIdAt(doc, 1));
@@ -1046,13 +1050,17 @@ void TestRotateCopy::modeSwitchKeepsFormula()
             (aSp2->resolvedPos + aEp2->resolvedPos) * 0.5);
         sendMouse(QEvent::MouseButtonPress, vp(aMid2.x, aMid2.y), Qt::LeftButton, Qt::NoModifier);
         sendMouse(QEvent::MouseButtonRelease, vp(aMid2.x, aMid2.y), Qt::LeftButton, Qt::NoModifier);
-        // 点 ° 切到角度模式：弧长公式锁定 → 拒绝，表达式必须原样保留。
+        // 点 ° 切到角度模式 (2026-12 用户拍板: 公式原样搬移不乘系数):
+        // rotationMode 翻转, followerAngleFormula 保持 "10" 原样;
+        // 数值字段仍做几何保持换算 (10cm 弧长 → 95.5°)。
         QVERIFY(bridge.strip.unitAngleButton()->isEnabled());
         bridge.strip.unitAngleButton()->click();
         const Attachment* att = followerAttachmentOf(doc, a.blockId);
         QVERIFY(att);
-        QCOMPARE(att->rotationMode, cad::param::RotationMode::ArcLength);
-        QCOMPARE(att->arcLengthFormula, QStringLiteral("10"));   // 未被烘焙
+        QCOMPARE(att->rotationMode, cad::param::RotationMode::Angle);
+        QCOMPARE(att->followerAngleFormula, QStringLiteral("10"));   // 原样保留
+        QVERIFY2(std::abs(att->followerAngle - 10.0 * 1800.0 / (M_PI * 60.0)) < 1e-6,
+                 "数值字段仍按几何保持换算");
     }
 }
 

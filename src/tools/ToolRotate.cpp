@@ -21,6 +21,7 @@
 #include "parametric/Attachment.h"
 #include "parametric/Duplicate.h"
 #include "parametric/ConditionEngine.h"
+#include "parametric/FollowerAngle.h"
 #include "parametric/Serial.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
@@ -408,11 +409,10 @@ void ToolRotate::rebuildAnchorState()
         m_attId = att->id;
         const cad::param::Block* fromBlk = m_paramDoc->findBlock(att->fromBlockId);
         m_pivot = fromBlk ? fromBlk->worldPos(att->fromPointId) : blk->worldPos(m_anchorPointId);
-        const cad::param::Block* leader = m_paramDoc->findBlock(att->toBlockId);
-        m_refWorldRad = leader
-            ? leader->transform.rotation
-                  + leader->exitDirectionAtPoint(att->toPointId, att->toSegmentId)
-            : 0.0;
+        // 有效基准方向 = 与 Resolver 同构 (自定义角度基准/两点连线/影子偏转
+        // 全部生效, 2026-09 审核 F3) —— 此前只取位置宿主出方向, 设了自定义
+        // 基准或影子偏转后 Gizmo 基准虚线/折角弧/表盘读数画错基准。
+        m_refWorldRad = cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
         m_baseAngle = att->followerAngle;
         m_baseFormula = att->followerAngleFormula;
         m_rotationMode = att->rotationMode;
