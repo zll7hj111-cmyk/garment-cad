@@ -104,3 +104,6 @@ tools/_tmp_*.bat
 tools/_cleanup_*.ps1
 *.preflatt
 *.presplit
+
+# ctest 输出转储（两字母+数字命名，如 cm8.txt / sw8.txt）
+/[a-z][a-z][0-9]*.txt

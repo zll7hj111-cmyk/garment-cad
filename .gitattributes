@@ -1,0 +1,21 @@
+# 行尾统一：文本文件入库 LF，检出按平台（Windows 为 CRLF）
+* text=auto
+
+# 明确文本类型，避免二进制误判
+*.cpp text
+*.h text
+*.md text
+*.txt text
+*.py text
+*.bat text
+*.ps1 text
+*.cmake text
+*.json text
+*.qrc text
+*.html text
+
+# 二进制
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
