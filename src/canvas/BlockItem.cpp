@@ -723,7 +723,7 @@ QUuid BlockItem::hitTest(const QPointF& localPos, double threshold,
 
 void BlockItem::rebuildCache()
 {
-    GCAD_PERF_EVENT("cache.rebuild");
+    GCAD_PERF_SCOPE("cache.rebuild");
     m_lines.clear();
     m_hoveredPointId = QUuid();  // cache rebuild drops transient hover state
     // Curve children are rebuilt from scratch (their geometry may be stale).

@@ -111,6 +111,7 @@ void CanvasScene::clearAllBlockItems()
 
 void CanvasScene::refreshComponentBoxes()
 {
+    GCAD_PERF_SCOPE("scene.compBoxes");
     if (!m_paramDoc) return;
 
     // Which components want a visible box right now.

@@ -263,7 +263,10 @@ void ParamDocument::resolveForDrag(const QList<QUuid>& affectedBlockIds,
     // followers into the affected set (Phase 3 moves only that subset).
     const QSet<QUuid> affected = affectedBlockIds.isEmpty()
         ? QSet<QUuid>()
-        : collectAffected(affectedBlockIds);
+        : [&]() {
+              GCAD_PERF_SCOPE("resolve.collectAffected");
+              return collectAffected(affectedBlockIds);
+          }();
     const QSet<QUuid>* affectedPtr = affectedBlockIds.isEmpty() ? nullptr : &affected;
 
     // Keep the pass-local ignored list alive for the duration of the call.
@@ -402,6 +405,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     // only) and re-run the aux pass with the fresh working values; changed
     // aux measurements re-trigger the working pass, bounded like Phase 3.
     if (auxRan && workingRan) {
+        GCAD_PERF_SCOPE("resolve.x2.5");
         // Structural property of the doc — recompute only on FULL resolves
         // (every structural mutation funnels through resolveAll()); narrowed
         // drag frames reuse the cached value instead of re-scanning
@@ -415,10 +419,15 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             bool settled = false;
             for (int round = 0; round < kMaxSettleRounds; ++round) {
                 std::vector<ResolveDiagnostic> auxDiag2;  // discarded
+                // Narrowed to the affected set (2026-09 性能): the aux blocks
+                // that need re-solving here are exactly the referencers of the
+                // moved working blocks — collectAffected's reference index
+                // already includes them (refPointA/interAimPointId). The old
+                // full aux pass re-resolved every aux block per round.
                 Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                      m_conditioned, &auxDiag2,
                                      Resolver::Scope::AuxOnly, kAuxLayer,
-                                     nullptr,
+                                     effAffected,
                                      &m_exprCache);
                 if (!(measureLinkedVars() || measureMeasureVars()
                       || measureAngleMeasureVars())) {
@@ -492,6 +501,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     // Re-run the working pass against the fresh aux pose; if the re-solve moved
     // measured geometry, the aux must re-settle too — bounded like Phase 2.5/3.
     if (m_workingIntersectToAux && workingRan) {
+        GCAD_PERF_SCOPE("resolve.x4");
         bool settled = false;
         for (int round = 0; round < kMaxSettleRounds; ++round) {
             m_layerRegistry->setWorkingDirty(true);
@@ -505,10 +515,12 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
             // round re-solves the working intersections against the fresh pose.
             m_layerRegistry->setAuxDirty(true);
             std::vector<ResolveDiagnostic> auxDiag4;  // discarded
+            // Narrowed like Phase 2.5: only the aux followers of the moved
+            // working blocks (already in the affected set) need re-settling.
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &auxDiag4,
                                  Resolver::Scope::AuxOnly, kAuxLayer,
-                                 nullptr,
+                                 effAffected,
                                  &m_exprCache);
             m_layerRegistry->setAuxDirty(false);
         }
@@ -534,6 +546,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     constexpr int kMaxFollowSettleRounds = kMaxSettleRounds;
     bool followConverged = false;
     for (int round = 0; round < kMaxFollowSettleRounds; ++round) {
+        GCAD_PERF_SCOPE("resolve.followRound");
         bool compConverged = false;
         for (int inner = 0; inner < kMaxSettleRounds; ++inner) {
             const bool compMoved = settleComponents(*passAttachments, effAffected);
