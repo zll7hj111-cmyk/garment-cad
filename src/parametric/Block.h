@@ -162,6 +162,16 @@ public:
     /// 桥接线/双端连接恒为 true。用于终点连接时决定是否发布测量驱动长度。
     bool lengthAuto = false;
 
+    /// 影子线段 (拆开影子基准, DETACH_SHADOW_DESIGN.md §8.1, 用户拍板 2026-xx):
+    /// 拆开连接时复制本体 exit 线段生成的**隐藏冻结克隆** —— 不可见、不可选
+    /// 中/捕捉/连接 (R4)，作为跟随线的角度基准；又可被系统挂到新宿主线上
+    /// (Att1) 形成 L3→影子→L2 双连接链 (R3 链式随动)。isShadow 仅影响
+    /// 交互面/渲染/级联，不新增 Resolver 逻辑 (影子=普通块参与求解)。
+    bool isShadow = false;
+    /// 影子本体 (拆开前的基准线块 id)。本体被删或跟随线挂回本体时影子随之
+    /// 删除 (状态机 ⑤⑥)；空 = 非影子。
+    QUuid shadowMasterBlockId;
+
     /// Resolve all internal point positions based on constraint chain.
     /// @param params       Variable name→value map (cm) for formula evaluation.
     /// @param conditioned  formulaName→conditions for standalone-condition
@@ -323,6 +333,21 @@ public:
     /// Used when releasing a bridge (桥接线释放) and when duplicating one.
     /// Returns false if the segment/endpoints are missing or unresolved.
     bool freezeSegmentGeometry();
+
+    /// 影子克隆 (拆开影子基准, DETACH_SHADOW_DESIGN.md §4/§8.1): 把 @p master
+    /// 的单条线段 @p segmentId 克隆为一个**冻结单线段影子块** —— 两点+一段，
+    /// 方向/长度/位置全部固化为普通数值 (Free 点 + resolved 缓存, R7 长度不
+    /// 联动)，transform/layer 逐位拷贝本体 (拆开瞬间姿态, R1 去耦合)。
+    /// 锚点 = 克隆自 @p anchorPointId 的点: 若它是本体线段起点则影子锚点 =
+    /// 影子段起点 (角色 1:1 映射, 出方向语义不变), 通过 @p outAnchorId /
+    /// @p outSegmentId 回传影子侧新 id (克隆 = 值拷贝, 与本体无引用关系)。
+    /// @return 影子块; 本体段/端点缺失或未解析时返回空块 (调用方须检查
+    ///         isShadow 而非仅 id —— 空块 id 也是合法 createUuid 值)。
+    [[nodiscard]] static Block cloneShadowOf(const Block& master,
+                                             const QUuid& segmentId,
+                                             const QUuid& anchorPointId,
+                                             QUuid* outAnchorId,
+                                             QUuid* outSegmentId);
 
     /// Add a point and return its ID.
     QUuid addPoint(ParamPoint pt);

@@ -209,6 +209,30 @@ void ParamDocument::setAttachmentAngleOnly(const QUuid& id, bool angleOnly)
         [&id](const Attachment& a) { return a.id == id; });
     if (it == m_attachments.end() || it->angleOnly == angleOnly)
         return;
+    // 影子基准路由 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.1 三入口统一;
+    // 无 undo 栈的 UI 兜底路径与引擎级测试都从这里走):
+    //   angleOnly=true + 基准是影子 → ④ 再拆开 = 释放挂载 (影子冻结当前方向);
+    //   angleOnly=true + 基准普通  → ② 影子换代 (降级门不过 = 走下方旧语义);
+    //   angleOnly=false + 基准是影子 → ⑤ 挂回本体 (删影子 + 活引用恢复)。
+    if (const Block* toBlk = blockById(it->toBlockId); toBlk && toBlk->isShadow) {
+        if (angleOnly) {
+            releaseShadowToDetached(toBlk->id);
+            return;
+        }
+        if (reattachShadowToMaster(id))  // ⑤ 挂回本体 (删影子 + 活引用恢复)
+            return;
+    } else if (angleOnly) {
+        Block shadow;
+        Attachment newAtt;
+        if (buildShadowDetach(id, shadow, newAtt)) {
+            addBlock(std::move(shadow));  // blockAdded + resolve + 信号
+            if (auto* a = findAttachment(id))
+                *a = newAtt;  // Att2 原地换代 (offset/公式原样, R2)
+            resolveAll();
+            emit structureChanged();
+            return;
+        }
+    }
     it->angleOnly = angleOnly;
     // 位置自由 ↔ 焊接互斥: 拆开自动解锁; 恢复完整连接重新焊接 (默认保护).
     it->isLocked = !angleOnly;

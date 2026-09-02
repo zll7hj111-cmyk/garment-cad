@@ -287,6 +287,57 @@ public:
     /// attachments removed.
     int removeAttachmentsOfBlock(const QUuid& blockId);
 
+    // ── 影子基准 (拆开影子线段, DETACH_SHADOW_DESIGN.md; 用户拍板 2026-xx) ──
+    // 拆开连接 = 复制本体 exit 线段为隐藏冻结克隆 (影子 Block, isShadow) 作
+    // 角度基准 + Att2 原地换代指向影子 (angleOnly)。挂新宿主 = 影子作为
+    // follower 挂上去 (Att1, Δ 反算保向) 形成 L3→影子→L2 标准双连接链 (R3)。
+    // 挂回本体 = 删影子恢复活引用 (⑤); 本体删 → 影子删 (⑥); 宿主删 → 影子
+    // 弹回拆开态 (⑦)。零新增 Resolver 逻辑 (影子=普通块, 链式附着现有已支持)。
+    /// 拆开 + 影子基准: 克隆 att 的 to-block exit 段为影子块并把 Att2 原地
+    /// 换代 (toBlock/toPoint/toSeg→影子, angleOnly=true, offset 原样 R2)。
+    /// 基准已是影子 (再拆开④) → 释放挂载、影子冻结当前方向。降级场景
+    /// (本体为桥线/省道/组件成员/多段块/曲线段) 返回空 id, 调用方走旧
+    /// angleOnly 行为。undo 经 SetAttachmentAngleOnlyCommand 一步回退。
+    QUuid detachWithShadow(const QUuid& attId);
+    /// 挂载影子到新宿主 (③): Att1 = 影子→宿主 (Δ=反算保向, 挂载瞬间影子/
+    /// 跟随线世界方向不变) + Att2 恢复位置钉点并重新焊接。@p toSegmentId 空
+    /// = 自动取宿主出口段。森林/跨层/桥线规则与 addAttachment 同门校验。
+    bool mountShadowTo(const QUuid& shadowId, const QUuid& toBlockId,
+                       const QUuid& toPointId, const QUuid& toSegmentId = QUuid());
+    /// 影子弹回拆开态 (④/⑦): 删除 Att1 (挂载关系), Att2 回 angleOnly。
+    /// 影子保持当前解算姿态 (冻结当前方向, 不跳变)。未挂载 = 幂等返回 true。
+    bool releaseShadowToDetached(const QUuid& shadowId);
+    /// 挂回本体 (⑤): Att2 基准若是影子 → 删影子 (含 Att1) 并把 Att2 还原到
+    /// 本体 (活引用恢复 + 重新焊接)。@p explicitToPoint 非空 = 挂载路由显式
+    /// 落点 (拖回本体时钉在用户拖到的点); 空 = 复原拆开前锚点 (面板重连)。
+    /// 拆开态 (②) 与挂载态 (③) 都可用 (不依赖 angleOnly 旗标)。非影子基准
+    /// 返回 false。
+    bool reattachShadowToMaster(const QUuid& attId,
+                                const QUuid& explicitToPoint = QUuid(),
+                                const QUuid& explicitToSegment = QUuid());
+    /// 清除影子 (面板「清除影子」): 删除 Att2 (跟随线转纯自由线) 与 Att1
+    /// (若挂载) 及影子块本身。
+    bool removeShadow(const QUuid& shadowId);
+    /// 本体 → 影子块查找 (一个本体可有多个影子 —— 多条跟随线各自拆开)。
+    /// 返回第一个匹配; 无影子返回 nullptr。
+    [[nodiscard]] Block* findShadowOfMaster(const QUuid& masterBlockId);
+    [[nodiscard]] const Block* findShadowOfMaster(const QUuid& masterBlockId) const;
+    /// 纯构建器 (无副作用, 命令层快照与降级判定共用): 拆开换代产物。
+    /// 失败 (降级/已是影子基准) 返回 false。成功时 outShadow 为待添加的影子
+    /// 块、outNewAtt 为 Att2 的 verbatim 换代态。
+    [[nodiscard]] bool buildShadowDetach(const QUuid& attId, Block& outShadow,
+                                         Attachment& outNewAtt) const;
+    /// 纯构建器: 挂回本体 (⑤) 的 Att2 还原态。@p explicitToPoint 非空 = 挂载
+    /// 路由显式落点 (拖回本体时用户钉的点); 否则按影子锚角色 1:1 复原拆开前
+    /// 锚点 (面板重连语义)。
+    [[nodiscard]] bool buildShadowReconnect(const QUuid& attId, Attachment& outRestored,
+                                            const QUuid& explicitToPoint = QUuid(),
+                                            const QUuid& explicitToSegment = QUuid()) const;
+    /// 纯构建器: 挂载 Att1 (影子→宿主, Δ 反算保向)。已挂载/目标非法返回 false。
+    [[nodiscard]] bool buildShadowMount(const QUuid& shadowId, const QUuid& toBlockId,
+                                        const QUuid& toPointId, const QUuid& toSegmentId,
+                                        Attachment& outAtt1) const;
+
     /// 撤销全部 (dialog reject): drop every non-pin follower attachment of
     /// @p fromBlockId and restore @p followerAtt VERBATIM if set (keeps the
     /// snapshot's isLocked — 快照完整性). Resolves once; the caller drives

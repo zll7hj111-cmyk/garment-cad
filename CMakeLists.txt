@@ -142,6 +142,7 @@ add_library(gcad_parametric STATIC
     src/parametric/ParamDocumentParameters.cpp
     src/parametric/ParamDocumentBlocks.cpp
     src/parametric/ParamDocumentAttachments.cpp
+    src/parametric/ParamDocumentShadow.cpp
     src/parametric/ParamDocumentIndexes.cpp
     src/parametric/ParamDocumentResolver.cpp
     src/parametric/ParamDocumentLifecycle.cpp

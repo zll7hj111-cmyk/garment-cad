@@ -147,6 +147,56 @@ void ParamDocument::removeBlock(const QUuid& id)
         }
     }
 
+    // ── 影子善后 (拆开影子基准, DETACH_SHADOW_DESIGN.md §6 状态机 ⑤⑥⑦) ──
+    // ⑥ 本体 (master) 被删 → 其影子块级联删除 (系统级, 不计入影响报告);
+    //    Att2 一并移除 → 跟随线失去角度基准转独立线 (方向冻结)。
+    //    跟随线被删 → 影子失去 Att2 (上方引用清理已删) → 影子+Att1 清理
+    //    (无消费者的系统对象不留孤儿)。
+    // ⑦ 挂载宿主 (L3) 被删 → Att1 已随引用清理消失 → 影子弹回拆开态
+    //    (保持当前解算姿态 = 冻结当前方向, Att2 回 angleOnly)。
+    {
+        std::vector<QUuid> shadowsToRemove;
+        std::vector<QUuid> shadowsToRelease;
+        for (const auto& b : m_blocks) {
+            if (!b.isShadow) continue;
+            bool hasAtt2 = false, hasAtt1 = false;
+            for (const auto& a : m_attachments) {
+                if (a.isPin) continue;
+                if (a.toBlockId == b.id && a.fromComponentId.isNull())
+                    hasAtt2 = true;
+                if (a.fromBlockId == b.id) hasAtt1 = true;
+            }
+            if (b.shadowMasterBlockId == id || !hasAtt2)
+                shadowsToRemove.push_back(b.id);
+            else if (!hasAtt1)
+                shadowsToRelease.push_back(b.id);
+        }
+        for (const QUuid& sid : shadowsToRelease) {
+            for (auto& a : m_attachments) {
+                if (!a.isPin && a.toBlockId == sid) {
+                    a.angleOnly = true;
+                    a.isLocked = false;
+                    a.slideMode = SlideMode::None;
+                }
+            }
+        }
+        for (const QUuid& sid : shadowsToRemove) {
+            m_attachments.erase(
+                std::remove_if(m_attachments.begin(), m_attachments.end(),
+                    [&sid](const Attachment& a) {
+                        return !a.isPin
+                            && (a.toBlockId == sid || a.fromBlockId == sid);
+                    }),
+                m_attachments.end());
+        }
+        if (!shadowsToRelease.empty()) {
+            recountCrossLayerAttachments();
+            m_followersDirty = true;
+        }
+        for (const QUuid& sid : shadowsToRemove)
+            removeBlock(sid);  // 级联信号/索引/重解复用完整路径 (影子无嵌套)
+    }
+
     emit blockRemoved(id);
     // Bridges pinned to the removed block just lost a pin — they are released
     // as independent segments (父线段删除后桥接线独立, see Block::isBridge).
@@ -437,6 +487,12 @@ bool ParamDocument::pruneComponentsForBlock(const QUuid& blockId)
 // ═══════════════════════════════════════════════════════════════════════════════
 // Mirrors every cascade branch of removeBlock() — keep the two in sync when
 // the cleanup logic grows. Prediction only: no mutation.
+//
+// 影子块 (Block::isShadow, 拆开影子基准) 十项计数全不计入 (设计稿 §7.5 拍板:
+// 影子不可见/系统级): 影子非桥线/省道、无交点/测量/关联变量, 结构上天然不
+// 触发任何计数器; 本体或跟随线被删时影子的级联清理 (影子块 + Att1/Att2) 属
+// 系统级善后, 同样不占位 —— 删除挂载宿主 L3 时其 Att1 因直接引用 L3 照常
+// 计入 attachmentsRemoved (下方第 1 条既有规则覆盖)。
 // ═══════════════════════════════════════════════════════════════════════════════
 
 ParamDocument::DeleteImpact ParamDocument::deleteImpactReport(const QUuid& id) const
