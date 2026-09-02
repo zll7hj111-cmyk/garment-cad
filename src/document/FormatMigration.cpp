@@ -17,6 +17,7 @@ std::vector<MigrationStep>& registry()
         // ── append new links here; `from` is the version UPGRADED FROM ──
         {0, "layer-refs", &FormatMigration::migrateV0ToV1},
         {1, "shadow-anchor", &FormatMigration::migrateV1ToV2},
+        {2, "shadow-line", &FormatMigration::migrateV2ToV3},
     };
     return steps;
 }
@@ -203,6 +204,48 @@ QJsonObject FormatMigration::migrateV1ToV2(QJsonObject root, QStringList* warnin
         warnings->append(
             QStringLiteral("已清理旧版文件（v1 → v2）的影子偏移残留字段："
                            "丢弃 %1 处连接的 baselineOffsetDeg")
+                .arg(removed));
+    }
+    return root;
+}
+
+QJsonObject FormatMigration::migrateV2ToV3(QJsonObject root, QStringList* warnings)
+{
+    QJsonObject docObj = root["document"].toObject();
+
+    // ── 影子偏转残留键清理 (防回潮) ────────────────────────────────────────
+    // shadowAnchorRotDeg (v13 旧制) / noFollowRotate (v14 旧制) 已随功能删除
+    // (2026-09 用户拍板, d79e425)。v3 为块新增 isShadow/shadowMasterBlockId
+    // (Optional since v3, 读端缺键 = 安全默认值), 旧档本体零迁移负载 —— 本步
+    // 只丢弃已删除功能的残留键, 其余字节原样直通。
+    static const char* kDeadKeys[] = {
+        "shadowAnchorRotDeg",
+        "noFollowRotate",
+    };
+    QJsonArray atts = docObj["attachments"].toArray();
+    int removed = 0;
+    for (int i = 0; i < atts.size(); ++i) {
+        QJsonObject a = atts[i].toObject();
+        bool changed = false;
+        for (const char* key : kDeadKeys) {
+            if (a.contains(QLatin1String(key))) {
+                a.remove(QLatin1String(key));
+                changed = true;
+            }
+        }
+        if (changed) {
+            atts[i] = a;
+            ++removed;
+        }
+    }
+    if (removed > 0)
+        docObj["attachments"] = atts;
+    root["document"] = docObj;
+
+    if (warnings && removed > 0) {
+        warnings->append(
+            QStringLiteral("已清理旧版文件（v2 → v3）的影子偏转残留字段："
+                           "丢弃 %1 处连接的 shadowAnchorRotDeg/noFollowRotate")
                 .arg(removed));
     }
     return root;

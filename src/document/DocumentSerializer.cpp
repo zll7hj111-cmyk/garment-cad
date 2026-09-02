@@ -364,6 +364,8 @@ QJsonObject blockJson(const Block& b) {
         {"isClosed", b.isClosed},
         {"isBridge", b.isBridge},
         {"lengthAuto", b.lengthAuto},
+        {"isShadow", b.isShadow},  // 影子基准 (Optional since v3, DETACH_SHADOW_DESIGN.md §8.2)
+        {"shadowMasterBlockId", uuidStr(b.shadowMasterBlockId)},
         {"layer", uuidStr(b.layer)},
         {"endTargetBlockId", uuidStr(b.endTargetBlockId)},
         {"endTargetPointId", uuidStr(b.endTargetPointId)},
@@ -391,6 +393,8 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     b.isClosed = o["isClosed"].toBool();
     b.isBridge = o["isBridge"].toBool();  // Optional since v3 — defaults to false.
     b.lengthAuto = o["lengthAuto"].toBool();  // Optional since v12 — defaults to false.
+    b.isShadow = o["isShadow"].toBool();  // 影子基准 (Optional since v3 — defaults to false).
+    b.shadowMasterBlockId = uuidFrom(o["shadowMasterBlockId"].toString());
     // Layer reference: always a stable Layer::id string. Integer indices are
     // a v0 (pre-id) shape and are rewritten by FormatMigration::migrateV0ToV1
     // before this function ever runs — anything non-string here is corruption
@@ -900,6 +904,29 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
         if (bc.layer.isNull())
             if (auto* b = doc.blockById(bc.id))
                 b->layer = doc.layersView().firstWorkingLayerId();
+
+    // 影子基准校验 (拆开影子基准, DETACH_SHADOW_DESIGN.md §8.2): 影子必须
+    // 单线段且本体 (master) 存在, 否则降级为普通不可见块并逐条告警 (不拒绝
+    // 加载 —— 与图层引用降级同契约)。降级同时清掉影子标记, 防半残影子参与
+    // 级联/挂载路由。
+    for (const auto& bc : doc.blocks()) {
+        if (!bc.isShadow) continue;
+        QString problem;
+        if (bc.segments.size() != 1)
+            problem = QString::fromUtf8("不是单线段块");
+        else if (bc.shadowMasterBlockId.isNull()
+                 || !doc.blockById(bc.shadowMasterBlockId))
+            problem = QString::fromUtf8("本体线段不存在");
+        if (problem.isEmpty())
+            continue;
+        if (warnings)
+            warnings->append(QString::fromUtf8("影子线段 %1 %2，已降级为普通不可见块")
+                                 .arg(bc.name, problem));
+        if (auto* b = doc.blockById(bc.id)) {
+            b->isShadow = false;
+            b->shadowMasterBlockId = QUuid();
+        }
+    }
 
     // Free points
     for (const auto& v : docObj["freePoints"].toArray())

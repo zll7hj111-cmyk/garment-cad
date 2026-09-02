@@ -35,7 +35,7 @@
 namespace cad::doc {
 
 /// The version DocumentFile writes, and the newest one it can read.
-constexpr int kFormatVersion = 2;
+constexpr int kFormatVersion = 3;
 
 /// One link in the chain: rewrites a vN document in place into a vN+1 one.
 /// @p warnings collects human-readable degradation notes (same contract as
@@ -83,6 +83,13 @@ public:
     /// now only drops the dead legacy key from each attachment. The step name
     /// is kept stable — it is a registered link in the migration chain.
     static QJsonObject migrateV1ToV2(QJsonObject root, QStringList* warnings);
+
+    /// v2 → v3, "shadow-line": 拆开影子基准 (DETACH_SHADOW_DESIGN.md §8.2)。
+    /// Block 新增 isShadow/shadowMasterBlockId (Optional since v3, 读写端
+    /// 缺键 = 默认 false/null, 旧档零迁移负载)。本步纯直通, 只清理已删除的
+    /// 影子偏转功能残留键 (shadowAnchorRotDeg / noFollowRotate) —— 防旧档
+    /// 垃圾键在 v3 读取端"回潮" (读端天然忽略未知键, 清理只为文件卫生)。
+    static QJsonObject migrateV2ToV3(QJsonObject root, QStringList* warnings);
 };
 
 } // namespace cad::doc
