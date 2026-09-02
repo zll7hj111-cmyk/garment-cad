@@ -96,9 +96,13 @@ private slots:
     void resolveForDrag_incrementalMatchesFull();
     void resolveForDrag_ignoresDetachedAttachments();
 
-    // 拆开保留角度 (用户拍板 2026-08: 位置吸附解除, 角度跟随保留)
+    // 拆开影子基准 (DETACH_SHADOW_DESIGN.md, 2026-xx 用户拍板)
     void setAttachmentAngleOnly_keepsFollowAngle();
     void setAttachmentAngleOnly_docHelperAndLockedClosure();
+    void shadowDetach_mountChainFollowsHost();      // R3: L3 旋转链式带动 (R1/R2 前置)
+    void shadowDetach_formulaOffsetPreserved();     // R2: 公式偏移原样 + R1 去耦合
+    void shadowLifecycle_stateMachineTransitions(); // R5: ④⑤⑥⑦ 状态机 + undo
+    void shadowDetach_degradeAndClearShadow();      // 降级门 (多段块) + 清除影子
     // 解焊重连保持两点基准 (preserveAngleRefOnReattach 点交换: 点1=另一端,
     // 点2=目标点, 方向与拆开前 exitDirectionAtPoint 一致)
     void reattachPreservesAngleRefTwoPointBasis();
@@ -1373,11 +1377,12 @@ void TestCommands::layerCommands_activeLayerRestored()
 }
 
 // ---------------------------------------------------------------------------
-// 拆开保留角度 (用户拍板 2026-08): SetAttachmentAngleOnlyCommand releases the
-// POSITION constraint only — 角度跟随保留, 拆开后跟随线 B 的旋转仍由基准线
-// A 驱动 (B 的角度 = A 当前方向 + 拆开前的跟随角 α; A 旋转时 B 跟着转,
-// 平移 B 不动角度)。Undo restores the full connection (position re-snaps onto
-// the leader point)。
+// 拆开影子基准 (用户拍板 2026-xx, DETACH_SHADOW_DESIGN.md §3 R1/R2 —— 翻案
+// 旧「拆开保留角度 = 活引用」语义): SetAttachmentAngleOnlyCommand 现在复制
+// 隐藏影子块作为角度基准 —— 拆开后旋转本体 A 不再影响 B (R1 去耦合, 影子 =
+// 快照不是活引用); B 与原 A 的夹角偏移量 (90°) 原样保留, 基准 = 影子 (R2)。
+// Undo restores the full connection AND removes the shadow (影子随之删除);
+// Redo verbatim 重放 (影子 id 与首次一致)。
 // ---------------------------------------------------------------------------
 void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
 {
@@ -1400,13 +1405,24 @@ void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
     const double rotBefore = doc.findBlock(bId)->transform.rotation;
     QVERIFY(std::abs(rotBefore - M_PI / 2.0) < 1e-9);
 
-    // 拆开保留角度: convert to angle-only through the undo command.
+    // 拆开 (影子换代): convert to angle-only through the undo command.
     QUndoStack stack;
     stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, true));
     {
         const Attachment& a = doc.attachments().front();
         QVERIFY2(a.angleOnly, "拆开 = angleOnly");
         QVERIFY2(!a.isLocked, "位置自由 ↔ 拖动保护互斥");
+        // 影子换代 (R2): 基准指向影子块, offset 原样保留。
+        const Block* shadow = doc.blockById(a.toBlockId);
+        QVERIFY2(shadow && shadow->isShadow, "基准换代为影子块 (isShadow)");
+        QVERIFY2(shadow->shadowMasterBlockId == aId, "影子 master = 本体 A");
+        QVERIFY2(a.followerAngle == 90.0, "offset 原样保留 (R2)");
+        QVERIFY2(a.toSegmentId != aSeg, "toSegmentId 换代为影子段 (与本体无引用关系)");
+        // 冻结克隆: 影子世界几何 = 本体拆开瞬间姿态 (逐位一致)。
+        const Block* master = doc.findBlock(aId);
+        QVERIFY(std::abs(shadow->transform.rotation - master->transform.rotation) < 1e-9);
+        QVERIFY(std::abs(shadow->worldPos(a.toPointId).distanceTo(
+                   master->worldPos(att.toPointId))) < 1e-6);
     }
     // Conversion itself changes nothing geometrically.
     QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9);
@@ -1420,29 +1436,35 @@ void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
     QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9);
     QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint).length() > 100.0);
 
-    // Rotate the leader by +30°: B must follow (角度跟随保留 —— 拆开后 B 的
-    // 角度仍由活的基准线 A 驱动)。
+    // R1 去耦合 (2026-xx 翻案, 设计稿 §3): 旋转本体 A +30° → B 方向不变
+    // (影子 = 快照, 拆开态不再跟随本体旋转)。
     {
         auto* a = doc.blockById(aId);
         a->transform.rotation += 30.0 * M_PI / 180.0;
     }
     doc.resolveAll();
-    QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation
-                     - (rotBefore + 30.0 * M_PI / 180.0)) < 1e-9);
+    QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9);
 
-    // Undo: the FULL connection is restored — B re-snaps onto A's end.
+    // Undo: 完整连接恢复 + 影子删除 —— B 重新吸附到 A 的 (已旋转) 端点。
     stack.undo();
     {
         const Attachment& a = doc.attachments().front();
         QVERIFY(!a.angleOnly);
         QVERIFY(a.isLocked);   // undo 恢复原态 (新建默认焊接, 快照还原不得丢锁)
+        QVERIFY2(a.toBlockId == aId, "基准还原为本体 (活引用恢复)");
+        QVERIFY2(!doc.findShadowOfMaster(aId), "undo 删除影子块");
     }
     const Vec2 joint2 = doc.findBlock(aId)->worldPos(aEnd);
     QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint2).length() < 1e-6);
 
-    // Redo: angle-only again, position stays wherever it currently is.
+    // Redo: 影子换代 verbatim 重放 (影子 id 与首次一致)。
     stack.redo();
     QVERIFY(doc.attachments().front().angleOnly);
+    {
+        const Block* shadow2 = doc.blockById(doc.attachments().front().toBlockId);
+        QVERIFY(shadow2 && shadow2->isShadow);
+        QVERIFY2(shadow2->shadowMasterBlockId == aId, "redo 影子 id 复现");
+    }
 }
 
 
@@ -1640,16 +1662,333 @@ void TestCommands::setAttachmentAngleOnly_docHelperAndLockedClosure()
     QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 2);
 
     // 拆开: angleOnly + unlocked; closure no longer spans the pair.
+    // 影子换代 (DETACH_SHADOW_DESIGN.md §7.1, 2026-xx 翻案活引用): 拆开同时
+    // 创建影子基准块; 恢复完整连接 = 挂回本体 (⑤, 删影子 + 活引用)。
     doc.setAttachmentAngleOnly(attId, true);
     QVERIFY(doc.attachments().front().angleOnly);
     QVERIFY(!doc.attachments().front().isLocked);
     QVERIFY(doc.lockedClosure({bId}) == QSet<QUuid>{bId});
+    {
+        const auto* shadow = doc.blockById(doc.attachments().front().toBlockId);
+        QVERIFY(shadow && shadow->isShadow);
+        QVERIFY(shadow->shadowMasterBlockId == aId);
+    }
 
     // 恢复完整连接: re-welded (只要建立跟随就保护), angleOnly cleared.
     doc.setAttachmentAngleOnly(attId, false);
     QVERIFY(!doc.attachments().front().angleOnly);
     QVERIFY(doc.attachments().front().isLocked);
     QCOMPARE(static_cast<int>(doc.lockedClosure({bId}).size()), 2);
+    QVERIFY2(doc.attachments().front().toBlockId == aId, "挂回本体 (⑤)");
+    QVERIFY2(!doc.findShadowOfMaster(aId), "挂回本体删影子 (⑤)");
+}
+
+// ---------------------------------------------------------------------------
+// R3 链式随动 (DETACH_SHADOW_DESIGN.md §3/§4): 拆开 (影子换代) 后把影子挂到
+// 新宿主 C —— L3 旋转 → 影子随动 (标准附着) → Att2 传导 → B 跟着转 (位置 +
+// 角度链式), 接点 (C.end = 影子锚点 = B.start) 保持不动。挂载瞬间 Δ 反算
+// 保向: B 的世界方向零跳变。
+// ---------------------------------------------------------------------------
+void TestCommands::shadowDetach_mountChainFollowsHost()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);              // 本体 A
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80}); // 跟随 B
+    auto [cId, cStart, cEnd, cSeg] = makeLine(doc, 80.0, Vec2{300, -80}); // 新宿主 C
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+
+    // ② 拆开 (影子换代): 影子 master = A, Att2 指向影子。
+    const QUuid shadowId = doc.detachWithShadow(att.id);
+    QVERIFY2(!shadowId.isNull(), "拆开 = 影子换代 (非降级场景)");
+    QVERIFY(doc.blockById(shadowId)->isShadow);
+
+    // ③ 影子挂载到 C: Δ 反算保向 —— 挂载瞬间 B 世界方向不变 (零跳变)。
+    const double rotB0 = doc.findBlock(bId)->transform.rotation;
+    QVERIFY(doc.mountShadowTo(shadowId, cId, cEnd, cSeg));
+    QCOMPARE(doc.attachments().size(), size_t(2));
+    QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation - rotB0) < 1e-9,
+             "挂载瞬间影子/B 方向零跳变 (Δ 反算保向)");
+    QVERIFY2(!doc.findAttachment(att.id)->angleOnly
+             && doc.findAttachment(att.id)->isLocked,
+             "Att2 恢复位置钉点并重新焊接");
+    // 链式位置: B.start 钉在影子锚点 = C.end。
+    QVERIFY2(doc.findBlock(bId)->worldPos(bStart).distanceTo(
+                 doc.findBlock(cId)->worldPos(cEnd)) < 1e-6,
+             "B.start = 影子锚点 = C.end (链式枢轴)");
+
+    // R3: C 旋转 +30° → B 链式跟转 +30°, 接点不动。
+    const double rotB1 = doc.findBlock(bId)->transform.rotation;
+    doc.blockById(cId)->transform.rotation += 30.0 * M_PI / 180.0;
+    doc.resolveAll();
+    QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation
+                      - (rotB1 + 30.0 * M_PI / 180.0)) < 1e-9,
+             "L3 旋转 → 影子随动 → B 链式跟转 (R3)");
+    QVERIFY2(doc.findBlock(bId)->worldPos(bStart).distanceTo(
+                 doc.findBlock(cId)->worldPos(cEnd)) < 1e-6,
+             "挂载态旋转 = 绕接点转 (接点保持)");
+}
+
+// ---------------------------------------------------------------------------
+// R2 保关系 (含公式) + R1 去耦合: 拆开 (影子换代) 前后 offset 公式字符串
+// 原样保留; 旋转本体 A, 跟随线 B 方向不变 (影子 = 快照, 不是活引用)。
+// ---------------------------------------------------------------------------
+void TestCommands::shadowDetach_formulaOffsetPreserved()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80});
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 90.0;
+    att.followerAngleFormula = QStringLiteral("45+45");  // 公式驱动 offset (锁定)
+    QVERIFY(doc.addAttachment(att));
+    const double rotBefore = doc.findBlock(bId)->transform.rotation;
+
+    const QUuid shadowId = doc.detachWithShadow(att.id);
+    QVERIFY(!shadowId.isNull());
+    // R2: offset 公式原样保留 (不烘焙、不清除)。
+    const Attachment* att2 = doc.findAttachment(att.id);
+    QVERIFY2(att2->followerAngleFormula == QStringLiteral("45+45"),
+             "offset 公式原样保留 (R2)");
+    QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9,
+             "拆开换代零跳变");
+
+    // R1: 旋转本体 A +30° → B 方向不变; 影子也不动 (与本体无耦合)。
+    doc.blockById(aId)->transform.rotation += 30.0 * M_PI / 180.0;
+    doc.resolveAll();
+    QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9,
+             "本体旋转不影响跟随线 (R1)");
+    QVERIFY2(std::abs(doc.blockById(shadowId)->transform.rotation
+                      - doc.findBlock(aId)->transform.rotation + 30.0 * M_PI / 180.0)
+                 < 1e-9,
+             "影子保持拆开瞬间姿态 (快照)");
+    QVERIFY2(doc.findAttachment(att.id)->followerAngleFormula
+                 == QStringLiteral("45+45"),
+             "R1 旋转后公式仍原样");
+}
+
+// ---------------------------------------------------------------------------
+// R5 生命周期状态机 (DETACH_SHADOW_DESIGN.md §6): ②拆开 → ③挂 C → ④再拆开
+// (影子冻结当前方向, undo 可还原挂载) → ⑤挂回本体 (删影子 + 活引用) →
+// ⑥本体删除 (影子级联删除 + B 独立) → ⑦宿主删除 (影子弹回拆开态)。
+// ---------------------------------------------------------------------------
+void TestCommands::shadowLifecycle_stateMachineTransitions()
+{
+    // ── ②→③→④: 再拆开 = 结构复位, 影子冻结当前方向 (带过挂载期间转量)。──
+    {
+        ParamDocument doc;
+        auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80});
+        auto [cId, cStart, cEnd, cSeg] = makeLine(doc, 80.0, Vec2{300, -80});
+        for (const auto& b : doc.blocks())
+            if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+        Attachment att;
+        att.fromBlockId = bId; att.fromPointId = bStart;
+        att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+
+        const QUuid shadowId = doc.detachWithShadow(att.id);          // ②
+        QVERIFY(!shadowId.isNull());
+        QVERIFY(doc.mountShadowTo(shadowId, cId, cEnd, cSeg));        // ③
+        QCOMPARE(doc.attachments().size(), size_t(2));
+
+        // 宿主 C 旋转 +30° (挂载期间影子被带转) —— ④ 再拆开时影子冻结在
+        // 当前值 (不跳回拆开瞬间值)。
+        doc.blockById(cId)->transform.rotation += 30.0 * M_PI / 180.0;
+        doc.resolveAll();
+        const double shadowRotMounted =
+            doc.blockById(shadowId)->transform.rotation;
+
+        // ④ 再拆开 (经命令: ReDetach 模式, 一步 undo)。
+        QUndoStack stack;
+        stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, true));
+        QCOMPARE(doc.attachments().size(), size_t(1));
+        QVERIFY(doc.findAttachment(att.id)->angleOnly);
+        QVERIFY2(std::abs(doc.blockById(shadowId)->transform.rotation
+                          - shadowRotMounted) < 1e-9,
+                 "④ 影子冻结当前方向 (不跳变)");
+        QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation
+                          - (doc.blockById(shadowId)->transform.rotation
+                             + M_PI - 90.0 * M_PI / 180.0)) < 1e-9,
+                 "④ B 方向 = 影子基准 + offset (随影子冻结值, 无跳变)");
+
+        // ④ undo: 挂载态 verbatim 还原 (Att1 回填 + Att2 焊接)。
+        stack.undo();
+        QCOMPARE(doc.attachments().size(), size_t(2));
+        QVERIFY(!doc.findAttachment(att.id)->angleOnly);
+        QVERIFY2(std::abs(doc.blockById(shadowId)->transform.rotation
+                          - shadowRotMounted) < 1e-9,
+                 "④ undo 影子回到挂载姿态");
+        stack.redo();
+        QCOMPARE(doc.attachments().size(), size_t(1));
+
+        // ⑤ 挂回本体: 删影子 + Att2 还原到本体 (活引用恢复 + 重新焊接)。
+        QVERIFY(doc.reattachShadowToMaster(att.id));
+        QVERIFY2(!doc.findShadowOfMaster(aId), "⑤ 影子删除");
+        QVERIFY2(doc.findAttachment(att.id)->toBlockId == aId
+                 && !doc.findAttachment(att.id)->angleOnly
+                 && doc.findAttachment(att.id)->isLocked,
+                 "⑤ Att2 → 本体, 活引用恢复 + 焊接");
+        QCOMPARE(doc.attachments().size(), size_t(1));
+    }
+
+    // ── ⑥: 本体 (master) 被删 → 影子级联删除 + Att2 移除, B 转独立线。──
+    {
+        ParamDocument doc;
+        auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80});
+        for (const auto& b : doc.blocks())
+            if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+        Attachment att;
+        att.fromBlockId = bId; att.fromPointId = bStart;
+        att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+
+        const QUuid shadowId = doc.detachWithShadow(att.id);
+        QVERIFY(!shadowId.isNull());
+        const double rotB = doc.findBlock(bId)->transform.rotation;
+
+        doc.removeBlock(aId);   // ⑥
+        QVERIFY2(!doc.blockById(shadowId), "⑥ 影子随本体级联删除");
+        QVERIFY2(doc.attachments().empty(), "⑥ Att2 一并移除 (B 独立)");
+        QVERIFY2(doc.findBlock(bId) != nullptr, "⑥ 跟随线保留");
+        QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation - rotB) < 1e-9,
+                 "⑥ B 独立线方向冻结 (原地保留)");
+    }
+
+    // ── ⑦: 挂载宿主 (L3) 被删 → 影子弹回拆开态 (冻结当前方向)。──
+    {
+        ParamDocument doc;
+        auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80});
+        auto [cId, cStart, cEnd, cSeg] = makeLine(doc, 80.0, Vec2{300, -80});
+        for (const auto& b : doc.blocks())
+            if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+        Attachment att;
+        att.fromBlockId = bId; att.fromPointId = bStart;
+        att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+
+        const QUuid shadowId = doc.detachWithShadow(att.id);
+        QVERIFY(doc.mountShadowTo(shadowId, cId, cEnd, cSeg));
+        doc.blockById(cId)->transform.rotation += 20.0 * M_PI / 180.0;
+        doc.resolveAll();
+        const double shadowRot = doc.blockById(shadowId)->transform.rotation;
+
+        doc.removeBlock(cId);   // ⑦
+        QVERIFY2(doc.blockById(shadowId) != nullptr, "⑦ 影子弹回拆开态 (保留)");
+        QVERIFY2(std::abs(doc.blockById(shadowId)->transform.rotation
+                          - shadowRot) < 1e-9,
+                 "⑦ 影子冻结删除前最后姿态");
+        QCOMPARE(doc.attachments().size(), size_t(1));
+        QVERIFY2(doc.findAttachment(att.id)->angleOnly
+                 && !doc.findAttachment(att.id)->isLocked,
+                 "⑦ Att2 回 angleOnly (拆开态)");
+        QVERIFY2(!doc.findBlock(cId), "⑦ 宿主已删");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 降级门 (计划 L2-2.1): 多段块本体 → 不建影子, 拆开保持旧 angleOnly 行为
+// (活引用, 旋转基准线仍带动跟随线); 清除影子 (removeShadow) → Att2 移除,
+// 跟随线变纯自由线 (方向/位置冻结)。
+// ---------------------------------------------------------------------------
+void TestCommands::shadowDetach_degradeAndClearShadow()
+{
+    // ── 降级: 多段块本体 → Legacy 拆开 (无影子, 活引用)。──
+    {
+        ParamDocument doc;
+        // 多段块本体: p1→p2 (100mm) →p3 (50mm @90°)。
+        Block multi;
+        multi.transform.origin = Vec2{0, 0};
+        ParamPoint p1; p1.constraint = PointConstraint::Free; p1.freePos = Vec2::zero();
+        const QUuid p1id = p1.id;
+        ParamPoint p2; p2.constraint = PointConstraint::Polar;
+        p2.refPointId = p1id; p2.distance = 100.0; p2.angle = 0.0;
+        const QUuid p2id = p2.id;
+        ParamPoint p3; p3.constraint = PointConstraint::Polar;
+        p3.refPointId = p2id; p3.distance = 50.0; p3.angle = 90.0;
+        const QUuid p3id = p3.id;
+        multi.addPoint(p1); multi.addPoint(p2); multi.addPoint(p3);
+        Segment s1; s1.startPointId = p1id; s1.endPointId = p2id;
+        const QUuid s1id = s1.id;
+        Segment s2; s2.startPointId = p2id; s2.endPointId = p3id;
+        multi.addSegment(s1); multi.addSegment(s2);
+        const QUuid multiId = multi.id;
+        doc.addBlock(std::move(multi));
+
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80});
+        for (const auto& b : doc.blocks())
+            if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+        Attachment att;
+        att.fromBlockId = bId; att.fromPointId = bStart;
+        att.toBlockId = multiId; att.toPointId = p2id; att.toSegmentId = s1id;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+
+        // 门面降级: detachWithShadow 返回空且不改模型。
+        QVERIFY2(doc.detachWithShadow(att.id).isNull(),
+                 "多段块本体 = 降级 (无影子)");
+        QVERIFY2(!doc.findShadowOfMaster(multiId), "降级不产生影子");
+        // 命令路径降级: Legacy 模式 = 旧 angleOnly 行为 (活引用)。
+        QUndoStack stack;
+        stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, true));
+        QVERIFY(doc.findAttachment(att.id)->angleOnly);
+        QVERIFY2(doc.findAttachment(att.id)->toBlockId == multiId,
+                 "降级拆开: 基准保持本体 (活引用, 不换代)");
+        // 旧语义保底: 旋转基准线, 跟随线仍跟转 (与旧版逐位一致)。
+        const double rotB0 = doc.findBlock(bId)->transform.rotation;
+        doc.blockById(multiId)->transform.rotation += 30.0 * M_PI / 180.0;
+        doc.resolveAll();
+        QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation
+                          - (rotB0 + 30.0 * M_PI / 180.0)) < 1e-9,
+                 "降级场景保持旧活引用语义 (旋转基准线 B 跟转)");
+    }
+
+    // ── 清除影子 (removeShadow): Att2 移除, B 变纯自由线。──
+    {
+        ParamDocument doc;
+        auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+        auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80});
+        for (const auto& b : doc.blocks())
+            if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+        Attachment att;
+        att.fromBlockId = bId; att.fromPointId = bStart;
+        att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+        att.followerAngle = 90.0;
+        QVERIFY(doc.addAttachment(att));
+
+        const QUuid shadowId = doc.detachWithShadow(att.id);
+        QVERIFY(!shadowId.isNull());
+        const double rotB = doc.findBlock(bId)->transform.rotation;
+        const Vec2 originB = doc.findBlock(bId)->transform.origin;
+
+        QVERIFY(doc.removeShadow(shadowId));
+        QVERIFY2(doc.attachments().empty(), "清除影子: Att2 移除");
+        QVERIFY2(!doc.blockById(shadowId), "清除影子: 影子块删除");
+        QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation - rotB) < 1e-9
+                 && doc.findBlock(bId)->transform.origin.distanceTo(originB) < 1e-9,
+                 "清除影子: B 纯自由线 (姿态冻结)");
+        // 旋转本体不再有任何影响 (B 已无连接)。
+        doc.blockById(aId)->transform.rotation += 45.0 * M_PI / 180.0;
+        doc.resolveAll();
+        QVERIFY2(std::abs(doc.findBlock(bId)->transform.rotation - rotB) < 1e-9,
+                 "清除影子后 B 完全独立");
+    }
 }
 
 // ---------------------------------------------------------------------------

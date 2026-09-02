@@ -38,6 +38,7 @@ private slots:
     void blocksRoundTrip();
     void attachmentsRoundTrip();
     void bridgeRoundTrip();
+    void shadowRoundTripAndDowngrade();
     void serialCountersRoundTrip();
     void fullDocumentRoundTrip();
     void auxiliaryPointSnappable();
@@ -843,6 +844,111 @@ void TestSerializer::bridgeRoundTrip()
     QCOMPARE(pinCount, 2);
     QVERIFY(!dst.findBlock(hostAId)->isBridge);
     QVERIFY(!dst.findBlock(hostBId)->isBridge);
+}
+
+// 影子基准 round-trip (拆开影子基准, DETACH_SHADOW_DESIGN.md §8.2):
+// 影子块 (isShadow/shadowMasterBlockId) + Att1/Att2 全字段往返一致;
+// 非法影子 (缺 master / 多段) 加载 = 降级普通不可见块 + 告警, 不崩溃。
+void TestSerializer::shadowRoundTripAndDowngrade()
+{
+    ParamDocument src;
+
+    // 本体 A (leader)。
+    Block master;
+    ParamPoint ma;
+    ma.constraint = PointConstraint::Free;
+    ma.freePos = cad::geo::Vec2(0.0, 0.0);
+    QUuid maId = ma.id;
+    ParamPoint mb;
+    mb.constraint = PointConstraint::Polar;
+    mb.refPointId = maId;
+    mb.distance = 100.0;
+    QUuid mbId = mb.id;
+    master.addPoint(std::move(ma));
+    master.addPoint(std::move(mb));
+    Segment mseg;
+    mseg.startPointId = maId;
+    mseg.endPointId = mbId;
+    QUuid msegId = mseg.id;
+    master.addSegment(std::move(mseg));
+    QUuid masterId = master.id;
+    src.addBlock(std::move(master));
+
+    // 跟随线 B。
+    Block follower;
+    ParamPoint fb;
+    fb.constraint = PointConstraint::Free;
+    fb.freePos = cad::geo::Vec2(0.0, 0.0);
+    QUuid fbId = fb.id;
+    ParamPoint fe;
+    fe.constraint = PointConstraint::Polar;
+    fe.refPointId = fbId;
+    fe.distance = 50.0;
+    follower.addPoint(std::move(fb));
+    follower.addPoint(std::move(fe));
+    Segment fseg;
+    fseg.startPointId = fbId;
+    fseg.endPointId = fe.id;
+    follower.addSegment(std::move(fseg));
+    QUuid followerId = follower.id;
+    src.addBlock(std::move(follower));
+
+    Attachment att;
+    att.fromBlockId = followerId;
+    att.fromPointId = fbId;
+    att.toBlockId = masterId;
+    att.toPointId = mbId;
+    att.toSegmentId = msegId;
+    att.followerAngle = 90.0;
+    QVERIFY(src.addAttachment(att));
+
+    // 拆开 → 影子换代 (走门面, 产物 = 影子块 + Att2 换代)。
+    const QUuid shadowId = src.detachWithShadow(att.id);
+    QVERIFY(!shadowId.isNull());
+    QVERIFY(src.findBlock(shadowId)->isShadow);
+    QCOMPARE((int)src.attachments().size(), 1);
+
+    QJsonObject json = DocumentSerializer::serialize(src);
+    ParamDocument dst;
+    QStringList warnings;
+    DocumentSerializer::deserialize(dst, json, &warnings);
+
+    // 影子块 + 字段 verbatim 往返。
+    const Block* rs = dst.findBlock(shadowId);
+    QVERIFY(rs != nullptr);
+    QVERIFY2(rs->isShadow, "isShadow 往返一致");
+    QVERIFY2(rs->shadowMasterBlockId == masterId, "shadowMasterBlockId 往返一致");
+    QCOMPARE((int)rs->points.size(), 2);
+    QCOMPARE((int)rs->segments.size(), 1);
+    QCOMPARE((int)dst.attachments().size(), 1);
+    const Attachment& ra = dst.attachments().front();
+    QVERIFY2(ra.toBlockId == shadowId, "Att2 基准仍指向影子");
+    QVERIFY2(ra.angleOnly, "angleOnly 往返一致");
+    QVERIFY2(ra.followerAngle == 90.0, "offset 往返一致");
+    QVERIFY2(warnings.isEmpty(), "合法影子加载无告警");
+
+    // ── 非法影子: 缺 master → 降级普通不可见块 + 告警 ──
+    QJsonObject bad = json;
+    QJsonObject docObj = bad["document"].toObject();
+    // 把影子的 master 清空 (模拟旧档/损坏: master 引用丢失)。
+    QJsonArray blocks2 = docObj["blocks"].toArray();
+    for (int i = 0; i < blocks2.size(); ++i) {
+        QJsonObject b = blocks2[i].toObject();
+        if (QUuid(b["id"].toString()) == shadowId)
+            b["shadowMasterBlockId"] = QString();
+        blocks2[i] = b;
+    }
+    docObj["blocks"] = blocks2;
+    bad["document"] = docObj;
+
+    ParamDocument dst2;
+    QStringList warnings2;
+    DocumentSerializer::deserialize(dst2, bad, &warnings2);
+    QVERIFY2(!warnings2.isEmpty(), "缺 master 影子加载应产生告警");
+    if (const Block* degraded = dst2.findBlock(shadowId)) {
+        QVERIFY2(!degraded->isShadow, "非法影子降级为普通块 (不拒绝加载)");
+        QVERIFY2(degraded->shadowMasterBlockId.isNull(), "降级清空 master 引用");
+    }
 }
 
 void TestSerializer::serialCountersRoundTrip()

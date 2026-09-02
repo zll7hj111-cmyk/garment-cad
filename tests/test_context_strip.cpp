@@ -955,16 +955,27 @@ void TestContextStrip::connectionDimDetachButtons()
     QCOMPARE(angBtn->text(), QString::fromUtf8("拆开"));
 
     // 1) 连接拆开 (位置维度): angleOnly, 不碰角度维度。
+    //    影子基准 (DETACH_SHADOW_DESIGN.md §7.1, 2026-xx 翻案活引用语义):
+    //    拆开同时创建隐藏影子块作为角度基准 (master = 本体 leader)。
     posBtn->click();
     QVERIFY2(attFor() && attFor()->angleOnly, "连接拆开 = 位置维度拆开");
     QVERIFY2(!attFor()->angleIndependent, "位置维度拆开不碰角度维度");
+    {
+        const auto* shadow = doc.blockById(attFor()->toBlockId);
+        QVERIFY2(shadow && shadow->isShadow, "拆开 = 影子换代 (影子基准)");
+        QVERIFY2(shadow->shadowMasterBlockId == leader.blockId,
+                 "影子 master = 本体 leader");
+    }
     QCOMPARE(posBtn->text(), QString::fromUtf8("重连"));
     QCOMPARE(angBtn->text(), QString::fromUtf8("拆开"));  // 角度维度未动
 
-    // 2) 连接重连: 位置回宿主 + 重新焊接。
+    // 2) 连接重连: 位置回宿主 + 重新焊接 —— 影子基准下 = 挂回本体 (⑤):
+    //    删影子 + Att2 还原到本体 (活引用恢复)。
     posBtn->click();
     QVERIFY2(!attFor()->angleOnly, "连接重连 = 位置维度恢复");
     QVERIFY2(attFor()->isLocked, "重连重新焊接");
+    QVERIFY2(attFor()->toBlockId == leader.blockId, "重连 = 基准还原本体 (⑤)");
+    QVERIFY2(!doc.findShadowOfMaster(leader.blockId), "挂回本体应删除影子");
 
     // 3) 基准拆开 (角度维度): angleIndependent, 不碰位置维度。
     angBtn->click();

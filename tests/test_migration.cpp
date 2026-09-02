@@ -140,6 +140,10 @@ private slots:
     void migratedV0DeserializesLikeV1();
     void v1ArchiveStillRoundTrips();
     void v1ShadowOffsetKeyIsDropped();
+    // v2 → v3 (拆开影子基准, DETACH_SHADOW_DESIGN.md §8.2): 纯直通迁移 ——
+    // 旧档零迁移负载; 已删除影子偏转功能的残留键 (shadowAnchorRotDeg /
+    // noFollowRotate) 清理不回归; 链 1→2→3 无缺口。
+    void v2ShadowLegacyKeysDroppedAndChainComplete();
 };
 
 void TestMigration::v0InsertsAuxLayerAndShiftsIndices()
@@ -472,6 +476,105 @@ void TestMigration::v1ShadowOffsetKeyIsDropped()
     QVERIFY(!outAtt.contains(QStringLiteral("baselineOffsetDeg")));
     QVERIFY(!outAtt.contains(QStringLiteral("shadowAnchorRotDeg")));
     QCOMPARE(outAtt["followerAngle"].toDouble(), 180.0);   // 其余字段原样保留
+}
+
+void TestMigration::v2ShadowLegacyKeysDroppedAndChainComplete()
+{
+    // v2 → v3 "shadow-line": 拆开影子基准上格式 —— 块新增 isShadow /
+    // shadowMasterBlockId (Optional since v3, 旧档无该键 = 安全默认值, 零
+    // 迁移负载)。本步只清理已删除影子偏转功能的残留键, 其余字节直通。
+    QJsonObject root;
+    QJsonObject docObj;
+    docObj["pointSeq"] = 1;
+    docObj["lineSeq"]  = 1;
+
+    QJsonArray layers;
+    QJsonObject l0;
+    l0["id"] = uuidStr(QUuid::createUuid());
+    l0["name"] = QStringLiteral("辅助层");
+    l0["type"] = QStringLiteral("auxiliary");
+    layers.append(l0);
+    QJsonObject l1;
+    l1["id"] = uuidStr(QUuid::createUuid());
+    l1["name"] = QStringLiteral("工作层 1");
+    l1["type"] = QStringLiteral("working");
+    layers.append(l1);
+    docObj["layers"] = layers;
+    docObj["activeLayer"] = l1["id"];
+
+    const QString hostId = uuidStr(QUuid::createUuid());
+    const QString followerId = uuidStr(QUuid::createUuid());
+
+    QJsonArray blocks;
+    for (const auto& def : {QPair<QString, double>{hostId, 0.5},
+                            {followerId, 0.0}}) {
+        QJsonObject b;
+        b["id"] = def.first;
+        b["name"] = QStringLiteral("块");
+        b["layer"] = l1["id"];
+        b["rotation"] = def.second;
+        QJsonObject p1;
+        p1["id"] = uuidStr(QUuid::createUuid());
+        p1["constraint"] = QStringLiteral("Free");
+        QJsonObject pos; pos["x"] = 0.0; pos["y"] = 0.0;
+        p1["freePos"] = pos;
+        QJsonObject p2;
+        p2["id"] = uuidStr(QUuid::createUuid());
+        p2["constraint"] = QStringLiteral("Polar");
+        p2["refPointId"] = p1["id"];
+        p2["distance"] = 50.0;
+        p2["angle"] = 0.0;
+        QJsonArray pts; pts.append(p1); pts.append(p2);
+        b["points"] = pts;
+        QJsonObject seg;
+        seg["id"] = uuidStr(QUuid::createUuid());
+        seg["startPointId"] = p1["id"];
+        seg["endPointId"] = p2["id"];
+        seg["type"] = QStringLiteral("Line");
+        QJsonArray segs; segs.append(seg);
+        b["segments"] = segs;
+        blocks.append(b);
+    }
+    docObj["blocks"] = blocks;
+
+    QJsonObject att;
+    att["id"] = uuidStr(QUuid::createUuid());
+    att["fromBlockId"] = followerId;
+    att["fromPointId"] = blocks[1].toObject()["points"].toArray()[0].toObject()["id"];
+    att["toBlockId"] = hostId;
+    att["toPointId"] = blocks[0].toObject()["points"].toArray()[1].toObject()["id"];
+    att["followerAngle"] = 180.0;
+    att["shadowAnchorRotDeg"] = 15.0;   // 影子偏转残留 (功能已删除, d79e425)
+    att["noFollowRotate"] = true;       // 不跟随旋转残留 (功能已删除)
+    QJsonArray atts; atts.append(att);
+    docObj["attachments"] = atts;
+
+    root["document"] = docObj;
+    root["variables"] = QJsonObject();
+
+    // 链完整性: {2, shadow-line} 已注册, 1→2→3 无缺口 (缺环节拒绝加载是
+    // 既有契约 —— missingStepIsRejectedRatherThanGuessed 覆盖缺口侧)。
+    bool hasShadowLineStep = false;
+    for (const auto& s : cad::doc::FormatMigration::steps())
+        if (s.from == 2 && QLatin1String(s.name) == QLatin1String("shadow-line"))
+            hasShadowLineStep = true;
+    QVERIFY2(hasShadowLineStep, "注册表应含 {2, shadow-line} 步骤");
+    QCOMPARE(cad::doc::kFormatVersion, 3);
+
+    QStringList warnings;
+    QString error;
+    QVERIFY(cad::doc::FormatMigration::migrate(2, root, &warnings, &error));
+    QVERIFY(error.isEmpty());
+    QVERIFY(!warnings.isEmpty());   // 残留键清理有提示
+
+    const QJsonObject outDoc = root["document"].toObject();
+    const QJsonObject outAtt = outDoc["attachments"].toArray()[0].toObject();
+    QVERIFY(!outAtt.contains(QStringLiteral("shadowAnchorRotDeg")));
+    QVERIFY(!outAtt.contains(QStringLiteral("noFollowRotate")));
+    QCOMPARE(outAtt["followerAngle"].toDouble(), 180.0);   // 其余字段原样保留
+    // 直通: 块字段 (无 isShadow 键的旧档) 原样透传, 不添不减。
+    QCOMPARE(outDoc["blocks"].toArray().size(), 2);
+    QVERIFY(!outDoc["blocks"].toArray()[0].toObject().contains(QStringLiteral("isShadow")));
 }
 
 QTEST_GUILESS_MAIN(TestMigration)

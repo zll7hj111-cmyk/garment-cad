@@ -6,6 +6,8 @@
 #include <QComboBox>
 #include <QStandardItemModel>
 
+#include <cmath>
+
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasView.h"
 #include "canvas/BlockItem.h"
@@ -1254,25 +1256,37 @@ void TestSelectWKey::quickDetachKeyD()
     QTest::qWait(20);
 
     // 3) 连接已转为仅角度: 位置自由 + 自动解锁 (位置自由 ↔ 拖动保护互斥)。
+    //    影子基准 (DETACH_SHADOW_DESIGN.md §3/§7.1, 2026-xx 翻案活引用语义):
+    //    基准换代为隐藏影子块 (master = 本体 A), offset 原样保留 (R2)。
     QCOMPARE(doc.attachments().size(), size_t(1));
     const auto& after = doc.attachments().front();
     QVERIFY2(after.angleOnly, "D 键应把连接转为仅角度 (拆开保留角度)");
     QVERIFY2(!after.isLocked, "拆开自动清除拖动保护");
+    {
+        const auto* shadow = doc.blockById(after.toBlockId);
+        QVERIFY2(shadow && shadow->isShadow, "基准应为影子块 (拆开影子基准)");
+        QVERIFY2(shadow->shadowMasterBlockId == a.blockId, "影子 master = 本体 A");
+        QVERIFY2(after.followerAngle == 90.0, "offset 原样保留 (R2)");
+        QVERIFY2(doc.findBlock(a.blockId) != shadow, "影子与本体无引用关系 (克隆=值拷贝)");
+    }
 
     // 4) undo: 恢复完整连接 (焊接态原样还原 — SetAttachmentAngleOnlyCommand
-    //    快照 isLocked=true, undo 回放)。
+    //    快照 isLocked=true, undo 回放); 影子随 undo 一并删除 (基准还原本体)。
     stack.undo();
     QCOMPARE(doc.attachments().size(), size_t(1));
     const auto& undone = doc.attachments().front();
     QVERIFY2(!undone.angleOnly, "undo 应恢复完整连接");
     QVERIFY2(undone.isLocked,
              "undo 应恢复原来的焊接态 (默认焊, 快照还原不得丢锁)");
+    QVERIFY2(undone.toBlockId == a.blockId, "基准还原为本体 (活引用恢复)");
+    QVERIFY2(!doc.findShadowOfMaster(a.blockId), "undo 应删除影子块");
 }
 
-// 回归 (用户报告): 线段使用了引用线段 (角度跟随基准线) 但没有连接线段
-// (仅角度 angleOnly = 位置自由) 时, 拖动端点必须能重新建立位置连接 —
-// 吸附反应 + 原附件重挂到新目标 (旧角度基准保留为独立角度基准 = 双基准,
-// 恢复完整连接并重新焊接)。
+// 影子挂载路由 (DETACH_SHADOW_DESIGN.md §7.4, 2026-xx 翻案「双基准」语义):
+// 线段处于拆开影子基准态 (angleOnly, 基准 = 影子块) 时, 拖动端点重新建立
+// 位置连接 → 挂到非本体 = 影子挂载新宿主 (Att1 = 影子→宿主, Δ 反算保向;
+// Att2 恢复位置钉点重新焊接) —— 形成 宿主→影子→本线 双连接链 (R3 链式随动)。
+// 仅连接语义不变 (followerAngle/公式原样、不进角度会话); undo 整步回拆开态。
 void TestSelectWKey::angleOnlyEndpointDragReconnects()
 {
     ParamDocument doc;
@@ -1349,17 +1363,24 @@ void TestSelectWKey::angleOnlyEndpointDragReconnects()
     sendMouse(QEvent::MouseMove, to, Qt::NoButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoModifier);
 
-    // 3) 原附件重挂: 同一 id, 恢复完整位置连接 (angleOnly=false)、重新焊接、
-    //    位置吸到 C.end、旧 A 保留为独立角度基准 (双基准)。
-    QCOMPARE(doc.attachments().size(), size_t(1));
+    // 3) 影子挂载路由 (DETACH_SHADOW_DESIGN.md §7.4, 2026-xx 翻案双基准):
+    //    拖端点释放到 C = 影子挂载 (Att1 = 影子→C, Δ 反算保向) + Att2 恢复
+    //    位置钉点重新焊接 —— 形成 C→影子→B 双连接链 (R3 链式随动)。
+    //    followerAngle 原样保留 (仅连接, 不反算覆盖)。
+    QCOMPARE(doc.attachments().size(), size_t(2));
     const cad::param::Attachment* after = doc.findAttachment(att.id);
     QVERIFY(after);
-    QVERIFY2(!after->angleOnly, "释放到目标后应恢复完整位置连接");
+    QVERIFY2(!after->angleOnly, "释放到目标后应恢复完整位置连接 (Att2)");
     QVERIFY2(after->isLocked, "重挂恢复完整连接应重新焊接 (拖动保护默认勾选)");
-    QVERIFY2(after->toBlockId == c.blockId, "位置应重挂到新宿主线段");
-    QVERIFY2(after->toPointId == c.endId, "位置应重挂到新宿主端点");
-    QVERIFY2(after->angleRefBlockId == a.blockId,
-             "旧角度基准应保留为独立角度基准 (双基准)");
+    const auto* shadowBlk = doc.blockById(after->toBlockId);
+    QVERIFY2(shadowBlk && shadowBlk->isShadow, "Att2 基准仍为影子块 (换代不回退)");
+    const cad::param::Attachment* att1 = nullptr;
+    for (const auto& a2 : doc.attachments()) {
+        if (!a2.isPin && a2.fromBlockId == after->toBlockId) { att1 = &a2; break; }
+    }
+    QVERIFY2(att1, "影子挂载应生成 Att1 (影子→新宿主)");
+    QVERIFY2(att1->toBlockId == c.blockId, "影子应挂到新宿主线段");
+    QVERIFY2(att1->toPointId == c.endId, "影子锚点应钉在新宿主端点");
     QVERIFY2(after->followerAngle == 90.0,
              "仅连接: followerAngle 应原样保留, 不得反算覆盖 (旧实现 bug)");
     const cad::param::Block* bb2 = doc.findBlock(b.blockId);
@@ -1367,25 +1388,42 @@ void TestSelectWKey::angleOnlyEndpointDragReconnects()
     QVERIFY(bb2 && cc);
     QVERIFY(bb2->worldPos(b.startId).distanceTo(cc->worldPos(c.endId)) < 1e-6);
 
+    // 3b) R3 链式随动: 宿主 C 旋转 +30° → B 跟随旋转 +30° (位置+角度链式)。
+    {
+        const double rotB0 = bb2->transform.rotation;
+        doc.blockById(c.blockId)->transform.rotation += 30.0 * M_PI / 180.0;
+        doc.resolveAll();
+        QVERIFY2(std::abs(doc.findBlock(b.blockId)->transform.rotation
+                          - (rotB0 + 30.0 * M_PI / 180.0)) < 1e-9,
+                 "L3 旋转 → 影子随动 → B 链式跟转 (R3)");
+    }
+
     // 4) 仅连接: 直接完成连接回 Idle (不进入角度输入会话)。
     auto* ts = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
     QVERIFY(ts);
     QCOMPARE(ts->state(), cad::tools::SelectState::Idle);
-    QCOMPARE(doc.attachments().size(), size_t(1));
+    QCOMPARE(doc.attachments().size(), size_t(2));
 
-    // 5) undo: 回到快拆前的仅角度态 (位置/角度原样) — 重挂整步可撤销。
-    //    (连接手势的 undo 栈 = ParamDocument 的内部栈, 与卡片一致.)
+    // 5) undo: 回到快拆后的仅角度态 (Att1 删除, 影子保留冻结当前方向,
+    //    位置/角度原样) — 影子挂载整步可撤销。
     doc.undoStack()->undo();
     const cad::param::Attachment* undone2 = doc.findAttachment(att.id);
     QVERIFY(undone2);
     QVERIFY2(undone2->angleOnly, "undo 应回到仅角度态");
+    QVERIFY2(doc.findAttachment(att.id)->toBlockId == shadowBlk->id,
+             "undo 后 Att2 仍指向影子");
+    bool att1Gone = true;
+    for (const auto& a2 : doc.attachments())
+        if (!a2.isPin && a2.fromBlockId == shadowBlk->id) att1Gone = false;
+    QVERIFY2(att1Gone, "undo 应删除 Att1 (挂载关系)");
 }
 
 // ── 有对齐点方向 + 变量时接入新线段不覆盖变量 (2026-xx 用户报告) ─────────
-// 线段处于仅角度 (angleOnly) 且使用了自定义对齐点方向 (angleRefBlockId 非空)
-// 与变量 (followerAngleFormula, 如 LL=90) 时, 拖端点接入新线段:
-//   · 方向基准 = 对齐点, 不是新宿主 → 原对齐点方向与变量原样保留, 不反算
-//     覆盖、不清变量 (旧实现把变量烘成数值)。
+// 线段处于拆开影子基准态 (angleOnly) 且使用了自定义对齐点方向
+// (angleRefBlockId 非空) 与变量 (followerAngleFormula, 如 LL=90) 时, 拖端点
+// 接入新线段 (影子挂载路由, §7.4):
+//   · 影子挂载只动位置维度 (Att1 + Att2 焊接) —— 自定义对齐点方向与变量
+//     原样保留, 不反算覆盖、不清变量 (旧实现把变量烘成数值)。
 //   · 不进入角度输入会话 (回车 = 确定连接而非确定角度), 直接完成连接。
 //   · undo 单步回到拖前仅角度态。
 void TestSelectWKey::angleRefWithFormulaReattachKeepsFormula()
@@ -1477,19 +1515,27 @@ void TestSelectWKey::angleRefWithFormulaReattachKeepsFormula()
     sendMouse(QEvent::MouseMove, to, Qt::NoButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoModifier);
 
-    // 3) 原附件重挂: 恢复完整位置连接 (angleOnly=false)、位置吸到 C.end。
-    QCOMPARE(doc.attachments().size(), size_t(1));
+    // 3) 影子挂载路由 (§7.4): 释放到 C = 影子挂载 (Att1 = 影子→C) + Att2
+    //    恢复位置钉点 —— 自定义基准/变量都挂在 Att2 上, 原样保留。
+    QCOMPARE(doc.attachments().size(), size_t(2));
     const cad::param::Attachment* after = doc.findAttachment(att.id);
     QVERIFY(after);
     QVERIFY2(!after->angleOnly, "释放到目标后应恢复完整位置连接");
-    QVERIFY2(after->toBlockId == c.blockId, "位置应重挂到新宿主线段");
-    QVERIFY2(after->toPointId == c.endId, "位置应重挂到新宿主端点");
+    const auto* shadowBlk = doc.blockById(after->toBlockId);
+    QVERIFY2(shadowBlk && shadowBlk->isShadow, "Att2 基准仍为影子块");
 
-    // 4) 有对齐点方向: 方向基准 = 对齐点 (A), 变量 LL 原样保留, 不烘成数值。
+    // 4) 有对齐点方向: 方向基准 = 对齐点 (A), 变量 LL 原样保留, 不烘成数值
+    //    (影子挂载不动 Att2 的角度域 —— 自定义基准原样保留, R6 同源纪律)。
     QVERIFY2(after->angleRefBlockId == a.blockId,
              "用户自定义对齐点方向应原样保留");
     QVERIFY2(after->followerAngleFormula == QStringLiteral("LL"),
              "变量 LL 应原样保留, 不得被烘成数值 (旧实现 bug)");
+    const cad::param::Attachment* att1 = nullptr;
+    for (const auto& a2 : doc.attachments()) {
+        if (!a2.isPin && a2.fromBlockId == after->toBlockId) { att1 = &a2; break; }
+    }
+    QVERIFY2(att1 && att1->toBlockId == c.blockId,
+             "影子应挂到新宿主 C (Att1)");
 
     // 5) 有对齐点方向: 不进入角度输入会话, 直接完成连接回 Idle。
     auto* ts = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
@@ -1900,7 +1946,10 @@ void TestSelectWKey::connectionCardNewSemantics()
     QVERIFY2(!btnAngleBase->isChecked(), "初始非独立 (角度跟随基准)");
     QVERIFY2(btnAngleBase->isCheckable(), "[独立] 必须是 checkable 勾选钮");
 
-    // 1) 连接点「拆开」(位置维度): 仅角度 —— 位置自由、角度仍跟随、记忆保留。
+    // 1) 连接点「拆开」(位置维度): 仅角度 —— 位置自由、角度仍跟随。
+    //    影子换代 (DETACH_SHADOW_DESIGN.md §7.1, 2026-xx 翻案「位置记忆保留
+    //    在附件 toBlockId」): 拆开后基准 = 影子块 (master = 原宿主) —— 重连
+    //    回宿主的记忆由影子 master 链接承载 (⑤ 复原锚点 = 角色 1:1 映射)。
     QPushButton* btnDetach = findBtn(card, QString::fromUtf8("拆开"));
     QVERIFY(btnDetach);
     QVERIFY(btnDetach->isEnabled());
@@ -1910,8 +1959,12 @@ void TestSelectWKey::connectionCardNewSemantics()
         QVERIFY2(a.angleOnly, "连接点拆开 = 位置维度拆开 (仅角度)");
         QVERIFY2(!a.isLocked, "拆开自动解除焊接");
         QVERIFY2(!a.angleIndependent, "位置维度拆开不碰角度维度");
-        QCOMPARE(a.toBlockId, leader.blockId);   // 位置记忆保留 (重连回宿主)
-        QCOMPARE(a.toPointId, leader.endId);
+        const auto* shadow = doc.blockById(a.toBlockId);
+        QVERIFY2(shadow && shadow->isShadow, "拆开 = 影子换代 (基准 → 影子)");
+        QVERIFY2(shadow->shadowMasterBlockId == leader.blockId,
+                 "重连回宿主的记忆 = 影子 master (原宿主)");
+        QVERIFY2(a.toPointId != leader.endId, "锚点 = 影子克隆点 (与本体无引用)");
+        QCOMPARE(a.followerAngle, 180.0);   // offset 原样保留 (R2)
     }
     card.refresh();
     // 起点行按钮 (connDetachBtn) 翻面为「重连」; 终点行恒有禁用「拆开」,

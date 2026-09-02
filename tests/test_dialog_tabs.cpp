@@ -1012,24 +1012,35 @@ void TestDialogTabs::detachClearsConnectEditAndRetargetReconnects()
     QCOMPARE(detachBtn->text(), QString::fromUtf8("重连"));
     QVERIFY2(doc.attachments().front().angleOnly, "拆开 = 位置维度拆开 (仅角度)");
 
-    // ③ 拆开后输入目标 P# 回车 = 重连: 位置恢复吸附 + 重新焊接 + 框回显新目标。
+    // ③ 拆开后输入目标 P# 回车 = 重定向 (影子挂载路由, DETACH_SHADOW_DESIGN.md
+    //    §7.4, 2026-xx 翻案「直接重挂到新目标」): 影子挂到新宿主 (Att1 反算
+    //    保向) + Att2 恢复位置吸附并重新焊接 —— 位置确实吸附回新宿主点。
     const auto* hb = doc.findBlock(hostB.blockId);
     const auto* bp = hb->findPoint(hostB.startId);
     connEdit->setText(bp->serial);
     QTest::keyClick(connEdit, Qt::Key_Return);
     QVERIFY2(cad::test::waitUntil([&] {
+                 if (doc.attachments().size() != 2) return false;
                  const auto& a = doc.attachments().front();
-                 return !a.angleOnly && a.toBlockId == hostB.blockId
-                        && a.toPointId == hostB.startId;
+                 if (a.angleOnly || !a.isLocked) return false;
+                 const auto* sh = doc.blockById(a.toBlockId);
+                 if (!sh || !sh->isShadow) return false;
+                 for (const auto& a1 : doc.attachments())
+                     if (!a1.isPin && a1.fromBlockId == sh->id
+                         && a1.toBlockId == hostB.blockId
+                         && a1.toPointId == hostB.startId)
+                         return true;
+                 return false;
              }),
-             "拆开后输入 P# 应恢复位置连接并重定向到新目标");
+             "拆开后输入 P# = 影子挂载到新宿主 (Att1→hostB.start) + Att2 焊接");
     {
         const auto& a = doc.attachments().front();
         QVERIFY2(!a.angleOnly, "重定向必须恢复位置维度 (angleOnly=false)");
         QVERIFY2(a.isLocked, "重定向必须重新焊接");
-        QCOMPARE(a.toBlockId, hostB.blockId);
-        QCOMPARE(a.toPointId, hostB.startId);
-        // 位置确实吸附回新宿主点 (Resolver 生效)。
+        const auto* shadow = doc.blockById(a.toBlockId);
+        QVERIFY2(shadow && shadow->isShadow, "Att2 基准 = 影子块");
+        QCOMPARE(a.followerAngle, 180.0);   // offset 原样保留 (R2)
+        // 位置确实吸附回新宿主点 (Resolver 链式生效: L3→影子→本线)。
         const Vec2 hostWorld = hb->transform.toWorld(
             hb->findPoint(hostB.startId)->resolvedPos);
         const auto* fb = doc.findBlock(line.blockId);
@@ -1065,17 +1076,18 @@ void TestDialogTabs::reattachPreservesAngleRef()
     const auto hostC = makeLine(doc, 70.0, Vec2(300.0, 120.0));  // 二次重定向目标宿主
     doc.resolveAll();
 
-    const auto* leaderBlk = doc.findBlock(doc.blocks().at(0).id);
-    const auto& leaderSeg = leaderBlk->segments.front();
-    const QUuid leaderEnd = leaderSeg.endPointId;
-    const QUuid leaderStart = leaderSeg.startPointId;
+    // master id 提前复制值 (leader 块裸指针会随后续 addBlock 扩容悬垂 —
+    // 一次一取, 禁止跨变更持有; 2026-xx 影子换代 addBlock 触发的回归)。
+    const QUuid leaderId = doc.blocks().at(0).id;
+    const QUuid leaderEnd = doc.blockById(leaderId)->segments.front().endPointId;
+    const QUuid leaderStart = doc.blockById(leaderId)->segments.front().startPointId;
 
     cad::param::Attachment att;
     att.fromBlockId = line.blockId;
     att.fromPointId = line.startId;
-    att.toBlockId   = leaderBlk->id;
+    att.toBlockId   = leaderId;
     att.toPointId   = leaderEnd;
-    att.toSegmentId = leaderSeg.id;
+    att.toSegmentId = doc.blockById(leaderId)->segments.front().id;
     att.followerAngle = 180.0;
     QVERIFY(doc.addAttachment(att));
     doc.resolveAll();
@@ -1102,8 +1114,16 @@ void TestDialogTabs::reattachPreservesAngleRef()
         QStringLiteral("startDetachBtn"));
     QVERIFY2(connEdit && detachBtn, "起点「连接到」框与拆开按钮必须存在");
 
+    // 影子挂载判定 (DETACH_SHADOW_DESIGN.md §7.4, 2026-xx 翻案「两点基准
+    // 固化」语义): 拆开 = 影子换代 (基准 = 隐藏影子块); 重定向到非本体 =
+    // 影子挂载 (Att1 = 影子→宿主, Δ 反算保向) + Att2 恢复位置钉点。
+    auto findAtt1Of = [&](const QUuid& shadowId) -> const cad::param::Attachment* {
+        for (const auto& a : doc.attachments())
+            if (!a.isPin && a.fromBlockId == shadowId) return &a;
+        return nullptr;
+    };
     auto retargetTo = [&](const LineSetup& host) {
-        detachBtn->click();   // 拆开 (angleOnly)
+        detachBtn->click();   // 拆开 (影子换代)
         QVERIFY2(cad::test::waitUntil([&] { return connEdit->text().isEmpty(); }),
                  "拆开后「连接到」框应清空");
         const auto* hb = doc.findBlock(host.blockId);
@@ -1111,38 +1131,47 @@ void TestDialogTabs::reattachPreservesAngleRef()
         connEdit->setText(hp->serial);
         QTest::keyClick(connEdit, Qt::Key_Return);
         QVERIFY2(cad::test::waitUntil([&] {
+                     if (doc.attachments().size() != 2) return false;
                      const auto& a = doc.attachments().front();
-                     return !a.angleOnly && a.toBlockId == host.blockId;
+                     if (a.angleOnly || !a.isLocked) return false;
+                     const auto* sh = doc.blockById(a.toBlockId);
+                     if (!sh || !sh->isShadow) return false;
+                     const auto* a1 = findAtt1Of(sh->id);
+                     return a1 && a1->toBlockId == host.blockId;
                  }),
-                 "重连应恢复位置连接并重定向到新宿主");
+                 "重定向 = 影子挂载到新宿主 (Att1) + Att2 恢复位置焊接");
     };
 
-    // ① 自动态拆开重连到 hostB: 旧所连线段被固化为两点基准 (点1 = 旧线段
-    //    另一端、点2 = 旧目标点), 方向基准不随新宿主漂移。
+    // ① 拆开重定向到 hostB: 基准 = 影子块 (master = leader), offset (180°)
+    //    原样保留 (R2) —— 影子替代旧两点基准固化。
     retargetTo(hostB);
     {
         const auto& a = doc.attachments().front();
-        QVERIFY2(a.angleRefBlockId == leaderBlk->id,
-                 "拆开重连: 点1 基准块 = 旧所连线段 (不被新宿主覆盖)");
-        QVERIFY2(a.angleRefPointId == leaderStart,
-                 "拆开重连: 点1 = 旧线段另一端 (方向与拆开前一致)");
-        QVERIFY2(a.angleRef2BlockId == leaderBlk->id
-                     && a.angleRef2PointId == leaderEnd,
-                 "拆开重连: 点2 = 旧目标点 (两点基准完整)");
-        QVERIFY2(a.toBlockId == hostB.blockId,
-                 "拆开重连: 位置重挂到新宿主");
+        const auto* sh = doc.blockById(a.toBlockId);
+        QVERIFY2(sh && sh->isShadow, "拆开重定向: Att2 基准 = 影子块");
+        QVERIFY2(sh->shadowMasterBlockId == leaderId,
+                 "影子 master = 原基准线 leader (旧基准的载体化, R2)");
+        QVERIFY2(a.followerAngle == 180.0, "offset 原样保留 (R2)");
+        QVERIFY2(a.angleRefBlockId.isNull(),
+                 "影子替代两点基准固化: angleRef 保持自动态 (翻案 2026-xx)");
+        const auto* a1 = findAtt1Of(sh->id);
+        QVERIFY2(a1 && a1->toBlockId == hostB.blockId,
+                 "影子挂载到 hostB (Att1)");
+        QVERIFY2(a1->isLocked, "新建挂载连接默认焊接 (与 addAttachment 同约定)");
     }
 
-    // ② 二次拆开重连到 hostC: 已自定义的基准原样保留 (仍指向 leader)。
+    // ② 二次拆开重定向到 hostC: 影子换宿主 (原子替换旧 Att1, Δ 重新反算),
+    //    Att2 的 offset 与影子块保持不变 (基准不漂移 —— 影子是稳定中间实体)。
     retargetTo(hostC);
     {
         const auto& a = doc.attachments().front();
-        QVERIFY2(a.angleRefBlockId == leaderBlk->id,
-                 "二次拆开重连: 自定义基准原样保留");
-        QVERIFY2(a.angleRefPointId == leaderStart,
-                 "二次拆开重连: 点1 不变");
-        QVERIFY2(a.toBlockId == hostC.blockId,
-                 "二次拆开重连: 位置重挂到新宿主 hostC");
+        const auto* sh = doc.blockById(a.toBlockId);
+        QVERIFY2(sh && sh->isShadow, "二次重定向: Att2 基准 = 同一影子块");
+        QVERIFY2(a.followerAngle == 180.0, "二次重定向: offset 原样保留");
+        const auto* a1 = findAtt1Of(sh->id);
+        QVERIFY2(a1 && a1->toBlockId == hostC.blockId,
+                 "影子换宿主到 hostC (旧 Att1 原子替换)");
+        QVERIFY2(doc.attachments().size() == 2, "换宿主不残留旧 Att1");
     }
 
     delete dlg;
