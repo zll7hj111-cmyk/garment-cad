@@ -613,8 +613,6 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
     // 基准 (点1 = 旧目标点, 点2 = 旧线段另一端) —— 此前只固化点1, 点2 留空,
     // 两点连线方向退化为单点出口方向。已自定义的基准原样保留。
     cad::param::preserveAngleRefOnReattach(m_paramDoc, *mut);
-    // 重连重钉影子锚点 (2026-09 锚点推导): 保持用户可见偏转不变。
-    cad::param::repinShadowAnchorOnReattach(m_paramDoc, *mut, toBlockId);
     mut->angleOnly = false;
     mut->slideMode = cad::param::SlideMode::None;
     mut->isLocked = true;   // 仅角度重挂 = 恢复完整连接并重新焊接
@@ -622,24 +620,13 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
     mut->toPointId = toPointId;
     mut->toSegmentId = segId;
 
-    // 按保留的角度基准方向反算 followerAngle (与 Resolver 的 refWorld
-    // 同构, 2026-09 审核 F2): 旧角度基准 = 唯一角度引用线段或新宿主;
-    // 两点基准 (angleRef2) 与影子偏转一并生效 ——
-    // 此前只实现点1出口/线段 start→end 两分支, 已填点2 的线重挂后按
-    // 点1出口反算、随后被 Resolver 按两点连线驱动 → 方向差跳变。
-    double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, *mut);
-    if (mut->angleRefBlockId.isNull()) {
-        // 无自定义基准: 反算基准 = 新宿主出方向 (与 Resolver 回退一致)。
-        refWorld = toBlk->transform.rotation
-            + toBlk->exitDirectionAtPoint(toPointId, segId);
-    }
-    const double localDir = fromBlk->directionAtPoint(m_connectFromPoint);
-    mut->followerAngle = cad::param::backSolveFollowerAngle(
-        fromBlk->transform.rotation, localDir, refWorld);
-    mut->followerAngleFormula.clear();
-    mut->rotationMode = cad::param::RotationMode::Angle;
-    mut->arcLength = 0.0;
-    mut->arcLengthFormula.clear();
+    // 仅角度重挂 = 仅连接 (用户拍板 2026-12): 位置挂到新端点, 角度基准与
+    // followerAngle/followerAngleFormula 原样保留 (旧基准 L2 + 变量 GG 继续
+    // 驱动角度), 不反算覆盖、不清公式、不进入角度输入会话 (回车 = 确定连接
+    // 而非确定角度)。旧实现曾在此反算 followerAngle 并 clear 公式, 导致:
+    // ①变量 GG 被强制换算成数值 90° 并消失; ②基准不一致 ——
+    // preserveAngleRefOnReattach 已把角度基准固化为旧宿主 L2, 反算却用新宿主
+    // L3 的 refWorld → L1 方向翻转。
     m_paramDoc->resolveAll();
 
     // 有 undo 栈: 记录旧态供 finalizeConnection 单步撤销 (含 HUD 角度调整).
@@ -657,9 +644,9 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
         if (const QString toast = cad::ui::crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
             !toast.isEmpty())
             m_showToast(toast);
-        beginAngleSession(attId, m_initialAngle);
     }
-    setState(SelectState::AngleInput);
+    // 仅连接: 直接收尾 (finalizeConnection 走 undo 宏, 单步撤销)。
+    finalizeConnection();
     return true;
 }
 
@@ -788,20 +775,6 @@ bool ConnectGesture::switchComponentTarget(const ConfirmCandidate& cand)
     if (!m_paramDoc->addAttachment(att)) {
         m_paramDoc->addAttachment(old);
         return false;
-    }
-    // 重钉影子锚点 (2026-09 锚点推导): addAttachment 已把锚点钉到新宿主
-    // 当前旋转。影子此前激活 (显式角度基准在旧宿主外) 时按旧偏转回补
-    // (旧偏转 = 旧宿主旋转 − 旧锚点); 此前不激活则保持新钉锚 (可见偏转 0)。
-    if (auto* added = m_paramDoc->findAttachment(att.id)) {
-        const cad::param::Block* oldHost = m_paramDoc->findBlock(old.toBlockId);
-        const cad::param::Block* newHost = m_paramDoc->findBlock(cand.blockId);
-        const bool wasActive = !old.angleRefBlockId.isNull()
-            && old.angleRefBlockId != old.toBlockId;
-        if (oldHost && newHost && wasActive) {
-            const double visibleDeg =
-                oldHost->transform.rotation - old.shadowAnchorRotDeg;
-            added->shadowAnchorRotDeg = newHost->transform.rotation - visibleDeg;
-        }
     }
     m_editingAttachmentId = att.id;
     m_initialAngle = angleDeg;
