@@ -6,6 +6,7 @@
 #include <QWidget>
 
 class ElaText;
+class QLineEdit;
 
 namespace cad::param {
 class ParamDocument;
@@ -64,6 +65,13 @@ private:
     /// [链接当前线] 按钮 (2026-09 用户拍板): 清空自定义角度基准回自动态 ——
     /// 方向基准 = 当前所连线段出口方向 (方向行灰显回显当前线段两点)。
     void onLinkCurrentLineClicked();
+    /// 影子角度行 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.3): 回车提交 ——
+    /// 拆开态写影子 rotation (+ 跟随线绕 p3 原地转 R8, ShadowRotateCommand),
+    /// 挂载态写 Att1 followerAngle Δ (SetFollowerAngleCommand); 恒可编辑
+    /// (不受 offset 公式锁影响, R6)。
+    void onShadowAngleEdited();
+    /// [清除影子] (R5/§7.3): 删除影子 + Att2 → 跟随线变纯自由线。
+    void onClearShadowClicked();
 
     [[nodiscard]] const cad::param::Attachment* findFollowerAttachment() const;
     void refreshAngleRefRow(const cad::param::Attachment* att);
@@ -80,6 +88,12 @@ private:
     PointRefEdit* m_angleRefPoint2 = nullptr; ///< 点2.
     QPushButton* m_btnIndependent = nullptr;  ///< [独立] checkable.
     QPushButton* m_btnLinkCurrent = nullptr;  ///< [链接当前线] (2026-09 用户拍板).
+
+    // 影子角度行 (拆开影子基准): 影子角度【QLineEdit】 [清除影子] —— 仅当
+    // 连接基准是影子块时显示; 挂载态与拆开态写目标不同 (Δ vs rotation)。
+    ElaText*     m_lblShadowAngle = nullptr;  ///< "影子角度" 标签.
+    QLineEdit* m_shadowAngleEdit = nullptr;   ///< 带符号折角输入 (objectName shadowAngleEdit).
+    QPushButton* m_btnClearShadow = nullptr;  ///< [清除影子] (objectName clearShadowBtn).
 };
 
 } // namespace cad::ui

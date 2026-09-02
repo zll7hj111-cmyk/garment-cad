@@ -536,10 +536,11 @@ void LayerPanel::refresh()
 
     m_countLabel->setText(QStringLiteral("%1").arg(layers.size()));
 
-    // Detect whether any blocks exist at all (for the empty hint).
+    // Detect whether any blocks exist at all (for the empty hint). 影子块
+    // (拆开影子基准, R4) 不进任何用户交互面: 不触发空提示、不占列表行。
     bool anyBlocks = false;
     for (const auto& b : m_doc->blocks())
-        if (!b.segments.empty()) { anyBlocks = true; break; }
+        if (!b.segments.empty() && !b.isShadow) { anyBlocks = true; break; }
     m_emptyHint->setVisible(!anyBlocks);
 
     for (int i = 0; i < static_cast<int>(layers.size()); ++i) {
@@ -548,6 +549,7 @@ void LayerPanel::refresh()
         // Gather member segments.
         std::vector<LayerCard::SegmentInfo> segs;
         for (const auto& b : m_doc->blocks()) {
+            if (b.isShadow) continue;  // 影子不进图层面板 (R4)
             if (b.layer != layer.id || b.segments.empty())
                 continue;
             const auto& s = b.segments.front();

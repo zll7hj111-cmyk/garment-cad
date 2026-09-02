@@ -1160,7 +1160,43 @@ void LinePropertyDialog::refreshEndpointConnRows()
             if (att.isPin) continue;
             if (att.fromBlockId == m_blockId && att.fromPointId == pointId) {
                 if (const auto* ldr = m_paramDoc->findBlock(att.toBlockId)) {
-                    if (const auto* ls = ldr->findSegment(att.toSegmentId)) {
+                    if (ldr->isShadow) {
+                        // 影子基准复合读数 (拆开影子基准 §7.3): 不暴露影子
+                        // id —— 挂载态 = 跟随 宿主（经影子）; 拆开态 =
+                        // 角度基准 本体（影子）。
+                        const auto* master =
+                            m_paramDoc->findBlock(ldr->shadowMasterBlockId);
+                        const cad::param::Attachment* att1 = nullptr;
+                        for (const auto& a : m_paramDoc->attachments()) {
+                            if (!a.isPin && a.fromBlockId == ldr->id) {
+                                att1 = &a; break;
+                            }
+                        }
+                        auto hostLabel = [&](const cad::param::Block* hb,
+                                             const QUuid& segId) {
+                            if (!hb) return QString();
+                            const auto* hs = hb->findSegment(segId);
+                            if (!hs) return QString();
+                            QString t = cad::param::Serial::tag(hs->serial);
+                            if (!hs->name.isEmpty())
+                                t += QStringLiteral("·") + hs->name;
+                            return t;
+                        };
+                        if (att1) {
+                            const QString t = hostLabel(
+                                m_paramDoc->findBlock(att1->toBlockId),
+                                att1->toSegmentId);
+                            if (!t.isEmpty())
+                                parts << QString::fromUtf8("跟随 ") + t
+                                         + QString::fromUtf8("（经影子）");
+                        } else if (master && !master->segments.empty()) {
+                            const QString t = hostLabel(
+                                master, master->segments.front().id);
+                            if (!t.isEmpty())
+                                parts << QString::fromUtf8("角度基准 ") + t
+                                         + QString::fromUtf8("（影子）");
+                        }
+                    } else if (const auto* ls = ldr->findSegment(att.toSegmentId)) {
                         QString t = cad::param::Serial::tag(ls->serial);
                         if (!ls->name.isEmpty())
                             t += QStringLiteral("·") + ls->name;
@@ -1222,7 +1258,23 @@ void LinePropertyDialog::refreshEndpointConnRows()
         // 会误导 —— 用户 2026-09 报告「拆开后框里还有原内容」); 重连恢复
         // 完整连接后才回显目标点。
         if (att && m_topIsStart && !att->angleOnly) {
-            m_refStartConnect->setPoint(att->toBlockId, att->toPointId);
+            // 影子基准 (拆开影子基准 §7.3): 回显影子挂载的宿主点 (经影子),
+            // 不回显不可交互的影子点; 拆开态影子无宿主 → 清空。
+            const auto* toBlk = m_paramDoc->findBlock(att->toBlockId);
+            if (toBlk && toBlk->isShadow) {
+                const cad::param::Attachment* att1 = nullptr;
+                for (const auto& a : m_paramDoc->attachments()) {
+                    if (!a.isPin && a.fromBlockId == toBlk->id) {
+                        att1 = &a; break;
+                    }
+                }
+                if (att1)
+                    m_refStartConnect->setPoint(att1->toBlockId, att1->toPointId);
+                else
+                    m_refStartConnect->clearPoint();
+            } else {
+                m_refStartConnect->setPoint(att->toBlockId, att->toPointId);
+            }
             m_btnStartDetach->setEnabled(true);
             m_btnStartDetach->setText(QString::fromUtf8("拆开"));
         } else if (att && m_topIsStart) {
@@ -1618,6 +1670,20 @@ void LinePropertyDialog::onStartConnectResolved(const QUuid& blockId,
         if (!mut) return;
         const auto* leader = m_paramDoc->findBlock(blockId);
         if (!leader || !leader->findPoint(pointId)) { refreshEndpointConnRows(); return; }
+        // 影子基准拓扑 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4): 输入
+        // 目标点 = 用户意图重定向 —— 挂回本体 (⑤, 目标 = master, 删影子 +
+        // 活引用恢复) 或影子挂载 (③, 目标 = 其他线, Att1 反算保向 + Att2
+        // 重新焊接)。校验与 resolveAll 由门面内部把关; offset 原样保留。
+        bool shadowRouted = false;
+        if (const auto* curTo = m_paramDoc->findBlock(mut->toBlockId);
+            curTo && curTo->isShadow) {
+            if (blockId == curTo->shadowMasterBlockId)
+                m_paramDoc->reattachShadowToMaster(mut->id, pointId);
+            else
+                m_paramDoc->mountShadowTo(curTo->id, blockId, pointId);
+            shadowRouted = true;
+        }
+        if (!shadowRouted) {
         // 拆开 (angleOnly) 后输入目标点 = 用户意图重连: 恢复位置吸附并重新
         // 焊接 (与「重连」按钮同语义, 2026-09 用户报告「拆开后输入点 id 只
         // 有线段特效、位置不跟随」—— 原实现只改目标, angleOnly 保持, 位置
@@ -1648,6 +1714,7 @@ void LinePropertyDialog::onStartConnectResolved(const QUuid& blockId,
         mut->arcLength = 0.0;
         mut->arcLengthFormula.clear();
         m_paramDoc->resolveAll();
+        }
     } else {
         // 自由线 → 建立连接。
         const auto* leader = m_paramDoc->findBlock(blockId);

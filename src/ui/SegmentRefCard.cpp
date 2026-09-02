@@ -7,6 +7,7 @@
 #include <QVBoxLayout>
 #include <QSignalBlocker>
 #include <QPushButton>
+#include <QLineEdit>
 #include <QTimer>
 
 #include "ElaText.h"
@@ -17,10 +18,13 @@
 #include "parametric/Attachment.h"
 #include "parametric/AttachmentGraph.h"
 #include "parametric/Serial.h"
+#include "geometry/Angle.h"
+#include "geometry/Units.h"
 #include "canvas/CanvasScene.h"
 #include "ui/PointRefEdit.h"
 #include "ui/Theme.h"
 #include "document/commands/AttachmentCommands.h"
+#include "document/commands/BlockCommands.h"
 
 namespace cad::ui {
 
@@ -121,6 +125,43 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     row->addWidget(m_btnLinkCurrent);
     lay->addLayout(row);
 
+    // ── 影子角度行 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.3) ────────────
+    // 仅当连接基准是影子块时显示: 影子角度【折角输入】[清除影子]。
+    // 恒可编辑 (R6: 不受 offset 公式锁影响 —— 写影子而非 offset);
+    // 写目标 = 拆开态影子 rotation (+ 跟随线绕 p3 原地转 R8) / 挂载态 Att1 Δ。
+    auto* shadowRow = new QHBoxLayout();
+    shadowRow->setContentsMargins(0, 0, 0, 0);
+    shadowRow->setSpacing(6);
+    m_lblShadowAngle = new ElaText(QString::fromUtf8("影子角度"), 11, this);
+    m_lblShadowAngle->setFixedWidth(40);
+    m_lblShadowAngle->setStyleSheet(QStringLiteral("background: transparent;"));
+    m_lblShadowAngle->setToolTip(QString::fromUtf8(
+        "影子角度：角度基准（影子线）相对宿主的方向角。拆开后旋转本体不再"
+        "影响本线；改此值 = 转动影子基准（本线跟着转），公式偏移不受影响。"));
+    shadowRow->addWidget(m_lblShadowAngle);
+    m_shadowAngleEdit = new QLineEdit(this);
+    m_shadowAngleEdit->setObjectName(QStringLiteral("shadowAngleEdit"));
+    m_shadowAngleEdit->setFixedWidth(kRefEditW);
+    m_shadowAngleEdit->setPlaceholderText(QStringLiteral("±180°"));
+    m_shadowAngleEdit->setToolTip(QString::fromUtf8(
+        "影子角度：角度基准（影子线）的方向角，带符号折角。回车提交 —— "
+        "本线方向随之变化，offset 公式/变量保持原样。"));
+    shadowRow->addWidget(m_shadowAngleEdit);
+    shadowRow->addStretch();
+    m_btnClearShadow = new QPushButton(QString::fromUtf8("清除影子"), this);
+    m_btnClearShadow->setObjectName(QStringLiteral("clearShadowBtn"));
+    m_btnClearShadow->setFixedHeight(kFieldH);
+    m_btnClearShadow->setStyleSheet(cad::ui::chipButtonStyle());
+    m_btnClearShadow->setCursor(Qt::PointingHandCursor);
+    m_btnClearShadow->setToolTip(QString::fromUtf8(
+        "清除影子：删除隐藏的角度基准线，本线变为纯自由线（连接一并移除，"
+        "Ctrl+Z 可整体撤销）。"));
+    shadowRow->addWidget(m_btnClearShadow);
+    lay->addLayout(shadowRow);
+    m_lblShadowAngle->setVisible(false);
+    m_shadowAngleEdit->setVisible(false);
+    m_btnClearShadow->setVisible(false);
+
     connect(m_alignPointEdit, &PointRefEdit::pointResolved,
             this, &SegmentRefCard::onAlignPointResolved);
     connect(m_angleRefPoint, &PointRefEdit::pointResolved,
@@ -131,6 +172,10 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
             this, &SegmentRefCard::onIndependentToggled);
     connect(m_btnLinkCurrent, &QPushButton::clicked,
             this, &SegmentRefCard::onLinkCurrentLineClicked);
+    connect(m_shadowAngleEdit, &QLineEdit::returnPressed,
+            this, &SegmentRefCard::onShadowAngleEdited);
+    connect(m_btnClearShadow, &QPushButton::clicked,
+            this, &SegmentRefCard::onClearShadowClicked);
 }
 
 void SegmentRefCard::setTarget(const QUuid& blockId, const QUuid& segmentId)
@@ -180,7 +225,12 @@ void SegmentRefCard::refresh()
     // 2026-09 设计修正: 自动态回填的点1/点2 (autoEcho) 不算用户意图 ——
     // 必须跳过, 否则每次 refresh 都把自动回显值当预填提交 (自动态被误固化
     // 为自定义)。
-    if (att && att->angleRefBlockId.isNull() && !att->angleIndependent) {
+    // 影子基准 (拆开影子基准) 跳过: 基准 = 影子 (angleRef 恒空), 自动落库
+    // 会把影子点固化为自定义基准, 破坏"影子可挂载"语义 (R2/R3)。
+    const auto* toBlkChk = att ? m_doc->findBlock(att->toBlockId) : nullptr;
+    const bool shadowBasis = toBlkChk && toBlkChk->isShadow;
+    if (att && att->angleRefBlockId.isNull() && !att->angleIndependent
+        && !shadowBasis) {
         const bool has1 = m_angleRefPoint->resolvedBlockId().isNull() ? false
             : !m_angleRefPoint->resolvedPointId().isNull()
               && !m_angleRefPoint->isAutoEcho();
@@ -217,6 +267,53 @@ void SegmentRefCard::refresh()
     }
 
     refreshAngleRefRow(att);
+
+    // ── 影子角度行 (拆开影子基准, §7.3): 基准 = 影子块时显示 + 回显 ────────
+    bool showShadowRow = false;
+    double shadowAngle = 0.0;
+    bool shadowMounted = false;
+    if (att && !dirHidden) {
+        if (const auto* toBlk = m_doc->findBlock(att->toBlockId);
+            toBlk && toBlk->isShadow) {
+            showShadowRow = true;
+            const cad::param::Attachment* att1 = nullptr;
+            for (const auto& a : m_doc->attachments()) {
+                if (!a.isPin && a.fromBlockId == toBlk->id) { att1 = &a; break; }
+            }
+            if (att1) {
+                // 挂载态: 显示 = Att1 Δ (影子相对宿主的折角)。
+                shadowMounted = true;
+                shadowAngle = cad::geo::normalizeDeg180(att1->followerAngle);
+            } else {
+                // 拆开态: 显示 = 影子基准方向的世界角 (带符号折角域)。
+                if (const auto* sh = m_doc->findBlock(toBlk->id)) {
+                    const double world = sh->transform.rotation
+                        + sh->exitDirectionAtPoint(att->toPointId, att->toSegmentId);
+                    shadowAngle = cad::geo::normalizeDeg180(cad::geo::radToDeg(world));
+                }
+            }
+        }
+    }
+    if (m_lblShadowAngle) m_lblShadowAngle->setVisible(showShadowRow);
+    if (m_btnClearShadow) m_btnClearShadow->setVisible(showShadowRow);
+    if (m_shadowAngleEdit) {
+        m_shadowAngleEdit->setVisible(showShadowRow);
+        if (showShadowRow) {
+            const QSignalBlocker se(m_shadowAngleEdit);
+            m_shadowAngleEdit->setText(
+                cad::geo::Units::formatDegValue(shadowAngle));
+            m_shadowAngleEdit->setToolTip(shadowMounted
+                ? QString::fromUtf8("影子角度 = 影子相对宿主线的折角 (挂载态)。"
+                                    "回车提交, 本线方向随之变化; offset 公式不受影响。")
+                : QString::fromUtf8("影子角度 = 隐藏基准线 (本体拆开瞬间快照) 的方向角。"
+                                    "回车提交, 本线绕对齐点原地转; offset 公式不受影响。"));
+        }
+    }
+    if (m_btnClearShadow) {
+        m_btnClearShadow->setToolTip(shadowMounted
+            ? QString::fromUtf8("清除影子：删除隐藏基准线与其挂载连接，本线变纯自由线。")
+            : QString::fromUtf8("清除影子：删除隐藏基准线，本线变纯自由线 (角度/位置全自由)。"));
+    }
 }
 
 void SegmentRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
@@ -305,6 +402,27 @@ void SegmentRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
     }
 
     if (att->angleRefBlockId.isNull()) {
+        // 影子基准 (拆开影子基准): 基准线不可交互 —— 灰显回显**本体**的对应
+        // 两点 (角色 1:1 映射), 不暴露影子 id (设计稿 §7.3 复合读数纪律)。
+        const auto* toBlk = m_doc->findBlock(att->toBlockId);
+        if (toBlk && toBlk->isShadow) {
+            const auto* master = m_doc->findBlock(toBlk->shadowMasterBlockId);
+            const auto* sseg = toBlk->findSegment(att->toSegmentId);
+            if (master && sseg && master->segments.size() == 1) {
+                const auto& mseg = master->segments.front();
+                const bool anchorWasStart = (att->toPointId == sseg->startPointId);
+                m_angleRefPoint->setPoint(master->id, anchorWasStart
+                    ? mseg.startPointId : mseg.endPointId);
+                m_angleRefPoint->setAutoEcho(true);
+                m_angleRefPoint2->setPoint(master->id, anchorWasStart
+                    ? mseg.endPointId : mseg.startPointId);
+                m_angleRefPoint2->setAutoEcho(true);
+            } else {
+                m_angleRefPoint->clearPoint();
+                m_angleRefPoint2->clearPoint();
+            }
+            return;
+        }
         // 自动态 (默认): 灰显回显 目标点 P2 与 宿主线段另一端 P1 —— 方向 =
         // 宿主在吸附点处的出口方向 ("P3 对齐 P2, 以 P2→P1 为基准", 2026-09
         // 设计修正: 此前点2 恒空, 用户看不到基准方向的另一端)。
@@ -526,6 +644,89 @@ void SegmentRefCard::onLinkCurrentLineClicked()
             m_doc, att->id, QUuid(), QUuid()));
     else
         m_doc->setAttachmentAngleRef(att->id, QUuid(), QUuid());
+    refresh();
+    emit changed();
+}
+
+// ─── 影子角度行 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.3; R6/R8) ────────
+// 回车提交: 显示值直接作为写目标的当前域值 ——
+//   · 拆开态: 写影子 rotation 使影子基准方向 = 输入值, 并同步回写跟随线
+//     transform 使其绕 p3 (对齐点) 原地转 (R8) —— ShadowRotateCommand 单步
+//     undo (影子 + 跟随线双 verbatim)。
+//   · 挂载态: 写 Att1 followerAngle Δ —— SetFollowerAngleCommand 单步 undo。
+// 恒可编辑 (R6): 写影子/Δ 而非 offset —— followerAngleFormula 原样存活。
+void SegmentRefCard::onShadowAngleEdited()
+{
+    if (!m_doc) return;
+    const auto* att = findFollowerAttachment();
+    const auto* toBlk = att ? m_doc->findBlock(att->toBlockId) : nullptr;
+    if (!att || !toBlk || !toBlk->isShadow) { refresh(); return; }
+
+    bool ok = false;
+    const double inputDeg = m_shadowAngleEdit->text().remove(QChar(0x00B0))
+                                .trimmed().toDouble(&ok);
+    if (!ok) { refresh(); return; }   // 非数字: 刷回当前值。
+
+    const cad::param::Attachment* att1 = nullptr;
+    for (const auto& a : m_doc->attachments()) {
+        if (!a.isPin && a.fromBlockId == toBlk->id) { att1 = &a; break; }
+    }
+
+    auto* mutBlk = m_doc->findBlock(att->fromBlockId);
+    if (!mutBlk) { refresh(); return; }
+
+    if (att1) {
+        // 挂载态: Δ 直接置值 (Resolver 把影子钉回宿主点, Att2 链式带动)。
+        if (auto* stack = m_doc->undoStack())
+            stack->push(new cad::cmd::SetFollowerAngleCommand(
+                m_doc, att1->id, cad::geo::normalizeDeg180(inputDeg)));
+        else if (auto* mut = m_doc->findAttachment(att1->id)) {
+            mut->followerAngle = cad::geo::normalizeDeg180(inputDeg);
+            m_doc->resolveAll();
+        }
+    } else {
+        // 拆开态: 转影子 (δ = 输入 − 当前世界角) + 跟随线绕 p3 原地转。
+        auto* sh = m_doc->findBlock(toBlk->id);
+        if (!sh) { refresh(); return; }
+        const auto* anchor = mutBlk->findPoint(att->fromPointId);
+        if (!anchor || !anchor->resolved) { refresh(); return; }
+        const double curWorld = sh->transform.rotation
+            + sh->exitDirectionAtPoint(att->toPointId, att->toSegmentId);
+        const double deltaRad = cad::geo::degToRad(
+            cad::geo::normalizeDeg180(inputDeg - cad::geo::radToDeg(curWorld)));
+        const cad::param::Transform2D shOld = sh->transform;
+        cad::param::Transform2D shNew = shOld;
+        shNew.rotation += deltaRad;
+        const cad::param::Transform2D flOld = mutBlk->transform;
+        cad::param::Transform2D flNew = flOld;
+        flNew.rotation += deltaRad;
+        const geo::Vec2 p3World = mutBlk->worldPos(att->fromPointId);
+        flNew.origin = p3World - anchor->resolvedPos.rotated(flNew.rotation);
+        if (auto* stack = m_doc->undoStack()) {
+            stack->push(new cad::cmd::ShadowRotateCommand(
+                m_doc, toBlk->id, shOld, shNew,
+                mutBlk->id, flOld, flNew));
+        } else {
+            sh->transform = shNew;
+            mutBlk->transform = flNew;
+            m_doc->resolveAll();
+        }
+    }
+    refresh();
+    emit changed();
+}
+
+// ─── [清除影子] (R5/§7.3): 删影子 + Att2 → 跟随线纯自由线; 单步 undo。 ──────
+void SegmentRefCard::onClearShadowClicked()
+{
+    if (!m_doc) return;
+    const auto* att = findFollowerAttachment();
+    const auto* toBlk = att ? m_doc->findBlock(att->toBlockId) : nullptr;
+    if (!att || !toBlk || !toBlk->isShadow) { refresh(); return; }
+    if (auto* stack = m_doc->undoStack())
+        stack->push(new cad::cmd::RemoveShadowCommand(m_doc, toBlk->id));
+    else
+        m_doc->removeShadow(toBlk->id);
     refresh();
     emit changed();
 }

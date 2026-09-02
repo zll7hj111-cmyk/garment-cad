@@ -642,6 +642,13 @@ void ContextStrip::refreshChrome()
     // 状态徽标: 一眼看出这条线受谁驱动 (2026-xx 两维独立: 双拆开 = 自由)。
     // 2026-12: 跟随连接追加当前模式 (· 角度 / · 弧长) —— Ela 选中态不可见,
     // 模式只能靠徽标文字区分 (用户报告「状态栏看不出处于什么模式」)。
+    // 拆开影子基准 (§7.3): 基准 = 影子块时徽标加「影子基准」标记 (与两维
+    // 独立四态共存不冲突 —— 影子只是基准载体, 位置/角度维度语义不变)。
+    const auto* shadowBlk = (att && m_paramDoc)
+        ? m_paramDoc->findBlock(att->toBlockId) : nullptr;
+    const bool shadowBasis = shadowBlk && shadowBlk->isShadow;
+    const QString shadowMark = shadowBasis
+        ? QString::fromUtf8(" · 影子基准") : QString();
     const QString modeWord = (att && !att->angleIndependent
                               && att->rotationMode == cad::param::RotationMode::ArcLength)
         ? QString::fromUtf8(" · 弧长") : QString::fromUtf8(" · 角度");
@@ -651,30 +658,59 @@ void ContextStrip::refreshChrome()
         m_badge->setText(QString::fromUtf8("曲线"));
     } else if (att && att->angleIndependent && att->angleOnly) {
         // 位置与角度都拆开 = 自由线 (attachment 仍存, 但两个维度都不驱动)。
-        m_badge->setText(QString::fromUtf8("自由"));
+        m_badge->setText(QString::fromUtf8("自由") + shadowMark);
     } else if (att && att->angleIndependent) {
         // 独立角度: 位置仍跟随宿主, 但角度自管 —— 徽标说明这是"独立角"状态。
         const auto* leader = m_paramDoc->findBlock(att->toBlockId);
         const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
-        m_badge->setText(leaderSeg
+        m_badge->setText((leaderSeg
             ? QString::fromUtf8("独立角 · 位置跟随 %1").arg(cad::param::Serial::tag(leaderSeg->serial))
-            : QString::fromUtf8("独立角"));
+            : QString::fromUtf8("独立角")) + shadowMark);
     } else if (att && att->angleOnly) {
         // 仅角度 (拆开): 位置自由, 角度仍跟随基准线。
-        const auto* leader = m_paramDoc->findBlock(att->toBlockId);
-        const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
-        m_badge->setText(leaderSeg
-            ? QString::fromUtf8("仅角度 · 跟随 %1%2").arg(cad::param::Serial::tag(leaderSeg->serial), modeWord)
-            : QString::fromUtf8("仅角度%1").arg(modeWord));
+        // 影子基准: 挂载态跟随影子宿主 (经影子), 拆开态 = 角度基准本体（影子）。
+        QString basisText;
+        if (shadowBasis) {
+            const cad::param::Attachment* att1 = nullptr;
+            for (const auto& a : m_paramDoc->attachments()) {
+                if (!a.isPin && a.fromBlockId == shadowBlk->id) { att1 = &a; break; }
+            }
+            if (att1) {
+                if (const auto* host = m_paramDoc->findBlock(att1->toBlockId)) {
+                    if (const auto* hs = host->findSegment(att1->toSegmentId))
+                        basisText = cad::param::Serial::tag(hs->serial);
+                }
+            } else if (const auto* master =
+                           m_paramDoc->findBlock(shadowBlk->shadowMasterBlockId);
+                       master && !master->segments.empty()) {
+                if (const auto* ms = master->findSegment(master->segments.front().id))
+                    basisText = cad::param::Serial::tag(ms->serial);
+            }
+        }
+        if (!basisText.isEmpty())
+            m_badge->setText(QString::fromUtf8("仅角度 · %1%2")
+                                 .arg(basisText, QString::fromUtf8("（影子）") + modeWord));
+        else {
+            const auto* leader = m_paramDoc->findBlock(att->toBlockId);
+            const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
+            m_badge->setText((leaderSeg
+                ? QString::fromUtf8("仅角度 · 跟随 %1%2").arg(cad::param::Serial::tag(leaderSeg->serial), modeWord)
+                : QString::fromUtf8("仅角度%1").arg(modeWord)) + shadowMark);
+        }
     } else if (att) {
         const auto* leader = m_paramDoc->findBlock(att->toBlockId);
         const auto* leaderSeg = leader ? leader->findSegment(att->toSegmentId) : nullptr;
-        m_badge->setText(leaderSeg
+        m_badge->setText((leaderSeg
             ? QString::fromUtf8("跟随 %1%2").arg(cad::param::Serial::tag(leaderSeg->serial), modeWord)
-            : QString::fromUtf8("跟随%1").arg(modeWord));
+            : QString::fromUtf8("跟随%1").arg(modeWord)) + shadowMark);
     } else {
         m_badge->setText(QString::fromUtf8("自由"));
     }
+    if (shadowBasis)
+        m_badge->setToolTip(QString::fromUtf8(
+            "影子基准：角度基准是一条隐藏的影子线（本体拆开瞬间的方向快照）。"
+            "旋转本体不再影响本线；把本线拖到其他线上时影子随之挂载（链式跟随）。"
+            "可在属性面板「影子角度」改基准角，或点「清除影子」转为自由线。"));
 
     // 角度基准读数 (换向按钮已承担切换职能, 这里是只读说明)。
     // 2026-12: 显示真实串号 tag (与属性对话框 SegmentAngleCard 同口径, 换向

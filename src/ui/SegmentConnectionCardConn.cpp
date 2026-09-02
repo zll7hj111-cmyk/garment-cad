@@ -52,6 +52,21 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     }
     if (!att) return;
 
+    // 影子基准拓扑 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4): 面板重定向
+    // 目标线带影子基准 —— 挂回本体 = ⑤ 删影子 + 活引用恢复 (门面影子感知
+    // 路由); 挂到其他线 = ③ 影子挂载链 (Att1 反算保向 + Att2 重新焊接)。
+    // 校验由门面内部把关 (拒绝 = refresh 还原显示, 与既有拒绝路径一致)。
+    if (const auto* curTo = m_doc->findBlock(att->toBlockId);
+        curTo && curTo->isShadow) {
+        if (blockId == curTo->shadowMasterBlockId)
+            m_doc->reattachShadowToMaster(att->id);  // ⑤ 挂回本体 (不依赖 angleOnly 旗标)
+        else
+            m_doc->mountShadowTo(curTo->id, blockId, pointId, QUuid());  // ③ 影子挂载
+        refresh();
+        emit changed();
+        return;
+    }
+
     // Validate: would the re-targeted attachment create a cycle?
     cad::param::Attachment candidate = *att;
     candidate.toBlockId = blockId;

@@ -134,6 +134,7 @@ std::vector<PointRefEdit::Match> PointRefEdit::findMatches(const QString& text) 
 
     for (const auto& block : m_doc->blocks()) {
         if (block.id == m_excludeBlockId) continue;
+        if (block.isShadow) continue;  // 影子不可交互/不可被引用 (R4, 拆开影子基准)
         for (const auto& pt : block.points) {
             bool hit = false;
             // 1. Full serial exact match (case-sensitive).
@@ -164,6 +165,7 @@ std::vector<PointRefEdit::Match> PointRefEdit::findMatches(const QString& text) 
     // (起点的出口方向 = 线段方向, 与旧「基准线」语义一致)。点匹配优先。
     for (const auto& block : m_doc->blocks()) {
         if (block.id == m_excludeBlockId) continue;
+        if (block.isShadow) continue;  // 影子不可交互 (R4, 拆开影子基准)
         for (const auto& seg : block.segments) {
             bool hit = seg.serial == input
                 || cad::param::Serial::tag(seg.serial).compare(
