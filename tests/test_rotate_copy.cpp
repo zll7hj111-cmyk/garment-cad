@@ -228,6 +228,19 @@ private slots:
     /// H2: 确认门有可视 —— gizmo 样式 + 状态栏提示 (原第三条表达是 HUD
     /// caption 后缀, 一期随 AngleHud 退场迁入状态栏)。
     void d15ConfirmStateHasVisualAndHint();
+
+    // ── 影子偏转 (2026-09 用户拍板; 2026-09 锚点推导重设计) ──
+    /// 旋转位置宿主时, 角度基准在宿主外的跟随线随组转 δ (影子 = 宿主旋转 −
+    /// 锚点现算, followerAngle 不变); 一步 undo 同滚。
+    void rotateHostShadowFollowsFollower();
+    /// noFollowRotate (不跟随旋转): 置位后旋转宿主, 跟随线被角度基准拽回。
+    void noFollowRotateKeepsFollowerPulledBack();
+    /// 位置宿主 = 角度基准 (普通跟随): 影子不激活, 跟随线随组转。
+    void shadowInactiveWhenRefIsHost();
+    /// 锚点推导 (2026-09): 宿主被其基准线间接带动旋转时, 影子同样跟转 ——
+    /// 旧累计账本不跟 (宿主旋转不经过旋转工具会话), 这是锚点推导的语义
+    /// 变化点。
+    void shadowFollowsIndirectHostRotation();
 };
 
 void TestRotateCopy::cloneAttachesToOriginalWithRelativeAngle()
@@ -2786,6 +2799,430 @@ void TestRotateCopy::d15ConfirmStateHasVisualAndHint()
     QVERIFY(!tool->gizmoConfirmed());
     QVERIFY2(bridge.hint.contains(confirmHint),
              qPrintable(QStringLiteral("Esc should restore hint: ") + bridge.hint));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 影子偏转 (2026-09 用户拍板): 旋转位置宿主时, 角度基准在宿主外的跟随线
+// 随组转 δ —— 影子 = 宿主旋转 − 锚点现算 (2026-09 锚点推导), 世界方向
+// 跟转、followerAngle 不变、锚点字段不动。
+// 跟转、followerAngle 不变 (角度基准约束保持)。验证:
+//   · 旋转宿主 L1 (L2 挂 L1、角度基准 L3): L2 世界方向跟转 δ, followerAngle
+//     不变, L2 相对 L1 夹角不变。
+//   · 一步 undo: 主旋转 + 影子偏转同一步回滚。
+//   · noFollowRotate (不跟随旋转): 置位后旋转宿主, L2 被 L3 拽回原方向。
+//   · 位置宿主 = 角度基准 (普通跟随): 不激活影子 (基准随组转, 刚体平账)。
+// ─────────────────────────────────────────────────────────────────────────
+void TestRotateCopy::rotateHostShadowFollowsFollower()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    // L1 = 位置宿主 (水平, 原点); L2 = 跟随线 (挂 L1 终点); L3 = 角度基准
+    // (L2 的 angleRef = L3, 与位置宿主分离)。
+    const LineSetup l1 = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+    const LineSetup l2 = makeLine(doc, 60.0);
+    const LineSetup l3 = makeLine(doc, 80.0, Vec2(120.0, 90.0));
+    doc.resolveAll();
+
+    cad::param::Attachment att;
+    att.fromBlockId = l2.blockId;
+    att.fromPointId = l2.startId;
+    att.toBlockId   = l1.blockId;
+    att.toPointId   = l1.endId;
+    att.toSegmentId = l1.segId;
+    att.followerAngle = 90.0;
+    att.angleRefBlockId = l3.blockId;
+    att.angleRefSegmentId = l3.segId;
+    att.angleRefPointId = l3.startId;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    QVERIFY(doc.diagnostics().empty());
+
+    auto worldDir = [&](const QUuid& blockId) {
+        const auto* b = doc.findBlock(blockId);
+        if (!b || b->segments.empty()) return 0.0;
+        const auto& seg = b->segments.front();
+        const auto* sp = b->findPoint(seg.startPointId);
+        const auto* ep = b->findPoint(seg.endPointId);
+        if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
+        const Vec2 w1 = b->transform.toWorld(sp->resolvedPos);
+        const Vec2 w2 = b->transform.toWorld(ep->resolvedPos);
+        return std::atan2(w2.y - w1.y, w2.x - w1.x);
+    };
+    auto angDiff = [](double a, double b) {
+        double d = std::abs(a - b);
+        d = std::fmod(d, 2.0 * M_PI);
+        return d > M_PI ? 2.0 * M_PI - d : d;
+    };
+
+    const double l2Dir0 = worldDir(l2.blockId);
+    const double l1Dir0 = worldDir(l1.blockId);
+    const double l2RelL1_0 = angDiff(l2Dir0, l1Dir0);
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    StripBridge bridge(&doc, tm);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    auto* tool = dynamic_cast<cad::tools::ToolRotate*>(tm.activeTool());
+    QVERIFY(tool);
+
+    // 选中 L1 (自由线, 锚 = 起点) → 确认 → 拖动旋转。
+    const Block* l1Blk = doc.findBlock(l1.blockId);
+    QVERIFY(l1Blk);
+    const Segment& l1Seg = l1Blk->segments.front();
+    const ParamPoint* l1Sp = l1Blk->findPoint(l1Seg.startPointId);
+    const ParamPoint* l1Ep = l1Blk->findPoint(l1Seg.endPointId);
+    QVERIFY(l1Sp && l1Ep && l1Sp->resolved && l1Ep->resolved);
+    const Vec2 l1Mid = l1Blk->transform.toWorld(
+        (l1Sp->resolvedPos + l1Ep->resolvedPos) * 0.5);
+    sendMouse(QEvent::MouseButtonPress, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendConfirm(view);
+
+    // 影子基准虚线 (2026-09 用户需求追加): 旋转会话中 = 一条, 方向 =
+    // 有效角度基准 (L3 start 出口 + 影子偏转; L3 水平, start 出口 = 反向 = π)。
+    QCOMPARE(tool->shadowRefLineCount(), 1);
+    const double refDir0 = tool->shadowRefLineDirRad(att.id);
+    QVERIFY2(angDiff(refDir0, M_PI) < 1e-6,
+             "初始影子基准虚线方向 = L3 start 出口方向 (π)");
+
+    // 拖动: 从 L1 起点 (锚) 上方 90° 方向 → 旋转 90° CCW。
+    const Vec2 pivot = l1Blk->transform.toWorld(l1Sp->resolvedPos);
+    sendMouse(QEvent::MouseButtonPress, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(pivot.x, pivot.y + 50.0), Qt::NoButton, Qt::NoModifier);
+    // 拖动中 (未 Release): L2 已实时跟转 + 影子基准虚线随影子转了 ~90°。
+    QVERIFY2(angDiff(worldDir(l2.blockId), l2Dir0 + M_PI / 2.0) < 0.1,
+             "拖动中 L2 应实时跟转 (影子偏转预览)");
+    QVERIFY2(angDiff(tool->shadowRefLineDirRad(att.id), refDir0 + M_PI / 2.0) < 0.1,
+             "拖动中影子基准虚线应随影子转 ~90°");
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x, pivot.y + 50.0), Qt::LeftButton,
+              Qt::NoModifier);
+
+    // L1 世界方向转了 ~90° (自由线显示角 = 世界角)。
+    const double l1Dir1 = worldDir(l1.blockId);
+    QVERIFY2(angDiff(l1Dir1, l1Dir0 + M_PI / 2.0) < 0.1,
+             "L1 应旋转约 90°");
+
+    // 影子偏转: L2 世界方向跟转 ~90°, followerAngle 不变, 相对 L1 夹角不变。
+    const auto& a = doc.attachments().front();
+    QVERIFY2(angDiff(worldDir(l2.blockId), l2Dir0 + M_PI / 2.0) < 0.1,
+             "L2 世界方向应跟转 ~90° (影子偏转)");
+    QVERIFY2(qFuzzyCompare(a.followerAngle, 90.0),
+             "影子偏转不写 followerAngle (账本独立)");
+    QVERIFY2(angDiff(worldDir(l2.blockId), worldDir(l1.blockId)) - l2RelL1_0 < 0.1,
+             "L2 相对 L1 夹角不变");
+    // 锚点推导: 影子 = 宿主旋转 − 锚点现算, 锚点字段保持钉锚值 (宿主初始
+    // 旋转 0), 可见偏转 = 宿主当前旋转 − 锚点 ≈ 90°。
+    QVERIFY2(qFuzzyCompare(a.shadowAnchorRotDeg, 0.0),
+             "锚点推导: 影子锚点保持钉锚值 (宿主初始旋转 0)");
+    QVERIFY2(std::abs((l1Blk->transform.rotation - a.shadowAnchorRotDeg)
+                      * 180.0 / M_PI - 90.0) < 1.0,
+             "可见偏转 = 宿主当前旋转 − 锚点 ≈ 90°");
+
+    // 一步 undo: 主旋转一步回滚 (影子随宿主旋转现算, 自动回位)。
+    stack.undo();
+    QVERIFY2(angDiff(worldDir(l1.blockId), l1Dir0) < 1e-6,
+             "undo 后 L1 回原位");
+    QVERIFY2(angDiff(worldDir(l2.blockId), l2Dir0) < 1e-6,
+             "undo 后 L2 回原位 (影子随宿主回位)");
+    QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg, 0.0),
+             "undo 后影子锚点保持钉锚值");
+}
+
+// 不跟随旋转 (noFollowRotate): 置位后旋转宿主, L2 被角度基准拽回原方向。
+void TestRotateCopy::noFollowRotateKeepsFollowerPulledBack()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup l1 = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+    const LineSetup l2 = makeLine(doc, 60.0);
+    const LineSetup l3 = makeLine(doc, 80.0, Vec2(120.0, 90.0));
+    doc.resolveAll();
+
+    cad::param::Attachment att;
+    att.fromBlockId = l2.blockId;
+    att.fromPointId = l2.startId;
+    att.toBlockId   = l1.blockId;
+    att.toPointId   = l1.endId;
+    att.toSegmentId = l1.segId;
+    att.followerAngle = 90.0;
+    att.angleRefBlockId = l3.blockId;
+    att.angleRefSegmentId = l3.segId;
+    att.angleRefPointId = l3.startId;
+    att.noFollowRotate = true;   // 不跟随旋转
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    QVERIFY(doc.diagnostics().empty());
+
+    auto worldDir = [&](const QUuid& blockId) {
+        const auto* b = doc.findBlock(blockId);
+        if (!b || b->segments.empty()) return 0.0;
+        const auto& seg = b->segments.front();
+        const auto* sp = b->findPoint(seg.startPointId);
+        const auto* ep = b->findPoint(seg.endPointId);
+        if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
+        const Vec2 w1 = b->transform.toWorld(sp->resolvedPos);
+        const Vec2 w2 = b->transform.toWorld(ep->resolvedPos);
+        return std::atan2(w2.y - w1.y, w2.x - w1.x);
+    };
+    auto angDiff = [](double a, double b) {
+        double d = std::abs(a - b);
+        d = std::fmod(d, 2.0 * M_PI);
+        return d > M_PI ? 2.0 * M_PI - d : d;
+    };
+
+    const double l2Dir0 = worldDir(l2.blockId);
+    const double l1Dir0 = worldDir(l1.blockId);
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    StripBridge bridge(&doc, tm);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    const Block* l1Blk = doc.findBlock(l1.blockId);
+    QVERIFY(l1Blk);
+    const Segment& l1Seg = l1Blk->segments.front();
+    const ParamPoint* l1Sp = l1Blk->findPoint(l1Seg.startPointId);
+    const ParamPoint* l1Ep = l1Blk->findPoint(l1Seg.endPointId);
+    QVERIFY(l1Sp && l1Ep && l1Sp->resolved && l1Ep->resolved);
+    const Vec2 l1Mid = l1Blk->transform.toWorld(
+        (l1Sp->resolvedPos + l1Ep->resolvedPos) * 0.5);
+    sendMouse(QEvent::MouseButtonPress, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendConfirm(view);
+
+    const Vec2 pivot = l1Blk->transform.toWorld(l1Sp->resolvedPos);
+    sendMouse(QEvent::MouseButtonPress, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(pivot.x, pivot.y + 50.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x, pivot.y + 50.0), Qt::LeftButton,
+              Qt::NoModifier);
+
+    // L1 转了 ~90°, 但 L2 被 L3 拽回原方向 (不跟随旋转)。
+    QVERIFY2(angDiff(worldDir(l1.blockId), l1Dir0 + M_PI / 2.0) < 0.1,
+             "L1 应旋转约 90°");
+    QVERIFY2(angDiff(worldDir(l2.blockId), l2Dir0) < 0.1,
+             "noFollowRotate: L2 应被角度基准拽回原方向");
+    QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg, 0.0),
+             "noFollowRotate: 影子锚点保持钉锚值 (不跟转)");
+}
+
+// 位置宿主 = 角度基准 (普通跟随): 旋转宿主, L2 跟转 (基准随组转), 无影子。
+void TestRotateCopy::shadowInactiveWhenRefIsHost()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup l1 = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+    const LineSetup l2 = makeLine(doc, 60.0);
+    doc.resolveAll();
+
+    cad::param::Attachment att;
+    att.fromBlockId = l2.blockId;
+    att.fromPointId = l2.startId;
+    att.toBlockId   = l1.blockId;
+    att.toPointId   = l1.endId;
+    att.toSegmentId = l1.segId;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    QVERIFY(doc.diagnostics().empty());
+
+    auto worldDir = [&](const QUuid& blockId) {
+        const auto* b = doc.findBlock(blockId);
+        if (!b || b->segments.empty()) return 0.0;
+        const auto& seg = b->segments.front();
+        const auto* sp = b->findPoint(seg.startPointId);
+        const auto* ep = b->findPoint(seg.endPointId);
+        if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
+        const Vec2 w1 = b->transform.toWorld(sp->resolvedPos);
+        const Vec2 w2 = b->transform.toWorld(ep->resolvedPos);
+        return std::atan2(w2.y - w1.y, w2.x - w1.x);
+    };
+    auto angDiff = [](double a, double b) {
+        double d = std::abs(a - b);
+        d = std::fmod(d, 2.0 * M_PI);
+        return d > M_PI ? 2.0 * M_PI - d : d;
+    };
+
+    const double l2Dir0 = worldDir(l2.blockId);
+    const double l1Dir0 = worldDir(l1.blockId);
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    StripBridge bridge(&doc, tm);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    const Block* l1Blk = doc.findBlock(l1.blockId);
+    QVERIFY(l1Blk);
+    const Segment& l1Seg = l1Blk->segments.front();
+    const ParamPoint* l1Sp = l1Blk->findPoint(l1Seg.startPointId);
+    const ParamPoint* l1Ep = l1Blk->findPoint(l1Seg.endPointId);
+    QVERIFY(l1Sp && l1Ep && l1Sp->resolved && l1Ep->resolved);
+    const Vec2 l1Mid = l1Blk->transform.toWorld(
+        (l1Sp->resolvedPos + l1Ep->resolvedPos) * 0.5);
+    sendMouse(QEvent::MouseButtonPress, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendConfirm(view);
+
+    const Vec2 pivot = l1Blk->transform.toWorld(l1Sp->resolvedPos);
+    sendMouse(QEvent::MouseButtonPress, vp(l1Mid.x, l1Mid.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(pivot.x, pivot.y + 50.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(pivot.x, pivot.y + 50.0), Qt::LeftButton,
+              Qt::NoModifier);
+
+    // L1 转了 ~90°; L2 是普通跟随 (基准 = 宿主), 跟转 ~90°; 影子锚点保持
+    // 钉锚值 (普通跟随时影子恒不激活, 基准随组转刚体平账)。
+    QVERIFY2(angDiff(worldDir(l1.blockId), l1Dir0 + M_PI / 2.0) < 0.1,
+             "L1 应旋转约 90°");
+    QVERIFY2(angDiff(worldDir(l2.blockId), l2Dir0 + M_PI / 2.0) < 0.1,
+             "普通跟随: L2 应跟转 ~90° (基准随组转)");
+    QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg, 0.0),
+             "普通跟随: 影子锚点保持钉锚值 (不激活)");
+}
+
+// 锚点推导 (2026-09): 宿主被其基准线间接带动旋转时, 影子同样跟转 ——
+// 影子 = 宿主旋转 − 锚点现算, 宿主旋转无论来自旋转工具还是被基准线带动,
+// 影子都刚性跟转 (旧累计账本只在旋转工具会话里回写, 间接旋转不跟)。
+void TestRotateCopy::shadowFollowsIndirectHostRotation()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    // L0 = 宿主 L1 的角度基准 (水平); L1 = 位置宿主 (挂 L0); L2 = 跟随线
+    // (挂 L1, 角度基准 L3); L3 = L2 的角度基准 (水平)。
+    const LineSetup l0 = makeLine(doc, 100.0, Vec2(0.0, 0.0));
+    const LineSetup l1 = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+    const LineSetup l2 = makeLine(doc, 60.0);
+    const LineSetup l3 = makeLine(doc, 80.0, Vec2(120.0, 90.0));
+    doc.resolveAll();
+
+    // L1 挂 L0 (普通跟随, followerAngle 180 = 直行延续)。
+    cad::param::Attachment a1;
+    a1.fromBlockId = l1.blockId;
+    a1.fromPointId = l1.startId;
+    a1.toBlockId   = l0.blockId;
+    a1.toPointId   = l0.endId;
+    a1.toSegmentId = l0.segId;
+    a1.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(a1));
+
+    // L2 挂 L1, 角度基准 L3 (位置宿主 ≠ 角度基准 → 影子激活)。
+    cad::param::Attachment a2;
+    a2.fromBlockId = l2.blockId;
+    a2.fromPointId = l2.startId;
+    a2.toBlockId   = l1.blockId;
+    a2.toPointId   = l1.endId;
+    a2.toSegmentId = l1.segId;
+    a2.followerAngle = 90.0;
+    a2.angleRefBlockId = l3.blockId;
+    a2.angleRefSegmentId = l3.segId;
+    a2.angleRefPointId = l3.startId;
+    QVERIFY(doc.addAttachment(a2));
+    doc.resolveAll();
+    QVERIFY(doc.diagnostics().empty());
+
+    auto worldDir = [&](const QUuid& blockId) {
+        const auto* b = doc.findBlock(blockId);
+        if (!b || b->segments.empty()) return 0.0;
+        const auto& seg = b->segments.front();
+        const auto* sp = b->findPoint(seg.startPointId);
+        const auto* ep = b->findPoint(seg.endPointId);
+        if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
+        const Vec2 w1 = b->transform.toWorld(sp->resolvedPos);
+        const Vec2 w2 = b->transform.toWorld(ep->resolvedPos);
+        return std::atan2(w2.y - w1.y, w2.x - w1.x);
+    };
+    auto angDiff = [](double a, double b) {
+        double d = std::abs(a - b);
+        d = std::fmod(d, 2.0 * M_PI);
+        return d > M_PI ? 2.0 * M_PI - d : d;
+    };
+
+    const double l1Dir0 = worldDir(l1.blockId);
+    const double l2Dir0 = worldDir(l2.blockId);
+    const double l2RelL1_0 = angDiff(l2Dir0, l1Dir0);
+
+    // 旋转 L0 90° (L1 的基准线): L1 被带动转 90° (普通跟随), L2 的影子
+    // 随宿主 L1 转 90° —— 相对 L1 夹角不变 (锚点推导语义)。
+    Block* l0Blk = doc.findBlock(l0.blockId);
+    QVERIFY(l0Blk);
+    const Vec2 pivot = l0Blk->worldPos(l0.startId);
+    const Vec2 startLocal = l0Blk->findPoint(l0.startId)->resolvedPos;
+    const double newRot = 90.0 * M_PI / 180.0;
+    l0Blk->transform.rotation = newRot;
+    l0Blk->transform.origin = pivot - startLocal.rotated(newRot);
+    doc.invalidateAllLayers();
+    doc.resolveAll();
+    QVERIFY(doc.diagnostics().empty());
+
+    QVERIFY2(angDiff(worldDir(l1.blockId), l1Dir0 + M_PI / 2.0) < 0.1,
+             "L1 应被 L0 带动转 ~90° (普通跟随)");
+    QVERIFY2(angDiff(worldDir(l2.blockId), l2Dir0 + M_PI / 2.0) < 0.1,
+             "L2 影子应随宿主 L1 间接跟转 ~90° (锚点推导)");
+    QVERIFY2(angDiff(worldDir(l2.blockId), worldDir(l1.blockId)) - l2RelL1_0 < 0.1,
+             "L2 相对 L1 夹角不变");
+    QVERIFY2(qFuzzyCompare(doc.attachments().back().followerAngle, 90.0),
+             "影子偏转不写 followerAngle");
+    QVERIFY2(qFuzzyCompare(doc.attachments().back().shadowAnchorRotDeg, 0.0),
+             "影子锚点保持钉锚值 (宿主初始旋转 0)");
 }
 QTEST_MAIN(TestRotateCopy)
 #include "test_rotate_copy.moc"

@@ -260,10 +260,6 @@ public:
     /// PerpLeader 写 slidePerpMm —— 锁轴坐标保持激活时快照。不触发 resolve
     /// (随后的 resolveForDrag / resolveAll 会按新坐标落位)。滑轨未激活时 no-op。
     void updateSlideOffsetsFromCurrent(const QUuid& id);
-    /// 影子偏转角拖动回写 (旋转会话每帧调用, 用户拍板 2026-08-27): 逐条写入
-    /// baselineOffsetDeg (key = attachment id)。不触发 resolve —— 随后的
-    /// resolveForDrag / resolveAll 按新值落位 (与滑轨回写同一拖帧契约)。
-    void updateBaselineOffsets(const QHash<QUuid, double>& offsets);
     /// Expand a seed set of block ids to include every block welded by LOCKED
     /// attachments (递归焊接闭包): dragging any member moves the whole closure
     /// (A锁B、B锁C → 拖A时B、C一起走). Also the basis of the drag-time

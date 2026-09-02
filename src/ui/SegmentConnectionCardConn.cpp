@@ -69,14 +69,17 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     auto* block = m_doc->findBlock(m_blockId);
     if (!leader || !block) { refreshCard(); return; }
 
+    // 重连保持角度基准 (用户拍板 2026-09): 自动态下把旧所连线段固化为两点
+    // 基准 (点1 = 旧目标点, 点2 = 旧线段另一端) —— 方向基准不随新宿主漂移
+    // (此前只固化点1, 点2 留空, 两点连线方向退化为单点出口方向)。已自定义
+    // 的基准原样保留。必须在改写 toBlockId 之前调用 (旧宿主信息仍在 att 上)。
+    cad::param::preserveAngleRefOnReattach(m_doc, *att);
+    // 重连重钉影子锚点 (2026-09 锚点推导): 保持用户可见偏转不变。
+    cad::param::repinShadowAnchorOnReattach(m_doc, *att, blockId);
+
     // 仅角度拖动到新端点：旧角度基准保留为独立角度基准，位置挂到新端点，
     // 从而自动进入“双基准”。
     if (att->angleOnly) {
-        if (att->angleRefBlockId.isNull()) {
-            att->angleRefBlockId = att->toBlockId;
-            att->angleRefSegmentId = att->toSegmentId;
-            att->angleRefPointId = att->toPointId;
-        }
         att->angleOnly = false;
         att->slideMode = cad::param::SlideMode::None;
         att->isLocked = true;
@@ -88,10 +91,12 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     att->toSegmentId = leader->exitSegmentAtPoint(pointId);
 
     // Back-solve the follower angle so the CURRENT world direction is
-    // preserved (no visual jump on re-attach).
+    // preserved (no visual jump on re-attach). 基准方向 = 有效角度基准
+    // (与 Resolver 同构): 重连保持基准后 = 旧基准两点连线方向, 自动态 =
+    // 新宿主出口方向 —— 此前恒用新宿主方向反算, 固化基准后 Resolver 按
+    // 旧基准驱动 → 重连瞬间跳线。
     if (auto* seg = block->findSegment(m_segmentId)) {
-        const double refWorld = leader->transform.rotation
-            + leader->exitDirectionAtPoint(pointId, att->toSegmentId);
+        const double refWorld = cad::param::effectiveAngleRefWorld(m_doc, *att);
         const double localDir = block->directionAtPoint(seg->startPointId);
         att->followerAngle = cad::param::backSolveFollowerAngle(
             block->transform.rotation, localDir, refWorld);

@@ -3,6 +3,7 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
 #include <QGraphicsEllipseItem>
+#include <QGraphicsPathItem>
 #include <QKeyEvent>
 #include <QSignalBlocker>
 #include <QUndoStack>
@@ -94,8 +95,9 @@ void ToolRotate::onDeactivate()
         m_releaseAttId = QUuid();
         m_releaseAttHeld = false;
     }
+    // 影子基准虚线随工具退出清理 (2026-09)
+    clearShadowRefLines();
     removeGizmo();
-    // 上下文属性条: 工具退出 = 焦点清空 (锁定与悬停都不跨工具继承)。
     reportPinnedTarget(QUuid(), QUuid());
     reportHoverTarget(QUuid(), QUuid());
     reportHintOverride(QString());
@@ -479,6 +481,99 @@ void ToolRotate::releaseFollowerIfAnchorMoved()
     if (m_scene) m_scene->refreshAllBlockItems();
 }
 
+// ── 影子基准虚线 (2026-09 用户需求追加) ──────────────────────────────
+// 旋转位置宿主时, 影子连接 (= 角度基准在宿主外的跟随线) 在画布上没有
+// 任何"基准朝哪"的可视化 —— L2 明明跟着 L1 转, 用户看不到它的角度基准
+// (L3 + 影子偏转) 在哪。每条影子连接在跟随线挂接点画一条灰色虚线, 方向 =
+// 有效角度基准 (真基准 + 影子偏转, 2026-09 锚点推导: 影子随宿主旋转现算),
+// 拖动时随影子逐帧转动 —— 直观显示"L2 相对这条线保持 α 不变"。
+
+void ToolRotate::buildShadowRefLines()
+{
+    clearShadowRefLines();
+    if (!m_scene || !m_paramDoc || m_blockId.isNull()) return;
+    const double zoom = currentZoom();
+    const double len = 60.0 / zoom;   // 与 gizmo 基准虚线同长
+    for (const auto& a : m_paramDoc->attachments()) {
+        // 影子连接判定 (2026-09 锚点推导, 与 Resolver 影子语义同源):
+        // 本线是位置宿主 + 非纯位置钉 + 角度被基准驱动 + 未置不跟随旋转
+        // + 有效角度基准在宿主外 (位置宿主 = 角度基准时影子恒不激活)。
+        if (a.toBlockId != m_blockId) continue;
+        if (a.isPin || a.angleIndependent || a.noFollowRotate) continue;
+        const QUuid refBlk = !a.angleRefBlockId.isNull()
+            ? a.angleRefBlockId : a.toBlockId;
+        if (refBlk.isNull() || refBlk == m_blockId) continue;
+        const auto* fromBlk = m_paramDoc->findBlock(a.fromBlockId);
+        if (!fromBlk) continue;
+        const auto* ap = fromBlk->findPoint(a.fromPointId);
+        if (!ap || !ap->resolved) continue;
+        const cad::geo::Vec2 anchor = fromBlk->worldPos(a.fromPointId);
+        const double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, a);
+        const QPointF c = cad::geo::Coord::toScene(anchor.x, anchor.y);
+        auto* line = new QGraphicsPathItem();
+        QPen pen(QColor(120, 144, 156));   // 灰, 与 gizmo 基准虚线同色系
+        pen.setWidthF(1.0);
+        pen.setCosmetic(true);
+        pen.setStyle(Qt::DashLine);
+        line->setPen(pen);
+        line->setZValue(9997);             // 与 gizmo refLine 同层
+        QPainterPath path;
+        path.moveTo(c);
+        path.lineTo(c.x() + len * std::cos(refWorld),
+                    c.y() - len * std::sin(refWorld));   // scene y-down
+        line->setPath(path);
+        m_scene->addItem(line);
+        m_managed.own(line);
+        m_shadowRefLines.insert(a.id, line);
+    }
+}
+
+void ToolRotate::updateShadowRefLines()
+{
+    if (m_shadowRefLines.isEmpty()) return;
+    const double zoom = currentZoom();
+    const double len = 60.0 / zoom;
+    for (auto it = m_shadowRefLines.constBegin(); it != m_shadowRefLines.constEnd(); ++it) {
+        auto* line = it.value();
+        if (!line) continue;
+        const auto* att = m_paramDoc ? m_paramDoc->attachmentsView().byId(it.key()) : nullptr;
+        if (!att) continue;
+        const auto* fromBlk = m_paramDoc->findBlock(att->fromBlockId);
+        if (!fromBlk) continue;
+        const auto* ap = fromBlk->findPoint(att->fromPointId);
+        if (!ap || !ap->resolved) continue;
+        // 有效基准含影子偏转 (2026-09 锚点推导: 影子随宿主旋转现算,
+        // 宿主 transform 已随拖动逐帧落位)。
+        const double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
+        const cad::geo::Vec2 anchor = fromBlk->worldPos(att->fromPointId);
+        const QPointF c = cad::geo::Coord::toScene(anchor.x, anchor.y);
+        QPainterPath path;
+        path.moveTo(c);
+        path.lineTo(c.x() + len * std::cos(refWorld),
+                    c.y() - len * std::sin(refWorld));
+        line->setPath(path);
+    }
+}
+
+void ToolRotate::clearShadowRefLines()
+{
+    if (m_shadowRefLines.isEmpty()) return;
+    for (auto it = m_shadowRefLines.constBegin(); it != m_shadowRefLines.constEnd(); ++it)
+        m_managed.release(it.value());
+    m_shadowRefLines.clear();
+}
+
+double ToolRotate::shadowRefLineDirRad(const QUuid& attId) const
+{
+    const auto it = m_shadowRefLines.constFind(attId);
+    if (it == m_shadowRefLines.constEnd() || !it.value()) return 0.0;
+    const auto* att = m_paramDoc ? m_paramDoc->attachmentsView().byId(attId) : nullptr;
+    if (!att) return 0.0;
+    // 有效基准方向 = 真基准 + 影子偏转 (与 Resolver 同构) —— 虚线画的就是
+    // 这个方向, 拖动态随基准影子逐帧转动。
+    return cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
+}
+
 void ToolRotate::selectTarget(const QUuid& blockId,
                               const std::optional<cad::geo::Vec2>& clickWorld)
 {
@@ -526,12 +621,19 @@ void ToolRotate::selectTarget(const QUuid& blockId,
     if (m_blockId.isNull()) return;   // rebuild cleared an invalid target
 
     m_state = RotateState::Ready;
+    // 影子基准虚线 (2026-09 用户需求追加): 选中即显示 —— 旋转目标 (位置
+    // 宿主) 的每条"基准在宿主外"的跟随线一条灰色虚线, 方向 = 有效角度
+    // 基准 (真基准 + 影子偏转), 让"跟随线相对 L3 的角度保持"在拖动前
+    // 就有可视化 (影子偏转 = 宿主旋转 − 锚点现算, 面板设过偏转时虚线
+    // 即显示该偏转)。
+    buildShadowRefLines();
     // 条带: 旋转会话激活, 锚心端在前 (2026-12)。必须放在 m_state=Ready 之后
     // —— reportRotateAnchorState 用 m_state != Idle 判定会话激活, 提前调用会
     // 上报 active=false, 条带不进入旋转会话, 换向按钮将走命令路径而非切锚心。
     reportRotateAnchorState();
     buildGizmo();
     updateGizmo();
+    updateShadowRefLines();
     // 上下文属性条: 锁定到目标线段 (角度格随之可编辑, 并跟随拖动实时刷新)。
     reportStripTarget();
     updateStatusHint();
@@ -542,6 +644,7 @@ void ToolRotate::clearTarget()
 {
     removeGizmo();
     clearAimCandidate();
+    clearShadowRefLines();   // 影子基准虚线随会话结束清理 (2026-09)
     m_blockId = QUuid();
     m_attId = QUuid();
     m_connected = false;
@@ -572,6 +675,10 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
     // its leader on every frame. The link is snapshotted; Esc / undo restore
     // it (undo 一步恢复挂接).
     releaseFollowerIfAnchorMoved();
+    // 影子基准虚线: 每条影子连接一条灰色虚线 (方向 = 有效角度基准), 让
+    // "跟随线相对 L3 的角度保持"有可视化 (2026-09 用户需求追加)。影子
+    // 偏转本身由 Resolver 按锚点现算 (2026-09 锚点推导), 工具不再逐帧回写。
+    buildShadowRefLines();
     // Endpoint-aim constraint (终点指向): free-hand rotation RELEASES the aim
     // — the resolver would otherwise pull the direction straight back to the
     // target point on every frame (用户拍板: 旋转 = 放弃终点指向).
@@ -663,7 +770,13 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
     // endpoint's direction with a nearby point.
     if (!snap) checkEndpointAimSnap(target);
 
+    // 影子偏转 (2026-09 锚点推导): 影子随宿主旋转现算 —— 宿主 transform
+    // 在 applyAngleDeg 内同帧落位, Resolver 按 (宿主旋转 − 锚点) 驱动跟随
+    // 线, 无需工具逐帧回写。影子基准虚线在 applyAngleDeg 之后刷新 (方向 =
+    // 真基准 + 当前影子偏转, 读本帧宿主旋转, 不滞后一帧)。
     applyAngleDeg(target);
+    if (!m_copyGesture->active())
+        updateShadowRefLines();
     updateGizmo();
 }
 
@@ -796,7 +909,10 @@ void ToolRotate::commitCurrent()
 
     if (m_connected) {
         cad::param::Attachment* att = editableAttachment();
-        if (!att) return;
+        if (!att) {
+            updateGizmo();
+            return;
+        }
 
         // Snapshot current state.
         const double curAngle = att->followerAngle;
@@ -810,7 +926,10 @@ void ToolRotate::commitCurrent()
                           || curMode != m_rotationMode
                           || std::abs(curArc - m_baseArcLength) > 1e-6
                           || curArcFormula != m_baseArcFormula;
-        if (!changed) { updateGizmo(); return; }
+        if (!changed) {
+            updateGizmo();
+            return;
+        }
 
         // Restore-then-replay: put the base state back, then push a command
         // whose redo() re-applies the current state (single undo step).
@@ -829,7 +948,10 @@ void ToolRotate::commitCurrent()
         m_baseArcFormula = curArcFormula;
     } else {
         cad::param::Block* blk = m_paramDoc->findBlock(m_blockId);
-        if (!blk) return;
+        if (!blk) {
+            updateGizmo();
+            return;
+        }
 
         const cad::param::Transform2D curTf = blk->transform;
         const QUuid curEndBlock = blk->endTargetBlockId;
@@ -839,7 +961,10 @@ void ToolRotate::commitCurrent()
                           || curEndBlock != m_baseEndTargetBlock
                           || curEndPoint != m_baseEndTargetPoint
                           || m_releaseAttHeld;
-        if (!changed) { updateGizmo(); return; }
+        if (!changed) {
+            updateGizmo();
+            return;
+        }
 
         blk->transform = m_baseTf;
             blk->endTargetBlockId = m_baseEndTargetBlock;

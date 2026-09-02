@@ -446,7 +446,8 @@ QJsonObject attachmentJson(const Attachment& a) {
         {"slidePerpMm", a.slidePerpMm},
         {"slideAlongFormula", a.slideAlongFormula},
         {"slidePerpFormula", a.slidePerpFormula},
-        {"baselineOffsetDeg", a.baselineOffsetDeg},  // 影子偏转角 (Optional since v11)
+        {"shadowAnchorRotDeg", a.shadowAnchorRotDeg},  // 影子锚点 (Optional since v14)
+        {"noFollowRotate", a.noFollowRotate},  // 不跟随旋转 (Optional since v13)
     };
 }
 Attachment attachmentFrom(const QJsonObject& o) {
@@ -491,10 +492,14 @@ Attachment attachmentFrom(const QJsonObject& o) {
     // 滑轨公式 (Optional since v7): 缺失 = 空 (数值路径兼容旧档).
     a.slideAlongFormula = o["slideAlongFormula"].toString();
     a.slidePerpFormula = o["slidePerpFormula"].toString();
-    // 基准影子偏转角 (Optional since v11): 缺失 = 0 —— 平时恒为 0, 旧档零迁移
-    // (shadow offset, 用户拍板 2026-08-27; ROTATE_REDESIGN_DESIGN.md §2.6).
-    const double bo = o["baselineOffsetDeg"].toDouble(0.0);
-    a.baselineOffsetDeg = std::isfinite(bo) ? bo : 0.0;
+    // 影子锚点 (Optional since v14, 2026-09 锚点推导): 缺失 = 0 —— 新建连接
+    // 在 addAttachment 钉锚, 旧档 (v11 baselineOffsetDeg) 由 FormatMigration
+    // v1→v2 换算为锚点 (锚 = 宿主旋转 − 旧偏移), 走到这里时已是 v14 形状。
+    const double sa = o["shadowAnchorRotDeg"].toDouble(0.0);
+    a.shadowAnchorRotDeg = std::isfinite(sa) ? sa : 0.0;
+    // 不跟随旋转 (Optional since v13): 缺失 = false —— 旧档零迁移 (默认
+    // 影子偏转激活, 行为与无此字段逐位一致)。
+    a.noFollowRotate = o["noFollowRotate"].toBool(false);
     return a;
 }
 

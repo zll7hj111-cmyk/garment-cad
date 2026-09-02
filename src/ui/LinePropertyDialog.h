@@ -110,6 +110,8 @@ private slots:
     void onSlideModeChanged(int index);
     void onSlideOffsetEdited();
     void onShadowEdited();
+    /// 不跟随旋转开关 (2026-09 用户拍板): 旋转位置宿主时本线不参与影子偏转。
+    void onNoFollowRotateClicked();
     /// 端点组内连接 (2026-xx §3): 起点/终点「连接到」+ 拆开/重连。
     void onStartConnectResolved(const QUuid& blockId, const QUuid& pointId);
     void onStartDetachClicked();
@@ -252,6 +254,7 @@ private:
     ElaLineEdit*  m_editSlidePerp  = nullptr;
     QWidget*      m_shadowRow      = nullptr;
     ElaLineEdit*  m_editShadow     = nullptr;
+    QPushButton*  m_btnNoFollowRotate = nullptr;  ///< 不跟随旋转 (2026-09, chip 开关).
     ElaText*      m_lblArcLength  = nullptr;   ///< Read-only arc length display (curve only).
     ElaLineEdit*    m_editTension   = nullptr;   ///< Curve tension (curve only).
     QWidget*      m_arcRow        = nullptr;   ///< Container for arc-length row (curve only).

@@ -35,7 +35,7 @@
 namespace cad::doc {
 
 /// The version DocumentFile writes, and the newest one it can read.
-constexpr int kFormatVersion = 1;
+constexpr int kFormatVersion = 2;
 
 /// One link in the chain: rewrites a vN document in place into a vN+1 one.
 /// @p warnings collects human-readable degradation notes (same contract as
@@ -76,6 +76,15 @@ public:
     /// resolved to an id string once — here, at load time, instead of being
     /// guessed by the serializer on every read.
     static QJsonObject migrateV0ToV1(QJsonObject root, QStringList* warnings);
+
+    /// v1 → v2, "shadow-anchor": v1 stored the shadow as a cumulative offset
+    /// (baselineOffsetDeg, degrees). v2 stores a shadow ANCHOR
+    /// (shadowAnchorRotDeg, radians) = the position host's rotation at pin
+    /// time; the effective shadow = host rotation − anchor, recomputed every
+    /// solve (2026-09 锚点推导重设计). Conversion: anchor = host rotation −
+    /// old offset (degrees → radians). Attachments whose host block is missing
+    /// keep 0 (the serializer's dangling-attachment handling owns that case).
+    static QJsonObject migrateV1ToV2(QJsonObject root, QStringList* warnings);
 };
 
 } // namespace cad::doc

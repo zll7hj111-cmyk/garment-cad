@@ -30,4 +30,4 @@ jobs:
       - name: 全量 ctest
         shell: cmd
         working-directory: build/out
-        run: ctest --output-on-failure -E "test_serializer|test_component"
+        run: ctest --output-on-failure

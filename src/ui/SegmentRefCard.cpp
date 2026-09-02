@@ -27,8 +27,9 @@ namespace cad::ui {
 namespace {
 constexpr int kFieldH = 30;   ///< 2026-xx 紧凑化 (35→30, 与状态栏对齐).
 constexpr int kBtnW = 48;     ///< 二字按钮统一宽 (2026-xx 紧凑 58→48).
-constexpr int kRefEditW = 104; ///< 点1/点2 输入框宽 (句式行内).
-constexpr int kAlignEditW = 64; ///< 对齐点输入框宽 (本线端点, 短 tag).
+constexpr int kRefEditW = 88; ///< 点1/点2 输入框宽 (句式行内; 2026-09 加
+                              ///< [链接当前线] 按钮后 104→88 防行溢出).
+constexpr int kAlignEditW = 56; ///< 对齐点输入框宽 (本线端点, 短 tag).
 } // namespace
 
 SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
@@ -106,6 +107,18 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_btnIndependent->setToolTip(QString::fromUtf8(
         "独立：角度改用世界角度（不跟任何线）；再点还原上次的角度基准。"));
     row->addWidget(m_btnIndependent);
+
+    // [链接当前线] (2026-09 用户拍板): 清空自定义角度基准回自动态 —— 方向
+    // 基准 = 当前所连线段出口方向 (方向行灰显回显当前线段两点)。仅已连接
+    // 且非自动态时可用。
+    m_btnLinkCurrent = new QPushButton(QString::fromUtf8("链接当前线"), this);
+    m_btnLinkCurrent->setObjectName(QStringLiteral("linkCurrentLineBtn"));
+    m_btnLinkCurrent->setFixedHeight(kFieldH);
+    m_btnLinkCurrent->setStyleSheet(cad::ui::chipButtonStyle());
+    m_btnLinkCurrent->setCursor(Qt::PointingHandCursor);
+    m_btnLinkCurrent->setToolTip(QString::fromUtf8(
+        "方向基准链接到当前线段：清空自定义基准，角度跟随所连线段的方向。"));
+    row->addWidget(m_btnLinkCurrent);
     lay->addLayout(row);
 
     connect(m_alignPointEdit, &PointRefEdit::pointResolved,
@@ -116,6 +129,8 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
             this, &SegmentRefCard::onAngleRefPoint2Resolved);
     connect(m_btnIndependent, &QPushButton::toggled,
             this, &SegmentRefCard::onIndependentToggled);
+    connect(m_btnLinkCurrent, &QPushButton::clicked,
+            this, &SegmentRefCard::onLinkCurrentLineClicked);
 }
 
 void SegmentRefCard::setTarget(const QUuid& blockId, const QUuid& segmentId)
@@ -158,6 +173,7 @@ void SegmentRefCard::refresh()
     if (m_angleRefPoint) m_angleRefPoint->setVisible(!dirHidden);
     if (m_angleRefPoint2) m_angleRefPoint2->setVisible(!dirHidden);
     if (m_btnIndependent) m_btnIndependent->setVisible(!dirHidden);
+    if (m_btnLinkCurrent) m_btnLinkCurrent->setVisible(!dirHidden);
 
     // 预填自动落库 (用户 2026-12): 自由态先选好引用点, 连入后第一次 refresh
     // 自动写为角度基准 —— 一次生效 (落库后 angleRefBlockId 非空即停)。
@@ -263,14 +279,28 @@ void SegmentRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
     m_angleRefPoint->setAutoEcho(false);
     m_angleRefPoint2->setAutoEcho(false);
 
+    // [链接当前线] (2026-09 用户拍板): 已连接且非自动态时可用 —— 自动态
+    // 方向基准本就是当前线段, 点击无意义。**独立角不禁用** (用户 2026-09
+    // 修正: 独立只是清空点1/点2, 不锁按钮) —— 独立角 + 有自定义基准时点击
+    // = 清空基准 + 退出独立角回自动态 (SetAttachmentAngleRefCommand redo
+    // 会清 angleIndependent)。
+    if (m_btnLinkCurrent) {
+        m_btnLinkCurrent->setEnabled(hasAtt && !att->angleRefBlockId.isNull());
+        m_btnLinkCurrent->setToolTip(independent
+            ? QString::fromUtf8("方向基准链接到当前线段：清空自定义基准并退出独立角，"
+                                "角度跟随所连线段的方向。")
+            : QString::fromUtf8("方向基准链接到当前线段：清空自定义基准，"
+                                "角度跟随所连线段的方向。"));
+    }
+
     if (!att) return;   // 自由态: 保留用户已填的预填内容 (不 clear/不重写)。
 
     if (independent) {
-        // 独立角: 输入框清空+禁用 (模型 ref 字段保留 = 还原缓存)。
+        // 独立角: 输入框清空 (模型 ref 字段保留 = 还原缓存)。2026-09 用户
+        // 拍板: 清空但**不禁用** —— 独立角时点1/点2 无内容, 但输入框保持
+        // 可编辑 (用户可直接填点 = 退出独立角并建立自定义基准)。
         m_angleRefPoint->clearPoint();
         m_angleRefPoint2->clearPoint();
-        m_angleRefPoint->setEnabled(false);
-        m_angleRefPoint2->setEnabled(false);
         return;
     }
 
@@ -469,6 +499,33 @@ void SegmentRefCard::onIndependentToggled(bool checked)
             m_doc, att->id, /*angleIndependent=*/checked));
     else
         m_doc->setAttachmentAngleIndependent(att->id, checked);
+    refresh();
+    emit changed();
+}
+
+// ─── onLinkCurrentLineClicked (2026-09 用户拍板) ───
+// [链接当前线]: 清空自定义角度基准回自动态 —— 方向基准 = 当前所连线段出口
+// 方向 (方向行灰显回显当前线段两点)。走 SetAttachmentAngleRefCommand (undo
+// 可撤, 与点1/点2 编辑同栈); 命令 redo 会按新基准反算 followerAngle 零跳变,
+// 并清 angleIndependent (独立角 + 自定义基准时点击 = 一并退出独立角)。
+// **必须先清空点1/点2 编辑框再 refresh()**: refresh 的"预填自动落库"分支
+// (angleRefBlockId 为空时) 会把编辑框残留的旧自定义值当用户预填重新提交,
+// 刚清空的基准会被写回 (2026-09 实测路径)。
+void SegmentRefCard::onLinkCurrentLineClicked()
+{
+    if (!m_doc) return;
+    const auto* att = findFollowerAttachment();
+    if (!att || att->angleRefBlockId.isNull()) {
+        refresh();
+        return;
+    }
+    m_angleRefPoint->clearPoint();
+    m_angleRefPoint2->clearPoint();
+    if (auto* stack = m_doc->undoStack())
+        stack->push(new cad::cmd::SetAttachmentAngleRefCommand(
+            m_doc, att->id, QUuid(), QUuid()));
+    else
+        m_doc->setAttachmentAngleRef(att->id, QUuid(), QUuid());
     refresh();
     emit changed();
 }

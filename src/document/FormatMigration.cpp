@@ -1,13 +1,18 @@
 #include "FormatMigration.h"
 
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QUuid>
 
 #include <algorithm>
+#include <cmath>
 
 namespace cad::doc {
 namespace {
+
+/// 度 → 弧度 (局部常量, 不依赖 M_PI 的传递定义)。
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
 /// Function-local registry: built on first use, so registration order across
 /// translation units can never bite (static initialisation order fiasco).
@@ -16,6 +21,7 @@ std::vector<MigrationStep>& registry()
     static std::vector<MigrationStep> steps = {
         // ── append new links here; `from` is the version UPGRADED FROM ──
         {0, "layer-refs", &FormatMigration::migrateV0ToV1},
+        {1, "shadow-anchor", &FormatMigration::migrateV1ToV2},
     };
     return steps;
 }
@@ -173,6 +179,51 @@ QJsonObject FormatMigration::migrateV0ToV1(QJsonObject root, QStringList* warnin
             QStringLiteral("已将旧版文件（v0 → v1）迁移为稳定图层 id："
                            "插入辅助层并重写 %1 处图层索引引用")
                 .arg(remapped));
+    }
+    return root;
+}
+
+QJsonObject FormatMigration::migrateV1ToV2(QJsonObject root, QStringList* warnings)
+{
+    QJsonObject docObj = root["document"].toObject();
+
+    // ── 影子账本: 累计偏移 (v11 baselineOffsetDeg, 度) → 锚点 (v14
+    // shadowAnchorRotDeg, 弧度) ────────────────────────────────────────────
+    // 旧语义: 有效基准 = 真基准 + offset (旋转会话逐帧回写 base+δ)。
+    // 新语义: 有效基准 = 真基准 + (宿主旋转 − 锚点), 每次求解现算。
+    // 换算: 锚 = 宿主旋转 − 旧偏移 (度 → 弧度)。宿主块缺失时锚 = 0
+    // (序列化器的悬空连接处理拥有该场景)。
+    QJsonArray blocks = docObj["blocks"].toArray();
+    QHash<QString, double> blockRot;
+    for (const auto& v : blocks) {
+        const QJsonObject b = v.toObject();
+        blockRot.insert(b["id"].toString(), b["rotation"].toDouble());
+    }
+
+    QJsonArray atts = docObj["attachments"].toArray();
+    int converted = 0;
+    for (int i = 0; i < atts.size(); ++i) {
+        QJsonObject a = atts[i].toObject();
+        // 旧偏移缺省 0 (旧行为 = 无影子偏转); 锚 = 宿主旋转 − 旧偏移。
+        // 无 baselineOffsetDeg 字段的连接同样要写锚点 —— 否则新读取端
+        // 锚点缺省 0 会把宿主旋转暴露成意外偏转。
+        const double oldOffsetDeg = a["baselineOffsetDeg"].toDouble(0.0);
+        const QString hostId = a["toBlockId"].toString();
+        const double hostRot = blockRot.value(hostId, 0.0);
+        const double anchor = hostRot - oldOffsetDeg * kDegToRad;
+        a["shadowAnchorRotDeg"] = anchor;
+        a.remove(QStringLiteral("baselineOffsetDeg"));
+        atts[i] = a;
+        ++converted;
+    }
+    docObj["attachments"] = atts;
+    root["document"] = docObj;
+
+    if (warnings && converted > 0) {
+        warnings->append(
+            QStringLiteral("已将旧版文件（v1 → v2）的影子偏转账本迁移为锚点："
+                           "重写 %1 处连接")
+                .arg(converted));
     }
     return root;
 }

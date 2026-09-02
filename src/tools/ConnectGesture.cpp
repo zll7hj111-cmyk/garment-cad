@@ -609,13 +609,12 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
     const cad::param::Attachment oldState = *att;
     cad::param::Attachment* mut = m_paramDoc->findAttachment(attId);
     if (!mut) return false;
-    if (!mut->angleIndependent) {
-        if (mut->angleRefBlockId.isNull()) {
-            mut->angleRefBlockId = oldState.toBlockId;
-            mut->angleRefSegmentId = oldState.toSegmentId;
-            mut->angleRefPointId = oldState.toPointId;
-        }
-    }
+    // 重连保持角度基准 (用户拍板 2026-09): 自动态下把旧所连线段固化为两点
+    // 基准 (点1 = 旧目标点, 点2 = 旧线段另一端) —— 此前只固化点1, 点2 留空,
+    // 两点连线方向退化为单点出口方向。已自定义的基准原样保留。
+    cad::param::preserveAngleRefOnReattach(m_paramDoc, *mut);
+    // 重连重钉影子锚点 (2026-09 锚点推导): 保持用户可见偏转不变。
+    cad::param::repinShadowAnchorOnReattach(m_paramDoc, *mut, toBlockId);
     mut->angleOnly = false;
     mut->slideMode = cad::param::SlideMode::None;
     mut->isLocked = true;   // 仅角度重挂 = 恢复完整连接并重新焊接
@@ -625,7 +624,7 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
 
     // 按保留的角度基准方向反算 followerAngle (与 Resolver 的 refWorld
     // 同构, 2026-09 审核 F2): 旧角度基准 = 唯一角度引用线段或新宿主;
-    // 两点基准 (angleRef2) 与影子偏转 (baselineOffsetDeg) 一并生效 ——
+    // 两点基准 (angleRef2) 与影子偏转一并生效 ——
     // 此前只实现点1出口/线段 start→end 两分支, 已填点2 的线重挂后按
     // 点1出口反算、随后被 Resolver 按两点连线驱动 → 方向差跳变。
     double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, *mut);
@@ -789,6 +788,20 @@ bool ConnectGesture::switchComponentTarget(const ConfirmCandidate& cand)
     if (!m_paramDoc->addAttachment(att)) {
         m_paramDoc->addAttachment(old);
         return false;
+    }
+    // 重钉影子锚点 (2026-09 锚点推导): addAttachment 已把锚点钉到新宿主
+    // 当前旋转。影子此前激活 (显式角度基准在旧宿主外) 时按旧偏转回补
+    // (旧偏转 = 旧宿主旋转 − 旧锚点); 此前不激活则保持新钉锚 (可见偏转 0)。
+    if (auto* added = m_paramDoc->findAttachment(att.id)) {
+        const cad::param::Block* oldHost = m_paramDoc->findBlock(old.toBlockId);
+        const cad::param::Block* newHost = m_paramDoc->findBlock(cand.blockId);
+        const bool wasActive = !old.angleRefBlockId.isNull()
+            && old.angleRefBlockId != old.toBlockId;
+        if (oldHost && newHost && wasActive) {
+            const double visibleDeg =
+                oldHost->transform.rotation - old.shadowAnchorRotDeg;
+            added->shadowAnchorRotDeg = newHost->transform.rotation - visibleDeg;
+        }
     }
     m_editingAttachmentId = att.id;
     m_initialAngle = angleDeg;

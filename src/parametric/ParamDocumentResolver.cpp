@@ -583,58 +583,62 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         // position for the rest of this round — the final drag frame would show
         // the follower one frame behind (曲线点连接不跟随, 用户报告 2026-08).
         // followMoved tracks that case so the re-settle below closes the gap.
-        bool followMoved = false;
-        for (auto& blk : m_blocks) {
-            const bool blkAux = isAuxLayer(blk.layer);
-            if (!(blkAux ? (auxRan || xLayerMoved) : workingRan)) continue;
-            for (auto& pt : blk.points) {
-                if (pt.constraint != PointConstraint::CurveAnchor)
-                    continue;
-                if (pt.followPointId.isNull())
-                    continue;
-                // Find the target point (may be in another block or the same one).
-                const Block* targetBlk = (pt.followBlockId == blk.id)
-                    ? &blk : findBlock(pt.followBlockId);
-                if (!targetBlk) continue;
-                const ParamPoint* target = targetBlk->findPoint(pt.followPointId);
-                if (!target || !target->resolved) continue;
+        auto runFollowPostPass = [&]() -> bool {
+            bool followMoved = false;
+            for (auto& blk : m_blocks) {
+                const bool blkAux = isAuxLayer(blk.layer);
+                if (!(blkAux ? (auxRan || xLayerMoved) : workingRan)) continue;
+                for (auto& pt : blk.points) {
+                    if (pt.constraint != PointConstraint::CurveAnchor)
+                        continue;
+                    if (pt.followPointId.isNull())
+                        continue;
+                    // Find the target point (may be in another block or the same one).
+                    const Block* targetBlk = (pt.followBlockId == blk.id)
+                        ? &blk : findBlock(pt.followBlockId);
+                    if (!targetBlk) continue;
+                    const ParamPoint* target = targetBlk->findPoint(pt.followPointId);
+                    if (!target || !target->resolved) continue;
 
-                // Desired world position = target world pos + follow offset.
-                const geo::Vec2 targetWorld = targetBlk->transform.toWorld(target->resolvedPos);
-                const geo::Vec2 desiredWorld = targetWorld + pt.followOffset;
-                const geo::Vec2 desiredLocal = blk.transform.toLocal(desiredWorld);
+                    // Desired world position = target world pos + follow offset.
+                    const geo::Vec2 targetWorld = targetBlk->transform.toWorld(target->resolvedPos);
+                    const geo::Vec2 desiredWorld = targetWorld + pt.followOffset;
+                    const geo::Vec2 desiredLocal = blk.transform.toLocal(desiredWorld);
 
-                // Convert to chord-relative (percent, offset).
-                const Segment* hostSeg = blk.findSegment(pt.hostSegmentId);
-                if (!hostSeg) continue;
-                const ParamPoint* sp = blk.findPoint(hostSeg->startPointId);
-                const ParamPoint* ep = blk.findPoint(hostSeg->endPointId);
-                if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
-                const geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
-                const double len = chord.length();
-                if (len < 1e-9) continue;
-                const geo::Vec2 unitDir = chord / len;
-                const geo::Vec2 normal{-unitDir.y, unitDir.x};
-                const geo::Vec2 rel = desiredLocal - sp->resolvedPos;
-                pt.interpPercent = rel.dot(unitDir) / len;
-                pt.interpOffsetDist = rel.dot(normal);
+                    // Convert to chord-relative (percent, offset).
+                    const Segment* hostSeg = blk.findSegment(pt.hostSegmentId);
+                    if (!hostSeg) continue;
+                    const ParamPoint* sp = blk.findPoint(hostSeg->startPointId);
+                    const ParamPoint* ep = blk.findPoint(hostSeg->endPointId);
+                    if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
+                    const geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
+                    const double len = chord.length();
+                    if (len < 1e-9) continue;
+                    const geo::Vec2 unitDir = chord / len;
+                    const geo::Vec2 normal{-unitDir.y, unitDir.x};
+                    const geo::Vec2 rel = desiredLocal - sp->resolvedPos;
+                    pt.interpPercent = rel.dot(unitDir) / len;
+                    pt.interpOffsetDist = rel.dot(normal);
 
-                // Re-resolve this point's position from the new params.
-                const geo::Vec2 newPos = sp->resolvedPos
-                                       + unitDir * (len * pt.interpPercent)
-                                       + normal * pt.interpOffsetDist;
-                // The anchor moved — bump the epoch so the canvas rebuilds the
-                // curve cache this frame (Block::resolve's own epoch bump already
-                // ran BEFORE this post-pass, so without this the curve would keep
-                // passing through the OLD anchor until the next resolve).
-                if (pt.resolvedPos.distanceSquaredTo(newPos) > 1e-6) {
-                    blk.touchGeometry();
-                    followMoved = true;
+                    // Re-resolve this point's position from the new params.
+                    const geo::Vec2 newPos = sp->resolvedPos
+                                           + unitDir * (len * pt.interpPercent)
+                                           + normal * pt.interpOffsetDist;
+                    // The anchor moved — bump the epoch so the canvas rebuilds the
+                    // curve cache this frame (Block::resolve's own epoch bump already
+                    // ran BEFORE this post-pass, so without this the curve would keep
+                    // passing through the OLD anchor until the next resolve).
+                    if (pt.resolvedPos.distanceSquaredTo(newPos) > 1e-6) {
+                        blk.touchGeometry();
+                        followMoved = true;
+                    }
+                    pt.resolvedPos = newPos;
+                    pt.resolved = true;
                 }
-                pt.resolvedPos = newPos;
-                pt.resolved = true;
             }
-        }
+            return followMoved;
+        };
+        bool followMoved = runFollowPostPass();
 
         // ── Curve-anchor follow re-settle (曲线点连接同帧跟随, 2026-08) ──
         // The post-pass moved anchor(s) AFTER the attachment settle of this
@@ -665,6 +669,20 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                                      &reDiag, Resolver::Scope::AuxOnly, kAuxLayer,
                                      effAffected,
                                      &m_exprCache);
+            }
+            // 锚点后处理改写了宿主曲线切线 → 重解把以该切线为基准的内部
+            // 连接重新定向 → 组件对齐被打破 (bEnd 离开 xEnd). 重解后必须再
+            // 沉降一次组件, 让本帧结束在"组件对齐"状态; 组件沉降移动成员
+            // 又可能让锚点偏离目标 → 再跑一次锚点后处理 (它只改锚点参数,
+            // 不再触发重解, 不会再次打破组件对齐). 若组件沉降后锚点又动了,
+            // 下一轮外层循环会再对账 (followMoved 已置位).
+            if (settleComponents(*passAttachments, effAffected)) {
+                GCAD_PERF_SCOPE("resolve.followResettleComp");
+                std::vector<ResolveDiagnostic> reDiag;  // discarded
+                Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
+                                     &reDiag, Resolver::Scope::All, QUuid(), effAffected,
+                                     &m_exprCache);
+                if (runFollowPostPass()) followMoved = true;
             }
         }
 

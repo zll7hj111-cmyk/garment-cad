@@ -2215,12 +2215,14 @@ void TestSelectWKey::alignPointEditableAndAutoStateTwoPointBackfill()
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 基准影子偏转角 (2026-09 审核 F4): baselineOffsetDeg 是唯一"公式链之外的
-// 隐式旋转账本" —— 有效基准方向 = 真基准出方向 + 影子偏转 (Resolver
-// applyAttachment 叠加)。验证:
-//   · 影子偏转驱动旋转: 设 offset=δ → 跟随线世界方向整体转 δ (followerAngle
-//     不变, 公式原样存活)。
-//   · 命令 undo: SetAttachmentBaselineOffsetCommand 单步回滚。
+// 影子偏转 (2026-09 审核 F4; 2026-09 锚点推导重设计): 影子 = 宿主旋转 −
+// 锚点现算, 是唯一"公式链之外的隐式旋转账本" —— 有效基准方向 = 真基准
+// 出方向 + 影子偏转 (Resolver applyAttachment 叠加)。激活条件: 显式角度
+// 基准在位置宿主外 (普通跟随时真基准已随宿主转, 叠加影子 = 双重计入,
+// 恒不激活)。验证:
+//   · 影子偏转驱动旋转: 设可见偏转 δ (锚 = 宿主旋转 − δ) → 跟随线世界方向
+//     整体转 δ (followerAngle 不变, 公式原样存活)。
+//   · 命令 undo: SetAttachmentShadowAnchorCommand 单步回滚。
 //   · 与自定义角度基准 (两点连线) 叠加: 有效基准 = 两点方向 + δ。
 // ─────────────────────────────────────────────────────────────────────────
 void TestSelectWKey::shadowBaselineOffsetDrivesRotation()
@@ -2229,7 +2231,7 @@ void TestSelectWKey::shadowBaselineOffsetDrivesRotation()
     doc.setActiveLayer(layerIdAt(doc, 1));
     const auto leader = makeLine(doc, 100.0, Vec2(200.0, 0.0));   // 宿主 A
     const auto line   = makeLine(doc, 60.0);                       // 本线 (0,0)→(60,0)
-    const auto hostB  = makeLine(doc, 80.0, Vec2(120.0, 90.0));   // 点2 宿主 B
+    const auto hostB  = makeLine(doc, 80.0, Vec2(120.0, 90.0));   // 角度基准 B
     doc.resolveAll();
 
     cad::param::Attachment att;
@@ -2239,6 +2241,10 @@ void TestSelectWKey::shadowBaselineOffsetDrivesRotation()
     att.toPointId   = leader.endId;
     att.toSegmentId = leader.segId;
     att.followerAngle = 180.0;
+    // 显式角度基准在宿主外 (B ≠ A) → 影子激活。
+    att.angleRefBlockId = hostB.blockId;
+    att.angleRefSegmentId = hostB.segId;
+    att.angleRefPointId = hostB.startId;
     QVERIFY(doc.addAttachment(att));
     doc.resolveAll();
 
@@ -2257,11 +2263,15 @@ void TestSelectWKey::shadowBaselineOffsetDrivesRotation()
     };
     const double dir0 = worldDir(line.blockId);
 
-    // 1) 影子偏转 δ=30°: 有效基准 = 真基准 + 30° → 跟随线世界方向转 30°。
+    // 1) 影子偏转 δ=30°: 锚 = 宿主旋转 − 30° (宿主旋转 0) → 有效基准 =
+    // 真基准 + 30° → 跟随线世界方向转 30°。
     {
         auto* mut = doc.findAttachment(att.id);
         QVERIFY(mut);
-        mut->baselineOffsetDeg = 30.0;
+        const Block* host = doc.findBlock(leader.blockId);
+        QVERIFY(host);
+        mut->shadowAnchorRotDeg = host->transform.rotation
+                                - 30.0 * M_PI / 180.0;
     }
     doc.resolveAll();
     QVERIFY2(angDiff(worldDir(line.blockId), dir0 + 30.0 * M_PI / 180.0) < 1e-9,
@@ -2269,36 +2279,41 @@ void TestSelectWKey::shadowBaselineOffsetDrivesRotation()
     QVERIFY2(qFuzzyCompare(doc.attachments().front().followerAngle, 180.0),
              "影子偏转不写 followerAngle (账本独立)");
 
-    // 2) 命令 undo: SetAttachmentBaselineOffsetCommand 单步回滚到 0。
+    // 2) 命令 undo: SetAttachmentShadowAnchorCommand (输入可见偏转 0 =
+    // 重钉锚点) 单步回滚。
     {
         auto* stack = doc.undoStack();
-        stack->push(new cad::cmd::SetAttachmentBaselineOffsetCommand(
+        stack->push(new cad::cmd::SetAttachmentShadowAnchorCommand(
             &doc, att.id, 0.0));
-        QVERIFY2(qFuzzyCompare(doc.attachments().front().baselineOffsetDeg, 0.0),
-                 "命令 redo 写入 0");
+        QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg, 0.0),
+                 "命令 redo 重钉锚点 (可见偏转 0)");
         stack->undo();
-        QVERIFY2(qFuzzyCompare(doc.attachments().front().baselineOffsetDeg, 30.0),
-                 "命令 undo 回滚到 30");
+        QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg,
+                               -30.0 * M_PI / 180.0),
+                 "命令 undo 回滚到旧锚点");
         stack->redo();
-        QVERIFY2(qFuzzyCompare(doc.attachments().front().baselineOffsetDeg, 0.0),
-                 "命令 redo 恢复 0");
+        QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg, 0.0),
+                 "命令 redo 恢复新锚点");
     }
 
-    // 3) 与自定义两点基准叠加: 有效基准 = 点1→点2 连线方向 + δ。
+    // 3) 与自定义两点基准叠加: 有效基准 = 点1→点2 连线方向 + δ。点1 宿主
+    // (B) 在位置宿主 (A) 外 → 影子仍激活。
     {
         auto* mut = doc.findAttachment(att.id);
         QVERIFY(mut);
-        mut->angleRefBlockId = leader.blockId;
-        mut->angleRefSegmentId = leader.segId;
-        mut->angleRefPointId = leader.endId;
-        mut->angleRef2BlockId = hostB.blockId;
-        mut->angleRef2PointId = hostB.startId;
-        mut->baselineOffsetDeg = 15.0;
+        mut->angleRefBlockId = hostB.blockId;
+        mut->angleRefSegmentId = hostB.segId;
+        mut->angleRefPointId = hostB.startId;
+        mut->angleRef2BlockId = leader.blockId;
+        mut->angleRef2PointId = leader.endId;
+        const Block* host = doc.findBlock(leader.blockId);
+        mut->shadowAnchorRotDeg = host->transform.rotation
+                                - 15.0 * M_PI / 180.0;
     }
     doc.resolveAll();
     {
-        const Vec2 w1 = doc.findBlock(leader.blockId)->worldPos(leader.endId);
-        const Vec2 w2 = doc.findBlock(hostB.blockId)->worldPos(hostB.startId);
+        const Vec2 w1 = doc.findBlock(hostB.blockId)->worldPos(hostB.startId);
+        const Vec2 w2 = doc.findBlock(leader.blockId)->worldPos(leader.endId);
         const double refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
         const double fA = doc.attachments().front().followerAngle * M_PI / 180.0;
         QVERIFY2(angDiff(worldDir(line.blockId),

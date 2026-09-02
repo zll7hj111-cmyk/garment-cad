@@ -28,6 +28,16 @@
 > `AimRelease`/`DartRelease`、选集/影子八用例全部移除；当前多选后按 R = 普通单线旋转，产品内无整组
 > 旋转入口。**`baselineOffsetDeg` 字段与 §2.6 机制保留**（连接卡「基准偏转/归零」仍唯一写入方），
 > 重新设计时 §2.5/§2.6 的判定表与影子机制可直接取用（缺的只是工具入口）。
+>
+> **2026-09 落地（影子锚点推导重设计，用户拍板）**：旧累计账本（offset += δ 由旋转工具会话逐帧
+> 回写）在移动时产生累计角度偏差，用户提出"影子挂靠连接线"的心智模型。§2.6 的 baselineOffsetDeg
+> 被 `shadowAnchorRotDeg`（影子锚点旋转角，弧度）取代：影子 = 刚性挂在位置宿主上的隐形基准，
+> 有效基准 = 真基准 + (宿主当前旋转 − 锚点)，每次求解现算 —— 结构上不可能累计漂移，宿主被其
+> 基准线间接带动时影子同样跟转。旋转工具影子会话（collectShadowAttachments/applyShadowDelta/
+> restoreShadowBase）、`ParamDocument::updateBaselineOffsets`、`SetShadowOffsetsCommand`、
+> `SetAttachmentBaselineOffsetCommand` 全部移除；面板输入改 `SetAttachmentShadowAnchorCommand`
+> （重钉锚点）。序列化 kFormatVersion 1→2，`migrateV1ToV2`（"shadow-anchor"）换算旧档。
+> 权威决策记录见 DECISIONS.md「影子偏转·锚点推导」条目；本文档 §2.6 保留为历史档案。
 
 ---
 

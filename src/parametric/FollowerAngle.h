@@ -41,7 +41,8 @@ inline double backSolveFollowerAngle(double followerRotRad,
 ///   ① 自定义角度基准 (angleRefBlockId 非空): 点1→点2 世界连线方向优先,
 ///      其次点1 出口方向, 再次基准线段 start→end 方向;
 ///   ② 否则 = 位置宿主 (toBlockId) 在吸附点的出口方向;
-///   ③ 最后叠加基准影子偏转角 baselineOffsetDeg (有效基准 = 真基准 + 影子)。
+///   ③ 最后叠加影子偏转 (2026-09 锚点推导): 有效基准 = 真基准 +
+///      (宿主当前旋转 − shadowAnchorRotDeg), noFollowRotate 置位不叠加。
 /// 滑轨轨道方向 (leaderRefWorld) 刻意不在此列 —— 轨道属于位置宿主, 与
 /// 角度影子无关 (Resolver.cpp:767-768 同注释)。
 ///
@@ -50,6 +51,27 @@ inline double backSolveFollowerAngle(double followerRotRad,
 /// @return 有效基准方向 (radians); 宿主/基准块缺失时回退 0 (调用方自行兜底)。
 /// 实现见 ParamDocumentAttachments.cpp (需 ParamDocument 完整类型)。
 double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att);
+
+/// 重连时保持角度基准 (用户拍板 2026-09): 自动态 (angleRefBlockId 为空) 下
+/// 重连 = 把旧所连线段固化为两点基准 (点1 = 旧目标点, 点2 = 旧线段另一端),
+/// 方向基准不随新宿主漂移 —— 此前各重连路径只固化点1, 点2 留空, 两点连线
+/// 方向退化为单点出口方向, 且面板重定向后基准跟随新宿主 (用户报告「重连
+/// 覆盖方向基准, 只覆盖点1, 点2 没有内容」)。已自定义的基准原样保留;
+/// 独立角 (angleIndependent) 时基准字段是还原缓存, 不动。
+/// **调用方必须在改写 toBlockId/toPointId 之前调用** (旧宿主信息仍在 att 上)。
+/// @return 是否发生了固化 (自动态 → 两点基准)。
+/// 实现见 ParamDocumentAttachments.cpp (需 ParamDocument 完整类型)。
+bool preserveAngleRefOnReattach(ParamDocument* doc, Attachment& att);
+
+/// 重连重钉影子锚点 (2026-09 锚点推导): 影子此前激活 (显式角度基准在旧
+/// 宿主外) 时保持用户可见偏转不变 —— 旧偏转 = 旧宿主旋转 − 旧锚点; 新锚点
+/// = 新宿主旋转 − 旧偏转。此前不激活 (自动态/普通跟随) 时重钉到新宿主
+/// 当前旋转 (可见偏转 0, 方向保持由调用方的 followerAngle 反算承担)。
+/// **必须在改写 toBlockId 之前调用** (旧宿主信息仍在 att 上), 且新宿主
+/// (@p newHostBlockId) 必须已存在; 任一宿主缺失时不动 (调用方兜底)。
+/// 实现见 ParamDocumentAttachments.cpp (需 ParamDocument 完整类型)。
+void repinShadowAnchorOnReattach(ParamDocument* doc, Attachment& att,
+                                 const QUuid& newHostBlockId);
 
 /// Shared 角度↔弧长 double-mode switch write-back (2026-08-28 收口 A3).
 /// Both mode-toggle entries (SegmentAngleCard::onModeToggle / 

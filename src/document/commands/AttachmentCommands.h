@@ -98,6 +98,7 @@ private:
     cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
     double m_oldArcLength = 0.0;
     QString m_oldArcFormula;
+    double m_oldShadowAnchor = 0.0;   ///< 影子锚点快照 (2026-09 锚点推导).
 };
 
 
@@ -146,6 +147,7 @@ private:
     cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
     double m_oldArcLength = 0.0;
     QString m_oldArcFormula;
+    double m_oldShadowAnchor = 0.0;   ///< 影子锚点快照 (2026-09 锚点推导).
 };
 
 /// 重新挂接 (用户需求 2026): 解焊后把跟随线拖到新的位置宿主 A, 同时保留
@@ -334,25 +336,48 @@ private:
     QString m_newArcFormula;
 };
 
-/// 基准影子偏转角独立设置 (用户拍板 2026-08-27, ROTATE_REDESIGN_DESIGN.md
-/// §2.6): records a baselineOffsetDeg change (old → new) on one attachment.
-/// Used by the connection card's「归零」button —— 选集旋转（原 §2.6 的影子
-/// 偏转批量回写）已于 2026-08-29 删除，本命令是该字段目前唯一的写入方。
-class SetAttachmentBaselineOffsetCommand : public QUndoCommand
+/// 影子锚点重钉 (2026-09 锚点推导重设计, 取代旧 SetAttachmentBaselineOffset
+/// Command): 面板「影子偏转」输入 = 重钉锚点 —— 锚 = 宿主当前旋转 − 输入
+/// 偏转 (保持用户可见偏转 = 输入值)。redo/undo 均 resolve。
+class SetAttachmentShadowAnchorCommand : public QUndoCommand
 {
 public:
-    SetAttachmentBaselineOffsetCommand(cad::param::ParamDocument* doc,
-                                       const QUuid& attId,
-                                       double newOffsetDeg,
-                                       QUndoCommand* parent = nullptr);
+    SetAttachmentShadowAnchorCommand(cad::param::ParamDocument* doc,
+                                     const QUuid& attId,
+                                     double newVisibleDeg,
+                                     QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
 
 private:
     cad::param::ParamDocument* m_doc;
     QUuid m_attId;
-    double m_oldOffset = 0.0;
-    double m_newOffset = 0.0;
+    double m_oldAnchor = 0.0;
+    double m_newAnchor = 0.0;
+};
+
+/// 不跟随旋转开关 (用户拍板 2026-09): 持久化记录本跟随线在旋转位置宿主时
+/// 是否**不**参与影子偏转 (noFollowRotate)。redo/undo 均 resolve —— 开关
+/// 翻转后 Resolver 按新影子语义落位 (影子偏转激活时旋转宿主 δ, 影子随宿主
+/// 转 δ; 关闭时被角度基准拽回原方向)。
+class SetAttachmentNoFollowRotateCommand : public QUndoCommand
+{
+public:
+    SetAttachmentNoFollowRotateCommand(cad::param::ParamDocument* doc,
+                                       const QUuid& attId,
+                                       bool noFollowRotate,
+                                       QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+    int id() const override { return static_cast<int>(CommandId::SetNoFollowRotate); }
+    bool mergeWith(const QUndoCommand* other) override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_attId;
+    bool m_newNoFollow = false;
+    bool m_oldNoFollow = false;
+    double m_oldShadowAnchor = 0.0;   ///< 影子锚点快照 (2026-09 锚点推导).
 };
 
 /// 滑轨偏移面板编辑 (2026-09 审核收口): 摆放区「滑轨」两轴输入 (数值或公式)

@@ -102,6 +102,9 @@ bool ParamDocument::addAttachment(Attachment att)
     // 拆开 (angleOnly) 的置位互斥由 setAttachmentXxx 保持 (2026-xx 起
     // angleOnly 与 angleIndependent 两维独立, 不再互斥)。
     att.isLocked = true;
+    // 影子锚点 (2026-09 锚点推导): 新建连接钉锚到宿主当前旋转 —— 影子
+    // 初始偏转 = 0 (有效基准 = 真基准, 与旧账本零值逐位一致)。
+    att.shadowAnchorRotDeg = toBlock->transform.rotation;
     m_attachments.push_back(std::move(att));
     if (crossLayer)
         ++m_crossLayerCount;
@@ -149,6 +152,8 @@ bool ParamDocument::addComponentAttachment(Attachment att)
 
     // 组件级连接同样默认勾选「拖动保护」(整组随外部线移动, 拖组件不拆).
     att.isLocked = true;
+    // 影子锚点 (2026-09 锚点推导): 组件级连接同样钉锚到宿主当前旋转。
+    att.shadowAnchorRotDeg = toBlock->transform.rotation;
 
     m_attachments.push_back(std::move(att));
     m_followersDirty = true;  // new leader→component edge
@@ -426,19 +431,6 @@ void ParamDocument::updateSlideOffsetsFromCurrent(const QUuid& id)
     }
 }
 
-void ParamDocument::updateBaselineOffsets(const QHash<QUuid, double>& offsets)
-{
-    // 影子偏转角拖动回写 (旋转会话每帧调用, 用户拍板 2026-08-27): 只写存储值,
-    // 不触发 resolve —— 随后的 resolveForDrag 按新值落位 (与
-    // updateSlideOffsetsFromCurrent 同一拖帧回写契约)。未知 id 忽略。
-    for (auto it = offsets.constBegin(); it != offsets.constEnd(); ++it) {
-        auto att = std::find_if(m_attachments.begin(), m_attachments.end(),
-            [&it](const Attachment& a) { return a.id == it.key(); });
-        if (att != m_attachments.end())
-            att->baselineOffsetDeg = it.value();
-    }
-}
-
 QSet<QUuid> ParamDocument::lockedClosure(const QSet<QUuid>& seed) const
 {
     QSet<QUuid> result = seed;
@@ -696,8 +688,70 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
         }
     }
 
-    refWorld += att.baselineOffsetDeg * M_PI / 180.0;
+    // 影子偏转 (2026-09 锚点推导重设计): 有效基准 = 真基准 + (宿主当前旋转
+    // − 钉锚时宿主旋转), 与 Resolver::applyAttachment 逐位同构。激活条件
+    // 同源: 显式角度基准在位置宿主外 (普通跟随时真基准已随宿主转, 叠加
+    // 影子 = 双重计入, 恒不激活); noFollowRotate 置位 = 不跟转。
+    const bool shadowActive = !att.angleRefBlockId.isNull()
+        && att.angleRefBlockId != att.toBlockId;
+    if (shadowActive && !att.noFollowRotate)
+        refWorld += to->transform.rotation - att.shadowAnchorRotDeg;
     return refWorld;
+}
+
+// ─── preserveAngleRefOnReattach (2026-09 用户拍板) ─────────────────────────
+// 重连保持角度基准: 自动态下把旧所连线段固化为两点基准 (点1 = 旧目标点,
+// 点2 = 旧线段另一端), 方向基准不随新宿主漂移。声明见 FollowerAngle.h。
+
+bool preserveAngleRefOnReattach(ParamDocument* doc, Attachment& att)
+{
+    if (att.angleIndependent) return false;   // 独立角: ref 字段是还原缓存, 不动
+    if (!att.angleRefBlockId.isNull()) return false;  // 已自定义: 原样保留
+
+    const Block* oldHost = doc ? doc->findBlock(att.toBlockId) : nullptr;
+    if (!oldHost) return false;
+    QUuid oldSegId = att.toSegmentId;
+    const Segment* oldSeg = oldHost->findSegment(oldSegId);
+    if (!oldSeg) {
+        oldSegId = oldHost->exitSegmentAtPoint(att.toPointId);
+        oldSeg = oldHost->findSegment(oldSegId);
+    }
+    if (!oldSeg) return false;
+
+    att.angleRefBlockId = att.toBlockId;
+    att.angleRefSegmentId = oldSegId;
+    att.angleRefPointId = att.toPointId;
+    const QUuid other = (oldSeg->startPointId == att.toPointId)
+        ? oldSeg->endPointId : oldSeg->startPointId;
+    att.angleRef2BlockId = att.toBlockId;
+    att.angleRef2PointId = other;
+    return true;
+}
+
+// ─── repinShadowAnchorOnReattach (2026-09 锚点推导) ────────────────────────
+// 重连重钉影子锚点。声明见 FollowerAngle.h。
+
+void repinShadowAnchorOnReattach(ParamDocument* doc, Attachment& att,
+                                 const QUuid& newHostBlockId)
+{
+    const Block* oldHost = doc ? doc->findBlock(att.toBlockId) : nullptr;
+    const Block* newHost = doc ? doc->findBlock(newHostBlockId) : nullptr;
+    if (!oldHost || !newHost) return;
+    // 影子此前是否激活: 显式角度基准在旧宿主外 (调用方已先跑
+    // preserveAngleRefOnReattach —— 自动态已固化为旧宿主两点基准, 此处
+    // angleRefBlockId == 旧宿主 = 此前不激活)。
+    const bool wasActive = !att.angleRefBlockId.isNull()
+        && att.angleRefBlockId != att.toBlockId;
+    if (wasActive) {
+        // 保持用户可见偏转不变: 新锚 = 新宿主旋转 − 旧偏转。
+        const double visibleDeg =
+            oldHost->transform.rotation - att.shadowAnchorRotDeg;
+        att.shadowAnchorRotDeg = newHost->transform.rotation - visibleDeg;
+    } else {
+        // 影子此前不激活 (自动态/普通跟随): 重钉到新宿主当前旋转 (可见
+        // 偏转 0), 方向保持由调用方的 followerAngle 反算承担。
+        att.shadowAnchorRotDeg = newHost->transform.rotation;
+    }
 }
 
 } // namespace cad::param

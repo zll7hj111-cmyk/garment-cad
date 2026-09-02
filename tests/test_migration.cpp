@@ -15,6 +15,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDir>
+#include <QPair>
 #include <QTemporaryDir>
 #include <QUuid>
 
@@ -132,12 +133,13 @@ private slots:
     void v0InsertsAuxLayerAndShiftsIndices();
     void v0WithoutLayersArrayGetsDefaultPair();
     void v0WithExistingAuxLayerDoesNotShift();
-    void v1DocumentIsUntouched();
+    void currentVersionDocumentIsUntouched();
     void newerThanSupportedIsRejected();
     void missingStepIsRejectedRatherThanGuessed();
     void blockWithoutLayerFieldIsLeftToTheSerializer();
     void migratedV0DeserializesLikeV1();
     void v1ArchiveStillRoundTrips();
+    void v1ShadowOffsetMigratesToAnchor();
 };
 
 void TestMigration::v0InsertsAuxLayerAndShiftsIndices()
@@ -233,7 +235,7 @@ void TestMigration::v0WithExistingAuxLayerDoesNotShift()
              layers[0].toObject()["id"].toString());
 }
 
-void TestMigration::v1DocumentIsUntouched()
+void TestMigration::currentVersionDocumentIsUntouched()
 {
     QJsonObject docObj;
     QJsonArray layers;
@@ -383,6 +385,96 @@ void TestMigration::v1ArchiveStillRoundTrips()
     QCOMPARE((int)dst.layers().size(), 2);
     QCOMPARE(dst.layers()[0].type, LayerType::Auxiliary);
     QVERIFY(warnings.isEmpty());   // a current-version file migrates silently
+}
+
+void TestMigration::v1ShadowOffsetMigratesToAnchor()
+{
+    // v1 stored the shadow as a cumulative offset (baselineOffsetDeg, degrees);
+    // v2 stores a shadow ANCHOR (shadowAnchorRotDeg, radians) = host rotation −
+    // old offset. A v1 attachment with offset 30° on a host rotated 0.5 rad
+    // must land on anchor = 0.5 − 30°·π/180, and the old key must be gone.
+    QJsonObject root;
+    QJsonObject docObj;
+    docObj["pointSeq"] = 1;
+    docObj["lineSeq"]  = 1;
+
+    QJsonArray layers;
+    QJsonObject l0;
+    l0["id"] = uuidStr(QUuid::createUuid());
+    l0["name"] = QStringLiteral("辅助层");
+    l0["type"] = QStringLiteral("auxiliary");
+    layers.append(l0);
+    QJsonObject l1;
+    l1["id"] = uuidStr(QUuid::createUuid());
+    l1["name"] = QStringLiteral("工作层 1");
+    l1["type"] = QStringLiteral("working");
+    layers.append(l1);
+    docObj["layers"] = layers;
+    docObj["activeLayer"] = l1["id"];
+
+    const QString hostId = uuidStr(QUuid::createUuid());
+    const QString followerId = uuidStr(QUuid::createUuid());
+    const double hostRot = 0.5;   // radians
+
+    QJsonArray blocks;
+    const QList<QPair<QString, double>> blockDefs{
+        {hostId, hostRot}, {followerId, 0.0}};
+    for (const auto& def : blockDefs) {
+        QJsonObject b;
+        b["id"] = def.first;
+        b["name"] = QStringLiteral("块");
+        b["layer"] = l1["id"];
+        b["rotation"] = def.second;
+        QJsonObject p1;
+        p1["id"] = uuidStr(QUuid::createUuid());
+        p1["constraint"] = QStringLiteral("Free");
+        QJsonObject pos; pos["x"] = 0.0; pos["y"] = 0.0;
+        p1["freePos"] = pos;
+        QJsonObject p2;
+        p2["id"] = uuidStr(QUuid::createUuid());
+        p2["constraint"] = QStringLiteral("Polar");
+        p2["refPointId"] = p1["id"];
+        p2["distance"] = 50.0;
+        p2["angle"] = 0.0;
+        QJsonArray pts; pts.append(p1); pts.append(p2);
+        b["points"] = pts;
+        QJsonObject seg;
+        seg["id"] = uuidStr(QUuid::createUuid());
+        seg["startPointId"] = p1["id"];
+        seg["endPointId"] = p2["id"];
+        seg["type"] = QStringLiteral("Line");
+        QJsonArray segs; segs.append(seg);
+        b["segments"] = segs;
+        blocks.append(b);
+    }
+    docObj["blocks"] = blocks;
+
+    QJsonObject att;
+    att["id"] = uuidStr(QUuid::createUuid());
+    att["fromBlockId"] = followerId;
+    att["fromPointId"] = blocks[1].toObject()["points"].toArray()[0].toObject()["id"];
+    att["toBlockId"] = hostId;
+    att["toPointId"] = blocks[0].toObject()["points"].toArray()[1].toObject()["id"];
+    att["followerAngle"] = 180.0;
+    att["baselineOffsetDeg"] = 30.0;   // v11 旧账本
+    QJsonArray atts; atts.append(att);
+    docObj["attachments"] = atts;
+
+    root["document"] = docObj;
+    root["variables"] = QJsonObject();
+
+    QStringList warnings;
+    QString error;
+    QVERIFY(cad::doc::FormatMigration::migrate(1, root, &warnings, &error));
+    QVERIFY(error.isEmpty());
+    QVERIFY(!warnings.isEmpty());   // 迁移有提示
+
+    const QJsonObject outAtt = root["document"].toObject()["attachments"]
+                                   .toArray()[0].toObject();
+    QVERIFY(!outAtt.contains(QStringLiteral("baselineOffsetDeg")));
+    const double expectedAnchor = hostRot - 30.0 * 3.14159265358979323846 / 180.0;
+    QVERIFY2(qFuzzyCompare(outAtt["shadowAnchorRotDeg"].toDouble(), expectedAnchor),
+             "锚 = 宿主旋转 − 旧偏移 (度→弧度)");
 }
 
 QTEST_GUILESS_MAIN(TestMigration)

@@ -420,6 +420,11 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
     // so bridge followers (and anything downstream of them) land correctly.
     // Skipped entirely when no bridge moved — the Step 3 settlement is still
     // valid then, and an extra settle pass is the single biggest per-frame cost.
+    // (2026-09 恢复: 205a229 为旧组件铰链让路时删掉了本步, 组件系统重构后
+    // 未恢复 — 桥跟随者从此停在 Step 3 的旧桥姿态上, 桥 aux 点跟随者
+    // 落点错误, test_serializer::bridgeAuxPointSnappableAndAttachable 基线红.)
+    if (bridgesMoved && settleAttachments())
+        report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
 
     // Step 6/6b/6c: cross-block intersection points and the interpolated points
     // that depend on them, in a SHARED bounded fixpoint. An intersection's ray
@@ -781,13 +786,21 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         }
     }
 
-    // 基准影子偏转角 (用户拍板 2026-08-27, Attachment::baselineOffsetDeg):
-    // 有效基准方向 = 真基准方向 + 影子累计偏转。平时为 0, 行为不变;
-    // 批量/整组旋转的会话把"基准在旋转集外"的连接逐帧写成 base+δ,
-    // 让被驱朝向跟着组走而真基准不动 (ROTATE_REDESIGN_DESIGN.md §2.6)。
+    // 影子偏转 (用户拍板 2026-09 锚点推导重设计, 取代旧 baselineOffsetDeg
+    // 累计账本): 影子 = 刚性挂在位置宿主上的隐形基准, 有效基准方向 =
+    // 真基准方向 + (宿主当前旋转 − 钉锚时宿主旋转)。每次求解从固定锚点
+    // 现算 —— 结构上不可能累计漂移; 宿主被其基准线间接带动旋转时影子
+    // 同样跟转 (与"影子挂靠连接线"的心智模型一致)。noFollowRotate 置位 =
+    // 不跟转 (被角度基准拽回原方向)。
+    // 激活条件 (与旧 collectShadowAttachments 同源): 显式角度基准在位置
+    // 宿主外 —— 位置宿主 = 角度基准 (普通跟随) 时真基准方向已随宿主转,
+    // 再叠加影子会把宿主旋转双重计入, 故影子恒不激活 (刚体平账)。
     // 只影响驱动旋转的 refWorld —— 滑轨轨道用的 leaderRefWorld 是位置宿主
     // 的方向, 与影子无关; 本字段位于公式求值链之外, 公式/常量原样存活。
-    refWorld += att.baselineOffsetDeg * M_PI / 180.0;
+    const bool shadowActive = !att.angleRefBlockId.isNull()
+        && att.angleRefBlockId != att.toBlockId;
+    if (shadowActive && !att.noFollowRotate)
+        refWorld += to.transform.rotation - att.shadowAnchorRotDeg;
 
     // The follower's attached point must exist and be resolved (checked before
     // any direction lookup so dangling points short-circuit cleanly).

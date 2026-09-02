@@ -303,17 +303,32 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
     - **test exe 直跑 stdout 捕获不到**（GUI 子系统进程）：bash 重定向得到空文件但 rc=0，测试照样跑了 13 秒。用 `ctest -R x -V`（Pass/耗时）或 QtTest 自带 `-o 文件,txt`（函数级 PASS 明细 + Totals）。
     - **python 原地改源文件后必须补 BOM 再走构建**；本次 Edit 工具实测**保留**了 BOM（与 AGENTS.md「Edit 剥 BOM」的记载不符，但保险起见每次改完仍用脚本核一遍）。
 
+- **线条属性「连接到」拆开/重连两处 UI 缺陷（2026-09 用户报告：「点击拆开后，连接到[]的输入框应该是空的，当前里面还是有原内容，虽然可以拆开了。且输入点id没有触发跟随，只是在线段上有特效」）**：①**拆开后输入框不清空**——`LinePropertyDialog::refreshEndpointConnRows` 的起点行回显条件只判 `att && m_topIsStart`，未排除 `att->angleOnly`（拆开 = 位置已自由），框里仍回显原目标点，与按钮已翻面「重连」矛盾（误导用户以为还连着）。修复 = 回显条件加 `!att->angleOnly`，拆开态 `clearPoint()` + 按钮「重连」可用（与隐藏辅助卡 SegmentConnectionCard::refreshUnifiedState 的既有语义对齐）。②**拆开后输入点 id 重定向不恢复位置连接**——`onStartConnectResolved` 重定向分支只改 `toBlockId/toPointId/toSegmentId` + 反算 followerAngle，`angleOnly` 保持 true → Resolver 只写旋转、跳过位置钉点（Resolver.cpp applyAttachment angleOnly 分支），画布上只有线段特效（角度跟随生效）而位置不吸附。修复 = 重定向分支先清 `angleOnly=false + isLocked=true + slideMode=None`（与「重连」按钮 SetAttachmentAngleOnlyCommand(false) 同语义：位置回宿主 + 重新焊接），再改目标点。**教训：拆开（angleOnly）是"位置维度已断开"的持久状态，任何"输入目标点 = 重连意图"的路径都必须显式恢复位置维度，只改目标点 = 静默半连接**。回归：test_dialog_tabs 新增 `detachClearsConnectEditAndRetargetReconnects`（拆开 → 框清空 + 按钮「重连」+ angleOnly；输入新宿主 P# 回车 → angleOnly=false / isLocked=true / toPoint=新目标 / from-point 吸附回新宿主点 / 框回显新目标）。
+
+- **重连覆盖方向基准（2026-09 用户拍板：「连接拆开的时候角度基准保持不变。再次连接的时候也应该不变。当前重新连接任意点，会覆盖掉方向基准。而且只覆盖方向点1，点2没有内容」）**：自动态（`angleRefBlockId` 空）下重连，各路径只把旧目标点固化为点1、点2 留空 → 两点连线方向退化为单点出口方向；面板「连接到」重定向后基准跟随新宿主（方向基准被覆盖）。修复 = 新增共享 helper `cad::param::preserveAngleRefOnReattach`（FollowerAngle.h 声明 / ParamDocumentAttachments.cpp 实现）：自动态下把旧所连线段固化为**两点基准**（点1 = 旧目标点、点2 = 旧线段另一端），已自定义的基准原样保留，独立角时 ref 字段是还原缓存不动；**必须在改写 toBlockId/toPointId 之前调用**（旧宿主信息仍在 att 上）。接入 4 条重连路径：`ConnectGesture::reattachAngleOnly` / `SegmentConnectionCard::onTargetResolved` / `ReattachAttachmentCommand::redo` / `LinePropertyDialog::onStartConnectResolved`。配套：①反算 followerAngle 改用 `effectiveAngleRefWorld`（与 Resolver 同构，含两点基准与影子偏转）——此前恒用新宿主方向反算，固化基准后 Resolver 按旧基准驱动 → 重连瞬间跳线；②方向行新增 **[链接当前线]** 按钮（`SegmentRefCard::onLinkCurrentLineClicked`，objectName `linkCurrentLineBtn`）：清空自定义基准回自动态（走 `SetAttachmentAngleRefCommand`，undo 可撤），**必须先清空点1/点2 编辑框再 refresh()**——refresh 的"预填自动落库"分支（angleRefBlockId 为空时）会把编辑框残留的旧自定义值当用户预填重新提交，刚清空的基准会被写回；③独立角时点1/点2 清空但**不禁用**（用户拍板：可直接填点 = 退出独立角并建立自定义基准）；**独立角也不锁「链接当前线」按钮**（2026-09 修正：独立只是清空，不锁按钮——独立角 + 自定义基准时点击 = 清空基准 + 退出独立角回自动态，`SetAttachmentAngleRefCommand::redo` 会清 `angleIndependent`）。回归：test_dialog_tabs 新增 `reattachPreservesAngleRef`（自动态重连 → 点1=旧目标点/点2=旧线段另一端；自定义基准再重连 → 原样保留）/ `linkCurrentLineButtonClearsRef`（点击 → angleRef 全清 + 自动态回显当前线段两点 + 按钮禁用）/ `independentAngleKeepsRefEditsEnabled`（独立角 → 点1/点2 空且可编辑；独立角 + 自定义基准 → 按钮可用，点击 → 清基准 + 退出独立角）。
+
+- **影子偏转累计角度偏差 → 锚点推导重设计（2026-09 用户报告「影子偏转在移动时产生累计的角度偏差，影子本质上还是自己挂自己」）**：旧机制 = `baselineOffsetDeg` 累计账本（度），旋转工具会话逐帧回写 base+δ、提交时宏内 `SetShadowOffsetsCommand` 与主命令同滚 —— 偏差来源：①提交后会话态不清零，工具切换/Esc 的 `restoreShadowBase` 把已提交的偏移静默写回 base（模型与 undo 栈脱节）；②条带角度输入走命令路径不经过影子会话（拖拽跟转、输入不跟转，入口不一致）；③会话生命周期散落 selectTarget/clearTarget/onDeactivate 多处，任一漏清理即残留。修复 = **锚点推导**（用户拍板）：`Attachment::shadowAnchorRotDeg`（弧度）= 钉锚那一刻宿主 transform.rotation，有效基准 = 真基准 + (宿主当前旋转 − 锚点)，**每次求解现算** —— 结构上不可能累计漂移，宿主被其基准线间接带动时影子同样跟转（与"影子挂靠连接线"心智模型一致）。要点：①**激活条件**：显式角度基准在位置宿主外（普通跟随时真基准已随宿主转，叠加影子 = 双重计入，恒不激活）——Resolver 与 `effectiveAngleRefWorld` 两处同源判定；②新建连接在 addAttachment/addComponentAttachment 钉锚；重连走 `repinShadowAnchorOnReattach`（此前激活 = 保持可见偏转，此前不激活 = 钉新宿主当前旋转）；③**激活态过渡**（非激活→激活）必须重钉锚点防陈旧锚点暴露成意外偏转：SetAttachmentAngleRefCommand / SetAttachmentAngleIndependentCommand（退出独立角）/ SetAttachmentNoFollowRotateCommand（关闭不跟随）三处，undo 恢复旧锚点快照；④删除：ToolRotate 影子会话（collectShadowAttachments/applyShadowDelta/restoreShadowBase + 三成员）、`ParamDocument::updateBaselineOffsets`、`SetShadowOffsetsCommand`、`SetAttachmentBaselineOffsetCommand`；面板输入改 `SetAttachmentShadowAnchorCommand`（输入 = 重钉锚点：锚 = 宿主旋转 − 输入值）；⑤序列化 kFormatVersion 1→2，`migrateV1ToV2`（"shadow-anchor"）换算旧档（锚 = 宿主旋转 − 旧偏移，度→弧度；**无旧字段的连接同样写锚点 = 宿主旋转**——否则新读取端锚点缺省 0 会把宿主旋转暴露成意外偏转）。回归：test_rotate_copy 影子三例改锚点断言 + 新增 `shadowFollowsIndirectHostRotation`；test_select_wkey::shadowBaselineOffsetDrivesRotation 改锚点驱动；test_migration 新增 `v1ShadowOffsetMigratesToAnchor`（12 例）；test_serializer::attachmentsRoundTrip 断言 shadowAnchorRotDeg 往返。
+
 ## 5. 测试 / 基线（判"是不是我引入的红"先看这里）
 
-- **既有基线红 = 2 条（与 AGENTS.md 同步，子用例名与数值一字不差）**：
-  ①`test_serializer::bridgeAuxPointSnappableAndAttachable`（`std::abs(fsWorld.x - 50.0) < 1e-6` 失败）；
-  ②`test_component::dragComponentLeaderCurveFollowStable`（`31.4798mm`，bEnd=(171.194,-46.1355) xEnd=(165,-77)）。
-  **整批 ctest 出现且仅有这两条 = 零回归**，不必逐个考证。
+- **既有基线红 = 0 条（2026-09-02 修复，两条基线红已根治）**：
+  ①`test_serializer::bridgeAuxPointSnappableAndAttachable` —— 根因：Resolver Step 5（桥跟随者重解）在
+  `205a229`（旧组件铰链系统让路）被删除后未恢复，`bridgesMoved` 成为死变量；桥在 Step 4 拉伸后其
+  follower 停在 Step 3 的旧桥姿态上，桥 aux 点跟随者落点错误。修复：恢复
+  `if (bridgesMoved && settleAttachments())`（Resolver.cpp Step 5）。
+  ②`test_component::dragComponentLeaderCurveFollowStable`（31.4798mm）—— 根因：锚点后处理改写宿主
+  曲线切线 → followResettle 重解把以该切线为基准的内部连接重新定向 → 组件对齐被打破（bEnd 离开
+  xEnd），外层收敛循环预算耗尽时停在偏离状态。修复：followResettle 后补一次组件沉降 + 锚点后处理，
+  每轮结束在"组件对齐"状态（ParamDocumentResolver.cpp followResettle 分支）。
+  **全量 ctest 34/34 全绿（2026-09-02 实测两次）**。
 - **环境漂移红**：test_intersection_update（5 用例）+ test_extend::savedDocFormulaStartExtendRenders 依赖
   活档 `E:/3.gcad`，用户一改该文件就红（交点偏移 29.17mm / 缺变量「后长补正」），非代码回归；缺该文件则 QSKIP。
 - **GUI 时序抖动**：test_dialog_tabs::switchBackAfterTyping / test_aux_layer / test_rotate_copy 在整批 ctest
   压力下偶发失败，单跑即过 —— 先单跑复现再判回归。**test_select_wkey 也在此列（2026-08-29 实测：
   整批 3 次里挂 1 次，单跑连续通过）**，它有 50 处 `qWait`（AGENTS.md P2-3），本就是抖动候选。
+  **test_component::junctionComponentConnectGesture / componentConnectOverlapSwitchTarget 也在此列
+  （2026-09-02 实测：整批 5 次挂 2 次，单跑连续通过；失败断言 = 拖拽后状态停在 Selecting 而非
+  AngleInput，连接未建立，与 Resolver 修改无关——该阶段组件尚无组件级连接，settleComponents 不进入）**。
   判法：**同一个 exe 连跑两次 + 整批再跑一次**，只在整批挂、单跑稳 = 抖动，不是回归。
 - **测试里不要用 CanvasView 造视口（2026-08-29 实测，test_mode_indicator）**：`CanvasView` 的 viewport 是
   `QOpenGLWidget`（CanvasView.cpp:50），Fixture 里放一个 → 每个用例一个 GL 上下文，5 个用例 = 5 个；

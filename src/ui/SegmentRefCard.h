@@ -61,6 +61,9 @@ private:
     void rejectRefInput(const QString& reason);
     /// [独立] 按钮: 独立角 ↔ 恢复跟随 (还原上次基准, 反算零跳变)。
     void onIndependentToggled(bool checked);
+    /// [链接当前线] 按钮 (2026-09 用户拍板): 清空自定义角度基准回自动态 ——
+    /// 方向基准 = 当前所连线段出口方向 (方向行灰显回显当前线段两点)。
+    void onLinkCurrentLineClicked();
 
     [[nodiscard]] const cad::param::Attachment* findFollowerAttachment() const;
     void refreshAngleRefRow(const cad::param::Attachment* att);
@@ -76,6 +79,7 @@ private:
     PointRefEdit* m_angleRefPoint = nullptr;  ///< 点1.
     PointRefEdit* m_angleRefPoint2 = nullptr; ///< 点2.
     QPushButton* m_btnIndependent = nullptr;  ///< [独立] checkable.
+    QPushButton* m_btnLinkCurrent = nullptr;  ///< [链接当前线] (2026-09 用户拍板).
 };
 
 } // namespace cad::ui

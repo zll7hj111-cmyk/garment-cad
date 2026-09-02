@@ -4,6 +4,7 @@
 #include <QFrame>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPushButton>
 #include <QTabBar>
 #include <QTabWidget>
 
@@ -13,6 +14,7 @@
 #include "parametric/Block.h"
 #include "parametric/ParamPoint.h"
 #include "parametric/Segment.h"
+#include "parametric/Serial.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasView.h"
 #include "ui/LinePropertyDialog.h"
@@ -54,6 +56,11 @@ private slots:
     void independentAngleInputDoesNotJump();  ///< 独立角输入不回跳 (用户 2026-12 反馈)
     void followerAngleModeToggleToArc();  ///< REPRO: 跟随角 → 弧长 切换 (用户报告切换不了)
     void endConnectionRowAndBadge();  ///< 终点连接行 + 桥接线 badge + 端点微卡摘要 (2026-xx 每端完整连接)
+    void detachClearsConnectEditAndRetargetReconnects();  ///< 拆开清空「连接到」框 + 拆开后输入 P# 重连 (用户 2026-09 报告)
+    void reattachPreservesAngleRef();  ///< 重连保持方向基准: 自动态固化为两点基准, 自定义原样保留 (用户 2026-09 拍板)
+    void linkCurrentLineButtonClearsRef();  ///< [链接当前线] 清空自定义基准回自动态 (用户 2026-09 拍板)
+    void independentAngleKeepsRefEditsEnabled();  ///< 独立角: 点1/点2 清空但不禁用 (用户 2026-09 拍板)
+    void noFollowRotateButtonToggles();  ///< 影子偏转行「不跟随旋转」开关: 点击翻转 + undo 回滚 (用户 2026-09 拍板)
 };
 
 namespace {
@@ -944,6 +951,487 @@ void TestDialogTabs::endConnectionRowAndBadge()
              "起点微卡应显示「跟随」摘要");
 
     delete dlg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 拆开/重连 与「连接到」输入框 (用户 2026-09 报告):
+//   · 拆开后「连接到」框必须清空 —— 位置已自由, 回显原目标会误导
+//     (旧实现: 框里仍显示原内容, 虽然按钮已翻面为「重连」)。
+//   · 拆开后输入目标 P# 回车 = 重连意图: 位置恢复吸附 + 重新焊接
+//     (旧实现: 只改目标点, angleOnly 保持, 位置维度仍自由 —— 画布上
+//     只有线段特效, 位置不跟随)。
+// ─────────────────────────────────────────────────────────────────────────
+void TestDialogTabs::detachClearsConnectEditAndRetargetReconnects()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);                       // leader (100mm @200,0) + line (60mm 自由)
+    const auto hostB = makeLine(doc, 80.0, Vec2(160.0, 60.0));   // 重定向目标宿主
+    doc.resolveAll();
+
+    // 建立跟随连接 (line → leader 终点)。
+    cad::param::Attachment att;
+    att.fromBlockId = line.blockId;
+    att.fromPointId = line.startId;
+    att.toBlockId   = doc.blocks().at(0).id;       // 第一条 = leader
+    att.toPointId   = doc.findBlock(doc.blocks().at(0).id)->segments.front().endPointId;
+    att.toSegmentId = doc.findBlock(doc.blocks().at(0).id)->segments.front().id;
+    att.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<cad::ui::SegmentConnectionCard*>() != nullptr;
+             }),
+             "timed out waiting for SegmentConnectionCard");
+
+    // 端点组内「连接到」框 (startConnectEdit) + 拆开按钮 (startDetachBtn)。
+    auto* connEdit = dlg->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("startConnectEdit"));
+    auto* detachBtn = dlg->findChild<QPushButton*>(
+        QStringLiteral("startDetachBtn"));
+    QVERIFY2(connEdit && detachBtn, "起点「连接到」框与拆开按钮必须存在");
+
+    // ① 初始: 已连接 → 框回显目标点, 按钮「拆开」。
+    QVERIFY2(cad::test::waitUntil([&] { return !connEdit->text().isEmpty(); }),
+             "已连接态「连接到」框应回显目标点");
+    QCOMPARE(detachBtn->text(), QString::fromUtf8("拆开"));
+
+    // ② 拆开 (位置维度): 框清空 + 按钮翻面「重连」+ 模型 angleOnly。
+    detachBtn->click();
+    QVERIFY2(cad::test::waitUntil([&] { return connEdit->text().isEmpty(); }),
+             "拆开后「连接到」框必须清空 (位置已自由, 回显原目标会误导)");
+    QCOMPARE(detachBtn->text(), QString::fromUtf8("重连"));
+    QVERIFY2(doc.attachments().front().angleOnly, "拆开 = 位置维度拆开 (仅角度)");
+
+    // ③ 拆开后输入目标 P# 回车 = 重连: 位置恢复吸附 + 重新焊接 + 框回显新目标。
+    const auto* hb = doc.findBlock(hostB.blockId);
+    const auto* bp = hb->findPoint(hostB.startId);
+    connEdit->setText(bp->serial);
+    QTest::keyClick(connEdit, Qt::Key_Return);
+    QVERIFY2(cad::test::waitUntil([&] {
+                 const auto& a = doc.attachments().front();
+                 return !a.angleOnly && a.toBlockId == hostB.blockId
+                        && a.toPointId == hostB.startId;
+             }),
+             "拆开后输入 P# 应恢复位置连接并重定向到新目标");
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(!a.angleOnly, "重定向必须恢复位置维度 (angleOnly=false)");
+        QVERIFY2(a.isLocked, "重定向必须重新焊接");
+        QCOMPARE(a.toBlockId, hostB.blockId);
+        QCOMPARE(a.toPointId, hostB.startId);
+        // 位置确实吸附回新宿主点 (Resolver 生效)。
+        const Vec2 hostWorld = hb->transform.toWorld(
+            hb->findPoint(hostB.startId)->resolvedPos);
+        const auto* fb = doc.findBlock(line.blockId);
+        const Vec2 fromWorld = fb->transform.toWorld(
+            fb->findPoint(line.startId)->resolvedPos);
+        QVERIFY2(hostWorld.distanceTo(fromWorld) < 1e-6,
+                 "重连后 from-point 必须重新吸附回新宿主点");
+    }
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return connEdit->text().contains(
+                     cad::param::Serial::tag(bp->serial));
+             }),
+             "重连后「连接到」框应回显新目标点");
+    QCOMPARE(detachBtn->text(), QString::fromUtf8("拆开"));
+
+    delete dlg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 重连保持方向基准 (用户 2026-09 拍板):
+//   · 自动态 (angleRefBlockId 空) 下重连 = 把旧所连线段固化为两点基准
+//     (点1 = 旧目标点, 点2 = 旧线段另一端) —— 方向基准不随新宿主漂移。
+//     旧实现只固化点1, 点2 留空 (两点连线方向退化为单点出口方向), 且
+//     面板重定向后基准跟随新宿主 (方向基准被覆盖)。
+//   · 已自定义的基准原样保留。
+// ─────────────────────────────────────────────────────────────────────────
+void TestDialogTabs::reattachPreservesAngleRef()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);                       // leader (100mm @200,0) + line (60mm 自由)
+    const auto hostB = makeLine(doc, 80.0, Vec2(160.0, 60.0));   // 重定向目标宿主
+    const auto hostC = makeLine(doc, 70.0, Vec2(300.0, 120.0));  // 二次重定向目标宿主
+    doc.resolveAll();
+
+    const auto* leaderBlk = doc.findBlock(doc.blocks().at(0).id);
+    const auto& leaderSeg = leaderBlk->segments.front();
+    const QUuid leaderEnd = leaderSeg.endPointId;
+    const QUuid leaderStart = leaderSeg.startPointId;
+
+    cad::param::Attachment att;
+    att.fromBlockId = line.blockId;
+    att.fromPointId = line.startId;
+    att.toBlockId   = leaderBlk->id;
+    att.toPointId   = leaderEnd;
+    att.toSegmentId = leaderSeg.id;
+    att.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    QVERIFY2(doc.attachments().front().angleRefBlockId.isNull(),
+             "初始连接 = 自动态 (无自定义角度基准)");
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<cad::ui::PointRefEdit*>(
+                            QStringLiteral("startConnectEdit")) != nullptr;
+             }),
+             "timed out waiting for startConnectEdit");
+
+    auto* connEdit = dlg->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("startConnectEdit"));
+    auto* detachBtn = dlg->findChild<QPushButton*>(
+        QStringLiteral("startDetachBtn"));
+    QVERIFY2(connEdit && detachBtn, "起点「连接到」框与拆开按钮必须存在");
+
+    auto retargetTo = [&](const LineSetup& host) {
+        detachBtn->click();   // 拆开 (angleOnly)
+        QVERIFY2(cad::test::waitUntil([&] { return connEdit->text().isEmpty(); }),
+                 "拆开后「连接到」框应清空");
+        const auto* hb = doc.findBlock(host.blockId);
+        const auto* hp = hb->findPoint(host.startId);
+        connEdit->setText(hp->serial);
+        QTest::keyClick(connEdit, Qt::Key_Return);
+        QVERIFY2(cad::test::waitUntil([&] {
+                     const auto& a = doc.attachments().front();
+                     return !a.angleOnly && a.toBlockId == host.blockId;
+                 }),
+                 "重连应恢复位置连接并重定向到新宿主");
+    };
+
+    // ① 自动态重连到 hostB: 旧所连线段固化为两点基准 (点1 = 旧目标点,
+    //    点2 = 旧线段另一端), 方向基准不随新宿主漂移。
+    retargetTo(hostB);
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(a.angleRefBlockId == leaderBlk->id,
+                 "自动态重连: 点1 基准块 = 旧所连线段 (不被新宿主覆盖)");
+        QVERIFY2(a.angleRefPointId == leaderEnd,
+                 "自动态重连: 点1 = 旧目标点");
+        QVERIFY2(a.angleRef2BlockId == leaderBlk->id
+                     && a.angleRef2PointId == leaderStart,
+                 "自动态重连: 点2 = 旧线段另一端 (两点基准完整)");
+        QVERIFY2(a.angleRefSegmentId == leaderSeg.id,
+                 "自动态重连: 基准线段 = 旧所连线段");
+    }
+
+    // ② 已自定义基准再重连到 hostC: 原样保留 (不再被覆盖)。
+    retargetTo(hostC);
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(a.angleRefBlockId == leaderBlk->id
+                     && a.angleRefPointId == leaderEnd
+                     && a.angleRef2BlockId == leaderBlk->id
+                     && a.angleRef2PointId == leaderStart,
+                 "自定义基准重连: 方向基准原样保留");
+    }
+
+    delete dlg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// [链接当前线] 按钮 (用户 2026-09 拍板): 清空自定义角度基准回自动态 ——
+// 方向基准 = 当前所连线段出口方向 (方向行灰显回显当前线段两点)。
+// ─────────────────────────────────────────────────────────────────────────
+void TestDialogTabs::linkCurrentLineButtonClearsRef()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);                       // leader (100mm @200,0) + line (60mm 自由)
+    const auto hostB = makeLine(doc, 80.0, Vec2(160.0, 60.0));   // 自定义基准目标
+    doc.resolveAll();
+
+    const auto* leaderBlk = doc.findBlock(doc.blocks().at(0).id);
+    const auto& leaderSeg = leaderBlk->segments.front();
+
+    cad::param::Attachment att;
+    att.fromBlockId = line.blockId;
+    att.fromPointId = line.startId;
+    att.toBlockId   = leaderBlk->id;
+    att.toPointId   = leaderSeg.endPointId;
+    att.toSegmentId = leaderSeg.id;
+    att.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(att));
+    // 自定义基准 = hostB 起点 (与所连线段不同)。
+    const auto* hb = doc.findBlock(hostB.blockId);
+    doc.setAttachmentAngleRef(att.id, hostB.blockId, hostB.segId, hostB.startId);
+    doc.resolveAll();
+    QVERIFY2(!doc.attachments().front().angleRefBlockId.isNull(),
+             "前置: 自定义角度基准已设置");
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<cad::ui::SegmentRefCard*>() != nullptr;
+             }),
+             "timed out waiting for SegmentRefCard");
+
+    auto* refCard = dlg->findChild<cad::ui::SegmentRefCard*>();
+    auto* linkBtn = refCard->findChild<QPushButton*>(
+        QStringLiteral("linkCurrentLineBtn"));
+    auto* p1Edit = refCard->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("angleRefPointEdit"));
+    auto* p2Edit = refCard->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("angleRefPoint2Edit"));
+    QVERIFY2(linkBtn && p1Edit && p2Edit, "链接当前线按钮与点1/点2 输入框必须存在");
+
+    // 自定义态: 按钮可用, 点1/点2 回显自定义基准。
+    QVERIFY2(cad::test::waitUntil([&] { return linkBtn->isEnabled(); }),
+             "自定义基准态: [链接当前线] 应可用");
+    QVERIFY2(p1Edit->text().contains(cad::param::Serial::tag(hb->findPoint(hostB.startId)->serial)),
+             "自定义态: 点1 回显自定义基准点");
+
+    // 点击 → 清空自定义基准回自动态。
+    linkBtn->click();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return doc.attachments().front().angleRefBlockId.isNull();
+             }),
+             "点击 [链接当前线] 应清空自定义角度基准");
+    {
+        const auto& a = doc.attachments().front();
+        QVERIFY2(a.angleRef2BlockId.isNull() && a.angleRef2PointId.isNull(),
+                 "点击 [链接当前线] 应同时清空点2");
+        QVERIFY2(!a.angleIndependent, "链接当前线 = 角度跟随, 不进入独立角");
+    }
+    // 自动态: 方向行灰显回显当前所连线段两点 (点1 = 宿主目标点, 点2 = 另一端)。
+    const auto* ldrEndPt = leaderBlk->findPoint(leaderSeg.endPointId);
+    const auto* ldrStartPt = leaderBlk->findPoint(leaderSeg.startPointId);
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return p1Edit->text().contains(
+                            cad::param::Serial::tag(ldrEndPt->serial))
+                     && p2Edit->text().contains(
+                            cad::param::Serial::tag(ldrStartPt->serial));
+             }),
+             "自动态: 点1/点2 灰显回显当前所连线段两点");
+    QVERIFY2(!linkBtn->isEnabled(), "自动态: [链接当前线] 禁用 (基准本就是当前线段)");
+
+    delete dlg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 独立角: 点1/点2 清空但**不禁用** (用户 2026-09 拍板) —— 独立角时方向行
+// 无内容, 但输入框保持可编辑 (可直接填点 = 退出独立角并建立自定义基准)。
+// 2026-09 修正: 独立角**不锁「链接当前线」按钮** —— 独立角 + 自定义基准
+// (ref 字段 = 还原缓存) 时按钮可用, 点击 = 清空基准 + 退出独立角回自动态。
+// ─────────────────────────────────────────────────────────────────────────
+void TestDialogTabs::independentAngleKeepsRefEditsEnabled()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    LineSetup line;
+    setup(doc, scene, line);                       // leader (100mm @200,0) + line (60mm 自由)
+    const auto hostB = makeLine(doc, 80.0, Vec2(160.0, 60.0));   // 自定义基准目标
+    doc.resolveAll();
+
+    const auto* leaderBlk = doc.findBlock(doc.blocks().at(0).id);
+    const auto& leaderSeg = leaderBlk->segments.front();
+
+    cad::param::Attachment att;
+    att.fromBlockId = line.blockId;
+    att.fromPointId = line.startId;
+    att.toBlockId   = leaderBlk->id;
+    att.toPointId   = leaderSeg.endPointId;
+    att.toSegmentId = leaderSeg.id;
+    att.followerAngle = 180.0;
+    QVERIFY(doc.addAttachment(att));
+    // 自定义基准 (hostB 起点) + 独立角: ref 字段保留为还原缓存。
+    const auto* hb = doc.findBlock(hostB.blockId);
+    doc.setAttachmentAngleRef(att.id, hostB.blockId, hostB.segId, hostB.startId);
+    doc.setAttachmentAngleIndependent(att.id, true);
+    doc.resolveAll();
+    QVERIFY2(doc.attachments().front().angleIndependent, "前置: 独立角已设置");
+    QVERIFY2(!doc.attachments().front().angleRefBlockId.isNull(),
+             "前置: 独立角保留自定义基准 (还原缓存)");
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<cad::ui::SegmentRefCard*>() != nullptr;
+             }),
+             "timed out waiting for SegmentRefCard");
+
+    auto* refCard = dlg->findChild<cad::ui::SegmentRefCard*>();
+    auto* p1Edit = refCard->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("angleRefPointEdit"));
+    auto* p2Edit = refCard->findChild<cad::ui::PointRefEdit*>(
+        QStringLiteral("angleRefPoint2Edit"));
+    auto* indBtn = refCard->findChild<QPushButton*>(
+        QStringLiteral("angleBaseToggleBtn"));
+    auto* linkBtn = refCard->findChild<QPushButton*>(
+        QStringLiteral("linkCurrentLineBtn"));
+    QVERIFY2(p1Edit && p2Edit && indBtn && linkBtn,
+             "点1/点2 输入框与 [独立]/[链接当前线] 按钮必须存在");
+
+    // 独立角: 点1/点2 清空 (方向行无内容) 但保持可编辑。
+    QVERIFY2(cad::test::waitUntil([&] { return indBtn->isChecked(); }),
+             "[独立] 按钮应勾选");
+    QVERIFY2(p1Edit->text().isEmpty() && p2Edit->text().isEmpty(),
+             "独立角: 点1/点2 应清空 (方向行无内容)");
+    QVERIFY2(p1Edit->isEnabled() && p2Edit->isEnabled(),
+             "独立角: 点1/点2 应保持可编辑 (不禁用)");
+
+    // 独立角 + 自定义基准: [链接当前线] 可用 (独立只是清空, 不锁按钮)。
+    QVERIFY2(linkBtn->isEnabled(),
+             "独立角 + 自定义基准: [链接当前线] 应可用 (独立不锁按钮)");
+
+    // 点击 → 清空基准 + 退出独立角回自动态。
+    linkBtn->click();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 const auto& a = doc.attachments().front();
+                 return a.angleRefBlockId.isNull() && !a.angleIndependent;
+             }),
+             "独立角点击 [链接当前线] 应清空基准并退出独立角");
+    // 自动态: 方向行灰显回显当前所连线段两点。
+    const auto* ldrEndPt = leaderBlk->findPoint(leaderSeg.endPointId);
+    const auto* ldrStartPt = leaderBlk->findPoint(leaderSeg.startPointId);
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return p1Edit->text().contains(
+                            cad::param::Serial::tag(ldrEndPt->serial))
+                     && p2Edit->text().contains(
+                            cad::param::Serial::tag(ldrStartPt->serial));
+             }),
+             "退出独立角后: 点1/点2 灰显回显当前所连线段两点");
+    QVERIFY2(!linkBtn->isEnabled(), "自动态: [链接当前线] 禁用 (基准本就是当前线段)");
+
+    delete dlg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 影子偏转行「不跟随旋转」开关 (2026-09 用户拍板): 持久化开关 —— 旋转位置
+// 宿主时本线不参与影子偏转。验证:
+//   · 位置宿主 ≠ 角度基准 (L2 挂 L1、基准 L3): 按钮可用, 初始未选中。
+//   · 点击 → noFollowRotate=true (选中态) + 命令 undo 一步回滚。
+//   · 位置宿主 = 角度基准 (普通跟随): 按钮禁用 (影子恒不激活, 无效果)。
+// ─────────────────────────────────────────────────────────────────────────
+void TestDialogTabs::noFollowRotateButtonToggles()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    const auto leader = makeLine(doc, 100.0, Vec2(200.0, 0.0));   // 宿主 L1
+    const auto line   = makeLine(doc, 60.0);                       // 本线 L2
+    const auto ref    = makeLine(doc, 80.0, Vec2(120.0, 90.0));    // 角度基准 L3
+    doc.resolveAll();
+
+    cad::param::Attachment att;
+    att.fromBlockId = line.blockId;
+    att.fromPointId = line.startId;
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    att.toSegmentId = leader.segId;
+    att.followerAngle = 180.0;
+    att.angleRefBlockId = ref.blockId;
+    att.angleRefSegmentId = ref.segId;
+    att.angleRefPointId = ref.startId;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        line.blockId, line.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg->findChild<QPushButton*>(
+                            QStringLiteral("noFollowRotateBtn")) != nullptr;
+             }),
+             "timed out waiting for noFollowRotateBtn");
+
+    auto* btn = dlg->findChild<QPushButton*>(QStringLiteral("noFollowRotateBtn"));
+    QVERIFY(btn);
+    // 位置宿主 ≠ 角度基准: 按钮可用, 初始未选中 (默认影子偏转激活)。
+    QVERIFY2(btn->isEnabled(), "位置宿主 ≠ 角度基准: 按钮应可用");
+    QVERIFY2(!btn->isChecked(), "初始: 不跟随旋转未选中 (默认影子偏转激活)");
+
+    // 点击 → noFollowRotate=true (选中态)。
+    btn->click();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return doc.attachments().front().noFollowRotate;
+             }),
+             "点击后 noFollowRotate 应置位");
+    QVERIFY2(btn->isChecked(), "点击后按钮应选中");
+
+    // undo 一步回滚 (对话框是会话制, 不订阅 undo 栈 —— 只验证模型层回滚)。
+    if (auto* stack = doc.undoStack()) {
+        stack->undo();
+        QVERIFY2(cad::test::waitUntil([&] {
+                     return !doc.attachments().front().noFollowRotate;
+                 }),
+                 "undo 后 noFollowRotate 应回滚");
+    }
+
+    delete dlg;
+
+    // 位置宿主 = 角度基准 (普通跟随): 按钮禁用 (影子恒不激活, 无效果)。
+    ParamDocument doc2;
+    CanvasScene scene2(&doc2);
+    const auto leader2 = makeLine(doc2, 100.0, Vec2(200.0, 0.0));
+    const auto line2   = makeLine(doc2, 60.0);
+    doc2.resolveAll();
+    cad::param::Attachment att2;
+    att2.fromBlockId = line2.blockId;
+    att2.fromPointId = line2.startId;
+    att2.toBlockId   = leader2.blockId;
+    att2.toPointId   = leader2.endId;
+    att2.toSegmentId = leader2.segId;
+    att2.followerAngle = 180.0;
+    QVERIFY(doc2.addAttachment(att2));
+    doc2.resolveAll();
+
+    CanvasView view2(&scene2);
+    view2.resize(900, 600);
+    view2.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view2));
+
+    auto* dlg2 = new cad::ui::LinePropertyDialog(
+        line2.blockId, line2.segId, &doc2, &scene2, &view2);
+    dlg2->show();
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return dlg2->findChild<QPushButton*>(
+                            QStringLiteral("noFollowRotateBtn")) != nullptr;
+             }),
+             "timed out waiting for noFollowRotateBtn (doc2)");
+    auto* btn2 = dlg2->findChild<QPushButton*>(QStringLiteral("noFollowRotateBtn"));
+    QVERIFY(btn2);
+    QVERIFY2(!btn2->isEnabled(),
+             "位置宿主 = 角度基准 (普通跟随): 按钮应禁用 (影子恒不激活)");
+
+    delete dlg2;
 }
 
 QTEST_MAIN(TestDialogTabs)

@@ -25,6 +25,8 @@ enum class CommandId : int {
     /// SetVariableValueCommand (continuous slider/spinbox merge). Was 1003
     /// (collided with RotateBlockCommand) — renumbered to 1004.
     SetVariableValue = 1004,
+    /// SetAttachmentNoFollowRotateCommand (不跟随旋转开关, 2026-09).
+    SetNoFollowRotate = 1005,
 };
 
 } // namespace cad::cmd
