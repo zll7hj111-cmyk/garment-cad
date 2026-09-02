@@ -42,12 +42,40 @@ private:
     cad::param::ParamDocument* m_doc;
     cad::param::Block m_block;                       ///< Saved block for undo.
     std::vector<cad::param::Block> m_bridges;        ///< Bridges pinned to it (pre-deletion state).
+    std::vector<cad::param::Block> m_shadows;        ///< 影子块级联删除的 pre-deletion 快照
+                                                     ///< (本体/跟随线被删时随删, DETACH_SHADOW_DESIGN ⑥)。
     std::vector<cad::param::Attachment> m_attachments; ///< Saved attachments for undo.
     std::vector<cad::param::LinkedVariable> m_linked;  ///< Linked vars sourced from the cascade set
                                                        ///< (auto-deleted with the block).
     std::vector<cad::param::MeasureVariable> m_measures; ///< Measure vars referencing the cascade set.
     std::vector<cad::param::Block> m_bakedConsumers;   ///< Blocks whose length formulas referenced
                                                        ///< those linked vars (baked to numbers by redo).
+};
+
+/// 影子角度旋转提交 (拆开影子基准 R6/R8): 拆开态旋转改写影子块 transform
+/// (冻结克隆自身姿态) 并同步回写跟随线 transform (绕 p3 原地转, Resolver
+/// angleOnly 只写 rotation 不碰 origin)。redo/undo 双块 verbatim 还原 +
+/// resolveAll —— 撤销后影子角度与跟随线姿态一起回拖前值。
+class ShadowRotateCommand : public QUndoCommand
+{
+public:
+    ShadowRotateCommand(cad::param::ParamDocument* doc,
+                        const QUuid& shadowId,
+                        const cad::param::Transform2D& shadowOld,
+                        const cad::param::Transform2D& shadowNew,
+                        const QUuid& followerId,
+                        const cad::param::Transform2D& followerOld,
+                        const cad::param::Transform2D& followerNew,
+                        QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_shadowId;
+    QUuid m_followerId;
+    cad::param::Transform2D m_shadowOld, m_shadowNew;
+    cad::param::Transform2D m_followerOld, m_followerNew;
 };
 
 /// Move a group of blocks by a delta (supports mergeWith for continuous drag).

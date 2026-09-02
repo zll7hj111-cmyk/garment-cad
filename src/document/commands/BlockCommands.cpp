@@ -52,19 +52,48 @@ RemoveBlockCommand::RemoveBlockCommand(cad::param::ParamDocument* doc,
 
     // Cascade set: the block + every bridge pinned to it (the model layer
     // releases those bridges as independent segments when the host goes
-    // away — their pre-deletion state is snapshotted for undo).
+    // away — their pre-deletion state is snapshotted for undo) + every SHADOW
+    // affected by the deletion (拆开影子基准级联, DETACH_SHADOW_DESIGN.md ⑥⑦):
+    //   · 本体被删 → 影子块级联删除 (undo 须还原影子块);
+    //   · 跟随线被删 → 影子失去 Att2 级联删除 (undo 须还原影子块);
+    //   · 挂载宿主 (L3) 被删 → 影子弹回拆开态 (影子保留, 但其 Att1 被删、
+    //     Att2 回 angleOnly —— 两连接都须入快照供 undo verbatim 还原)。
+    // 弹回影子不进 cascadeBlocks (块保留), 但其连接必须进快照扫描集 touchSet。
     QSet<QUuid> cascade{blockId};
+    QSet<QUuid> shadowTouch;  // 受影响影子 (连接快照扫描集)
     for (const QUuid& bridgeId : doc->attachmentsView().bridgesPinnedTo(blockId)) {
         if (cascade.contains(bridgeId)) continue;
         cascade.insert(bridgeId);
         if (const auto* bridge = doc->findBlock(bridgeId))
             m_bridges.push_back(*bridge);
     }
+    for (const auto& b : doc->blocks()) {
+        if (!b.isShadow) continue;
+        bool masterDied = (b.shadowMasterBlockId == blockId);
+        bool att2FromVictim = false, att1ToVictim = false;
+        for (const auto& a : doc->attachments()) {
+            if (a.isPin) continue;
+            if (a.toBlockId == b.id && a.fromBlockId == blockId)
+                att2FromVictim = true;
+            if (a.fromBlockId == b.id && a.toBlockId == blockId)
+                att1ToVictim = true;
+        }
+        if (masterDied || att2FromVictim) {
+            cascade.insert(b.id);       // 影子块随删 (undo 还原)
+            shadowTouch.insert(b.id);
+            m_shadows.push_back(b);
+        } else if (att1ToVictim) {
+            shadowTouch.insert(b.id);   // 弹回拆开态 (Att1 删 / Att2 翻旗, 快照还原)
+        }
+    }
 
-    // Snapshot every attachment touching any block in the cascade set.
+    // Snapshot every attachment touching any block in the cascade set, plus
+    // the surviving (弹回) shadow's connections — undo restores Att2's angle
+    // flags verbatim via the same snapshot (overwrite-or-insert below).
     QSet<QUuid> seen;
+    const QSet<QUuid> touchSet = cascade | shadowTouch;
     for (const auto& att : doc->attachments()) {
-        if (!cascade.contains(att.fromBlockId) && !cascade.contains(att.toBlockId))
+        if (!touchSet.contains(att.fromBlockId) && !touchSet.contains(att.toBlockId))
             continue;
         if (seen.contains(att.id)) continue;
         seen.insert(att.id);
@@ -111,9 +140,20 @@ void RemoveBlockCommand::undo()
     m_doc->addBlock(m_block);
     for (const auto& bridge : m_bridges)
         m_doc->addBlock(bridge);
+    // 影子级联块 (⑥): 与本体一同 verbatim 还原 (addBlock 自带 resolve)。
+    for (const auto& shadow : m_shadows)
+        if (!m_doc->findBlock(shadow.id))
+            m_doc->addBlock(shadow);
     // Verbatim restore: keep each attachment's snapshot isLocked (拖动保护
-    // 默认开启只针对新建连接; 快照还原必须保留用户手动解锁的状态).
-    cad::param::RawModelAccess::addAttachmentsRaw(*m_doc, m_attachments);
+    // 默认开启只针对新建连接; 快照还原必须保留用户手动解锁的状态). The
+    // 弹回影子's Att2 was NOT removed by redo (only flag-flipped) — it is
+    // still present, so overwrite it in place instead of inserting a dup.
+    for (const auto& att : m_attachments) {
+        if (auto* a = m_doc->findAttachment(att.id))
+            *a = att;  // in-place verbatim (授权通道: findAttachment 可变重载)
+        else
+            cad::param::RawModelAccess::addAttachmentRaw(*m_doc, att);
+    }
     // Re-publish the auto-deleted linked variables, then restore the pristine
     // formulas of their consumers (baked to numbers by redo).
     for (const auto& lv : m_linked)
@@ -124,8 +164,48 @@ void RemoveBlockCommand::undo()
         if (auto* b = m_doc->findBlock(snap.id))
             *b = snap;
     }
-    if (!m_linked.empty() || !m_measures.empty() || !m_bakedConsumers.empty())
-        m_doc->resolveAll();
+    // 影子级联还原也需要重解 (Att1/Att2 verbatim 回填后链条重新落位)。
+    m_doc->resolveAll();
+}
+
+// ─── ShadowRotateCommand (影子角度旋转, R6/R8) ───────────────────────────────
+
+ShadowRotateCommand::ShadowRotateCommand(cad::param::ParamDocument* doc,
+                                         const QUuid& shadowId,
+                                         const cad::param::Transform2D& shadowOld,
+                                         const cad::param::Transform2D& shadowNew,
+                                         const QUuid& followerId,
+                                         const cad::param::Transform2D& followerOld,
+                                         const cad::param::Transform2D& followerNew,
+                                         QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_shadowId(shadowId)
+    , m_followerId(followerId)
+    , m_shadowOld(shadowOld)
+    , m_shadowNew(shadowNew)
+    , m_followerOld(followerOld)
+    , m_followerNew(followerNew)
+{
+    setText(QStringLiteral("\xe6\x94\xb9\xe5\x86\x99\xe5\xbd\xb1\xe5\xad\x90\xe8\xa7\x92\xe5\xba\xa6"));  // 改写影子角度
+}
+
+void ShadowRotateCommand::redo()
+{
+    if (auto* sh = m_doc->findBlock(m_shadowId))
+        sh->transform = m_shadowNew;
+    if (auto* b = m_doc->findBlock(m_followerId))
+        b->transform = m_followerNew;
+    m_doc->resolveAll();
+}
+
+void ShadowRotateCommand::undo()
+{
+    if (auto* sh = m_doc->findBlock(m_shadowId))
+        sh->transform = m_shadowOld;
+    if (auto* b = m_doc->findBlock(m_followerId))
+        b->transform = m_followerOld;
+    m_doc->resolveAll();
 }
 
 // ─── MoveBlockCommand ───

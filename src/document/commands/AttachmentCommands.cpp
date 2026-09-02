@@ -86,10 +86,11 @@ void RemoveAttachmentCommand::undo()
     m_doc->resolveAll();
 }
 
-// ─── SetAttachmentAngleOnlyCommand ───
+// ─── SetAttachmentAngleOnlyCommand (影子基准语义, DETACH_SHADOW_DESIGN.md) ───
 
 SetAttachmentAngleOnlyCommand::SetAttachmentAngleOnlyCommand(
     cad::param::ParamDocument* doc, const QUuid& attId, bool angleOnly,
+    const QUuid& explicitToPoint, const QUuid& explicitToSegment,
     QUndoCommand* parent)
     : QUndoCommand(parent)
     , m_doc(doc)
@@ -98,21 +99,114 @@ SetAttachmentAngleOnlyCommand::SetAttachmentAngleOnlyCommand(
     , m_oldAngleOnly(false)
     , m_oldLocked(false)
     , m_oldSlideMode(cad::param::SlideMode::None)
+    , m_explicitToPoint(explicitToPoint)
+    , m_explicitToSegment(explicitToSegment)
 {
     setText(QStringLiteral("\xe6\x8b\x86\xe5\xbc\x80\xe4\xbf\x9d\xe7\x95\x99\xe8\xa7\x92\xe5\xba\xa6"));  // 拆开保留角度
 
+    const cad::param::Attachment* att = nullptr;
+    bool toIsShadow = false;
     for (const auto& a : doc->attachments()) {
         if (a.id == attId) {
+            att = &a;
             m_oldAngleOnly = a.angleOnly;
             m_oldLocked = a.isLocked;
             m_oldSlideMode = a.slideMode;
+            m_oldAtt = a;
+            if (const auto* toBlk = doc->findBlock(a.toBlockId))
+                toIsShadow = toBlk->isShadow;
             break;
         }
     }
+    if (!att) return;  // Legacy (找不到连接: redo/undo 走字段路径, 无害)
+
+    if (angleOnly && toIsShadow) {
+        // ④ 再拆开 (从挂载态): 删 Att1, Att2 回 angleOnly, 影子冻结当前方向。
+        m_mode = Mode::ReDetach;
+        for (const auto& a : doc->attachments()) {
+            if (!a.isPin && a.fromBlockId == att->toBlockId) {
+                m_oldAtt1 = a;
+                m_hasAtt1 = true;
+                break;
+            }
+        }
+        return;
+    }
+    if (angleOnly) {
+        // ② 拆开 + 影子换代: 克隆失败 (降级门) = Legacy (旧 angleOnly 行为)。
+        cad::param::Block shadow;
+        cad::param::Attachment newAtt;
+        if (doc->buildShadowDetach(attId, shadow, newAtt)) {
+            m_mode = Mode::FreshDetach;
+            m_shadow = std::move(shadow);
+            m_newAtt = std::move(newAtt);
+            m_hasShadow = true;
+        }
+        return;
+    }
+    if (toIsShadow) {
+        // ⑤ 挂回本体: 删影子 + Att2 还原到本体 (活引用恢复, 重新焊接)。
+        cad::param::Attachment restored;
+        if (doc->buildShadowReconnect(attId, restored,
+                                      m_explicitToPoint, m_explicitToSegment)) {
+            m_mode = Mode::ReconnectMaster;
+            m_newAtt = std::move(restored);
+            if (const auto* shadowBlk = doc->findBlock(m_oldAtt.toBlockId)) {
+                m_shadow = *shadowBlk;
+                m_hasShadow = true;
+            }
+            for (const auto& a : doc->attachments()) {
+                if (!a.isPin && a.fromBlockId == m_oldAtt.toBlockId) {
+                    m_oldAtt1 = a;
+                    m_hasAtt1 = true;
+                    break;
+                }
+            }
+        }
+        return;
+    }
+    // 其余 (恢复完整连接且基准非影子) = Legacy。
 }
 
 void SetAttachmentAngleOnlyCommand::redo()
 {
+    switch (m_mode) {
+    case Mode::FreshDetach: {
+        // 影子块先行 (silent add, 一次 resolve 落位), Att2 原地换代。
+        if (!m_doc->findBlock(m_shadow.id))
+            cad::param::RawModelAccess::addBlockRaw(*m_doc, m_shadow);
+        if (auto* a = m_doc->findAttachment(m_attId))
+            *a = m_newAtt;  // verbatim 换代 (offset/公式原样, R2)
+        m_doc->resolveAll();
+        emit m_doc->structureChanged();
+        return;
+    }
+    case Mode::ReDetach: {
+        // 删 Att1 (挂载关系), Att2 回 angleOnly —— 影子保持当前解算姿态
+        // (冻结当前方向, 不跳变; 设计稿 §6 ④)。
+        if (m_hasAtt1 && m_doc->findAttachment(m_oldAtt1.id))
+            m_doc->removeAttachment(m_oldAtt1.id);
+        if (auto* a = m_doc->findAttachment(m_attId)) {
+            a->angleOnly = true;
+            a->isLocked = false;
+            a->slideMode = cad::param::SlideMode::None;
+        }
+        m_doc->resolveAll();
+        return;
+    }
+    case Mode::ReconnectMaster: {
+        // Att2 还原到本体 → 删影子块 (removeBlock 引用清理顺带删 Att1)。
+        if (auto* a = m_doc->findAttachment(m_attId))
+            *a = m_newAtt;
+        m_doc->removeBlock(m_shadow.id);
+        m_doc->resolveAll();
+        emit m_doc->structureChanged();
+        return;
+    }
+    case Mode::Legacy:
+    default:
+        break;
+    }
     if (auto* a = m_doc->findAttachment(m_attId)) {
         a->angleOnly = m_newAngleOnly;
         if (m_newAngleOnly) {
@@ -130,6 +224,42 @@ void SetAttachmentAngleOnlyCommand::redo()
 
 void SetAttachmentAngleOnlyCommand::undo()
 {
+    switch (m_mode) {
+    case Mode::FreshDetach: {
+        // Att2 还原 verbatim → 删影子块 (引用已清空)。
+        if (auto* a = m_doc->findAttachment(m_attId))
+            *a = m_oldAtt;
+        m_doc->removeBlock(m_shadow.id);
+        m_doc->resolveAll();
+        emit m_doc->structureChanged();
+        return;
+    }
+    case Mode::ReDetach: {
+        // Att2 还原 verbatim → Att1 verbatim 回填 (影子仍在, 无块操作)。
+        if (auto* a = m_doc->findAttachment(m_attId))
+            *a = m_oldAtt;
+        if (m_hasAtt1)
+            cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_oldAtt1);
+        m_doc->resolveAll();
+        emit m_doc->structureChanged();
+        return;
+    }
+    case Mode::ReconnectMaster: {
+        // 影子块 → Att1 → Att2 全部 verbatim 还原 (挂载态复原)。
+        if (!m_doc->findBlock(m_shadow.id))
+            cad::param::RawModelAccess::addBlockRaw(*m_doc, m_shadow);
+        if (m_hasAtt1)
+            cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_oldAtt1);
+        if (auto* a = m_doc->findAttachment(m_attId))
+            *a = m_oldAtt;
+        m_doc->resolveAll();
+        emit m_doc->structureChanged();
+        return;
+    }
+    case Mode::Legacy:
+    default:
+        break;
+    }
     if (auto* a = m_doc->findAttachment(m_attId)) {
         a->angleOnly = m_oldAngleOnly;
         a->isLocked = m_oldLocked;
@@ -137,6 +267,107 @@ void SetAttachmentAngleOnlyCommand::undo()
     }
     m_doc->resolveAll();
 }
+
+// ─── ShadowMountCommand (影子挂载新宿主, 状态③) ─────────────────────────────
+
+ShadowMountCommand::ShadowMountCommand(cad::param::ParamDocument* doc,
+                                       const QUuid& shadowId,
+                                       const QUuid& toBlockId,
+                                       const QUuid& toPointId,
+                                       const QUuid& toSegmentId,
+                                       QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+{
+    setText(QStringLiteral("\xe5\xbd\xb1\xe5\xad\x90\xe6\x8c\x82\xe8\xbd\xbd"));  // 影子挂载
+
+    // 预构建 Att1 (Δ 反算保向) + Att2 快照; 失败 = 命令 no-op (redo/undo 无害)。
+    cad::param::Attachment att1;
+    if (!doc->buildShadowMount(shadowId, toBlockId, toPointId, toSegmentId, att1))
+        return;
+    m_valid = true;
+    m_att1 = att1;
+    for (const auto& a : doc->attachments()) {
+        if (!a.isPin && a.fromComponentId.isNull() && a.toBlockId == shadowId) {
+            m_att2Id = a.id;
+            m_oldAtt2 = a;
+            break;
+        }
+    }
+}
+
+void ShadowMountCommand::redo()
+{
+    if (!m_valid) return;
+    // Att1 插入 (verbatim, isLocked 默认焊接) + Att2 恢复位置钉点并重新焊接
+    // —— 一次 resolve 让 L3→影子→L2 链条按依赖序落位。
+    if (!m_doc->findAttachment(m_att1.id))
+        cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_att1);
+    if (auto* a = m_doc->findAttachment(m_att2Id)) {
+        a->angleOnly = false;
+        a->isLocked = true;
+        a->slideMode = cad::param::SlideMode::None;
+    }
+    m_doc->resolveAll();
+    emit m_doc->structureChanged();
+}
+
+void ShadowMountCommand::undo()
+{
+    if (!m_valid) return;
+    // 删 Att1 → Att2 verbatim 还原 (回拆开态: 位置自由、角度跟影子)。
+    if (m_doc->findAttachment(m_att1.id))
+        m_doc->removeAttachment(m_att1.id);
+    if (auto* a = m_doc->findAttachment(m_att2Id))
+        *a = m_oldAtt2;
+    m_doc->resolveAll();
+    emit m_doc->structureChanged();
+}
+
+// ─── RemoveShadowCommand (清除影子 → 跟随线纯自由线) ──────────────────────────
+
+RemoveShadowCommand::RemoveShadowCommand(cad::param::ParamDocument* doc,
+                                         const QUuid& shadowId,
+                                         QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_shadowId(shadowId)
+{
+    setText(QStringLiteral("\xe6\xb8\x85\xe9\x99\xa4\xe5\xbd\xb1\xe5\xad\x90"));  // 清除影子
+
+    const auto* shadowBlk = doc->findBlock(shadowId);
+    if (!shadowBlk || !shadowBlk->isShadow) return;
+    m_valid = true;
+    m_shadow = *shadowBlk;
+    for (const auto& a : doc->attachments()) {
+        if (a.isPin) continue;
+        if (a.toBlockId == shadowId || a.fromBlockId == shadowId)
+            m_atts.push_back(a);
+    }
+}
+
+void RemoveShadowCommand::redo()
+{
+    if (!m_valid) return;
+    // removeBlock 的引用清理顺带删除 Att1/Att2 (跟随线失去角度基准转纯自由
+    // 线), 影子级联扫描对影子自身 victim 无副作用 —— 信号/重解走完整路径。
+    m_doc->removeBlock(m_shadowId);
+    m_doc->resolveAll();
+    emit m_doc->structureChanged();
+}
+
+void RemoveShadowCommand::undo()
+{
+    if (!m_valid) return;
+    if (!m_doc->findBlock(m_shadowId))
+        cad::param::RawModelAccess::addBlockRaw(*m_doc, m_shadow);
+    for (const auto& att : m_atts)
+        if (!m_doc->findAttachment(att.id))
+            cad::param::RawModelAccess::addAttachmentRaw(*m_doc, att);
+    m_doc->resolveAll();
+    emit m_doc->structureChanged();
+}
+
 
 // ─── SetAttachmentAngleIndependentCommand ───
 
