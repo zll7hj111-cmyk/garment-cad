@@ -162,7 +162,6 @@ SetAttachmentAngleIndependentCommand::SetAttachmentAngleIndependentCommand(
             m_oldRotationMode = a.rotationMode;
             m_oldArcLength = a.arcLength;
             m_oldArcFormula = a.arcLengthFormula;
-            m_oldShadowAnchor = a.shadowAnchorRotDeg;
             break;
         }
     }
@@ -182,17 +181,8 @@ void SetAttachmentAngleIndependentCommand::redo()
     } else {
         // 退出独立角度: 反算当前世界方向对应的 followerAngle, 恢复角度跟随
         // 时不会跳线。若原来有公式/弧长模式则清掉, 以反算值为准。
-        // 影子激活态过渡 (2026-09 锚点推导): 独立角期间影子不参与驱动,
-        // 锚点可能陈旧 —— 显式角度基准在宿主外时先重钉到宿主当前旋转
-        // (可见偏转 0), 方向保持由下面的反算吸收。
-        const bool shadowWillActivate = !a->angleRefBlockId.isNull()
-            && a->angleRefBlockId != a->toBlockId;
-        if (shadowWillActivate) {
-            if (const cad::param::Block* host = m_doc->findBlock(a->toBlockId))
-                a->shadowAnchorRotDeg = host->transform.rotation;
-        }
-        // 有效基准方向 = 与 Resolver 同构 (两点基准/影子偏转一并生效,
-        // 2026-09 审核 F6) —— 此前退出独立角的反算漏了 angleRef2。
+        // 有效基准方向 = 与 Resolver 同构 (两点基准一并生效, 2026-09 审核
+        // F6) —— 此前退出独立角的反算漏了 angleRef2。
         const auto* from = m_doc->findBlock(a->fromBlockId);
         const auto* to = m_doc->findBlock(a->toBlockId);
         if (from && to) {
@@ -223,7 +213,6 @@ void SetAttachmentAngleIndependentCommand::undo()
     a->rotationMode = m_oldRotationMode;
     a->arcLength = m_oldArcLength;
     a->arcLengthFormula = m_oldArcFormula;
-    a->shadowAnchorRotDeg = m_oldShadowAnchor;
     m_doc->resolveAll();
 }
 
@@ -263,7 +252,6 @@ SetAttachmentAngleRefCommand::SetAttachmentAngleRefCommand(
             m_oldRotationMode = a.rotationMode;
             m_oldArcLength = a.arcLength;
             m_oldArcFormula = a.arcLengthFormula;
-            m_oldShadowAnchor = a.shadowAnchorRotDeg;
             break;
         }
     }
@@ -274,18 +262,6 @@ void SetAttachmentAngleRefCommand::redo()
     auto* a = m_doc->findAttachment(m_attId);
     if (!a) return;
 
-    // 影子激活态过渡 (2026-09 锚点推导): 旧基准在宿主内 (影子不激活) →
-    // 新基准在宿主外 (影子激活) 时, 陈旧锚点会暴露成意外偏转 —— 重钉到
-    // 宿主当前旋转 (可见偏转 0), 方向保持由下面的 followerAngle 反算承担。
-    const bool wasActive = !a->angleRefBlockId.isNull()
-        && a->angleRefBlockId != a->toBlockId;
-    const bool nowActive = !m_newRefBlockId.isNull()
-        && m_newRefBlockId != a->toBlockId;
-    if (!wasActive && nowActive) {
-        if (const cad::param::Block* host = m_doc->findBlock(a->toBlockId))
-            a->shadowAnchorRotDeg = host->transform.rotation;
-    }
-
     a->angleRefBlockId = m_newRefBlockId;
     a->angleRefSegmentId = m_newRefSegmentId;
     a->angleRefPointId = m_newRefPointId;
@@ -295,8 +271,8 @@ void SetAttachmentAngleRefCommand::redo()
     a->angleIndependent = false;
 
     // 反算当前世界方向对应的 followerAngle，避免切换角度基准时跳线。
-    // 有效基准方向 = 与 Resolver 同构 (两点基准/影子偏转一并生效, 2026-09
-    // 审核 F6) —— 此前 redo 反算漏了 angleRef2 与影子偏转。
+    // 有效基准方向 = 与 Resolver 同构 (两点基准一并生效, 2026-09 审核 F6)
+    // —— 此前 redo 反算漏了 angleRef2。
     const auto* from = m_doc->findBlock(a->fromBlockId);
     const auto* to = m_doc->findBlock(a->toBlockId);
     if (from && to) {
@@ -330,7 +306,6 @@ void SetAttachmentAngleRefCommand::undo()
     a->rotationMode = m_oldRotationMode;
     a->arcLength = m_oldArcLength;
     a->arcLengthFormula = m_oldArcFormula;
-    a->shadowAnchorRotDeg = m_oldShadowAnchor;
     m_doc->resolveAll();
 }
 
@@ -374,8 +349,6 @@ void ReattachAttachmentCommand::redo()
     // 两点连线方向退化为单点出口方向。已自定义的基准原样保留。
     // **必须在改写 toBlockId/toPointId 之前调用** (旧宿主信息仍在 newAtt 上)。
     cad::param::preserveAngleRefOnReattach(m_doc, newAtt);
-    // 重连重钉影子锚点 (2026-09 锚点推导): 保持用户可见偏转不变。
-    cad::param::repinShadowAnchorOnReattach(m_doc, newAtt, m_newToBlockId);
     newAtt.toBlockId   = m_newToBlockId;
     newAtt.toPointId   = m_newToPointId;
     newAtt.toSegmentId = m_newToSegmentId;
@@ -391,8 +364,8 @@ void ReattachAttachmentCommand::redo()
     // 按保留的角度基准反算 followerAngle, 保持当前世界方向 (无跳变)。
     // 基准方向 = 有效角度基准 (与 Resolver 同构): 重连保持基准后 = 旧基准
     // 两点连线方向, 自动态 = 新宿主出口方向 —— 此前手写 refWorld 只覆盖
-    // 单点出口/线段 start→end 两分支, 两点基准 (angleRef2) 与影子偏转
-    // (影子偏转) 漏算 → 固化基准后重挂瞬间跳线。
+    // 单点出口/线段 start→end 两分支, 两点基准 (angleRef2) 漏算 → 固化
+    // 基准后重挂瞬间跳线。
     const auto* from = m_doc->findBlock(newAtt.fromBlockId);
     if (from && m_doc->findBlock(newAtt.toBlockId)) {
         const double refWorld = cad::param::effectiveAngleRefWorld(m_doc, newAtt);
@@ -691,96 +664,6 @@ bool SetFollowerAngleCommand::mergeWith(const QUndoCommand* other)
     m_newAngle = cmd->m_newAngle;
     m_newMode = cmd->m_newMode;
     m_newArcLength = cmd->m_newArcLength;
-    return true;
-}
-
-// ─── SetAttachmentShadowAnchorCommand (2026-09 锚点推导) ───
-
-SetAttachmentShadowAnchorCommand::SetAttachmentShadowAnchorCommand(
-    cad::param::ParamDocument* doc, const QUuid& attId, double newVisibleDeg,
-    QUndoCommand* parent)
-    : QUndoCommand(parent)
-    , m_doc(doc)
-    , m_attId(attId)
-{
-    setText(QStringLiteral("影子偏转"));
-    QUuid hostId;
-    for (const auto& a : doc->attachments()) {
-        if (a.id == attId) {
-            m_oldAnchor = a.shadowAnchorRotDeg;
-            hostId = a.toBlockId;
-            break;
-        }
-    }
-    // 锚 = 宿主当前旋转 − 输入偏转 (保持用户可见偏转 = 输入值)。
-    const cad::param::Block* host = doc->findBlock(hostId);
-    m_newAnchor = host ? host->transform.rotation - newVisibleDeg : m_oldAnchor;
-}
-
-void SetAttachmentShadowAnchorCommand::redo()
-{
-    if (auto* a = m_doc->findAttachment(m_attId))
-        a->shadowAnchorRotDeg = m_newAnchor;
-    m_doc->resolveAll();
-}
-
-void SetAttachmentShadowAnchorCommand::undo()
-{
-    if (auto* a = m_doc->findAttachment(m_attId))
-        a->shadowAnchorRotDeg = m_oldAnchor;
-    m_doc->resolveAll();
-}
-
-// ─── SetAttachmentNoFollowRotateCommand (2026-09 用户拍板) ───
-
-SetAttachmentNoFollowRotateCommand::SetAttachmentNoFollowRotateCommand(
-    cad::param::ParamDocument* doc, const QUuid& attId, bool noFollowRotate,
-    QUndoCommand* parent)
-    : QUndoCommand(parent)
-    , m_doc(doc)
-    , m_attId(attId)
-    , m_newNoFollow(noFollowRotate)
-{
-    setText(QStringLiteral("不跟随旋转"));
-    for (const auto& a : doc->attachments()) {
-        if (a.id == attId) {
-            m_oldNoFollow = a.noFollowRotate;
-            m_oldShadowAnchor = a.shadowAnchorRotDeg;
-            break;
-        }
-    }
-}
-
-void SetAttachmentNoFollowRotateCommand::redo()
-{
-    if (auto* a = m_doc->findAttachment(m_attId)) {
-        // 影子激活态过渡 (2026-09 锚点推导): 关闭"不跟随旋转" = 影子重新
-        // 激活 —— 不跟随期间锚点可能陈旧, 重钉到宿主当前旋转 (可见偏转 0),
-        // 避免恢复跟转瞬间跳线。
-        if (m_oldNoFollow && !m_newNoFollow) {
-            if (const cad::param::Block* host = m_doc->findBlock(a->toBlockId))
-                a->shadowAnchorRotDeg = host->transform.rotation;
-        }
-        a->noFollowRotate = m_newNoFollow;
-    }
-    m_doc->resolveAll();
-}
-
-void SetAttachmentNoFollowRotateCommand::undo()
-{
-    if (auto* a = m_doc->findAttachment(m_attId)) {
-        a->noFollowRotate = m_oldNoFollow;
-        a->shadowAnchorRotDeg = m_oldShadowAnchor;
-    }
-    m_doc->resolveAll();
-}
-
-bool SetAttachmentNoFollowRotateCommand::mergeWith(const QUndoCommand* other)
-{
-    if (other->id() != id()) return false;
-    const auto* cmd = static_cast<const SetAttachmentNoFollowRotateCommand*>(other);
-    if (cmd->m_attId != m_attId) return false;
-    m_newNoFollow = cmd->m_newNoFollow;
     return true;
 }
 

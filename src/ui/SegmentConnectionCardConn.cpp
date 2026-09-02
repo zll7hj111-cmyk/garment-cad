@@ -27,7 +27,7 @@ namespace cad::ui {
 // ── 连接生命周期：建立 / 重定向 / 拆开↔重连 (位置维度) / ──
 // 2026-xx: 「连接线段」复选框与「清除」按钮已删 —— 连接 = 输入 P#,
 // 断开/恢复 = 连接点「拆开/重连」(位置维度) + 基准点「拆开/重连」(角度维度,
-// SegmentRefCard), 两维独立。滑轨/影子偏转已上移 LinePropertyDialog。
+// SegmentRefCard), 两维独立。滑轨已上移 LinePropertyDialog。
 // 2026-08: 「连接线段」框改用 PointRefEdit 统一解析 (同名弹窗消歧/红闪反馈),
 // 旧匿名 resolveSegmentInput (静默取首个命中) 已删。
 
@@ -74,8 +74,6 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     // (此前只固化点1, 点2 留空, 两点连线方向退化为单点出口方向)。已自定义
     // 的基准原样保留。必须在改写 toBlockId 之前调用 (旧宿主信息仍在 att 上)。
     cad::param::preserveAngleRefOnReattach(m_doc, *att);
-    // 重连重钉影子锚点 (2026-09 锚点推导): 保持用户可见偏转不变。
-    cad::param::repinShadowAnchorOnReattach(m_doc, *att, blockId);
 
     // 仅角度拖动到新端点：旧角度基准保留为独立角度基准，位置挂到新端点，
     // 从而自动进入“双基准”。

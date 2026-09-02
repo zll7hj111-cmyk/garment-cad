@@ -117,7 +117,7 @@ void SegmentConnectionCard::buildEndRow(QVBoxLayout* lay)
 {
     // 终点连接行组 (2026-xx 每端完整连接): 引擎载体 = Block::endTarget 终点
     // 指向 (Resolver Step 7, 旋转指向目标点)。行1 连接线段; 行2 连接点 +
-    // 偏移(°) + 拆开/重连。双端都连上 = 桥接线 (基准线行隐藏、角度/滑轨/影子
+    // 偏移(°) + 拆开/重连。双端都连上 = 桥接线 (基准线行隐藏、角度/滑轨
     // 禁用 —— 互斥, 见 SegmentRefCard/refreshUnifiedState)。
     m_endRow = new QWidget(this);
     auto* endV = new QVBoxLayout(m_endRow);

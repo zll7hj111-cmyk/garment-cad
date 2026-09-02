@@ -3,7 +3,6 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
 #include <QGraphicsEllipseItem>
-#include <QGraphicsPathItem>
 #include <QKeyEvent>
 #include <QSignalBlocker>
 #include <QUndoStack>
@@ -95,8 +94,7 @@ void ToolRotate::onDeactivate()
         m_releaseAttId = QUuid();
         m_releaseAttHeld = false;
     }
-    // 影子基准虚线随工具退出清理 (2026-09)
-    clearShadowRefLines();
+    // 工具退出清理 (ManagedItems 统一释放)
     removeGizmo();
     reportPinnedTarget(QUuid(), QUuid());
     reportHoverTarget(QUuid(), QUuid());
@@ -411,9 +409,9 @@ void ToolRotate::rebuildAnchorState()
         m_attId = att->id;
         const cad::param::Block* fromBlk = m_paramDoc->findBlock(att->fromBlockId);
         m_pivot = fromBlk ? fromBlk->worldPos(att->fromPointId) : blk->worldPos(m_anchorPointId);
-        // 有效基准方向 = 与 Resolver 同构 (自定义角度基准/两点连线/影子偏转
-        // 全部生效, 2026-09 审核 F3) —— 此前只取位置宿主出方向, 设了自定义
-        // 基准或影子偏转后 Gizmo 基准虚线/折角弧/表盘读数画错基准。
+        // 有效基准方向 = 与 Resolver 同构 (自定义角度基准/两点连线全部生效,
+        // 2026-09 审核 F3) —— 此前只取位置宿主出方向, 设了自定义基准后
+        // Gizmo 基准虚线/折角弧/表盘读数画错基准。
         m_refWorldRad = cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
         m_baseAngle = att->followerAngle;
         m_baseFormula = att->followerAngleFormula;
@@ -481,99 +479,6 @@ void ToolRotate::releaseFollowerIfAnchorMoved()
     if (m_scene) m_scene->refreshAllBlockItems();
 }
 
-// ── 影子基准虚线 (2026-09 用户需求追加) ──────────────────────────────
-// 旋转位置宿主时, 影子连接 (= 角度基准在宿主外的跟随线) 在画布上没有
-// 任何"基准朝哪"的可视化 —— L2 明明跟着 L1 转, 用户看不到它的角度基准
-// (L3 + 影子偏转) 在哪。每条影子连接在跟随线挂接点画一条灰色虚线, 方向 =
-// 有效角度基准 (真基准 + 影子偏转, 2026-09 锚点推导: 影子随宿主旋转现算),
-// 拖动时随影子逐帧转动 —— 直观显示"L2 相对这条线保持 α 不变"。
-
-void ToolRotate::buildShadowRefLines()
-{
-    clearShadowRefLines();
-    if (!m_scene || !m_paramDoc || m_blockId.isNull()) return;
-    const double zoom = currentZoom();
-    const double len = 60.0 / zoom;   // 与 gizmo 基准虚线同长
-    for (const auto& a : m_paramDoc->attachments()) {
-        // 影子连接判定 (2026-09 锚点推导, 与 Resolver 影子语义同源):
-        // 本线是位置宿主 + 非纯位置钉 + 角度被基准驱动 + 未置不跟随旋转
-        // + 有效角度基准在宿主外 (位置宿主 = 角度基准时影子恒不激活)。
-        if (a.toBlockId != m_blockId) continue;
-        if (a.isPin || a.angleIndependent || a.noFollowRotate) continue;
-        const QUuid refBlk = !a.angleRefBlockId.isNull()
-            ? a.angleRefBlockId : a.toBlockId;
-        if (refBlk.isNull() || refBlk == m_blockId) continue;
-        const auto* fromBlk = m_paramDoc->findBlock(a.fromBlockId);
-        if (!fromBlk) continue;
-        const auto* ap = fromBlk->findPoint(a.fromPointId);
-        if (!ap || !ap->resolved) continue;
-        const cad::geo::Vec2 anchor = fromBlk->worldPos(a.fromPointId);
-        const double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, a);
-        const QPointF c = cad::geo::Coord::toScene(anchor.x, anchor.y);
-        auto* line = new QGraphicsPathItem();
-        QPen pen(QColor(120, 144, 156));   // 灰, 与 gizmo 基准虚线同色系
-        pen.setWidthF(1.0);
-        pen.setCosmetic(true);
-        pen.setStyle(Qt::DashLine);
-        line->setPen(pen);
-        line->setZValue(9997);             // 与 gizmo refLine 同层
-        QPainterPath path;
-        path.moveTo(c);
-        path.lineTo(c.x() + len * std::cos(refWorld),
-                    c.y() - len * std::sin(refWorld));   // scene y-down
-        line->setPath(path);
-        m_scene->addItem(line);
-        m_managed.own(line);
-        m_shadowRefLines.insert(a.id, line);
-    }
-}
-
-void ToolRotate::updateShadowRefLines()
-{
-    if (m_shadowRefLines.isEmpty()) return;
-    const double zoom = currentZoom();
-    const double len = 60.0 / zoom;
-    for (auto it = m_shadowRefLines.constBegin(); it != m_shadowRefLines.constEnd(); ++it) {
-        auto* line = it.value();
-        if (!line) continue;
-        const auto* att = m_paramDoc ? m_paramDoc->attachmentsView().byId(it.key()) : nullptr;
-        if (!att) continue;
-        const auto* fromBlk = m_paramDoc->findBlock(att->fromBlockId);
-        if (!fromBlk) continue;
-        const auto* ap = fromBlk->findPoint(att->fromPointId);
-        if (!ap || !ap->resolved) continue;
-        // 有效基准含影子偏转 (2026-09 锚点推导: 影子随宿主旋转现算,
-        // 宿主 transform 已随拖动逐帧落位)。
-        const double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
-        const cad::geo::Vec2 anchor = fromBlk->worldPos(att->fromPointId);
-        const QPointF c = cad::geo::Coord::toScene(anchor.x, anchor.y);
-        QPainterPath path;
-        path.moveTo(c);
-        path.lineTo(c.x() + len * std::cos(refWorld),
-                    c.y() - len * std::sin(refWorld));
-        line->setPath(path);
-    }
-}
-
-void ToolRotate::clearShadowRefLines()
-{
-    if (m_shadowRefLines.isEmpty()) return;
-    for (auto it = m_shadowRefLines.constBegin(); it != m_shadowRefLines.constEnd(); ++it)
-        m_managed.release(it.value());
-    m_shadowRefLines.clear();
-}
-
-double ToolRotate::shadowRefLineDirRad(const QUuid& attId) const
-{
-    const auto it = m_shadowRefLines.constFind(attId);
-    if (it == m_shadowRefLines.constEnd() || !it.value()) return 0.0;
-    const auto* att = m_paramDoc ? m_paramDoc->attachmentsView().byId(attId) : nullptr;
-    if (!att) return 0.0;
-    // 有效基准方向 = 真基准 + 影子偏转 (与 Resolver 同构) —— 虚线画的就是
-    // 这个方向, 拖动态随基准影子逐帧转动。
-    return cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
-}
-
 void ToolRotate::selectTarget(const QUuid& blockId,
                               const std::optional<cad::geo::Vec2>& clickWorld)
 {
@@ -621,19 +526,12 @@ void ToolRotate::selectTarget(const QUuid& blockId,
     if (m_blockId.isNull()) return;   // rebuild cleared an invalid target
 
     m_state = RotateState::Ready;
-    // 影子基准虚线 (2026-09 用户需求追加): 选中即显示 —— 旋转目标 (位置
-    // 宿主) 的每条"基准在宿主外"的跟随线一条灰色虚线, 方向 = 有效角度
-    // 基准 (真基准 + 影子偏转), 让"跟随线相对 L3 的角度保持"在拖动前
-    // 就有可视化 (影子偏转 = 宿主旋转 − 锚点现算, 面板设过偏转时虚线
-    // 即显示该偏转)。
-    buildShadowRefLines();
     // 条带: 旋转会话激活, 锚心端在前 (2026-12)。必须放在 m_state=Ready 之后
     // —— reportRotateAnchorState 用 m_state != Idle 判定会话激活, 提前调用会
     // 上报 active=false, 条带不进入旋转会话, 换向按钮将走命令路径而非切锚心。
     reportRotateAnchorState();
     buildGizmo();
     updateGizmo();
-    updateShadowRefLines();
     // 上下文属性条: 锁定到目标线段 (角度格随之可编辑, 并跟随拖动实时刷新)。
     reportStripTarget();
     updateStatusHint();
@@ -644,7 +542,6 @@ void ToolRotate::clearTarget()
 {
     removeGizmo();
     clearAimCandidate();
-    clearShadowRefLines();   // 影子基准虚线随会话结束清理 (2026-09)
     m_blockId = QUuid();
     m_attId = QUuid();
     m_connected = false;
@@ -669,16 +566,19 @@ void ToolRotate::clearTarget()
 void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
 {
     if (m_state != RotateState::Ready) return;
+    // 变量/公式驱动角度 = 锁定 (用户拍板 2026-12): 旋转工具不得改变角度 ——
+    // 不烘焙公式、不覆盖变量。要改角度先移除公式 (属性面板)。旧实现在此
+    // 把公式烘焙成数值后继续旋转, 导致变量被覆盖消失。
+    if (isAngleLocked()) {
+        updateStatusHint();
+        return;
+    }
     // 旋转 = 放弃跟随 (用户拍板): the pivot was moved OFF the attachment
     // point (anchor switched to the far endpoint), so the rotation detaches
     // the follower link — the resolver would otherwise yank the line back to
     // its leader on every frame. The link is snapshotted; Esc / undo restore
     // it (undo 一步恢复挂接).
     releaseFollowerIfAnchorMoved();
-    // 影子基准虚线: 每条影子连接一条灰色虚线 (方向 = 有效角度基准), 让
-    // "跟随线相对 L3 的角度保持"有可视化 (2026-09 用户需求追加)。影子
-    // 偏转本身由 Resolver 按锚点现算 (2026-09 锚点推导), 工具不再逐帧回写。
-    buildShadowRefLines();
     // Endpoint-aim constraint (终点指向): free-hand rotation RELEASES the aim
     // — the resolver would otherwise pull the direction straight back to the
     // target point on every frame (用户拍板: 旋转 = 放弃终点指向).
@@ -692,34 +592,6 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
             m_paramDoc->resolveAll();
             if (m_scene) m_scene->refreshAllBlockItems();
         }
-    }
-    // Formula-driven follower angle: free-hand rotation is ALLOWED and
-    // means "I no longer want this formula to drive the angle" (用户拍板:
-    // 旋转 = 放弃公式约束). The formula's current value is baked into a
-    // plain number (geometry unchanged), then rotation proceeds freely.
-    if (isAngleLocked() && m_paramDoc) {
-        if (auto* a = editableAttachment()) {
-            const double cur = currentAngleDeg();
-            if (m_rotationMode == cad::param::RotationMode::ArcLength) {
-                // Bake the CURRENT arc value (formula evaluated) — never
-                // back-derive from the normalized display angle, which would
-                // collapse multi-turn arcs to 0 (用户回归 2026-08).
-                double arcMm = a->arcLength;
-                // 求值失败保持 baseline (out 参数语义), 烘焙兜底值。
-                (void)cad::param::ConditionEngine::evaluateLengthMm(
-                    a->arcLengthFormula, m_paramDoc->parameters(), {}, arcMm);
-                a->arcLength = arcMm;
-                a->arcLengthFormula.clear();
-            } else {
-                a->followerAngle = cur;
-                a->followerAngleFormula.clear();
-            }
-        }
-        // NOTE: m_baseFormula/m_baseArcFormula stay UNTOUCHED — they are the
-        // undo-restore target (撤销恢复公式), and the commit diff needs the
-        // formula-vs-empty change to be visible.
-        m_paramDoc->resolveAll();
-        if (m_scene) m_scene->refreshAllBlockItems();
     }
     m_state = RotateState::Rotating;
     const cad::geo::Vec2 d = pos - m_pivot;
@@ -770,13 +642,8 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
     // endpoint's direction with a nearby point.
     if (!snap) checkEndpointAimSnap(target);
 
-    // 影子偏转 (2026-09 锚点推导): 影子随宿主旋转现算 —— 宿主 transform
-    // 在 applyAngleDeg 内同帧落位, Resolver 按 (宿主旋转 − 锚点) 驱动跟随
-    // 线, 无需工具逐帧回写。影子基准虚线在 applyAngleDeg 之后刷新 (方向 =
-    // 真基准 + 当前影子偏转, 读本帧宿主旋转, 不滞后一帧)。
+    // Resolver 按基准方向驱动跟随线, 无需工具逐帧回写。
     applyAngleDeg(target);
-    if (!m_copyGesture->active())
-        updateShadowRefLines();
     updateGizmo();
 }
 
@@ -1173,6 +1040,12 @@ void ToolRotate::updateStatusHint()
                         : cad::param::Serial::tag(
                               blk->findPoint(seg.startPointId)->serial);
             }
+        }
+        if (isAngleLocked()) {
+            reportHintOverride(QString::fromUtf8(
+                "旋转：锚心 %1 · 角度由变量/公式驱动，已锁定（移除公式后可旋转）")
+                .arg(anchorTag));
+            return;
         }
         reportHintOverride(m_selectionConfirmed
             ? QString::fromUtf8("旋转：锚心 %1 · 拖动旋转（Shift 吸附 15°）")

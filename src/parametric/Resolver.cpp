@@ -748,9 +748,6 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     const double leaderRefWorld = to.transform.rotation
                     + to.exitDirectionAtPoint(att.toPointId, att.toSegmentId);
     double refWorld = leaderRefWorld;
-    // 位置锚点与角度基准分离 (用户需求 2026): when angleRefBlockId is set, the
-    // followerAngle is measured against the separate reference SEGMENT instead of
-    // the position leader's exit direction.
     if (!att.angleRefBlockId.isNull() && angleRef) {
         // 2026-xx §6.4: 角度基准两点化 —— 点1→点2 的连线方向优先。
         if (!att.angleRef2BlockId.isNull() && !att.angleRef2PointId.isNull()) {
@@ -785,22 +782,6 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
             }
         }
     }
-
-    // 影子偏转 (用户拍板 2026-09 锚点推导重设计, 取代旧 baselineOffsetDeg
-    // 累计账本): 影子 = 刚性挂在位置宿主上的隐形基准, 有效基准方向 =
-    // 真基准方向 + (宿主当前旋转 − 钉锚时宿主旋转)。每次求解从固定锚点
-    // 现算 —— 结构上不可能累计漂移; 宿主被其基准线间接带动旋转时影子
-    // 同样跟转 (与"影子挂靠连接线"的心智模型一致)。noFollowRotate 置位 =
-    // 不跟转 (被角度基准拽回原方向)。
-    // 激活条件 (与旧 collectShadowAttachments 同源): 显式角度基准在位置
-    // 宿主外 —— 位置宿主 = 角度基准 (普通跟随) 时真基准方向已随宿主转,
-    // 再叠加影子会把宿主旋转双重计入, 故影子恒不激活 (刚体平账)。
-    // 只影响驱动旋转的 refWorld —— 滑轨轨道用的 leaderRefWorld 是位置宿主
-    // 的方向, 与影子无关; 本字段位于公式求值链之外, 公式/常量原样存活。
-    const bool shadowActive = !att.angleRefBlockId.isNull()
-        && att.angleRefBlockId != att.toBlockId;
-    if (shadowActive && !att.noFollowRotate)
-        refWorld += to.transform.rotation - att.shadowAnchorRotDeg;
 
     // The follower's attached point must exist and be resolved (checked before
     // any direction lookup so dangling points short-circuit cleanly).

@@ -98,12 +98,8 @@ private:
     cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
     double m_oldArcLength = 0.0;
     QString m_oldArcFormula;
-    double m_oldShadowAnchor = 0.0;   ///< 影子锚点快照 (2026-09 锚点推导).
 };
 
-
-/// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): switches an attachment between
-/// 普通全连接 (None) and the one-axis slide modes (沿线滑动 AlongLeader /
 
 /// 位置锚点与角度基准分离 (用户需求 2026): sets a separate angle-reference
 /// block/segment on an attachment. The follower's position stays pinned to
@@ -147,7 +143,6 @@ private:
     cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
     double m_oldArcLength = 0.0;
     QString m_oldArcFormula;
-    double m_oldShadowAnchor = 0.0;   ///< 影子锚点快照 (2026-09 锚点推导).
 };
 
 /// 重新挂接 (用户需求 2026): 解焊后把跟随线拖到新的位置宿主 A, 同时保留
@@ -334,50 +329,6 @@ private:
     double m_newArcLength;
     QString m_oldArcFormula;
     QString m_newArcFormula;
-};
-
-/// 影子锚点重钉 (2026-09 锚点推导重设计, 取代旧 SetAttachmentBaselineOffset
-/// Command): 面板「影子偏转」输入 = 重钉锚点 —— 锚 = 宿主当前旋转 − 输入
-/// 偏转 (保持用户可见偏转 = 输入值)。redo/undo 均 resolve。
-class SetAttachmentShadowAnchorCommand : public QUndoCommand
-{
-public:
-    SetAttachmentShadowAnchorCommand(cad::param::ParamDocument* doc,
-                                     const QUuid& attId,
-                                     double newVisibleDeg,
-                                     QUndoCommand* parent = nullptr);
-    void redo() override;
-    void undo() override;
-
-private:
-    cad::param::ParamDocument* m_doc;
-    QUuid m_attId;
-    double m_oldAnchor = 0.0;
-    double m_newAnchor = 0.0;
-};
-
-/// 不跟随旋转开关 (用户拍板 2026-09): 持久化记录本跟随线在旋转位置宿主时
-/// 是否**不**参与影子偏转 (noFollowRotate)。redo/undo 均 resolve —— 开关
-/// 翻转后 Resolver 按新影子语义落位 (影子偏转激活时旋转宿主 δ, 影子随宿主
-/// 转 δ; 关闭时被角度基准拽回原方向)。
-class SetAttachmentNoFollowRotateCommand : public QUndoCommand
-{
-public:
-    SetAttachmentNoFollowRotateCommand(cad::param::ParamDocument* doc,
-                                       const QUuid& attId,
-                                       bool noFollowRotate,
-                                       QUndoCommand* parent = nullptr);
-    void redo() override;
-    void undo() override;
-    int id() const override { return static_cast<int>(CommandId::SetNoFollowRotate); }
-    bool mergeWith(const QUndoCommand* other) override;
-
-private:
-    cad::param::ParamDocument* m_doc;
-    QUuid m_attId;
-    bool m_newNoFollow = false;
-    bool m_oldNoFollow = false;
-    double m_oldShadowAnchor = 0.0;   ///< 影子锚点快照 (2026-09 锚点推导).
 };
 
 /// 滑轨偏移面板编辑 (2026-09 审核收口): 摆放区「滑轨」两轴输入 (数值或公式)

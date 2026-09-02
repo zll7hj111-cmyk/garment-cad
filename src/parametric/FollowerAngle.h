@@ -36,15 +36,13 @@ inline double backSolveFollowerAngle(double followerRotRad,
 }
 
 /// 有效角度基准方向 (radians) —— 与 Resolver::applyAttachment 的 refWorld
-/// 计算逐位同构 (Resolver.cpp:725-769), 供读数/反算/可视化等消费方复用,
-/// 避免各路径各自实现导致基准语义漂移 (2026-09 审核 F0):
+/// 计算逐位同构 (Resolver.cpp), 供读数/反算/可视化等消费方复用, 避免各路径
+/// 各自实现导致基准语义漂移 (2026-09 审核 F0):
 ///   ① 自定义角度基准 (angleRefBlockId 非空): 点1→点2 世界连线方向优先,
 ///      其次点1 出口方向, 再次基准线段 start→end 方向;
-///   ② 否则 = 位置宿主 (toBlockId) 在吸附点的出口方向;
-///   ③ 最后叠加影子偏转 (2026-09 锚点推导): 有效基准 = 真基准 +
-///      (宿主当前旋转 − shadowAnchorRotDeg), noFollowRotate 置位不叠加。
-/// 滑轨轨道方向 (leaderRefWorld) 刻意不在此列 —— 轨道属于位置宿主, 与
-/// 角度影子无关 (Resolver.cpp:767-768 同注释)。
+///   ② 否则 = 位置宿主 (toBlockId) 在吸附点的出口方向。
+/// 滑轨轨道方向 (leaderRefWorld) 刻意不在此列 —— 轨道属于位置宿主 (Resolver
+/// 同注释)。
 ///
 /// @param doc    ParamDocument (块查找).
 /// @param att    目标连接.
@@ -62,16 +60,6 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att);
 /// @return 是否发生了固化 (自动态 → 两点基准)。
 /// 实现见 ParamDocumentAttachments.cpp (需 ParamDocument 完整类型)。
 bool preserveAngleRefOnReattach(ParamDocument* doc, Attachment& att);
-
-/// 重连重钉影子锚点 (2026-09 锚点推导): 影子此前激活 (显式角度基准在旧
-/// 宿主外) 时保持用户可见偏转不变 —— 旧偏转 = 旧宿主旋转 − 旧锚点; 新锚点
-/// = 新宿主旋转 − 旧偏转。此前不激活 (自动态/普通跟随) 时重钉到新宿主
-/// 当前旋转 (可见偏转 0, 方向保持由调用方的 followerAngle 反算承担)。
-/// **必须在改写 toBlockId 之前调用** (旧宿主信息仍在 att 上), 且新宿主
-/// (@p newHostBlockId) 必须已存在; 任一宿主缺失时不动 (调用方兜底)。
-/// 实现见 ParamDocumentAttachments.cpp (需 ParamDocument 完整类型)。
-void repinShadowAnchorOnReattach(ParamDocument* doc, Attachment& att,
-                                 const QUuid& newHostBlockId);
 
 /// Shared 角度↔弧长 double-mode switch write-back (2026-08-28 收口 A3).
 /// Both mode-toggle entries (SegmentAngleCard::onModeToggle / 

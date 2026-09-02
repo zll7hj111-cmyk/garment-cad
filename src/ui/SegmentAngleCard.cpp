@@ -437,9 +437,9 @@ void SegmentAngleCard::onModeToggle()
 void SegmentAngleCard::updateWorldAngleLabel(const cad::param::Attachment& att)
 {
     if (!m_doc) { m_lblWorldAngle->setVisible(false); return; }
-    // 有效基准方向 = 与 Resolver 同构 (自定义角度基准/两点连线/影子偏转
-    // 全部生效, 2026-09 审核 F1) —— 此前只取位置宿主出方向, 设了自定义
-    // 基准或影子偏转后读数与线实际方向不符。
+    // 有效基准方向 = 与 Resolver 同构 (自定义角度基准/两点连线全部生效,
+    // 2026-09 审核 F1) —— 此前只取位置宿主出方向, 设了自定义基准后读数与
+    // 线实际方向不符。
     const double refWorldDeg = cad::param::effectiveAngleRefWorld(m_doc, att)
         * 180.0 / M_PI;
 
@@ -470,7 +470,20 @@ void SegmentAngleCard::updateWorldAngleLabel(const cad::param::Attachment& att)
 
 void SegmentAngleCard::onDocResolved()
 {
-    // Live 路径: 只刷几何相关读数 (绝对角度/世界角度), 不覆盖输入。
+    // 外部几何变更 (旋转拖动等) 每帧广播 resolved: 输入框未聚焦时回填
+    // 数值/公式 (与 ContextStrip 同款焦点保护 —— 聚焦中回填会打断敲击,
+    // 且用户未提交的输入不能被覆盖)。桥接线除外: 其输入框内容由
+    // setBridgeReadOnly 维护 (测出的世界角), 回填会覆盖成存储的跟随角。
+    if (!m_editAngle->hasFocus()) {
+        const auto* blk = m_doc ? m_doc->blocksView().byId(m_blockId) : nullptr;
+        if (!(blk && blk->isBridge)) {
+            const QSignalBlocker sb(m_editAngle);
+            populateAngleField();
+            refresh();
+            return;
+        }
+    }
+    // 聚焦中: 只刷几何相关读数 (绝对角度/世界角度), 不覆盖输入。
     const auto* att = findFollowerAttachment();
     if (att && !att->angleIndependent) {
         updateWorldAngleLabel(*att);

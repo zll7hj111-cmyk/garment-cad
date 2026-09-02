@@ -193,8 +193,7 @@ void RotateCopyGesture::convert(const Vec2& pos)
     blk->transform = o.m_baseTf;
     blk->endTargetBlockId = o.m_baseEndTargetBlock;
     blk->endTargetPointId = o.m_baseEndTargetPoint;
-    // 影子偏转随原块回位 (2026-09 锚点推导): 影子 = 宿主旋转 − 锚点现算,
-    // 原块回弹 base 姿态后影子自动回位, 无需工具回写。
+    // 原块回弹 base 姿态后跟随线由 Resolver 按基准自动回位, 无需工具回写。
     o.m_paramDoc->resolveAll();
 
     // 拖动基准切换到当前位置：后续 delta 从转换点继续（相对角 = 原线 base

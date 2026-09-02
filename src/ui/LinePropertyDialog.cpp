@@ -47,7 +47,7 @@
 #include "parametric/FollowerAngle.h"
 #include "document/commands/VariableCommands.h"
 #include "document/commands/BlockCommands.h"  // SetLinePropertiesCommand (P0-3)
-#include "document/commands/AttachmentCommands.h"  // SetAttachmentShadowAnchorCommand 等
+#include "document/commands/AttachmentCommands.h"
 #include "ui/PointRefEdit.h"
 #include "ui/SegmentAnchorTab.h"
 #include "ui/SegmentConnectionCard.h"
@@ -311,7 +311,7 @@ void LinePropertyDialog::connectLiveSignals()
         connect(m_btnLenSpec, &QPushButton::toggled, this,
                 [this](bool checked) { if (checked) onLengthModeChanged(false); });
     }
-    // 滑轨/影子偏转 (2026-xx §3 从连接卡拆到摆放分区).
+    // 滑轨 (2026-xx §3 从连接卡拆到摆放分区).
     if (m_cmbSlideMode) {
         connect(m_cmbSlideMode, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &LinePropertyDialog::onSlideModeChanged);
@@ -319,10 +319,6 @@ void LinePropertyDialog::connectLiveSignals()
                 this, &LinePropertyDialog::onSlideOffsetEdited);
         connect(m_editSlidePerp, &ElaLineEdit::editingFinished,
                 this, &LinePropertyDialog::onSlideOffsetEdited);
-        connect(m_editShadow, &ElaLineEdit::editingFinished,
-                this, &LinePropertyDialog::onShadowEdited);
-        connect(m_btnNoFollowRotate, &QPushButton::clicked,
-                this, &LinePropertyDialog::onNoFollowRotateClicked);
     }
     // 端点组内连接 (2026-xx §3).
     if (m_refStartConnect) {
@@ -847,50 +843,12 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     }
 
     // 角度区 (§3 顺序): ①对齐点+方向两段式行 对齐点 [P1] 方向：点1→点2 [独立]
-    // (文案 v2, 2026-12 用户拍板) → ②角度输入行 → ③影子偏转。方向行在前:
+    // (文案 v2, 2026-12 用户拍板) → ②角度输入行。方向行在前:
     // 先回答"对齐到什么方向", 再给数值。
     m_angleCard = new SegmentAngleCard(m_paramDoc, m_scene, page);
     layout->addWidget(m_refCard);
     layout->addWidget(m_angleCard);
 
-    // 影子偏转行 (§3: 常显可输入): 标签 64 + 输入 150 (全页统一列宽)。
-    m_shadowRow = new QWidget(page);
-    {
-        auto* shadowLayout = new QHBoxLayout(m_shadowRow);
-        shadowLayout->setContentsMargins(0, 0, 0, 0);
-        shadowLayout->setSpacing(6);
-        auto* lblShadowTitle = new ElaText(QString::fromUtf8("影子偏转"), 11, m_shadowRow);
-        lblShadowTitle->setFixedWidth(kLabelW);
-        lblShadowTitle->setFixedHeight(kFieldH);
-        lblShadowTitle->setMinimumHeight(kFieldH);
-        shadowLayout->addWidget(lblShadowTitle);
-        m_editShadow = new ElaLineEdit(m_shadowRow);
-        m_editShadow->setFixedWidth(150);
-        m_editShadow->setPlaceholderText(QString::fromUtf8("0"));
-        m_editShadow->setToolTip(QString::fromUtf8(
-            "影子偏转：本线相对角度基准的额外偏转（度）。影子刚性挂在位置宿主上，"
-            "宿主怎么转影子就怎么转（含被其基准线间接带动），本线世界方向随之跟转。"
-            "输入 0 = 本线转回与基准当前方向对齐（重钉锚点）。"));
-        m_editShadow->setFixedHeight(kFieldH);
-        m_editShadow->setStyleSheet(QStringLiteral("font-size: 11px;"));
-        shadowLayout->addWidget(m_editShadow);
-        // 不跟随旋转 (2026-09 用户拍板): 持久化开关 —— 旋转位置宿主时本线
-        // 不参与影子偏转 (被角度基准拽回原方向)。chip 按钮, 与 [链接当前线]
-        // 同款; 选中态 = 不跟随 (checked 实底)。
-        m_btnNoFollowRotate = new QPushButton(QString::fromUtf8("不跟随旋转"), m_shadowRow);
-        m_btnNoFollowRotate->setObjectName(QStringLiteral("noFollowRotateBtn"));
-        m_btnNoFollowRotate->setCheckable(true);
-        m_btnNoFollowRotate->setFixedHeight(kFieldH);
-        m_btnNoFollowRotate->setStyleSheet(cad::ui::chipButtonStyle());
-        m_btnNoFollowRotate->setCursor(Qt::PointingHandCursor);
-        m_btnNoFollowRotate->setToolTip(QString::fromUtf8(
-            "旋转位置宿主时，本线是否跟随旋转（影子偏转）：\n"
-            "关闭（默认）= 宿主旋转 δ，本线世界方向跟转 δ，角度基准约束保持；\n"
-            "开启 = 本线不跟转，被角度基准拽回原方向。持久化保存。"));
-        shadowLayout->addWidget(m_btnNoFollowRotate);
-        shadowLayout->addStretch();
-    }
-    layout->addWidget(m_shadowRow);
     layout->addWidget(makeDivider(page));
 
     // ─── 按需组 (仅曲线显示: 弧长 / 张力 / 转为直线) ───
@@ -1175,9 +1133,9 @@ void LinePropertyDialog::populateFromModel()
 
     // 端点延长量: 置灰 + 回填数值/公式.
     refreshEndpointExtends();
-    // 长度模式 + 滑轨/影子偏转 (2026-xx §3/§6.3).
+    // 长度模式 + 滑轨 (2026-xx §3/§6.3).
     refreshLengthMode();
-    refreshSlideShadow();
+    refreshSlideRow();
 }
 
 void LinePropertyDialog::refreshEndpointConnRows()
@@ -1574,16 +1532,16 @@ void LinePropertyDialog::onSlideModeChanged(int index)
     if (!m_paramDoc) return;
     const auto* att = findFollowerAttachmentFor(m_paramDoc, m_blockId);
     if (!att || att->angleOnly || att->angleIndependent) {
-        refreshSlideShadow();
+        refreshSlideRow();
         return;
     }
     const auto mode = static_cast<cad::param::SlideMode>(index);
     if (att->slideMode == mode) {
-        refreshSlideShadow();
+        refreshSlideRow();
         return;
     }
     m_paramDoc->setAttachmentSlideMode(att->id, mode);
-    refreshSlideShadow();
+    refreshSlideRow();
     refreshScene();
 }
 
@@ -1592,7 +1550,7 @@ void LinePropertyDialog::onSlideOffsetEdited()
     if (!m_paramDoc) return;
     const auto* att = findFollowerAttachmentFor(m_paramDoc, m_blockId);
     if (!att || att->angleOnly || att->angleIndependent) {
-        refreshSlideShadow();
+        refreshSlideRow();
         return;
     }
 
@@ -1638,78 +1596,7 @@ void LinePropertyDialog::onSlideOffsetEdited()
             m_paramDoc->resolveAll();
         }
     }
-    refreshSlideShadow();
-}
-
-void LinePropertyDialog::onShadowEdited()
-{
-    if (!m_paramDoc) return;
-    const auto* att = findFollowerAttachmentFor(m_paramDoc, m_blockId);
-    auto* block = m_paramDoc->findBlock(m_blockId);
-    const bool hasEnd = block && !block->endTargetPointId.isNull();
-    if (!att || att->angleIndependent || hasEnd) {
-        refreshSlideShadow();
-        return;
-    }
-    bool ok = false;
-    const double deg = m_editShadow->text().trimmed().toDouble(&ok);
-    if (!ok || !std::isfinite(deg)) {
-        refreshSlideShadow();
-        return;
-    }
-    // 普通跟随 (角度基准 = 位置宿主) 时影子恒不激活, 输入无效回显。
-    const bool refIsHost = att->angleRefBlockId.isNull()
-        || att->angleRefBlockId == att->toBlockId;
-    if (refIsHost) {
-        refreshSlideShadow();
-        return;
-    }
-    // 影子偏转输入 = 重钉锚点 (2026-09 锚点推导): 锚 = 宿主当前旋转 − 输入
-    // 偏转, 保持用户可见偏转 = 输入值。与当前可见偏转相同 = no-op。
-    const cad::param::Block* host = m_paramDoc->findBlock(att->toBlockId);
-    const double curVisible = host
-        ? host->transform.rotation - att->shadowAnchorRotDeg : 0.0;
-    if (std::abs(deg - curVisible) < 1e-9) {
-        refreshSlideShadow();
-        return;
-    }
-    if (auto* stack = m_paramDoc->undoStack())
-        stack->push(new cad::cmd::SetAttachmentShadowAnchorCommand(
-            m_paramDoc, att->id, deg));
-    else {
-        if (host) {
-            if (auto* mut = m_paramDoc->findAttachment(att->id))
-                mut->shadowAnchorRotDeg = host->transform.rotation - deg;
-        }
-        m_paramDoc->resolveAll();
-    }
-    refreshSlideShadow();
-    refreshScene();
-}
-
-void LinePropertyDialog::onNoFollowRotateClicked()
-{
-    if (!m_paramDoc) return;
-    const auto* att = findFollowerAttachmentFor(m_paramDoc, m_blockId);
-    if (!att) { refreshSlideShadow(); return; }
-    const bool want = !att->noFollowRotate;
-    if (auto* stack = m_paramDoc->undoStack()) {
-        stack->push(new cad::cmd::SetAttachmentNoFollowRotateCommand(
-            m_paramDoc, att->id, want));
-    } else {
-        if (auto* mut = m_paramDoc->findAttachment(att->id)) {
-            // 影子激活态过渡 (2026-09 锚点推导): 关闭"不跟随旋转" = 影子
-            // 重新激活, 重钉锚点到宿主当前旋转 (与命令 redo 同语义)。
-            if (att->noFollowRotate && !want) {
-                if (const cad::param::Block* host = m_paramDoc->findBlock(att->toBlockId))
-                    mut->shadowAnchorRotDeg = host->transform.rotation;
-            }
-            mut->noFollowRotate = want;
-        }
-        m_paramDoc->resolveAll();
-    }
-    refreshSlideShadow();
-    refreshScene();
+    refreshSlideRow();
 }
 
 void LinePropertyDialog::onStartConnectResolved(const QUuid& blockId,
@@ -1740,8 +1627,6 @@ void LinePropertyDialog::onStartConnectResolved(const QUuid& blockId,
         // 点2 留空, 且重定向后基准跟随新宿主 (方向基准被覆盖)。已自定义的
         // 基准原样保留。
         cad::param::preserveAngleRefOnReattach(m_paramDoc, *mut);
-        // 重连重钉影子锚点 (2026-09 锚点推导): 保持用户可见偏转不变。
-        cad::param::repinShadowAnchorOnReattach(m_paramDoc, *mut, blockId);
         mut->angleOnly = false;
         mut->isLocked = true;
         mut->slideMode = cad::param::SlideMode::None;
@@ -1860,19 +1745,18 @@ void LinePropertyDialog::onEndDetachClicked()
     refreshScene();
 }
 
-void LinePropertyDialog::refreshSlideShadow()
+void LinePropertyDialog::refreshSlideRow()
 {
-    if (!m_slideRow || !m_shadowRow || !m_paramDoc) return;
+    if (!m_slideRow || !m_paramDoc) return;
     const auto* block = m_paramDoc->findBlock(m_blockId);
     const auto* att = findFollowerAttachmentFor(m_paramDoc, m_blockId);
     const bool hasAtt = att != nullptr;
     const bool hasEnd = block && !block->endTargetPointId.isNull();
     const bool bridge = hasAtt && hasEnd;
 
-    // 省道线: 滑轨/影子偏转移出面板 (2026-xx §3)。
+    // 省道线: 滑轨行移出面板 (2026-xx §3)。
     if (block && block->isDart()) {
         m_slideRow->setVisible(false);
-        m_shadowRow->setVisible(false);
         return;
     }
 
@@ -1913,46 +1797,6 @@ void LinePropertyDialog::refreshSlideShadow()
             m_cmbSlideMode->setToolTip(slideTip);
     }
     m_lblSlideBadge->setVisible(false);
-
-    // 影子偏转行 (常显可输入; 无连接/独立角/终点指向态禁用; 普通跟随
-    // (角度基准 = 位置宿主) 时影子恒不激活, 输入禁用 —— 与 noFollowRotate
-    // 按钮同条件)。
-    {
-        const bool refIsHost = att && (att->angleRefBlockId.isNull()
-            || att->angleRefBlockId == att->toBlockId);
-        const bool shadowActive = hasAtt && !att->angleIndependent && !hasEnd
-            && !refIsHost;
-        m_editShadow->setEnabled(shadowActive);
-        const QSignalBlocker eb(m_editShadow);
-        // 读数 = 推导值 (2026-09 锚点推导): 宿主当前旋转 − 锚点。
-        double visibleDeg = 0.0;
-        if (shadowActive) {
-            const cad::param::Block* host = m_paramDoc->findBlock(att->toBlockId);
-            visibleDeg = host
-                ? host->transform.rotation - att->shadowAnchorRotDeg : 0.0;
-        }
-        m_editShadow->setText(shadowActive
-            ? cad::geo::Units::formatDegTrimmed(visibleDeg)
-            : QString());
-        // 不跟随旋转 (2026-09 用户拍板): 持久化开关 —— 选中 = 旋转位置宿主
-        // 时本线不参与影子偏转。与影子输入同可用条件 (无连接/独立角/终点
-        // 指向态禁用); 位置宿主 = 角度基准 (普通跟随) 时影子恒不激活, 开关
-        // 无效果, 置灰提示。
-        if (m_btnNoFollowRotate) {
-            m_btnNoFollowRotate->setEnabled(shadowActive);
-            const QSignalBlocker nb(m_btnNoFollowRotate);
-            m_btnNoFollowRotate->setChecked(
-                shadowActive && att->noFollowRotate);
-            m_btnNoFollowRotate->setToolTip(
-                !shadowActive
-                    ? QString::fromUtf8("需要完整连接（位置吸附 + 角度跟随）且角度基准在位置宿主外"
-                                        "（普通跟随时影子恒不激活）才能设置。")
-                    : QString::fromUtf8(
-                        "旋转位置宿主时，本线是否跟随旋转（影子偏转）：\n"
-                        "关闭（默认）= 宿主旋转 δ，本线世界方向跟转 δ，角度基准约束保持；\n"
-                        "开启 = 本线不跟转，被角度基准拽回原方向。持久化保存。"));
-        }
-    }
 }
 
 void LinePropertyDialog::onColorPick()
@@ -2479,7 +2323,7 @@ void LinePropertyDialog::onRefCardChanged()
     if (m_angleCard) m_angleCard->refresh();
     if (m_connCard)  m_connCard->refresh();
     refreshLengthMode();
-    refreshSlideShadow();
+    refreshSlideRow();
 }
 
 void LinePropertyDialog::onConnCardChanged()
@@ -2491,7 +2335,7 @@ void LinePropertyDialog::onConnCardChanged()
     refreshConnHint();              // 桥接线/已连接 badge
     if (m_refCard) m_refCard->refresh();   // 终点指向态 → 基准线行隐藏 (互斥)
     refreshLengthMode();
-    refreshSlideShadow();
+    refreshSlideRow();
 }
 
 } // namespace cad::ui

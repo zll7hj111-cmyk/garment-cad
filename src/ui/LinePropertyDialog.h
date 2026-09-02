@@ -106,19 +106,16 @@ private slots:
     void onPublishLength();    ///< Publish this segment's length as a linked variable.
     /// 长度模式 (2026-xx §6.3): 自动/指定 切换 (仅非双端连接时可改)。
     void onLengthModeChanged(bool autoMode);
-    /// 滑轨/影子偏转 (2026-xx §3 从连接卡拆到摆放分区)。
+    /// 滑轨 (2026-xx §3 从连接卡拆到摆放分区)。
     void onSlideModeChanged(int index);
     void onSlideOffsetEdited();
-    void onShadowEdited();
-    /// 不跟随旋转开关 (2026-09 用户拍板): 旋转位置宿主时本线不参与影子偏转。
-    void onNoFollowRotateClicked();
     /// 端点组内连接 (2026-xx §3): 起点/终点「连接到」+ 拆开/重连。
     void onStartConnectResolved(const QUuid& blockId, const QUuid& pointId);
     void onStartDetachClicked();
     void onEndConnectResolved(const QUuid& blockId, const QUuid& pointId);
     void onEndDetachClicked();
-    /// 刷新滑轨/影子偏转行状态。
-    void refreshSlideShadow();
+    /// 刷新滑轨行状态。
+    void refreshSlideRow();
 
     // 便利贴注释 (NoteButton, 2026-12): 三处注释统一走「live 写模型、不自行
     // push」—— 本对话框是会话制, onAccepted 会把「打开快照 → 确认状态」推成
@@ -246,15 +243,12 @@ private:
     QPushButton*    m_chkShowLength = nullptr;   ///< 显示 chip (外观区, checkable).
     ElaText*      m_lblActualLength = nullptr; ///< Read-only resolved length (dim mono), 长度行内.
     QPushButton*  m_btnPublishLen = nullptr;   ///< "发布长度参数" button (类型下拉框正下方, 与之左缘/同宽对齐).
-    // 滑轨/影子偏转行 (2026-xx §3 从连接卡拆到摆放分区).
+    // 滑轨行 (2026-xx §3 从连接卡拆到摆放分区).
     QWidget*      m_slideRow       = nullptr;
     ElaText*      m_lblSlideBadge  = nullptr;
     class QComboBox* m_cmbSlideMode = nullptr;
     ElaLineEdit*  m_editSlideAlong = nullptr;
     ElaLineEdit*  m_editSlidePerp  = nullptr;
-    QWidget*      m_shadowRow      = nullptr;
-    ElaLineEdit*  m_editShadow     = nullptr;
-    QPushButton*  m_btnNoFollowRotate = nullptr;  ///< 不跟随旋转 (2026-09, chip 开关).
     ElaText*      m_lblArcLength  = nullptr;   ///< Read-only arc length display (curve only).
     ElaLineEdit*    m_editTension   = nullptr;   ///< Curve tension (curve only).
     QWidget*      m_arcRow        = nullptr;   ///< Container for arc-length row (curve only).

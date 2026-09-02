@@ -78,12 +78,10 @@ public:
     static QJsonObject migrateV0ToV1(QJsonObject root, QStringList* warnings);
 
     /// v1 → v2, "shadow-anchor": v1 stored the shadow as a cumulative offset
-    /// (baselineOffsetDeg, degrees). v2 stores a shadow ANCHOR
-    /// (shadowAnchorRotDeg, radians) = the position host's rotation at pin
-    /// time; the effective shadow = host rotation − anchor, recomputed every
-    /// solve (2026-09 锚点推导重设计). Conversion: anchor = host rotation −
-    /// old offset (degrees → radians). Attachments whose host block is missing
-    /// keep 0 (the serializer's dangling-attachment handling owns that case).
+    /// (baselineOffsetDeg, degrees). The shadow-deflection feature and its
+    /// anchor rewrite (shadowAnchorRotDeg) were removed since v2, so this step
+    /// now only drops the dead legacy key from each attachment. The step name
+    /// is kept stable — it is a registered link in the migration chain.
     static QJsonObject migrateV1ToV2(QJsonObject root, QStringList* warnings);
 };
 

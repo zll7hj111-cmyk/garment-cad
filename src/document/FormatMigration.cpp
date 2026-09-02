@@ -1,18 +1,13 @@
 #include "FormatMigration.h"
 
-#include <QHash>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QUuid>
 
 #include <algorithm>
-#include <cmath>
 
 namespace cad::doc {
 namespace {
-
-/// 度 → 弧度 (局部常量, 不依赖 M_PI 的传递定义)。
-constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
 /// Function-local registry: built on first use, so registration order across
 /// translation units can never bite (static initialisation order fiasco).
@@ -187,43 +182,28 @@ QJsonObject FormatMigration::migrateV1ToV2(QJsonObject root, QStringList* warnin
 {
     QJsonObject docObj = root["document"].toObject();
 
-    // ── 影子账本: 累计偏移 (v11 baselineOffsetDeg, 度) → 锚点 (v14
-    // shadowAnchorRotDeg, 弧度) ────────────────────────────────────────────
-    // 旧语义: 有效基准 = 真基准 + offset (旋转会话逐帧回写 base+δ)。
-    // 新语义: 有效基准 = 真基准 + (宿主旋转 − 锚点), 每次求解现算。
-    // 换算: 锚 = 宿主旋转 − 旧偏移 (度 → 弧度)。宿主块缺失时锚 = 0
-    // (序列化器的悬空连接处理拥有该场景)。
-    QJsonArray blocks = docObj["blocks"].toArray();
-    QHash<QString, double> blockRot;
-    for (const auto& v : blocks) {
-        const QJsonObject b = v.toObject();
-        blockRot.insert(b["id"].toString(), b["rotation"].toDouble());
-    }
-
+    // ── v11 影子偏移账本 (baselineOffsetDeg, 度) 已随影子偏转功能删除 ─────
+    // 此步只清理残留键: 影子锚点换算 (锚 = 宿主旋转 − 旧偏移) 与读取端
+    // 锚点字段均已随功能删除, 旧偏移对当前语义无任何影响, 直接丢弃。
     QJsonArray atts = docObj["attachments"].toArray();
-    int converted = 0;
+    int removed = 0;
     for (int i = 0; i < atts.size(); ++i) {
         QJsonObject a = atts[i].toObject();
-        // 旧偏移缺省 0 (旧行为 = 无影子偏转); 锚 = 宿主旋转 − 旧偏移。
-        // 无 baselineOffsetDeg 字段的连接同样要写锚点 —— 否则新读取端
-        // 锚点缺省 0 会把宿主旋转暴露成意外偏转。
-        const double oldOffsetDeg = a["baselineOffsetDeg"].toDouble(0.0);
-        const QString hostId = a["toBlockId"].toString();
-        const double hostRot = blockRot.value(hostId, 0.0);
-        const double anchor = hostRot - oldOffsetDeg * kDegToRad;
-        a["shadowAnchorRotDeg"] = anchor;
-        a.remove(QStringLiteral("baselineOffsetDeg"));
-        atts[i] = a;
-        ++converted;
+        if (a.contains(QStringLiteral("baselineOffsetDeg"))) {
+            a.remove(QStringLiteral("baselineOffsetDeg"));
+            atts[i] = a;
+            ++removed;
+        }
     }
-    docObj["attachments"] = atts;
+    if (removed > 0)
+        docObj["attachments"] = atts;
     root["document"] = docObj;
 
-    if (warnings && converted > 0) {
+    if (warnings && removed > 0) {
         warnings->append(
-            QStringLiteral("已将旧版文件（v1 → v2）的影子偏转账本迁移为锚点："
-                           "重写 %1 处连接")
-                .arg(converted));
+            QStringLiteral("已清理旧版文件（v1 → v2）的影子偏移残留字段："
+                           "丢弃 %1 处连接的 baselineOffsetDeg")
+                .arg(removed));
     }
     return root;
 }

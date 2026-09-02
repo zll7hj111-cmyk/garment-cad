@@ -176,30 +176,6 @@ struct Attachment {
                                 ///< 的其它数值/公式字段同约定, Serialized since v7).
     QString slidePerpFormula;   ///< 垂直公式 (cm 域, 同理).
 
-    /// 影子锚点旋转角 (用户拍板 2026-09 锚点推导重设计, 取代旧
-    /// baselineOffsetDeg 累计账本): 影子 = 刚性挂在位置宿主 (toBlockId) 上的
-    /// 隐形基准, 本值 = 钉锚那一刻宿主的 transform.rotation (弧度)。有效角度
-    /// 基准方向 = 真基准出方向 + (宿主当前旋转 − 本值) —— 每次求解从固定锚
-    /// 点现算, 结构上不可能累计漂移 (旧账本"旋转会话逐帧回写 base+δ"的
-    /// 累计偏差/提交残留/入口不一致三类 bug 随机制一并消失)。宿主怎么转
-    /// 影子就怎么转 (含宿主被其基准线间接带动), 与"影子挂靠连接线"的心智
-    /// 模型一致; 不跟转走 noFollowRotate 开关。新建连接在 addAttachment/
-    /// addComponentAttachment 钉锚 (宿主当前旋转); 重连 (toBlockId 改写) 时
-    /// 重钉到新宿主当前旋转 (保持用户可见偏转不变); 面板输入偏转 = 重钉锚
-    /// (锚 = 宿主当前旋转 − 输入值)。连接删除即字段陪葬 (彻底自由, 不做
-    /// 转接)。序列化 Optional since v14 (v11 旧档 baselineOffsetDeg 由
-    /// FormatMigration v1→v2 换算: 锚 = 宿主旋转 − 旧偏移); 滑轨局部系
-    /// (slideMode) 不吃本值 —— 轨道属于位置宿主, 与角度影子无关。
-    double shadowAnchorRotDeg = 0.0;
-
-    /// 不跟随旋转 (用户拍板 2026-09): 旋转位置宿主 (toBlockId) 时, 本跟随线
-    /// 是否**不**参与影子偏转 —— 影子偏转激活时旋转宿主 δ, 影子随宿主转 δ
-    /// (世界方向跟转、followerAngle 不变); 本字段置位 = 旋转宿主时本线被
-    /// 角度基准拽回原方向 (followerAngle 约束优先)。默认 false = 影子偏转
-    /// 激活 (位置宿主 ≠ 角度基准 / 无位置连接但有角度基准时才有意义; 位置
-    /// 宿主 = 角度基准时影子恒不激活, 本字段无效果)。持久化开关: 序列化
-    /// Optional since v13, 旧档缺省 false 零迁移。
-    bool noFollowRotate = false;
 };
 
 } // namespace cad::param

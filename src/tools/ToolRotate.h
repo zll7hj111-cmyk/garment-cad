@@ -15,7 +15,6 @@
 #include "parametric/Duplicate.h"
 
 class QGraphicsEllipseItem;
-class QGraphicsPathItem;
 class QGraphicsSimpleTextItem;
 #include "canvas/ManagedItems.h"
 
@@ -86,10 +85,6 @@ public:
     { return m_state == RotateState::Ready || m_state == RotateState::Rotating; }
     /// 当前锚心所在点 id (测试/诊断用; null = 无会话)。
     [[nodiscard]] QUuid anchorPointId() const { return m_anchorPointId; }
-    /// 影子基准虚线数量 (测试/诊断用): 旋转会话中 = 影子连接数 (通常 1)。
-    [[nodiscard]] int shadowRefLineCount() const { return m_shadowRefLines.size(); }
-    /// 指定影子连接的基准虚线方向 (rad, 世界系; 测试/诊断用)。
-    [[nodiscard]] double shadowRefLineDirRad(const QUuid& attId) const;
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
@@ -143,19 +138,6 @@ private:
     /// point, detach the follower link (旋转 = 放弃跟随). The link is
     /// snapshotted and restored on Esc / undo. No-op once held.
     void releaseFollowerIfAnchorMoved();
-
-    // ── 影子基准虚线 (2026-09 用户需求追加) ──
-    /// 影子连接判定 (与 Resolver 影子语义同源): 本线是位置宿主 + 非纯位置
-    /// 钉 + 角度被基准驱动 + 未置 noFollowRotate + 有效角度基准在宿主外。
-    /// 影子偏转本身由 Resolver 按锚点现算 (2026-09 锚点推导), 工具不再
-    /// 逐帧回写 —— 虚线只是可视化。
-    /// 选中会话开始时在跟随线上画灰色虚线, 方向 = 有效角度基准 (真基准 +
-    /// 影子偏转); 拖动中每帧随影子转动。
-    void buildShadowRefLines();
-    /// 影子基准虚线逐帧刷新 (方向 = 有效基准, 含当前影子偏转)。
-    void updateShadowRefLines();
-    /// 清理全部影子基准虚线 (会话结束/取消/工具切换)。
-    void clearShadowRefLines();
 
     // ── Rotation gesture ──
     void beginRotation(const cad::geo::Vec2& pos);
@@ -266,12 +248,6 @@ private:
     // Free-mode local geometry snapshot (constant during rotation).
     cad::geo::Vec2 m_anchorLocal;  ///< Anchor point resolvedPos (local).
     double m_localDir = 0.0;       ///< Local direction of the start segment (rad).
-
-    // ── 影子基准虚线 (2026-09 用户需求追加) ──
-    /// 每条影子连接一条灰色虚线, 画在跟随线上, 方向 = 有效角度基准 (真基准
-    /// + 影子偏转, 2026-09 锚点推导: 影子随宿主旋转现算), 拖动时随影子逐帧
-    /// 转动 —— 让"L2 相对 L3 的角度保持"有可视化反馈。
-    QHash<QUuid, QGraphicsPathItem*> m_shadowRefLines;  ///< attId → 虚线图元.
 
     // Drag state.
     double m_dragCursorAngle0 = 0.0;  ///< Cursor polar angle at drag start (rad).

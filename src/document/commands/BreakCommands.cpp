@@ -1186,23 +1186,6 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
             kept.push_back(std::move(att));   // 原端点幸存：连接原样保留
         } else {
             // 原端点被删：重指到后段终点（原线的尾部），跟随关系不丢失。
-            // 重钉影子锚点 (2026-09 锚点推导): 影子此前激活 (显式角度基准
-            // 在旧宿主外) 时保持用户可见偏转不变 —— 新锚 = 后段旋转 −
-            // (旧宿主旋转 − 旧锚); 此前不激活则钉到后段当前旋转。
-            if (const cad::param::Block* oldHost = doc.findBlock(att.toBlockId)) {
-                if (const cad::param::Block* newHost = doc.findBlock(newBlockId)) {
-                    const bool wasActive = !att.angleRefBlockId.isNull()
-                        && att.angleRefBlockId != att.toBlockId;
-                    if (wasActive) {
-                        const double visibleDeg =
-                            oldHost->transform.rotation - att.shadowAnchorRotDeg;
-                        att.shadowAnchorRotDeg =
-                            newHost->transform.rotation - visibleDeg;
-                    } else {
-                        att.shadowAnchorRotDeg = newHost->transform.rotation;
-                    }
-                }
-            }
             att.toBlockId = newBlockId;
             att.toPointId = st.bpEndId;
             att.toSegmentId = st.backSegId;

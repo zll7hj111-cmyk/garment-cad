@@ -22,7 +22,7 @@ namespace cad::ui {
 // 2026-xx 用户再拍板: 「连接线段」「独立角度」复选框删除 —— 状态完全由
 // 行内表达 (连接行 + 基准行 + 拆开/重连双面按钮)。
 // 角度/引用线段/指向点 已抽出 (SegmentAngleCard / SegmentRefCard)。
-// 滑轨/影子偏转已上移到 LinePropertyDialog「摆放」分区 (2026-xx §3)。
+// 滑轨已上移到 LinePropertyDialog「摆放」分区 (2026-xx §3)。
 
 void SegmentConnectionCard::refreshUnifiedState(const cad::param::Attachment* att,
                                                 cad::param::Block* block)
