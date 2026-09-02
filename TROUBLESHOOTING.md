@@ -315,6 +315,18 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
 
 ## 5. 测试 / 基线（判"是不是我引入的红"先看这里）
 
+- **拆开影子基准落地的三个新坑（2026-09-03，DETACH_SHADOW_DESIGN.md）**：
+  ①**测试裸指针跨 addBlock 悬垂**：测试里 `const Block* leaderBlk = doc.findBlock(...)` 长持后，
+  拆开影子换代 `addBlock(影子)` 扩容 blocks vector → 指针悬垂 → 读到垃圾 id → 断言
+  `shadowMasterBlockId == leaderBlk->id` 假红（dt6 实测 leaderBlk 读出 dddddddd-dddd-dddd-dddd-dddddddddddd）。
+  规则照旧「一次一取，禁止跨变更持有」——测试也要遵守：提前把 id 复制成值
+  （`const QUuid leaderId = doc.blocks().at(0).id;`），断言用 `doc.blockById(leaderId)`。
+  ②**PointRefEdit 名称解析必须排除影子块**：影子点有自己的 serial（克隆产物），P# 输入会解析到
+  不可交互的影子点（R4 违规 + 面板路由错宿主）。findMatches 两个循环（点/线段）都要跳过
+  `block.isShadow`（PointRefEdit.cpp）。
+  ③**克隆影子点 Free 约束必须双写 freePos/resolvedPos**：Block::resolve 的 Free 分支取
+  `freePos` 覆盖 resolvedPos —— cloneShadowOf 若只拷 resolvedPos，下次 resolve 后影子方向塌回
+  零位（拆开瞬间姿态丢失）。
 - **既有基线红 = 0 条（2026-09-02 修复，两条基线红已根治）**：
   ①`test_serializer::bridgeAuxPointSnappableAndAttachable` —— 根因：Resolver Step 5（桥跟随者重解）在
   `205a229`（旧组件铰链系统让路）被删除后未恢复，`bridgesMoved` 成为死变量；桥在 Step 4 拉伸后其

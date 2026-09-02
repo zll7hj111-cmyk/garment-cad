@@ -28,6 +28,7 @@
 | `CONTEXT_STRIP_DESIGN.md` | 上下文属性条（ContextStrip）一期+二期+三期设计 | ✅ 已落地（2026-12） |
 | `PANEL_REDESIGN_DESIGN.md` | 面板重设计（v3 表单/端点组/栅格化） | ✅ 已落地（2026-08-31，§3 结构全部实施） |
 | `EXTEND_LINE_DESIGN.md` | 端点延长线（权威文档） | ✅ 已落地（2026-?） |
+| `DETACH_SHADOW_DESIGN.md` | 拆开影子线段（拆开 = 复制隐藏影子基准线 + 可挂载新线形成跟随链；翻案「拆开保留角度」活引用语义） | ✅ 已落地（2026-09-03，头部含实现摘要与差异说明） |
 | `ROTATE_REDESIGN_DESIGN.md` | 旋转工具重设计（D15 确认门/影子偏转 §2.6） | ✅ 已落地（2026-08-27）；选集旋转部分已删（2026-08-29），§2.5/§2.6 判定表仍可复用 |
 | `CURVE_P3_DESIGN.md` | 曲线系统 P3 设计 | ✅ 已落地（2026-09） |
 | `CONNECTION_REDESIGN_DESIGN.md` | 连接卡重设计（AttachEnd/LandMode/ConnMode 枚举方案） | 📦 **已归档（2026-09-02）** → `docs/archive/2026-08/`；原状态：已废弃（2026-08-31），技术视角方案被用户否决，现行方案 = 两维独立（见 DECISIONS.md 连接卡片条目）；源码考古结论仍有效 |
@@ -55,6 +56,7 @@
 | `ARCHITECTURE.md` | 模块分层依赖图（Mermaid）+ 外部中间件清单（2026-09-02 依据 CMakeLists.txt 实扫新建） |
 | `CONTRIBUTING.md` | Git 提交规范 + 代码格式化/静态检查命令（2026-09-02 新建） |
 | `docs/archive/SUMMARY.md` | 归档化石摘要（2026-09-02 建档） |
+| `DETACH_SHADOW_PLAN.md` | 拆开影子线段 实现计划（分级计划树落盘副本：北极星/需求/非目标/假设 + 7 大类/20 小类验收口径，供新会话重建同口径计划） | 📦 任务完成（2026-09-03 全量 ctest 34/34 绿），留作验收口径档案 |
 | `.reasonix/skills/*/SKILL.md` | 工具链技能定义（arch-optimize / make-ui-not-ai） |
 | `.workbuddy/memory/` | 工作记忆存档（含 C1 指针句柄化审计报告；2026-08-31 连接考古笔记部分过时，以源码为准） |
 
