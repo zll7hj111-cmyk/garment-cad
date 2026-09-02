@@ -434,6 +434,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
     if (!m_paramDoc) return false;
     auto* toBlk = m_paramDoc->findBlock(toBlockId);
     if (!toBlk) return false;
+    if (toBlk->isShadow) return false;  // 影子不可作为连接目标 (R4, 拆开影子基准)
 
     cad::param::Attachment att;
     att.fromPointId = m_connectFromPoint;
@@ -596,6 +597,14 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
     const cad::param::ParamPoint* toPt = toBlk->findPoint(toPointId);
     if (!toPt || !toPt->resolved) return false;
 
+    // 影子基准拓扑 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4): 拖影子
+    // 基准跟随线端点 → 挂回本体 (⑤) 或影子挂载新宿主 (③), 不走旧活引用路径。
+    if (const auto* curTo = m_paramDoc->findBlock(att->toBlockId);
+        curTo && curTo->isShadow) {
+        if (toBlockId == curTo->id) return false;  // 拖回影子自身: 非法 (影子不可交互)
+        return reattachShadowBased(attId, *curTo, toBlockId, toPointId, toSegmentId);
+    }
+
     // 目标线段: 未指定时取连接点所在线段 (与 attachToTarget 同规)。
     const QUuid segId = !toSegmentId.isNull()
         ? toSegmentId : toBlk->exitSegmentAtPoint(toPointId);
@@ -650,6 +659,57 @@ bool ConnectGesture::reattachAngleOnly(const QUuid& attId,
     return true;
 }
 
+// ── 影子基准重挂路由 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4) ───────────
+// 拖影子基准跟随线 (Att2 → 影子) 的端点释放到目标线:
+//   · 目标 = 影子本体 (master) → ⑤ 挂回本体: 删影子 + Att2 转普通活引用
+//     (SetAttachmentAngleOnlyCommand(false) 的 ReconnectMaster 模式, 显式
+//     落点 = 用户拖到的点);
+//   · 目标 = 其他线 → ③ 影子挂载 (ShadowMountCommand): Att1 = 影子→目标
+//     (Δ 反算保向) + Att2 恢复位置钉点重新焊接 —— L3→影子→L2 双连接链。
+// 仅连接语义 (用户拍板 2026-12 同源): 不进入角度输入会话, undo 单步。
+bool ConnectGesture::reattachShadowBased(const QUuid& attId,
+                                         const cad::param::Block& shadow,
+                                         const QUuid& toBlockId,
+                                         const QUuid& toPointId,
+                                         const QUuid& toSegmentId)
+{
+    if (!m_paramDoc) return false;
+    auto* fromBlk = m_paramDoc->findBlock(m_connectFromBlock);
+    if (!fromBlk || toBlockId == fromBlk->id) return false;
+    const bool toMaster = (toBlockId == shadow.shadowMasterBlockId);
+
+    if (m_undoStack) {
+        m_undoStack->beginMacro(toMaster ? QStringLiteral("重新挂接")
+                                         : QStringLiteral("影子挂载"));
+        if (toMaster) {
+            m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                m_paramDoc, attId, /*angleOnly=*/false, toPointId, toSegmentId));
+        } else {
+            m_undoStack->push(new cad::cmd::ShadowMountCommand(
+                m_paramDoc, shadow.id, toBlockId, toPointId, toSegmentId));
+        }
+        m_undoStack->endMacro();
+    } else if (toMaster) {
+        // 无 undo 栈兜底: 门面 ⑤ 路由 (显式落点 = 用户拖到的点)。
+        m_paramDoc->reattachShadowToMaster(attId, toPointId, toSegmentId);
+    } else {
+        m_paramDoc->mountShadowTo(shadow.id, toBlockId, toPointId, toSegmentId);
+    }
+
+    if (m_scene) {
+        m_scene->refreshAllBlockItems();
+        if (auto* toBlk = m_paramDoc->findBlock(toBlockId);
+            toBlk && fromBlk) {
+            if (const QString toast = cad::ui::crossLayerToast(m_paramDoc, *fromBlk, *toBlk);
+                !toast.isEmpty())
+                m_showToast(toast);
+        }
+    }
+    // 仅连接: 不设 m_editingAttachmentId (不走 finalize 的重挂宏), 直接收尾。
+    finalizeConnection();
+    return true;
+}
+
 bool ConnectGesture::componentCanConnect() const
 {
     if (!m_paramDoc) return false;
@@ -667,6 +727,7 @@ std::vector<ConfirmCandidate> ConnectGesture::collectConfirmCandidates(
     if (!m_paramDoc) return out;
     for (const auto& block : m_paramDoc->blocks()) {
         if (block.id == m_connectFromBlock) continue;
+        if (block.isShadow) continue;  // 影子不可作为连接目标 (R4, 拆开影子基准)
         for (const auto& seg : block.segments) {
             const auto* sp = block.findPoint(seg.startPointId);
             const auto* ep = block.findPoint(seg.endPointId);

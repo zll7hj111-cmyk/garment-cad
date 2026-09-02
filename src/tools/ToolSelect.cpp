@@ -888,6 +888,24 @@ bool ToolSelect::tryReattachOnDragEnd(const cad::geo::Vec2& pos)
     const QUuid segId = leader ? leader->exitSegmentAtPoint(snap->pointId) : QUuid();
     if (segId.isNull()) return false;
 
+    // 影子基准拓扑 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4): 被拖拆的
+    // 连接以影子为基准 (挂载态跟随线拖离影子) —— 挂回本体 = ⑤ 删影子+活引用;
+    // 挂到其他线 = ③ 影子挂载链 (Att1 反算保向 + Att2 重新焊接)。
+    if (const auto* curTo = m_paramDoc->blocksView().byId(att->toBlockId);
+        curTo && curTo->isShadow) {
+        const bool toMaster = (snap->blockId == curTo->shadowMasterBlockId);
+        m_undoStack->beginMacro(QStringLiteral("重新挂接"));
+        if (toMaster) {
+            m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                m_paramDoc, att->id, /*angleOnly=*/false, snap->pointId, segId));
+        } else {
+            m_undoStack->push(new cad::cmd::ShadowMountCommand(
+                m_paramDoc, curTo->id, snap->blockId, snap->pointId, segId));
+        }
+        m_undoStack->endMacro();
+        return true;
+    }
+
     m_undoStack->beginMacro(QStringLiteral("重新挂接"));
     m_undoStack->push(new cad::cmd::ReattachAttachmentCommand(
         m_paramDoc, att->id, snap->blockId, snap->pointId, segId));

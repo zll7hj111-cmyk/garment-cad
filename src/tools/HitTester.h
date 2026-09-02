@@ -44,6 +44,7 @@ inline std::vector<SceneBlockHit> blockHitsAtScene(
         seen.insert(bi->blockId());
         const auto* blk = doc.blocksView().byId(bi->blockId());
         if (!blk) continue;
+        if (blk->isShadow) continue;  // 影子不可命中/选中/悬停 (R4, 拆开影子基准)
         if (blk->layer != doc.activeLayer()) continue;
         SceneBlockHit h;
         h.blockId = bi->blockId();

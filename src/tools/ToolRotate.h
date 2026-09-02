@@ -150,6 +150,9 @@ private:
     /// Apply an effective angle (degrees): connected → followerAngle (formula
     /// cleared), free → block transform (pivot held fixed).
     void applyAngleDeg(double deg);
+    /// 影子角度通道 (R6/R8): 锁定 offset 的旋转落点 —— 拆开态写影子 rotation
+    /// + 跟随线绕 p3 原地转; 挂载态写 Att1 Δ (链式随动)。
+    void applyShadowAngleDeg(double deg);
     /// Apply a value in the current mode's unit (degrees for Angle, cm for
     /// ArcLength). Converts arc length → angle internally.
     void applyModeValue(double value);
@@ -244,6 +247,19 @@ private:
     cad::param::Transform2D m_baseTf;  ///< free: base transform.
     QUuid m_baseEndTargetBlock;    ///< free: endpoint-aim constraint at selection
     QUuid m_baseEndTargetPoint;    ///< (released by rotation, restored on undo).
+
+    // ── 影子角度通道 (R6/R8, 拆开影子基准) ──
+    /// offset 被公式/变量锁定 (isAngleLocked) 且基准是影子块时, 旋转不再
+    /// 拒绝 —— 改写影子角度 (拆开态=影子 transform.rotation, 挂载态=Att1
+    /// followerAngle Δ), 不碰公式。数字 offset 时 m_shadowId 为空 = 照旧写
+    /// followerAngle (影子不动)。
+    QUuid m_shadowId;              ///< 影子块 id (空 = 非影子通道)。
+    bool  m_shadowMounted = false; ///< true = 挂载态 (Att1 存在, 写 Δ)。
+    QUuid m_att1Id;                ///< 挂载态: Att1 (影子→宿主) id。
+    double m_shadowRot0 = 0.0;     ///< 拆开态: 影子 rotation 基线 (rad)。
+    double m_shadowDelta0 = 0.0;   ///< 挂载态: Att1 followerAngle 基线 (deg)。
+    cad::param::Transform2D m_shadowTf0;      ///< 拆开态: 影子完整基线 transform。
+    cad::param::Transform2D m_followerTf0;    ///< 拆开态: 跟随线基线 transform (R8 p3 轴心回写)。
 
     // Free-mode local geometry snapshot (constant during rotation).
     cad::geo::Vec2 m_anchorLocal;  ///< Anchor point resolvedPos (local).

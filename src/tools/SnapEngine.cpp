@@ -43,6 +43,7 @@ std::optional<SnapResult> SnapEngine::findSnap(
 
     pruneSnapCaches(paramDoc);
     for (const auto& block : paramDoc->blocks()) {
+        if (block.isShadow) continue;  // 影子不可捕捉/不可作为连接目标 (R4, 拆开影子基准)
         // Snap-target filter (layerSnappable): manually hidden layers are
         // never snappable; the auxiliary layer only while ACTIVE (its grayed
         // non-active draft is not a snap target — cross-group attachments
@@ -126,6 +127,7 @@ std::vector<SnapResult> SnapEngine::findSnapCandidates(
 
     pruneSnapCaches(paramDoc);
     for (const auto& block : paramDoc->blocks()) {
+        if (block.isShadow) continue;  // 影子不可捕捉/不可作为连接目标 (R4, 拆开影子基准)
         // Same target policy as findSnap (see its doc comment).
         if (!paramDoc->layersView().layerVisible(block.layer)) continue;
         if (!ignoreLayerFilter && !paramDoc->layersView().layerSnappable(block.layer)) continue;
@@ -177,6 +179,7 @@ std::optional<SnapResult> SnapEngine::findCurvePointSnap(
 
     pruneSnapCaches(paramDoc);
     for (const auto& block : paramDoc->blocks()) {
+        if (block.isShadow) continue;  // 影子不可捕捉/不可作为连接目标 (R4, 拆开影子基准)
         if (!paramDoc->layersView().layerSnappable(block.layer)) continue;
 
         // World positions + curve-relevant flags come from the per-block cache
@@ -231,6 +234,7 @@ std::optional<SegmentSnapResult> SnapEngine::findSegmentSnap(
 
     pruneSnapCaches(paramDoc);
     for (const auto& block : paramDoc->blocks()) {
+        if (block.isShadow) continue;  // 影子不可捕捉/不可作为连接目标 (R4, 拆开影子基准)
         // Same snap-target policy as findSnap (see layerSnappable / ignoreLayerFilter).
         if (!paramDoc->layersView().layerVisible(block.layer)) continue;
         if (!ignoreLayerFilter && !paramDoc->layersView().layerSnappable(block.layer)) continue;

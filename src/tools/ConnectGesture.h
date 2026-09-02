@@ -161,6 +161,14 @@ private:
     /// 经 ReconnectAttachmentCommand 整步撤销 (无 undo 栈时原地生效).
     bool reattachAngleOnly(const QUuid& attId, const QUuid& toBlockId,
                            const QUuid& toPointId, const QUuid& toSegmentId);
+    /// 影子基准重挂路由 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4):
+    /// 拖影子基准跟随线的端点释放到目标线 —— 目标 = 影子本体 → ⑤ 挂回本体
+    /// (删影子 + 活引用恢复, SetAttachmentAngleOnlyCommand(false) 影子模式);
+    /// 目标 = 其他线 → ③ 影子挂载 (ShadowMountCommand: Att1 反算保向 +
+    /// Att2 重新焊接, L3→影子→L2 链)。仅连接语义: 不进入角度输入会话。
+    bool reattachShadowBased(const QUuid& attId, const cad::param::Block& shadow,
+                             const QUuid& toBlockId, const QUuid& toPointId,
+                             const QUuid& toSegmentId);
     /// True when the source is a component member and a COMPONENT-level
     /// connection should be created (整组作为 follower, 借用暴露端点) instead of
     /// a line-level one. Component-level connections do NOT occupy any member

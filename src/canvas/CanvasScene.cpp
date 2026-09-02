@@ -77,6 +77,12 @@ double CanvasScene::currentZoom() const
 void CanvasScene::addBlockItem(const QUuid& blockId)
 {
     if (m_blockItems.contains(blockId)) return;
+    // 影子块 (拆开影子基准, R4): 纯系统对象不可见 —— 直接不创建图元。
+    if (m_paramDoc) {
+        if (const auto* b = m_paramDoc->blocksView().byId(blockId);
+            b && b->isShadow)
+            return;
+    }
 
     auto* item = new BlockItem(blockId, m_paramDoc);
     addItem(item);

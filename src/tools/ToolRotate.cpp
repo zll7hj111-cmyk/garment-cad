@@ -387,6 +387,9 @@ void ToolRotate::toggleAnchor()
 void ToolRotate::rebuildAnchorState()
 {
     if (!m_paramDoc) return;
+    m_shadowId = QUuid();          // 影子通道复位 (每帧重建时重判)
+    m_shadowMounted = false;
+    m_att1Id = QUuid();
     cad::param::Block* blk = m_paramDoc->findBlock(m_blockId);
     if (!blk || blk->segments.empty()) { clearTarget(); return; }
 
@@ -418,6 +421,27 @@ void ToolRotate::rebuildAnchorState()
         m_rotationMode = att->rotationMode;
         m_baseArcLength = att->arcLength;
         m_baseArcFormula = att->arcLengthFormula;
+        m_anchorLocal = ap->resolvedPos;  // 影子通道 R8 轴心回写需要 (连接态)
+        // 影子角度通道 (R6/R8, 拆开影子基准): 基准是影子块时记录通道基线。
+        // offset 公式锁定 → 旋转改写影子角度 (拆开态 rotation / 挂载态 Δ);
+        // 数字 offset → m_shadowId 只作标记, applyAngleDeg 照旧写 followerAngle。
+        if (const auto* toBlk = m_paramDoc->findBlock(att->toBlockId);
+            toBlk && toBlk->isShadow) {
+            m_shadowId = toBlk->id;
+            for (const auto& a : m_paramDoc->attachments()) {
+                if (!a.isPin && a.fromBlockId == m_shadowId) {
+                    m_att1Id = a.id;
+                    m_shadowMounted = true;
+                    m_shadowDelta0 = a.followerAngle;
+                    break;
+                }
+            }
+            if (auto* sh = m_paramDoc->findBlock(m_shadowId)) {
+                m_shadowRot0 = sh->transform.rotation;
+                m_shadowTf0 = sh->transform;
+            }
+            m_followerTf0 = blk->transform;
+        }
     } else {
         // ── Free mode: rotate rigidly about the anchor point. ──
         // (独立角度连接线同样走这里: 角度账本 = 块 transform.rotation。)
@@ -546,6 +570,9 @@ void ToolRotate::clearTarget()
     m_attId = QUuid();
     m_connected = false;
     m_anchorPointId = QUuid();
+    m_shadowId = QUuid();          // 影子通道复位
+    m_shadowMounted = false;
+    m_att1Id = QUuid();
     // N3: 同 selectTarget —— 走统一翻转入口。
     applySelectionConfirmed(false);   // D15
     m_releaseAttId = QUuid();
@@ -569,7 +596,9 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
     // 变量/公式驱动角度 = 锁定 (用户拍板 2026-12): 旋转工具不得改变角度 ——
     // 不烘焙公式、不覆盖变量。要改角度先移除公式 (属性面板)。旧实现在此
     // 把公式烘焙成数值后继续旋转, 导致变量被覆盖消失。
-    if (isAngleLocked()) {
+    // 影子通道例外 (R6, 拆开影子基准): 基准是影子块时锁定 offset 的旋转
+    // 改写**影子角度** (拆开态 rotation / 挂载态 Att1 Δ), 公式原样存活。
+    if (isAngleLocked() && m_shadowId.isNull()) {
         updateStatusHint();
         return;
     }
@@ -662,7 +691,12 @@ void ToolRotate::applyAngleDeg(double deg)
         return;
     }
     if (m_connected) {
-        if (auto* a = editableAttachment()) {
+        // 影子角度通道 (R6, 拆开影子基准): offset 公式/变量锁定时旋转改写
+        // **影子角度** (拆开态 rotation / 挂载态 Att1 Δ), 公式原样存活;
+        // 数字 offset 走下方常规路径 (写 followerAngle, 影子不动)。
+        if (isAngleLocked() && !m_shadowId.isNull()) {
+            applyShadowAngleDeg(deg);
+        } else if (auto* a = editableAttachment()) {
             // 输入 = 带符号折角（−180~+180，含折向）→ 存储 α ∈ [0, 360°)。
             const double alpha = cad::geo::normalizeDeg360(deg);
             if (m_rotationMode == cad::param::RotationMode::ArcLength) {
@@ -695,8 +729,41 @@ void ToolRotate::applyAngleDeg(double deg)
     // cheaply — syncFromBlock rebuilds just the blocks whose rotation/epoch
     // changed. The old resolveAll() + refreshAllBlockItems() re-resolved the
     // WHOLE document and rebuilt EVERY block item on every frame.
-    m_paramDoc->resolveForDrag(QList<QUuid>{m_blockId});
+    // 影子通道: 影子一并入种子 (挂载态影子需按新 Δ 重新钉回宿主, 随后 Att2
+    // 链式带动跟随线; 拆开态影子无驱动, 入种子无害)。
+    QList<QUuid> rotSeeds{m_blockId};
+    if (!m_shadowId.isNull()) rotSeeds.append(m_shadowId);
+    m_paramDoc->resolveForDrag(rotSeeds);
     if (m_scene) m_scene->syncBlockPositions();
+}
+
+// ── 影子角度通道 (R6/R8, 拆开影子基准, DETACH_SHADOW_DESIGN.md §7.2) ────────
+// offset 被公式/变量锁定时的旋转落点: 公式原样不动, 改写影子角度 ——
+//   · 拆开态: 写影子块 transform.rotation (冻结克隆 = 普通块), 并同步回写
+//     跟随线 transform 使其绕 p3 原地转 (R8: p3 世界位置不变、方向变 ——
+//     Resolver angleOnly 分支只写 rotation 不碰 origin, 回写得以存活)。
+//   · 挂载态: 写 Att1 followerAngle Δ (Δ_new = Δ0 − δ, 与反算公式同构),
+//     Resolver 把影子钉回宿主点 (绕接点转), Att2 链式带动跟随线。
+// @param deg 连接分支折角目标 α_target; δ = α0 − α_target = 光标增量。
+void ToolRotate::applyShadowAngleDeg(double deg)
+{
+    if (!m_paramDoc) return;
+    const double deltaDeg = cad::geo::normalizeDeg180(m_dragAngle0 - deg);
+    const double deltaRad = deltaDeg * M_PI / 180.0;
+    if (m_shadowMounted) {
+        if (auto* att1 = m_paramDoc->findAttachment(m_att1Id))
+            att1->followerAngle = cad::geo::normalizeDeg180(m_shadowDelta0 - deltaDeg);
+    } else {
+        if (auto* sh = m_paramDoc->findBlock(m_shadowId))
+            sh->transform.rotation = m_shadowRot0 + deltaRad;
+        if (auto* blk = m_paramDoc->findBlock(m_blockId)) {
+            const double newRot = m_followerTf0.rotation + deltaRad;
+            blk->transform.rotation = newRot;
+            blk->transform.origin = m_pivot - m_anchorLocal.rotated(newRot);
+        }
+    }
+    if (const auto* sh = m_paramDoc->findBlock(m_shadowId))
+        m_paramDoc->invalidateLayer(sh->layer);
 }
 
 void ToolRotate::applyModeValue(double value)
@@ -775,6 +842,47 @@ void ToolRotate::commitCurrent()
     if (!m_paramDoc || !m_undoStack) return;
 
     if (m_connected) {
+        // 影子角度通道提交 (R6): restore-then-replay 单步 undo。
+        //   挂载态 = SetFollowerAngleCommand(Att1 Δ); 拆开态 = ShadowRotateCommand
+        //   (影子 transform + 跟随线 transform 双 verbatim, R8 轴心一并还原)。
+        if (isAngleLocked() && !m_shadowId.isNull()) {
+            if (m_shadowMounted) {
+                auto* att1 = m_paramDoc->findAttachment(m_att1Id);
+                if (!att1) { updateGizmo(); return; }
+                const double curDelta = att1->followerAngle;
+                if (std::abs(curDelta - m_shadowDelta0) <= 1e-9) {
+                    updateGizmo();
+                    return;
+                }
+                att1->followerAngle = m_shadowDelta0;
+                m_undoStack->push(new cad::cmd::SetFollowerAngleCommand(
+                        m_paramDoc, m_att1Id, curDelta));
+                m_shadowDelta0 = curDelta;
+            } else {
+                auto* sh = m_paramDoc->findBlock(m_shadowId);
+                auto* blk = m_paramDoc->findBlock(m_blockId);
+                if (!sh || !blk) { updateGizmo(); return; }
+                const auto shNew = sh->transform;
+                const auto blkNew = blk->transform;
+                const bool changed =
+                    std::abs(shNew.rotation - m_shadowTf0.rotation) > 1e-9
+                    || shNew.origin.distanceTo(m_shadowTf0.origin) > 1e-6
+                    || std::abs(blkNew.rotation - m_followerTf0.rotation) > 1e-9
+                    || blkNew.origin.distanceTo(m_followerTf0.origin) > 1e-6;
+                if (!changed) { updateGizmo(); return; }
+                sh->transform = m_shadowTf0;
+                blk->transform = m_followerTf0;
+                m_undoStack->push(new cad::cmd::ShadowRotateCommand(
+                        m_paramDoc, m_shadowId, m_shadowTf0, shNew,
+                        m_blockId, m_followerTf0, blkNew));
+                m_shadowTf0 = shNew;
+                m_shadowRot0 = shNew.rotation;
+                m_followerTf0 = blkNew;
+            }
+            updateGizmo();
+            return;
+        }
+
         cad::param::Attachment* att = editableAttachment();
         if (!att) {
             updateGizmo();
@@ -860,7 +968,18 @@ void ToolRotate::restoreBase()
 {
     if (!m_paramDoc) return;
     if (m_connected) {
-        if (auto* a = editableAttachment()) {
+        // 影子角度通道 (Esc): 影子/跟随线回拖前基线 (拆开态) 或 Att1 Δ 回基线。
+        if (isAngleLocked() && !m_shadowId.isNull()) {
+            if (m_shadowMounted) {
+                if (auto* att1 = m_paramDoc->findAttachment(m_att1Id))
+                    att1->followerAngle = m_shadowDelta0;
+            } else {
+                if (auto* sh = m_paramDoc->findBlock(m_shadowId))
+                    sh->transform = m_shadowTf0;
+                if (auto* blk = m_paramDoc->findBlock(m_blockId))
+                    blk->transform = m_followerTf0;
+            }
+        } else if (auto* a = editableAttachment()) {
             a->followerAngle = m_baseAngle;
             a->followerAngleFormula = m_baseFormula;
             a->rotationMode = m_rotationMode;
