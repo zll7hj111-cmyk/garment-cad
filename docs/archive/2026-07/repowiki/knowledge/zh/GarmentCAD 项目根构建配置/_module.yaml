@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: ""
+title: GarmentCAD 项目根构建配置
+scope:
+    - CMakeLists.txt
+    - CMakePresets.json
+    - .gitignore
+    - AGENTS.md
+source_files: []
+depends_on: []
+related_to: []

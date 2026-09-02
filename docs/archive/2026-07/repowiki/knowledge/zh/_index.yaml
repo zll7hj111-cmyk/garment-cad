@@ -1,0 +1,19 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-07-27T13:50:56Z"
+modules:
+    "":
+        dir_name: GarmentCAD 项目根构建配置
+        title: GarmentCAD 项目根构建配置
+        scope:
+            - CMakeLists.txt
+            - CMakePresets.json
+            - .gitignore
+            - AGENTS.md
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
