@@ -726,18 +726,13 @@ void TestSerializer::attachmentsRoundTrip()
         // 滑轨公式 (Optional since v7): 两轴公式原样往返.
         mut->slideAlongFormula = QStringLiteral("肩宽/2");
         mut->slidePerpFormula = QStringLiteral("3*2");
-        // 影子锚点 (Optional since v14, 2026-09 锚点推导) + 角度基准两点化
-        // (angleRef2, Optional since v12): 全链唯一"公式链之外的隐式旋转
-        // 账本", 往返必须逐位存活 (2026-09 审核 F4)。
-        mut->shadowAnchorRotDeg = 0.75;
+        // 角度基准两点化 (angleRef2, Optional since v12): 往返必须逐位存活
+        // (2026-09 审核 F4)。
         mut->angleRefBlockId = src.blocks().front().id;
         mut->angleRefSegmentId = src.blocks().front().segments.front().id;
         mut->angleRefPointId = src.blocks().front().segments.front().startPointId;
         mut->angleRef2BlockId = src.blocks().at(1).id;
         mut->angleRef2PointId = src.blocks().at(1).segments.front().endPointId;
-        // 不跟随旋转 (Optional since v13, 2026-09 用户拍板): 持久化开关
-        // 往返必须存活 —— 旋转位置宿主时本线不参与影子偏转。
-        mut->noFollowRotate = true;
     }
 
     QJsonObject json = DocumentSerializer::serialize(src);
@@ -763,14 +758,11 @@ void TestSerializer::attachmentsRoundTrip()
     QVERIFY(qFuzzyCompare(da.slidePerpMm, -3.25));
     QCOMPARE(da.slideAlongFormula, QStringLiteral("肩宽/2"));
     QCOMPARE(da.slidePerpFormula, QStringLiteral("3*2"));
-    QVERIFY2(qFuzzyCompare(da.shadowAnchorRotDeg, 0.75),
-             "shadowAnchorRotDeg must survive serialization (v14)");
     QCOMPARE(da.angleRefBlockId, sa.angleRefBlockId);
     QCOMPARE(da.angleRefSegmentId, sa.angleRefSegmentId);
     QCOMPARE(da.angleRefPointId, sa.angleRefPointId);
     QCOMPARE(da.angleRef2BlockId, sa.angleRef2BlockId);
     QCOMPARE(da.angleRef2PointId, sa.angleRef2PointId);
-    QVERIFY2(da.noFollowRotate, "noFollowRotate must survive serialization (v13)");
 }
 
 void TestSerializer::bridgeRoundTrip()

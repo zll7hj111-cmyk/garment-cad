@@ -21,6 +21,7 @@
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"   // ReverseSegmentCommand (换向不解耦验证)
 #include "parametric/ParamDocument.h"
+#include "parametric/FormulaVariable.h"
 #include "parametric/Serial.h"
 #include "geometry/Angle.h"
 #include "TestHelpers.h"
@@ -53,6 +54,10 @@ private slots:
     void bodyDragMovesLine();
     void quickDetachKeyD();
     void angleOnlyEndpointDragReconnects();
+    // ── 有对齐点方向 + 变量时接入新线段不覆盖变量 (2026-xx 用户报告:
+    //    有对齐点方向时接入新线段 = 仅连接, 原对齐点方向与变量不变,
+    //    回车 = 确定连接而非确定角度) ──
+    void angleRefWithFormulaReattachKeepsFormula();
     // ── 连接角度会话 (二期: 角度输入并入上下文属性条, AngleHud 退场) ──
     void angleSessionStripInputDrivesConnection();
     // ── 重叠线段消歧 (2026-10) ──
@@ -74,8 +79,6 @@ private slots:
     // ── 终点指向超出延伸 (2026-09 规则表 ⑤): 指定长度 > 目标距离时终点
     //    越过目标点、方向保持指向角 ──
     void endTargetOvershootExtendsAlongAim();
-    // ── 基准影子偏转角 (2026-09 审核 F4): Resolver 叠加 + 命令 undo ──
-    void shadowBaselineOffsetDrivesRotation();
     // ── 终点连接行 (2026-xx 每端完整连接: 起点 Attachment + 终点 endTarget) ──
     void connectionCardEndConnection();
 };
@@ -1357,18 +1360,16 @@ void TestSelectWKey::angleOnlyEndpointDragReconnects()
     QVERIFY2(after->toPointId == c.endId, "位置应重挂到新宿主端点");
     QVERIFY2(after->angleRefBlockId == a.blockId,
              "旧角度基准应保留为独立角度基准 (双基准)");
+    QVERIFY2(after->followerAngle == 90.0,
+             "仅连接: followerAngle 应原样保留, 不得反算覆盖 (旧实现 bug)");
     const cad::param::Block* bb2 = doc.findBlock(b.blockId);
     const cad::param::Block* cc = doc.findBlock(c.blockId);
     QVERIFY(bb2 && cc);
     QVERIFY(bb2->worldPos(b.startId).distanceTo(cc->worldPos(c.endId)) < 1e-6);
 
-    // 4) 手势进入角度输入, Esc 收尾回 Idle。
+    // 4) 仅连接: 直接完成连接回 Idle (不进入角度输入会话)。
     auto* ts = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
     QVERIFY(ts);
-    QCOMPARE(ts->state(), cad::tools::SelectState::AngleInput);
-    // 二期: Esc 经条带 → 工具 → 手势 (旧浮动 AngleHud 已退场)。
-    ts->connectAngleCancelled();
-    QTest::qWait(30);
     QCOMPARE(ts->state(), cad::tools::SelectState::Idle);
     QCOMPARE(doc.attachments().size(), size_t(1));
 
@@ -1378,6 +1379,130 @@ void TestSelectWKey::angleOnlyEndpointDragReconnects()
     const cad::param::Attachment* undone2 = doc.findAttachment(att.id);
     QVERIFY(undone2);
     QVERIFY2(undone2->angleOnly, "undo 应回到仅角度态");
+}
+
+// ── 有对齐点方向 + 变量时接入新线段不覆盖变量 (2026-xx 用户报告) ─────────
+// 线段处于仅角度 (angleOnly) 且使用了自定义对齐点方向 (angleRefBlockId 非空)
+// 与变量 (followerAngleFormula, 如 LL=90) 时, 拖端点接入新线段:
+//   · 方向基准 = 对齐点, 不是新宿主 → 原对齐点方向与变量原样保留, 不反算
+//     覆盖、不清变量 (旧实现把变量烘成数值)。
+//   · 不进入角度输入会话 (回车 = 确定连接而非确定角度), 直接完成连接。
+//   · undo 单步回到拖前仅角度态。
+void TestSelectWKey::angleRefWithFormulaReattachKeepsFormula()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+
+    auto a = makeLine(doc, 100.0);                     // (0,0)-(100,0) 旧基准线
+    auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});   // (0,-50)-(100,-50) 跟随线
+    auto c = makeLine(doc, 100.0, Vec2{300.0, -50.0});  // (300,-50)-(400,-50) 新宿主
+    doc.resolveAll();
+
+    // 变量 LL = 90 (度)。
+    FormulaVariable ll;
+    ll.name = QStringLiteral("LL");
+    ll.expression = QStringLiteral("90");
+    doc.addFormula(ll);
+
+    // B 完整连接 A (B.start 吸到 A.end), 再 D 键快拆 → 仅角度。
+    cad::param::Attachment att;
+    att.fromBlockId = b.blockId;
+    att.fromPointId = b.startId;
+    att.toBlockId   = a.blockId;
+    att.toPointId   = a.endId;
+    att.toSegmentId = a.segId;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    doc.setAttachmentAngleOnly(att.id, true);
+    doc.resolveAll();
+    const auto* detached = doc.findAttachment(att.id);
+    QVERIFY2(detached && detached->angleOnly, "预置: 仅角度 (拆开保留角度)");
+
+    // 用户自定义对齐点方向 = A (旧基准线), 并设变量 LL=90 驱动跟随角。
+    auto* mut = doc.findAttachment(att.id);
+    QVERIFY(mut);
+    mut->angleRefBlockId = a.blockId;
+    mut->angleRefSegmentId = a.segId;
+    mut->angleRefPointId = a.endId;
+    mut->followerAngleFormula = QStringLiteral("LL");
+    doc.resolveAll();
+    QVERIFY2(!mut->angleRefBlockId.isNull(), "预置: 用户自定义对齐点方向");
+    QVERIFY2(mut->followerAngleFormula == QStringLiteral("LL"),
+             "预置: 变量驱动跟随角");
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos,
+                         Qt::MouseButton btn, Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        const Qt::MouseButtons buttons = (type == QEvent::MouseButtonRelease)
+            ? Qt::NoButton
+            : (btn | (mods & Qt::ControlModifier ? Qt::LeftButton : Qt::NoButton));
+        QMouseEvent ev(type, pos, global, btn, buttons, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    const cad::param::Block* bb = doc.findBlock(b.blockId);
+    QVERIFY(bb);
+    const cad::geo::Vec2 bEnd = bb->worldPos(b.endId);
+    const cad::geo::Vec2 bMid = (bb->worldPos(b.startId) + bEnd) * 0.5;
+
+    // 1) 选中 B。
+    sendMouse(QEvent::MouseButtonPress, vp(bMid.x, bMid.y), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(bMid.x, bMid.y), Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(scene.findBlockItem(b.blockId)->toolSelected());
+
+    // 2) 从 B 端点拖到 C 终点 (400,-50)。
+    const QPoint from = vp(bEnd.x, bEnd.y);
+    const QPoint to   = vp(400.0, -50.0);
+    sendMouse(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(150.0, 50.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(200.0, -20.0), Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, to, Qt::NoButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoModifier);
+
+    // 3) 原附件重挂: 恢复完整位置连接 (angleOnly=false)、位置吸到 C.end。
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const cad::param::Attachment* after = doc.findAttachment(att.id);
+    QVERIFY(after);
+    QVERIFY2(!after->angleOnly, "释放到目标后应恢复完整位置连接");
+    QVERIFY2(after->toBlockId == c.blockId, "位置应重挂到新宿主线段");
+    QVERIFY2(after->toPointId == c.endId, "位置应重挂到新宿主端点");
+
+    // 4) 有对齐点方向: 方向基准 = 对齐点 (A), 变量 LL 原样保留, 不烘成数值。
+    QVERIFY2(after->angleRefBlockId == a.blockId,
+             "用户自定义对齐点方向应原样保留");
+    QVERIFY2(after->followerAngleFormula == QStringLiteral("LL"),
+             "变量 LL 应原样保留, 不得被烘成数值 (旧实现 bug)");
+
+    // 5) 有对齐点方向: 不进入角度输入会话, 直接完成连接回 Idle。
+    auto* ts = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
+    QVERIFY(ts);
+    QCOMPARE(ts->state(), cad::tools::SelectState::Idle);
+
+    // 6) undo: 回到拖前仅角度态 (位置/角度/变量原样)。
+    doc.undoStack()->undo();
+    const cad::param::Attachment* undone = doc.findAttachment(att.id);
+    QVERIFY(undone);
+    QVERIFY2(undone->angleOnly, "undo 应回到仅角度态");
+    QVERIFY2(undone->followerAngleFormula == QStringLiteral("LL"),
+             "undo 后变量 LL 应原样保留");
 }
 
 // 二期 (CONTEXT_STRIP_DESIGN): 连接角度会话的输入走 条带 → 工具 → 手势 通道:
@@ -2214,113 +2339,6 @@ void TestSelectWKey::alignPointEditableAndAutoStateTwoPointBackfill()
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// 影子偏转 (2026-09 审核 F4; 2026-09 锚点推导重设计): 影子 = 宿主旋转 −
-// 锚点现算, 是唯一"公式链之外的隐式旋转账本" —— 有效基准方向 = 真基准
-// 出方向 + 影子偏转 (Resolver applyAttachment 叠加)。激活条件: 显式角度
-// 基准在位置宿主外 (普通跟随时真基准已随宿主转, 叠加影子 = 双重计入,
-// 恒不激活)。验证:
-//   · 影子偏转驱动旋转: 设可见偏转 δ (锚 = 宿主旋转 − δ) → 跟随线世界方向
-//     整体转 δ (followerAngle 不变, 公式原样存活)。
-//   · 命令 undo: SetAttachmentShadowAnchorCommand 单步回滚。
-//   · 与自定义角度基准 (两点连线) 叠加: 有效基准 = 两点方向 + δ。
-// ─────────────────────────────────────────────────────────────────────────
-void TestSelectWKey::shadowBaselineOffsetDrivesRotation()
-{
-    ParamDocument doc;
-    doc.setActiveLayer(layerIdAt(doc, 1));
-    const auto leader = makeLine(doc, 100.0, Vec2(200.0, 0.0));   // 宿主 A
-    const auto line   = makeLine(doc, 60.0);                       // 本线 (0,0)→(60,0)
-    const auto hostB  = makeLine(doc, 80.0, Vec2(120.0, 90.0));   // 角度基准 B
-    doc.resolveAll();
-
-    cad::param::Attachment att;
-    att.fromBlockId = line.blockId;
-    att.fromPointId = line.startId;
-    att.toBlockId   = leader.blockId;
-    att.toPointId   = leader.endId;
-    att.toSegmentId = leader.segId;
-    att.followerAngle = 180.0;
-    // 显式角度基准在宿主外 (B ≠ A) → 影子激活。
-    att.angleRefBlockId = hostB.blockId;
-    att.angleRefSegmentId = hostB.segId;
-    att.angleRefPointId = hostB.startId;
-    QVERIFY(doc.addAttachment(att));
-    doc.resolveAll();
-
-    auto angDiff = [](double a, double b) {
-        double d = std::abs(a - b);
-        d = std::fmod(d, 2.0 * M_PI);
-        return d > M_PI ? 2.0 * M_PI - d : d;
-    };
-    auto worldDir = [&](const QUuid& blockId) {
-        const auto* b = doc.findBlock(blockId);
-        const Vec2 w1 = b->transform.toWorld(
-            b->findPoint(line.startId)->resolvedPos);
-        const Vec2 w2 = b->transform.toWorld(
-            b->findPoint(line.endId)->resolvedPos);
-        return std::atan2(w2.y - w1.y, w2.x - w1.x);
-    };
-    const double dir0 = worldDir(line.blockId);
-
-    // 1) 影子偏转 δ=30°: 锚 = 宿主旋转 − 30° (宿主旋转 0) → 有效基准 =
-    // 真基准 + 30° → 跟随线世界方向转 30°。
-    {
-        auto* mut = doc.findAttachment(att.id);
-        QVERIFY(mut);
-        const Block* host = doc.findBlock(leader.blockId);
-        QVERIFY(host);
-        mut->shadowAnchorRotDeg = host->transform.rotation
-                                - 30.0 * M_PI / 180.0;
-    }
-    doc.resolveAll();
-    QVERIFY2(angDiff(worldDir(line.blockId), dir0 + 30.0 * M_PI / 180.0) < 1e-9,
-             "影子偏转 30° → 跟随线世界方向整体转 30° (followerAngle 不变)");
-    QVERIFY2(qFuzzyCompare(doc.attachments().front().followerAngle, 180.0),
-             "影子偏转不写 followerAngle (账本独立)");
-
-    // 2) 命令 undo: SetAttachmentShadowAnchorCommand (输入可见偏转 0 =
-    // 重钉锚点) 单步回滚。
-    {
-        auto* stack = doc.undoStack();
-        stack->push(new cad::cmd::SetAttachmentShadowAnchorCommand(
-            &doc, att.id, 0.0));
-        QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg, 0.0),
-                 "命令 redo 重钉锚点 (可见偏转 0)");
-        stack->undo();
-        QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg,
-                               -30.0 * M_PI / 180.0),
-                 "命令 undo 回滚到旧锚点");
-        stack->redo();
-        QVERIFY2(qFuzzyCompare(doc.attachments().front().shadowAnchorRotDeg, 0.0),
-                 "命令 redo 恢复新锚点");
-    }
-
-    // 3) 与自定义两点基准叠加: 有效基准 = 点1→点2 连线方向 + δ。点1 宿主
-    // (B) 在位置宿主 (A) 外 → 影子仍激活。
-    {
-        auto* mut = doc.findAttachment(att.id);
-        QVERIFY(mut);
-        mut->angleRefBlockId = hostB.blockId;
-        mut->angleRefSegmentId = hostB.segId;
-        mut->angleRefPointId = hostB.startId;
-        mut->angleRef2BlockId = leader.blockId;
-        mut->angleRef2PointId = leader.endId;
-        const Block* host = doc.findBlock(leader.blockId);
-        mut->shadowAnchorRotDeg = host->transform.rotation
-                                - 15.0 * M_PI / 180.0;
-    }
-    doc.resolveAll();
-    {
-        const Vec2 w1 = doc.findBlock(hostB.blockId)->worldPos(hostB.startId);
-        const Vec2 w2 = doc.findBlock(leader.blockId)->worldPos(leader.endId);
-        const double refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
-        const double fA = doc.attachments().front().followerAngle * M_PI / 180.0;
-        QVERIFY2(angDiff(worldDir(line.blockId),
-                         refWorld + 15.0 * M_PI / 180.0 + M_PI - fA) < 1e-9,
-                 "两点基准 + 影子偏转叠加: 世界方向 = 两点方向 + δ (闭合基准)");
-    }
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // 终点连接行 (2026-xx 每端完整连接: 起点连接 = Attachment (位置+角度),

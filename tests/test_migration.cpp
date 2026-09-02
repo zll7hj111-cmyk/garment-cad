@@ -139,7 +139,7 @@ private slots:
     void blockWithoutLayerFieldIsLeftToTheSerializer();
     void migratedV0DeserializesLikeV1();
     void v1ArchiveStillRoundTrips();
-    void v1ShadowOffsetMigratesToAnchor();
+    void v1ShadowOffsetKeyIsDropped();
 };
 
 void TestMigration::v0InsertsAuxLayerAndShiftsIndices()
@@ -387,12 +387,12 @@ void TestMigration::v1ArchiveStillRoundTrips()
     QVERIFY(warnings.isEmpty());   // a current-version file migrates silently
 }
 
-void TestMigration::v1ShadowOffsetMigratesToAnchor()
+void TestMigration::v1ShadowOffsetKeyIsDropped()
 {
-    // v1 stored the shadow as a cumulative offset (baselineOffsetDeg, degrees);
-    // v2 stores a shadow ANCHOR (shadowAnchorRotDeg, radians) = host rotation −
-    // old offset. A v1 attachment with offset 30° on a host rotated 0.5 rad
-    // must land on anchor = 0.5 − 30°·π/180, and the old key must be gone.
+    // v1 stored the shadow as a cumulative offset (baselineOffsetDeg, degrees).
+    // The shadow-deflection feature has since been removed (2026): the v1→v2
+    // step now only drops the dead legacy key — it must not write any anchor
+    // field, and every attachment keeps its other data intact.
     QJsonObject root;
     QJsonObject docObj;
     docObj["pointSeq"] = 1;
@@ -414,12 +414,10 @@ void TestMigration::v1ShadowOffsetMigratesToAnchor()
 
     const QString hostId = uuidStr(QUuid::createUuid());
     const QString followerId = uuidStr(QUuid::createUuid());
-    const double hostRot = 0.5;   // radians
 
     QJsonArray blocks;
-    const QList<QPair<QString, double>> blockDefs{
-        {hostId, hostRot}, {followerId, 0.0}};
-    for (const auto& def : blockDefs) {
+    for (const auto& def : {QPair<QString, double>{hostId, 0.5},
+                            {followerId, 0.0}}) {
         QJsonObject b;
         b["id"] = def.first;
         b["name"] = QStringLiteral("块");
@@ -456,7 +454,7 @@ void TestMigration::v1ShadowOffsetMigratesToAnchor()
     att["toBlockId"] = hostId;
     att["toPointId"] = blocks[0].toObject()["points"].toArray()[1].toObject()["id"];
     att["followerAngle"] = 180.0;
-    att["baselineOffsetDeg"] = 30.0;   // v11 旧账本
+    att["baselineOffsetDeg"] = 30.0;   // v11 旧账本 (已随功能删除)
     QJsonArray atts; atts.append(att);
     docObj["attachments"] = atts;
 
@@ -467,14 +465,13 @@ void TestMigration::v1ShadowOffsetMigratesToAnchor()
     QString error;
     QVERIFY(cad::doc::FormatMigration::migrate(1, root, &warnings, &error));
     QVERIFY(error.isEmpty());
-    QVERIFY(!warnings.isEmpty());   // 迁移有提示
+    QVERIFY(!warnings.isEmpty());   // 清理有提示
 
     const QJsonObject outAtt = root["document"].toObject()["attachments"]
                                    .toArray()[0].toObject();
     QVERIFY(!outAtt.contains(QStringLiteral("baselineOffsetDeg")));
-    const double expectedAnchor = hostRot - 30.0 * 3.14159265358979323846 / 180.0;
-    QVERIFY2(qFuzzyCompare(outAtt["shadowAnchorRotDeg"].toDouble(), expectedAnchor),
-             "锚 = 宿主旋转 − 旧偏移 (度→弧度)");
+    QVERIFY(!outAtt.contains(QStringLiteral("shadowAnchorRotDeg")));
+    QCOMPARE(outAtt["followerAngle"].toDouble(), 180.0);   // 其余字段原样保留
 }
 
 QTEST_GUILESS_MAIN(TestMigration)

@@ -99,6 +99,9 @@ private slots:
     // 拆开保留角度 (用户拍板 2026-08: 位置吸附解除, 角度跟随保留)
     void setAttachmentAngleOnly_keepsFollowAngle();
     void setAttachmentAngleOnly_docHelperAndLockedClosure();
+    // 解焊重连保持两点基准 (preserveAngleRefOnReattach 点交换: 点1=另一端,
+    // 点2=目标点, 方向与拆开前 exitDirectionAtPoint 一致)
+    void reattachPreservesAngleRefTwoPointBasis();
     // 角度基准两点化 (PANEL_REDESIGN §6.4, 2026-08-31 修复「点2 无效」)
     void angleRefTwoPointBasis_engineAndUndo();
     // 滑轨模式 (抽屉式滑动, 用户拍板 2026-08)
@@ -1371,11 +1374,10 @@ void TestCommands::layerCommands_activeLayerRestored()
 
 // ---------------------------------------------------------------------------
 // 拆开保留角度 (用户拍板 2026-08): SetAttachmentAngleOnlyCommand releases the
-// POSITION constraint only — the follower's rotation keeps being driven by the
-// leader's direction + followerAngle. Translating the follower must NOT change
-// its angle; rotating the leader MUST rotate the follower along (the relative
-// angle α is preserved). Undo restores the full connection (position re-snaps
-// onto the leader point).
+// POSITION constraint only — 角度跟随保留, 拆开后跟随线 B 的旋转仍由基准线
+// A 驱动 (B 的角度 = A 当前方向 + 拆开前的跟随角 α; A 旋转时 B 跟着转,
+// 平移 B 不动角度)。Undo restores the full connection (position re-snaps onto
+// the leader point)。
 // ---------------------------------------------------------------------------
 void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
 {
@@ -1418,7 +1420,8 @@ void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
     QVERIFY(std::abs(doc.findBlock(bId)->transform.rotation - rotBefore) < 1e-9);
     QVERIFY((doc.findBlock(bId)->worldPos(bStart) - joint).length() > 100.0);
 
-    // Rotate the leader by +30°: B must follow (keeps the relative angle).
+    // Rotate the leader by +30°: B must follow (角度跟随保留 —— 拆开后 B 的
+    // 角度仍由活的基准线 A 驱动)。
     {
         auto* a = doc.blockById(aId);
         a->transform.rotation += 30.0 * M_PI / 180.0;
@@ -1440,6 +1443,55 @@ void TestCommands::setAttachmentAngleOnly_keepsFollowAngle()
     // Redo: angle-only again, position stays wherever it currently is.
     stack.redo();
     QVERIFY(doc.attachments().front().angleOnly);
+}
+
+
+// ---------------------------------------------------------------------------
+// 解焊重连保持两点基准 (preserveAngleRefOnReattach 点交换, 2026-12 用户报告
+// 「重挂瞬间翻转」): 解焊 (断开拖动保护, 完整连接保持) 后重连走
+// ReattachAttachmentCommand, 自动态下把旧所连线段固化为两点基准 —— 点1 =
+// 旧线段另一端、点2 = 旧目标点, 两点连线方向与拆开前 exitDirectionAtPoint
+// (终点 = start→end) 一致, 不翻转。此路径是 preserveAngleRefOnReattach 点
+// 交换改动的唯一覆盖。
+// ---------------------------------------------------------------------------
+void TestCommands::reattachPreservesAngleRefTwoPointBasis()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);   // 旧宿主 A: (0,0)→(100,0)
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0);     // 跟随 B
+    auto [cId, cStart, cEnd, cSeg] =
+        makeLine(doc, 80.0, Vec2(200.0, 0.0));                // 新宿主 C
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+    QVERIFY(doc.attachments().front().angleRefBlockId.isNull());  // 自动态
+
+    // 解焊 (拖动保护取消) —— 完整连接保持, 无冻结语义。
+    doc.setAttachmentLocked(att.id, false);
+    QVERIFY(!doc.attachments().front().isLocked);
+
+    // 解焊重连到 C (ReattachAttachmentCommand): 自动态固化为两点基准。
+    QUndoStack stack;
+    stack.push(new cad::cmd::ReattachAttachmentCommand(
+        &doc, att.id, cId, cEnd, cSeg));
+    {
+        const Attachment& a = doc.attachments().front();
+        QVERIFY2(a.angleRefBlockId == aId,
+                 "解焊重连: 点1 基准块 = 旧所连线段 (不被新宿主覆盖)");
+        QVERIFY2(a.angleRefPointId == aStart,
+                 "解焊重连: 点1 = 旧线段另一端 (方向与拆开前 exitDirectionAtPoint 一致)");
+        QVERIFY2(a.angleRef2BlockId == aId && a.angleRef2PointId == aEnd,
+                 "解焊重连: 点2 = 旧目标点 (两点基准完整)");
+        QVERIFY2(a.angleRefSegmentId == aSeg,
+                 "解焊重连: 基准线段 = 旧所连线段");
+        QVERIFY2(a.toBlockId == cId, "解焊重连: 位置重挂到新宿主");
+    }
 }
 
 // ---------------------------------------------------------------------------
