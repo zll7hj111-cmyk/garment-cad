@@ -43,6 +43,7 @@
 #include "geometry/Angle.h"
 #include "ui/Theme.h"
 #include "ui/FormScaffold.h"
+#include "ui/TooltipFormatter.h"
 #include "ui/NoteButton.h"
 #include "parametric/FollowerAngle.h"
 #include "document/commands/VariableCommands.h"
@@ -85,8 +86,9 @@ QWidget* makeSectionHeader(const QString& title, QWidget* parent,
     // transparent} 规则, 漏了它标题变不透明浅底, 细笔画抗锯齿全混成灰
     // (探针实测 avgL≈175, solid 仅 22% = "盖滤镜/掉色" 真凶)。
     auto* t = new ElaText(title, 13, w);
+    t->setObjectName(QStringLiteral("sectionTitleLabel"));
     t->setStyleSheet(QStringLiteral(
-        "background: transparent; font-weight:700; color:%1;")
+        "#sectionTitleLabel { background: transparent; font-weight:700; color:%1; }")
                          .arg(cad::ui::Theme::tokens().text1.name()));
     h->addWidget(t);
     h->addStretch();
@@ -423,7 +425,10 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         // 前缀灰色 + 关键 "L#" 红色加粗 (Serial::toHtml, 与 SerialDelegate 同约定)。
         m_lblSegId = new ElaText(QString(), 11, page);
         m_lblSegId->setStyleSheet(dimMono);
-        m_lblSegId->setToolTip(QString::fromUtf8("线段完整编号（全局唯一，随机前缀+类型序号）"));
+        m_lblSegId->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("线段编号"),
+            QStringLiteral("线段完整编号（全局唯一，随机前缀+类型序号）"),
+            false));
         row->addWidget(m_lblSegId);
         row->addStretch();
         layout->addLayout(row);
@@ -447,7 +452,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
             b->setFixedSize(56, kFieldH);
             b->setStyleSheet(chips);
             b->setCursor(Qt::PointingHandCursor);
-            b->setToolTip(QString::fromUtf8(styleTips[i]));
+            b->setToolTip(cad::ui::TooltipFormatter::action(
+                QString::fromUtf8(styleTips[i]),
+                QString::fromUtf8("将线段渲染样式设置为%1").arg(QString::fromUtf8(styleTips[i]))));
             m_styleGroup->addButton(b, i);
             m_styleBtns[i] = b;
             row->addWidget(b);
@@ -476,15 +483,16 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
             row->addWidget(b);
         }
         m_spinWeight = new ElaDoubleSpinBox(page);
-        // ElaDoubleSpinBox Inline 模式按钮占 2×高 (70px): 76px 宽时数值域只剩
-        // ~12px → 输入框完全看不见 (用户 2026-12 反馈)。放宽到 110 (编辑域 ~46px)。
+        m_spinWeight->setButtonSymbols(QAbstractSpinBox::NoButtons);
         m_spinWeight->setFixedWidth(110);
         m_spinWeight->setFixedHeight(kFieldH);
         m_spinWeight->setStyleSheet(QStringLiteral("font-size: 11px;"));
         m_spinWeight->setRange(0.5, 10.0);
         m_spinWeight->setSingleStep(0.2);
         m_spinWeight->setDecimals(1);
-        m_spinWeight->setToolTip(QString::fromUtf8("自定义线宽 (px)"));
+        m_spinWeight->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("线宽 (px)"),
+            QStringLiteral("自定义线段渲染线宽（像素）")));
         row->addWidget(m_spinWeight);
         row->addStretch();
         layout->addLayout(row);
@@ -499,7 +507,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         m_btnColor = new QPushButton(page);
         m_btnColor->setFixedSize(44, kFieldH);
         m_btnColor->setCursor(Qt::PointingHandCursor);
-        m_btnColor->setToolTip(QString::fromUtf8("点击选择线段颜色"));
+        m_btnColor->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("线段颜色"),
+            QStringLiteral("点击打开调色板选择线段显示颜色")));
         row->addWidget(m_btnColor);
         m_lblColorHex = new ElaText(QString(), 11, page);
         m_lblColorHex->setStyleSheet(dimMono);
@@ -526,7 +536,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
             b->setFixedHeight(kFieldH);
             b->setStyleSheet(chips);
             b->setCursor(Qt::PointingHandCursor);
-            b->setToolTip(QString::fromUtf8(d.tip));
+            b->setToolTip(cad::ui::TooltipFormatter::action(
+                QString::fromUtf8(d.text),
+                QString::fromUtf8(d.tip)));
             *d.slot = b;
             row->addWidget(b);
         }
@@ -561,16 +573,18 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         m_btnLenAuto->setFixedSize(48, kFieldH);
         m_btnLenAuto->setStyleSheet(chips);
         m_btnLenAuto->setCursor(Qt::PointingHandCursor);
-        m_btnLenAuto->setToolTip(QString::fromUtf8(
-            "自动：两端都钉在宿主点上，长度由两点距离算出（桥接行为）。"));
+        m_btnLenAuto->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("自动长度"),
+            QStringLiteral("两端都钉在宿主点上，长度由两点距离算出（桥接行为）")));
         m_btnLenSpec = new QPushButton(QString::fromUtf8("指定"), page);
         m_btnLenSpec->setObjectName(QStringLiteral("lengthSpecChip"));
         m_btnLenSpec->setCheckable(true);
         m_btnLenSpec->setFixedSize(48, kFieldH);
         m_btnLenSpec->setStyleSheet(chips);
         m_btnLenSpec->setCursor(Qt::PointingHandCursor);
-        m_btnLenSpec->setToolTip(QString::fromUtf8(
-            "指定：起点钉在宿主点上，按角度延伸，长度由本输入框指定。"));
+        m_btnLenSpec->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("指定长度"),
+            QStringLiteral("起点钉在宿主点上，按角度延伸，长度由本输入框指定")));
         m_lenGroup = new QButtonGroup(page);
         m_lenGroup->addButton(m_btnLenAuto);
         m_lenGroup->addButton(m_btnLenSpec);
@@ -579,7 +593,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         auto* btnPasteLen = new QPushButton(QStringLiteral("填入"), page);
         btnPasteLen->setFixedSize(48, kFieldH);
         btnPasteLen->setStyleSheet(chips);
-        btnPasteLen->setToolTip(QStringLiteral("清空输入框并粘贴剪切板内容"));
+        btnPasteLen->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("填入剪贴板"),
+            QStringLiteral("清空输入框并粘贴剪切板内容")));
         connect(btnPasteLen, &QPushButton::clicked, this, [this] {
             const QString clean = QString(QApplication::clipboard()->text())
                                       .remove(QLatin1Char('\r'))
@@ -594,15 +610,19 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         m_btnPublishLen = new QPushButton(QString::fromUtf8("发布参数"), page);
         m_btnPublishLen->setFixedHeight(kFieldH);
         m_btnPublishLen->setStyleSheet(chips);
-        m_btnPublishLen->setToolTip(QString::fromUtf8(
-            "将本线段的长度发布为关联参数（只读），其他公式可直接引用其引用名（L+编号）"));
+        m_btnPublishLen->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("发布关联参数"),
+            QStringLiteral("将本线段的长度发布为关联参数（只读），其他公式可直接引用其引用名（L+编号）")));
         m_btnPublishLen->setCursor(Qt::PointingHandCursor);
         connect(m_btnPublishLen, &QPushButton::clicked,
                 this, &LinePropertyDialog::onPublishLength);
         row->addWidget(m_btnPublishLen);
         m_lblActualLength = new ElaText(QString(), 11, page);
         m_lblActualLength->setStyleSheet(dimMono);
-        m_lblActualLength->setToolTip(QString::fromUtf8("当前实际长度（只读）"));
+        m_lblActualLength->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("实际长度"),
+            QStringLiteral("当前实际长度（只读）"),
+            false));
         row->addWidget(m_lblActualLength);
         row->addStretch();
         layout->addLayout(row);
@@ -616,19 +636,22 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         slideLayout->setSpacing(6);
         auto* lblSlide = new ElaText(QString::fromUtf8("滑轨"), 11, m_slideRow);
         lblSlide->setFixedWidth(kLabelW);
-        lblSlide->setToolTip(QString::fromUtf8(
-            "抽屉式单向滑动：连接姿态保持（角度始终随基准线），但位置只留一个自由度。"));
+        lblSlide->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("滑轨连接"),
+            QStringLiteral("抽屉式单向滑动：连接姿态保持（角度始终随基准线），但位置只留一个自由度")));
         slideLayout->addWidget(lblSlide);
         auto* lblAlong = new ElaText(QString::fromUtf8("沿向"), 11, m_slideRow);
         lblAlong->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        lblAlong->setStyleSheet(QStringLiteral("background: transparent;"));
-        lblAlong->setToolTip(QString::fromUtf8("沿基准线方向 (cm)"));
+        lblAlong->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("沿向偏移"),
+            QStringLiteral("沿基准线方向偏移 (cm)")));
         slideLayout->addWidget(lblAlong);
         m_editSlideAlong = new ElaLineEdit(m_slideRow);
         m_editSlideAlong->setFixedWidth(150);
         m_editSlideAlong->setPlaceholderText(QString::fromUtf8("0"));
-        m_editSlideAlong->setToolTip(QString::fromUtf8(
-            "沿基准线方向偏移（cm）。数值或公式（如 肩宽/2）；留空/0 表示不偏移。"));
+        m_editSlideAlong->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("沿向偏移 (cm)"),
+            QStringLiteral("沿基准线方向偏移（cm）。数值或公式（如 肩宽/2）；留空/0 表示不偏移")));
         m_editSlideAlong->setFixedHeight(kFieldH);
         m_editSlideAlong->setStyleSheet(QStringLiteral("font-size: 11px;"));
         slideLayout->addWidget(m_editSlideAlong);
@@ -637,14 +660,16 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         slideLayout->addWidget(lblPerpSp);
         auto* lblPerp = new ElaText(QString::fromUtf8("垂直"), 11, m_slideRow);
         lblPerp->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        lblPerp->setStyleSheet(QStringLiteral("background: transparent;"));
-        lblPerp->setToolTip(QString::fromUtf8("垂直基准线方向 (cm)"));
+        lblPerp->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("垂直偏移"),
+            QStringLiteral("垂直基准线方向偏移 (cm)")));
         slideLayout->addWidget(lblPerp);
         m_editSlidePerp = new ElaLineEdit(m_slideRow);
         m_editSlidePerp->setFixedWidth(150);
         m_editSlidePerp->setPlaceholderText(QString::fromUtf8("0"));
-        m_editSlidePerp->setToolTip(QString::fromUtf8(
-            "垂直基准线方向偏移（cm）。数值或公式；留空/0 表示不偏移。"));
+        m_editSlidePerp->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("垂直偏移 (cm)"),
+            QStringLiteral("垂直基准线方向偏移（cm）。数值或公式；留空/0 表示不偏移")));
         m_editSlidePerp->setFixedHeight(kFieldH);
         m_editSlidePerp->setStyleSheet(QStringLiteral("font-size: 11px;"));
         slideLayout->addWidget(m_editSlidePerp);
@@ -657,8 +682,10 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         m_cmbSlideMode->setVisible(false);
         m_lblSlideBadge = new ElaText(QString(), 11, m_slideRow);
         m_lblSlideBadge->setStyleSheet(cad::ui::Theme::tealBadgeStyle());
-        m_lblSlideBadge->setToolTip(QString::fromUtf8(
-            "滑轨状态：角度跟随保持，但位置只留一个自由度。"));
+        m_lblSlideBadge->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("滑轨状态"),
+            QStringLiteral("角度跟随保持，但位置只留一个自由度"),
+            false));
         slideLayout->addWidget(m_lblSlideBadge);
         slideLayout->addStretch();
     }
@@ -713,13 +740,15 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
                 ptBadge = new ElaText(QString(), 11, panel);
                 ptBadge->setObjectName(QStringLiteral("endpointBadge"));
                 ptBadge->setStyleSheet(QStringLiteral(
-                    "font-weight:600; %1 background:transparent;")
+                    "#endpointBadge { font-weight:600; %1 }")
                     .arg(QString::fromLatin1(cad::ui::ThemeTokens::kMonospaceFamily)));
                 ptBadge->setFixedWidth(44);
                 ptBadge->setAlignment(Qt::AlignCenter);
-                ptBadge->setToolTip(QString::fromUtf8(
-                    isStart ? "上组 = 点1（线段第一个点，位置固定）；进出方向见中间箭头"
-                            : "下组 = 点2（线段第二个点，位置固定）；进出方向见中间箭头"));
+                ptBadge->setToolTip(cad::ui::TooltipFormatter::status(
+                    isStart ? QStringLiteral("点1 (起点)") : QStringLiteral("点2 (终点)"),
+                    isStart ? QStringLiteral("上组 = 点1（线段第一个点，位置固定）；进出方向见中间箭头")
+                            : QStringLiteral("下组 = 点2（线段第二个点，位置固定）；进出方向见中间箭头"),
+                    false));
                 head->addWidget(ptBadge);
                 nameEdit = new ElaLineEdit(panel);
                 nameEdit->setFixedWidth(150);   // 值输入列宽, 与 长度/角度 同栅格
@@ -738,7 +767,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
                 showChip->setFixedHeight(kFieldH);
                 showChip->setStyleSheet(chips);
                 showChip->setCursor(Qt::PointingHandCursor);
-                showChip->setToolTip(QString::fromUtf8("在画布上显示该点名称"));
+                showChip->setToolTip(cad::ui::TooltipFormatter::action(
+                    QStringLiteral("显示端点名称"),
+                    QStringLiteral("在画布上显示该点名称")));
                 head->addWidget(showChip);
                 head->addStretch();
                 v->addLayout(head);
@@ -750,7 +781,6 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
                 auto* r = new QHBoxLayout();
                 r->setSpacing(6);
                 auto* lblExt = new ElaText(QString::fromUtf8("延长量"), 11, panel);
-                lblExt->setStyleSheet(QStringLiteral("background: transparent;"));
                 r->addWidget(lblExt);
                 extEdit = new ElaLineEdit(panel);
                 extEdit->setObjectName(isStart ? QStringLiteral("startExtendEdit")
@@ -759,8 +789,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
                 extEdit->setFixedHeight(kFieldH);
                 extEdit->setStyleSheet(QStringLiteral("font-size: 11px;"));
                 extEdit->setPlaceholderText(QString::fromUtf8("0"));
-                extEdit->setToolTip(QString::fromUtf8(
-                    "沿该端朝外方向延长的距离；数值或公式 cm；只允许 >= 0"));
+                extEdit->setToolTip(cad::ui::TooltipFormatter::action(
+                    QStringLiteral("延长量 (cm)"),
+                    QStringLiteral("沿该端朝外方向延长的距离；数值或公式 cm；只允许 >= 0")));
                 connect(extEdit, &ElaLineEdit::editingFinished, this,
                         isStart ? &LinePropertyDialog::onStartExtendEdited
                                 : &LinePropertyDialog::onEndExtendEdited);
@@ -772,16 +803,16 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
                     auto* rc = new QHBoxLayout();
                     rc->setSpacing(6);
                     auto* lblConn = new ElaText(QString::fromUtf8("连接到"), 11, panel);
-                    lblConn->setStyleSheet(QStringLiteral("background: transparent;"));
                     rc->addWidget(lblConn);
                     refConn = new PointRefEdit(m_paramDoc, panel);
                     refConn->setObjectName(isStart ? QStringLiteral("startConnectEdit")
                                                    : QStringLiteral("endConnectEdit"));
                     refConn->setFixedWidth(150);   // 值输入列宽, 全页统一
                     refConn->setFixedHeight(kFieldH);
-                    refConn->setToolTip(QString::fromUtf8(
-                        isStart ? "输入目标点 P# 或线段 L#/名称，回车建立/重定向跟随连接（吸附；本端为进/起点时可用）。"
-                                : "输入目标点 P# 或线段 L#/名称，回车建立/重定向终点指向（本端为出/终点时可用）。"));
+                    refConn->setToolTip(cad::ui::TooltipFormatter::action(
+                        isStart ? QStringLiteral("起点连接") : QStringLiteral("终点指向"),
+                        isStart ? QStringLiteral("输入目标点 P# 或线段 L#/名称，回车建立/重定向跟随连接（吸附；本端为进/起点时可用）")
+                                : QStringLiteral("输入目标点 P# 或线段 L#/名称，回车建立/重定向终点指向（本端为出/终点时可用）")));
                     rc->addWidget(refConn);
                     detachBtn = new QPushButton(QString::fromUtf8("拆开"), panel);
                     detachBtn->setObjectName(isStart ? QStringLiteral("startDetachBtn")
@@ -794,17 +825,18 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
                     v->addLayout(rc);
                 }
                 // 摘要灰字 (跟随/挂载/指向): 空时隐藏 —— 不留占位灰块。
-                connSummary = new ElaText(QString(), 10, panel);
+                // 不设固定高度 (2026-09 修复): YaHei/高 DPI 下 11px 文字行高 18-22px,
+                // 旧 setFixedHeight(16) 会将「挂载…」等文字上下边缘截断。
+                connSummary = new ElaText(QString(), 11, panel);
                 connSummary->setObjectName(isStart ? QStringLiteral("startPointConn")
                                                    : QStringLiteral("endPointConn"));
                 connSummary->setStyleSheet(dimMono);
-                connSummary->setFixedHeight(16);
-                connSummary->setToolTip(QString::fromUtf8(
-                    "该端点上的连接：跟随 = 本线跟随的基准线；"
-                    "挂载 = 吸附在本端点上的下游线（反向连接）；"
-                    "指向 = 本线终点指向的目标线"));
+                connSummary->setToolTip(cad::ui::TooltipFormatter::status(
+                    QStringLiteral("端点连接关系"),
+                    QStringLiteral("跟随 = 本线跟随的基准线；挂载 = 吸附在本端点上的下游线（反向连接）；指向 = 本线终点指向的目标线"),
+                    false));
                 connSummary->setVisible(false);
-                v->addWidget(connSummary, 0, Qt::AlignLeft);
+                v->addWidget(connSummary);
             }
             return panel;
         };
@@ -818,8 +850,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         m_btnDirectionArrow->setFixedSize(28, kFieldH);
         m_btnDirectionArrow->setStyleSheet(chips);
         m_btnDirectionArrow->setCursor(Qt::PointingHandCursor);
-        m_btnDirectionArrow->setToolTip(QString::fromUtf8(
-            "调换进/出：↓ = 上进下出，↑ = 下进上出（点位置固定，几何不变）"));
+        m_btnDirectionArrow->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("调换进/出"),
+            QStringLiteral("↓ = 上进下出，↑ = 下进上出（点位置固定，几何不变）")));
         connect(m_btnDirectionArrow, &QPushButton::clicked,
                 this, &LinePropertyDialog::onDirectionArrowClicked);
         {
@@ -880,7 +913,9 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         tensionLayout->addWidget(lblTension);
         m_editTension = makeCompactEdit(m_tensionRow, 150);
         m_editTension->setPlaceholderText(QStringLiteral("0"));
-        m_editTension->setToolTip(QString::fromUtf8("0=平滑(Catmull-Rom)  >0更紧  <0更松"));
+        m_editTension->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("曲线张力"),
+            QStringLiteral("0 = 平滑(Catmull-Rom)；>0 更紧绷；<0 更松弛")));
         tensionLayout->addWidget(m_editTension);
         tensionLayout->addStretch();
         // 转换按钮仅对曲线显示（一键转回直线）。直线→曲线请用智能笔添加曲线点。
@@ -1861,7 +1896,7 @@ void LinePropertyDialog::refreshSlideRow()
                                         "沿线滑动 = 仅沿基准线方向可滑；垂直拉出 = 仅垂直基准线可拉。"
                                         "进入滑轨后拖动跟随线只沿对应方向动，角度跟随始终保留。与「拆开」互斥。")));
         if (m_cmbSlideMode->toolTip() != slideTip)
-            m_cmbSlideMode->setToolTip(slideTip);
+            m_cmbSlideMode->setToolTip(cad::ui::TooltipFormatter::plain(slideTip));
     }
     m_lblSlideBadge->setVisible(false);
 }
@@ -2231,9 +2266,11 @@ void LinePropertyDialog::refreshEndpointExtends()
     m_editStartExtend->setEnabled(topReason.isEmpty());
     m_editEndExtend->setEnabled(botReason.isEmpty());
     m_editStartExtend->setToolTip(topReason.isEmpty()
-        ? QString::fromUtf8("数值或公式 cm（0 = 不延长）") : topReason);
+        ? cad::ui::TooltipFormatter::action(QStringLiteral("延长量 (cm)"), QStringLiteral("数值或公式 cm（0 = 不延长）"))
+        : cad::ui::TooltipFormatter::plain(topReason));
     m_editEndExtend->setToolTip(botReason.isEmpty()
-        ? QString::fromUtf8("数值或公式 cm（0 = 不延长）") : botReason);
+        ? cad::ui::TooltipFormatter::action(QStringLiteral("延长量 (cm)"), QStringLiteral("数值或公式 cm（0 = 不延长）"))
+        : cad::ui::TooltipFormatter::plain(botReason));
 }
 
 QString LinePropertyDialog::endpointExtendDisableReason(const cad::param::Block& block,
@@ -2289,7 +2326,7 @@ void LinePropertyDialog::onDirectionArrowClicked()
     if (!cad::cmd::ReverseSegmentCommand::canReverse(m_paramDoc, m_blockId,
                                                      m_segmentId, &why)) {
         if (!why.isEmpty() && m_btnDirectionArrow)
-            m_btnDirectionArrow->setToolTip(why);
+            m_btnDirectionArrow->setToolTip(cad::ui::TooltipFormatter::plain(why));
         return;
     }
     if (auto* stack = m_paramDoc->undoStack()) {
@@ -2329,8 +2366,10 @@ void LinePropertyDialog::refreshDirectionArrow()
     m_btnDirectionArrow->setText(m_topIsStart ? QString::fromUtf8("↓")
                                               : QString::fromUtf8("↑"));
     m_btnDirectionArrow->setToolTip(ok
-        ? QString::fromUtf8("↓ = 上进下出；↑ = 下进上出。点击调换进/出（点固定，几何不变）")
-        : why);
+        ? cad::ui::TooltipFormatter::action(
+            QStringLiteral("调换进/出"),
+            QStringLiteral("↓ = 上进下出；↑ = 下进上出。点击调换进/出（点固定，几何不变）"))
+        : cad::ui::TooltipFormatter::plain(why));
 }
 
 void LinePropertyDialog::onPublishLength()

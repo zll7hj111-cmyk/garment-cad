@@ -948,8 +948,26 @@ void TestDialogTabs::endConnectionRowAndBadge()
                  return startConn->text().contains(QString::fromUtf8("跟随"));
              }),
              "起点微卡应显示「跟随」摘要");
+    QVERIFY2(startConn->height() >= startConn->fontMetrics().height(),
+             "跟随摘要高度必须 >= 字体行高, 避免上下截断");
 
     delete dlg;
+
+    // ③ 宿主线 (leader): 拥有吸附于其上的子线 → 端点微卡应显示「挂载」摘要, 且高度不截断
+    auto* leaderDlg = new cad::ui::LinePropertyDialog(
+        ldrBlk->id, ldrSeg.id, &doc, &scene, &view);
+    leaderDlg->show();
+    auto* ldrStartConn = leaderDlg->findChild<ElaText*>(QStringLiteral("startPointConn"));
+    auto* ldrEndConn = leaderDlg->findChild<ElaText*>(QStringLiteral("endPointConn"));
+    QVERIFY(ldrStartConn && ldrEndConn);
+    QVERIFY2(cad::test::waitUntil([&] {
+                 return ldrEndConn->text().contains(QString::fromUtf8("挂载"));
+             }),
+             "宿主线端点微卡应显示「挂载」摘要");
+    QVERIFY2(ldrEndConn->height() >= ldrEndConn->fontMetrics().height(),
+             "挂载摘要高度必须 >= 字体行高, 避免上下截断");
+
+    delete leaderDlg;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
