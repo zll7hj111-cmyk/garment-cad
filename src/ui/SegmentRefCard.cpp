@@ -1,4 +1,4 @@
-﻿#include "ui/SegmentRefCard.h"
+#include "ui/SegmentRefCard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +22,7 @@
 #include "geometry/Units.h"
 #include "canvas/CanvasScene.h"
 #include "ui/PointRefEdit.h"
+#include "ui/TooltipFormatter.h"
 #include "ui/Theme.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"
@@ -59,24 +60,22 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
 
     auto* lblAlign = new ElaText(QString::fromUtf8("对齐点"), 11, this);
     lblAlign->setFixedWidth(40);
-    lblAlign->setStyleSheet(QStringLiteral("background: transparent;"));
-    lblAlign->setToolTip(QString::fromUtf8(
-        "对齐点：本线段的哪个端点钉在目标点上（输入本线端点 P#；"
-        "与调换进/出无关）"));
+    lblAlign->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("对齐点"),
+        QStringLiteral("本线段的哪个端点钉在目标点上（输入本线端点 P#；与调换进/出无关）")));
     row->addWidget(lblAlign);
 
     m_alignPointEdit = new PointRefEdit(m_doc, this);
     m_alignPointEdit->setObjectName(QStringLiteral("alignPointEdit"));
     m_alignPointEdit->setFixedWidth(kAlignEditW);
     m_alignPointEdit->setPlaceholderText(QStringLiteral("P#"));
-    m_alignPointEdit->setToolTip(QString::fromUtf8(
-        "对齐点：本线段的哪个端点钉在目标点上。只接受本线端点（P#）；"
-        "与调换进/出无关。"));
+    m_alignPointEdit->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("对齐点"),
+        QStringLiteral("本线段的哪个端点钉在目标点上。只接受本线端点（P#）；与调换进/出无关。")));
     row->addWidget(m_alignPointEdit);
 
     auto mkSentence = [&](const QString& text) -> ElaText* {
         auto* t = new ElaText(text, 11, this);
-        t->setStyleSheet(QStringLiteral("background: transparent;"));
         return t;
     };
     auto* lblDirWord = mkSentence(QString::fromUtf8("方向："));
@@ -86,17 +85,17 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_angleRefPoint = new PointRefEdit(m_doc, this);
     m_angleRefPoint->setObjectName(QStringLiteral("angleRefPointEdit"));
     m_angleRefPoint->setFixedWidth(kRefEditW);
-    m_angleRefPoint->setToolTip(QString::fromUtf8(
-        "方向点1：输入 P#/L#/名称。与点2 的连线方向 = 角度基准；"
-        "只填点1 = 该点出口方向；都留空 = 自动跟随所连的线。"));
+    m_angleRefPoint->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("方向点1"),
+        QStringLiteral("输入 P#/L#/名称。与点2 的连线方向 = 角度基准；只填点1 = 该点出口方向；都留空 = 自动跟随所连的线。")));
     row->addWidget(m_angleRefPoint);
     row->addWidget(mkSentence(QString::fromUtf8("→")));
     m_angleRefPoint2 = new PointRefEdit(m_doc, this);
     m_angleRefPoint2->setObjectName(QStringLiteral("angleRefPoint2Edit"));
     m_angleRefPoint2->setFixedWidth(kRefEditW);
-    m_angleRefPoint2->setToolTip(QString::fromUtf8(
-        "方向点2：与点1的连线方向作为角度基准（可为任意块上的任意点）。"
-        "自动跟随态回显宿主线段另一端。"));
+    m_angleRefPoint2->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("方向点2"),
+        QStringLiteral("与点1的连线方向作为角度基准（可为任意块上的任意点）。自动跟随态回显宿主线段另一端。")));
     row->addWidget(m_angleRefPoint2);
     row->addStretch();
 
@@ -108,8 +107,9 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_btnIndependent->setFixedSize(kBtnW, kFieldH);
     m_btnIndependent->setStyleSheet(cad::ui::chipButtonStyle());
     m_btnIndependent->setCursor(Qt::PointingHandCursor);
-    m_btnIndependent->setToolTip(QString::fromUtf8(
-        "独立：角度改用世界角度（不跟任何线）；再点还原上次的角度基准。"));
+    m_btnIndependent->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("独立基准"),
+        QStringLiteral("角度改用世界角度（不跟任何线）；再点还原上次的角度基准。")));
     row->addWidget(m_btnIndependent);
 
     // [链接当前线] (2026-09 用户拍板): 清空自定义角度基准回自动态 —— 方向
@@ -120,8 +120,9 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_btnLinkCurrent->setFixedHeight(kFieldH);
     m_btnLinkCurrent->setStyleSheet(cad::ui::chipButtonStyle());
     m_btnLinkCurrent->setCursor(Qt::PointingHandCursor);
-    m_btnLinkCurrent->setToolTip(QString::fromUtf8(
-        "方向基准链接到当前线段：清空自定义基准，角度跟随所连线段的方向。"));
+    m_btnLinkCurrent->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("链接当前线"),
+        QStringLiteral("清空自定义基准，角度跟随所连线段的方向。")));
     row->addWidget(m_btnLinkCurrent);
     lay->addLayout(row);
 
@@ -134,18 +135,17 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     shadowRow->setSpacing(6);
     m_lblShadowAngle = new ElaText(QString::fromUtf8("影子角度"), 11, this);
     m_lblShadowAngle->setFixedWidth(40);
-    m_lblShadowAngle->setStyleSheet(QStringLiteral("background: transparent;"));
-    m_lblShadowAngle->setToolTip(QString::fromUtf8(
-        "影子角度：角度基准（影子线）相对宿主的方向角。拆开后旋转本体不再"
-        "影响本线；改此值 = 转动影子基准（本线跟着转），公式偏移不受影响。"));
+    m_lblShadowAngle->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("影子角度"),
+        QStringLiteral("角度基准（影子线）相对宿主的方向角。拆开后旋转本体不再影响本线；改此值 = 转动影子基准，公式偏移不受影响。")));
     shadowRow->addWidget(m_lblShadowAngle);
     m_shadowAngleEdit = new QLineEdit(this);
     m_shadowAngleEdit->setObjectName(QStringLiteral("shadowAngleEdit"));
     m_shadowAngleEdit->setFixedWidth(kRefEditW);
     m_shadowAngleEdit->setPlaceholderText(QStringLiteral("±180°"));
-    m_shadowAngleEdit->setToolTip(QString::fromUtf8(
-        "影子角度：角度基准（影子线）的方向角，带符号折角。回车提交 —— "
-        "本线方向随之变化，offset 公式/变量保持原样。"));
+    m_shadowAngleEdit->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("影子角度"),
+        QStringLiteral("角度基准（影子线）的方向角，带符号折角。回车提交 —— 本线方向随之变化，offset 公式/变量保持原样。")));
     shadowRow->addWidget(m_shadowAngleEdit);
     shadowRow->addStretch();
     m_btnClearShadow = new QPushButton(QString::fromUtf8("清除影子"), this);
@@ -153,9 +153,9 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_btnClearShadow->setFixedHeight(kFieldH);
     m_btnClearShadow->setStyleSheet(cad::ui::chipButtonStyle());
     m_btnClearShadow->setCursor(Qt::PointingHandCursor);
-    m_btnClearShadow->setToolTip(QString::fromUtf8(
-        "清除影子：删除隐藏的角度基准线，本线变为纯自由线（连接一并移除，"
-        "Ctrl+Z 可整体撤销）。"));
+    m_btnClearShadow->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("清除影子"),
+        QStringLiteral("删除隐藏的角度基准线，本线变为纯自由线（连接一并移除，Ctrl+Z 可整体撤销）。")));
     shadowRow->addWidget(m_btnClearShadow);
     lay->addLayout(shadowRow);
     m_lblShadowAngle->setVisible(false);
@@ -303,16 +303,22 @@ void SegmentRefCard::refresh()
             m_shadowAngleEdit->setText(
                 cad::geo::Units::formatDegValue(shadowAngle));
             m_shadowAngleEdit->setToolTip(shadowMounted
-                ? QString::fromUtf8("影子角度 = 影子相对宿主线的折角 (挂载态)。"
-                                    "回车提交, 本线方向随之变化; offset 公式不受影响。")
-                : QString::fromUtf8("影子角度 = 隐藏基准线 (本体拆开瞬间快照) 的方向角。"
-                                    "回车提交, 本线绕对齐点原地转; offset 公式不受影响。"));
+                ? cad::ui::TooltipFormatter::action(
+                    QStringLiteral("影子角度 (挂载态)"),
+                    QStringLiteral("影子相对宿主线的折角。回车提交，本线方向随之变化；offset 公式不受影响。"))
+                : cad::ui::TooltipFormatter::action(
+                    QStringLiteral("影子角度 (快照态)"),
+                    QStringLiteral("隐藏基准线（本体拆开瞬间快照）的方向角。回车提交，本线绕对齐点原地转；offset 公式不受影响。")));
         }
     }
     if (m_btnClearShadow) {
         m_btnClearShadow->setToolTip(shadowMounted
-            ? QString::fromUtf8("清除影子：删除隐藏基准线与其挂载连接，本线变纯自由线。")
-            : QString::fromUtf8("清除影子：删除隐藏基准线，本线变纯自由线 (角度/位置全自由)。"));
+            ? cad::ui::TooltipFormatter::action(
+                QStringLiteral("清除影子"),
+                QStringLiteral("删除隐藏基准线与其挂载连接，本线变纯自由线。"))
+            : cad::ui::TooltipFormatter::action(
+                QStringLiteral("清除影子"),
+                QStringLiteral("删除隐藏基准线，本线变纯自由线 (角度/位置全自由)。")));
     }
 }
 
@@ -346,11 +352,11 @@ void SegmentRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
     m_alignPointEdit->setEnabled(!alignLocked);
     m_alignPointEdit->setToolTip(alignLocked
         ? (isBridge
-               ? QString::fromUtf8("桥接线：两端都钉在宿主点上，没有进点（长度由两点距离决定）")
-               : QString::fromUtf8("终点指向生效：进点锁定在起点（终点端用于指向目标位置）"))
-        : QString::fromUtf8(
-              "对齐点 = 进点：本线段的哪个端点钉在目标点上（输入本线端点 P#）。"
-              "与调换进/出无关——箭头只是身份标签，对齐点才是实际钉点。"));
+               ? cad::ui::TooltipFormatter::status(QStringLiteral("桥接线对齐点"), QStringLiteral("两端都钉在宿主点上，没有进点（长度由两点距离决定）"), false)
+               : cad::ui::TooltipFormatter::status(QStringLiteral("终点指向生效"), QStringLiteral("进点锁定在起点（终点端用于指向目标位置）"), false))
+        : cad::ui::TooltipFormatter::action(
+              QStringLiteral("对齐点 (进点)"),
+              QStringLiteral("本线段的哪个端点钉在目标点上（输入本线端点 P#）。与调换进/出无关——箭头只是身份标签，对齐点才是实际钉点。")));
 
     m_angleRefPoint->setExcludeBlock(m_blockId);
     m_angleRefPoint2->setExcludeBlock(m_blockId);
@@ -362,12 +368,17 @@ void SegmentRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
     m_btnIndependent->setChecked(independent);
     m_btnIndependent->setEnabled(hasAtt);
     if (independent) {
-        m_btnIndependent->setToolTip(QString::fromUtf8(
-            "还原上次的角度基准：恢复角度跟随（反算零跳变）"));
+        m_btnIndependent->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("恢复基准跟随"),
+            QStringLiteral("还原上次的角度基准，恢复角度跟随（反算零跳变）")));
     } else {
         m_btnIndependent->setToolTip(hasAtt
-            ? QString::fromUtf8("独立：角度改用世界角度（不跟任何线）；输入框随之清空。")
-            : QString::fromUtf8("独立：需要先建立连接（自由线的角度本就是世界角度）。"));
+            ? cad::ui::TooltipFormatter::action(
+                QStringLiteral("独立角度"),
+                QStringLiteral("角度改用世界角度（不跟任何线）；输入框随之清空。"))
+            : cad::ui::TooltipFormatter::action(
+                QStringLiteral("独立角度"),
+                QStringLiteral("需要先建立连接（自由线的角度本就是世界角度）。")));
     }
 
     // 点1/点2 启用态: 有连接才可编辑 (自由线保持可输入 = 预填, 连入后自动落库)。
@@ -384,10 +395,12 @@ void SegmentRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
     if (m_btnLinkCurrent) {
         m_btnLinkCurrent->setEnabled(hasAtt && !att->angleRefBlockId.isNull());
         m_btnLinkCurrent->setToolTip(independent
-            ? QString::fromUtf8("方向基准链接到当前线段：清空自定义基准并退出独立角，"
-                                "角度跟随所连线段的方向。")
-            : QString::fromUtf8("方向基准链接到当前线段：清空自定义基准，"
-                                "角度跟随所连线段的方向。"));
+            ? cad::ui::TooltipFormatter::action(
+                QStringLiteral("链接当前线"),
+                QStringLiteral("清空自定义基准并退出独立角，角度跟随所连线段的方向。"))
+            : cad::ui::TooltipFormatter::action(
+                QStringLiteral("链接当前线"),
+                QStringLiteral("清空自定义基准，角度跟随所连线段的方向。")));
     }
 
     if (!att) return;   // 自由态: 保留用户已填的预填内容 (不 clear/不重写)。

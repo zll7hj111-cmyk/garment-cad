@@ -1,4 +1,4 @@
-﻿#include "CardBase.h"
+#include "CardBase.h"
 
 #include <cmath>
 
@@ -14,6 +14,8 @@
 #include "CopyChip.h"
 #include "IconHelper.h"
 #include "Theme.h"
+#include "TooltipFormatter.h"
+#include "ui/NoteButton.h"
 
 namespace {
 
@@ -39,6 +41,55 @@ protected:
         p.setPen(pen);
         p.drawLine(6.5, 6.5, 13.5, 13.5);
         p.drawLine(13.5, 6.5, 6.5, 13.5);
+    }
+};
+
+class VectorLockBadge : public ElaText
+{
+public:
+    explicit VectorLockBadge(QWidget* parent = nullptr) : ElaText(QString(), 12, parent)
+    {
+        setFixedSize(14, 14);
+    }
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const auto& t = cad::ui::Theme::tokens();
+        p.setPen(QPen(t.text3, 1.3));
+        p.setBrush(Qt::NoBrush);
+        // Lock shackle (把手)
+        p.drawArc(QRectF(3.5, 2.0, 7.0, 7.0), 0, 180 * 16);
+        // Lock body (锁身)
+        p.setBrush(t.surface3);
+        p.drawRoundedRect(QRectF(2.5, 6.0, 9.0, 6.5), 1.5, 1.5);
+    }
+};
+
+class VectorWarningBadge : public ElaText
+{
+public:
+    explicit VectorWarningBadge(QWidget* parent = nullptr) : ElaText(QString(), 12, parent)
+    {
+        setFixedSize(14, 14);
+    }
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const auto& t = cad::ui::Theme::tokens();
+        p.setPen(Qt::NoPen);
+        p.setBrush(t.danger);
+        // 警告等边三角形
+        QPolygonF tri;
+        tri << QPointF(7.0, 1.5) << QPointF(13.0, 12.0) << QPointF(1.0, 12.0);
+        p.drawPolygon(tri);
+        // 感叹号
+        p.setPen(QPen(Qt::white, 1.3));
+        p.drawLine(QPointF(7.0, 5.0), QPointF(7.0, 8.5));
+        p.drawPoint(QPointF(7.0, 10.5));
     }
 };
 
@@ -91,10 +142,13 @@ ElaText* CardBase::createIndexLabel(const QString& objectName, const QString& to
     m_indexLabel = new ElaText(QString(), 13, this);
     m_indexLabel->setObjectName(objectName);
     m_indexLabel->setStyleSheet(
-        QStringLiteral("font-size: %1px; background: transparent; %2")
-            .arg(QString::number(cad::ui::ThemeTokens::FontXs),
+        QStringLiteral("#%1 { font-size: %2px; background: transparent; %3 }")
+            .arg(objectName,
+                 QString::number(cad::ui::ThemeTokens::FontXs),
                  cad::ui::ThemeTokens::kMonospaceFamily));
-    m_indexLabel->setToolTip(tooltip);
+    m_indexLabel->setToolTip(tooltip.isEmpty() ? QString()
+        : (tooltip.startsWith(QLatin1String("<div")) ? tooltip
+            : cad::ui::TooltipFormatter::action(tooltip, QStringLiteral("当前列表中的视图行号"))));
     return m_indexLabel;
 }
 
@@ -113,7 +167,7 @@ ElaText* CardBase::createValueLabel(bool bold)
     // §4.3 值区强化: 15px Semibold 等宽 (FontLg) — 卡片第一视觉焦点。
     m_valueLabel = new ElaText(QString(), 13, this);
     m_valueLabel->setStyleSheet(
-        QStringLiteral("%1font-size: %2px;%3 background: transparent;")
+        QStringLiteral("%1font-size: %2px;%3")
             .arg(cad::ui::ThemeTokens::kMonospaceFamily,
                  QString::number(cad::ui::ThemeTokens::FontLg),
                  QStringLiteral(" font-weight: %1;")
@@ -126,7 +180,7 @@ ElaText* CardBase::createUnitLabel(const QString& unit)
     // 单位缩小至 10px text3, 退居值之后的元信息位 (§4.3)。
     m_unitLabel = new ElaText(unit, 13, this);
     m_unitLabel->setStyleSheet(
-        QStringLiteral("font-size: %1px; color: %2; background: transparent;")
+        QStringLiteral("font-size: %1px; color: %2;")
             .arg(QString::number(cad::ui::ThemeTokens::FontXs),
                  cad::ui::Theme::tokens().text3.name()));
     return m_unitLabel;
@@ -135,24 +189,17 @@ ElaText* CardBase::createUnitLabel(const QString& unit)
 void CardBase::appendDanglingBadge(QHBoxLayout* header)
 {
     // ⚠ 引用失效 badge (§6.2 dangling 行): 值变色之外再显性化, 默认隐藏。
-    m_danglingBadge = new ElaText(QStringLiteral("\u26A0"), 13, this);  // ⚠
-    m_danglingBadge->setStyleSheet(
-        QStringLiteral("font-size: %1px; color: %2; background: transparent;")
-            .arg(QString::number(cad::ui::ThemeTokens::FontSm),
-                 cad::ui::Theme::tokens().danger.name()));
+    m_danglingBadge = new VectorWarningBadge(this);
     m_danglingBadge->setVisible(false);
     header->addWidget(m_danglingBadge, 0);
 }
 
 void CardBase::setupLockIcon(const QString& tooltip)
 {
-    m_lockIcon = new ElaText(QString(), 13, this);
-    m_lockIcon->setText(QStringLiteral("\xF0\x9F\x94\x92"));  // 🔒
-    m_lockIcon->setStyleSheet(
-        QStringLiteral("font-size: %1px; background: transparent;")
-            .arg(cad::ui::ThemeTokens::FontXs));
-    m_lockIcon->setToolTip(tooltip);
-    m_lockIcon->setFixedWidth(16);
+    m_lockIcon = new VectorLockBadge(this);
+    m_lockIcon->setToolTip(tooltip.isEmpty() ? QString()
+        : (tooltip.startsWith(QLatin1String("<div")) ? tooltip
+            : cad::ui::TooltipFormatter::status(QStringLiteral("自动测量变量"), tooltip, false)));
 }
 
 void CardBase::appendDeleteButton(QHBoxLayout* header, const QString& tooltip)
@@ -167,27 +214,27 @@ void CardBase::appendDeleteButton(QHBoxLayout* header, const QString& tooltip)
     m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
         QStringLiteral("trash"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
     m_deleteBtn->setIconSize(QSize(12, 12));
-    m_deleteBtn->setToolTip(tooltip);
+    m_deleteBtn->setToolTip(tooltip.isEmpty() ? QString()
+        : (tooltip.startsWith(QLatin1String("<div")) ? tooltip
+            : cad::ui::TooltipFormatter::action(tooltip, QStringLiteral("从文档中删除该项参数"))));
     m_deleteBtn->setFixedSize(20, 20);
     m_deleteBtn->setCursor(Qt::PointingHandCursor);
     m_deleteBtn->setVisible(false);  // revealed on card hover
     header->addWidget(m_deleteBtn, 0);
 }
 
-ElaLineEdit* CardBase::createCommentEdit(QWidget* parent)
+cad::ui::NoteButton* CardBase::createNoteButton(QWidget* parent, int size)
 {
-    auto* edit = new ElaLineEdit(parent);
-    edit->setPlaceholderText(QStringLiteral("注释…"));
-    edit->setFixedHeight(22);
-    return edit;
+    auto* btn = new cad::ui::NoteButton(parent);
+    if (size > 0)
+        btn->setFixedSize(size, size);
+    return btn;
 }
 
 void CardBase::setCommentSilently(const QString& text)
 {
-    if (!m_commentEdit) return;
-    if (m_commentEdit->hasFocus()) return;  // 用户正在编辑: 不打断输入
-    const QSignalBlocker blocker(m_commentEdit);
-    m_commentEdit->setText(text);
+    if (!m_noteBtn) return;
+    m_noteBtn->setNote(text);
 }
 
 void CardBase::buildReadOnlySkeleton(const ReadOnlySkeletonSpec& spec,
@@ -197,7 +244,7 @@ void CardBase::buildReadOnlySkeleton(const ReadOnlySkeletonSpec& spec,
     setObjectName(spec.objectName);
 
     auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(12, 7, 8, 7);
+    mainLayout->setContentsMargins(10, 5, 8, 5);
     mainLayout->setSpacing(3);
 
     // === Header row ===
@@ -243,19 +290,23 @@ void CardBase::buildReadOnlySkeleton(const ReadOnlySkeletonSpec& spec,
     m_sourceInfo = new ElaText(QString(), 13, m_detail);
     m_sourceInfo->setText(spec.sourceLabel);
     m_sourceInfo->setStyleSheet(cad::ui::ThemeTokens::kCaptionSm);
-    m_sourceInfo->setToolTip(spec.sourceTooltip);
+    m_sourceInfo->setToolTip(spec.sourceTooltip.isEmpty() ? QString()
+        : (spec.sourceTooltip.startsWith(QLatin1String("<div")) ? spec.sourceTooltip
+            : cad::ui::TooltipFormatter::status(QStringLiteral("测量来源"), spec.sourceTooltip, false)));
     detailLayout->addWidget(m_sourceInfo, 0);
 
-    m_commentEdit = createCommentEdit(m_detail);
-    m_commentEdit->setText(spec.commentText);
-    detailLayout->addWidget(m_commentEdit, 1);
+    m_noteBtn = createNoteButton(m_detail, 22);
+    m_noteBtn->setPlaceholder(QStringLiteral("说明…"));
+    m_noteBtn->setNote(spec.commentText);
+    detailLayout->addWidget(m_noteBtn, 0);
+    detailLayout->addStretch(1);
 
     mainLayout->addWidget(m_detail);
 
     // === Connections ===
     connect(m_deleteBtn, &QToolButton::clicked, this, std::move(onDelete));
     connect(m_nameChip, &cad::ui::CopyChip::edited, this, std::move(onEdited));
-    connect(m_commentEdit, &QLineEdit::editingFinished, this, std::move(onEdited));
+    connect(m_noteBtn, &cad::ui::NoteButton::noteEdited, this, std::move(onEdited));
 }
 
 void CardBase::setValueLabelDangling(bool dangling, const QString& tooltip)
@@ -271,14 +322,18 @@ void CardBase::setValueLabelDangling(bool dangling, const QString& tooltip)
                      cad::ui::Theme::tokens().danger.name(),
                      QString::number(wash.red()), QString::number(wash.green()),
                      QString::number(wash.blue()), QString::number(wash.alpha())));
-        m_valueLabel->setToolTip(tooltip);
+        const QString formattedTip = cad::ui::TooltipFormatter::status(
+            QStringLiteral("引用失效"),
+            tooltip.isEmpty() ? QStringLiteral("所引用的实体已被删除或不可用") : tooltip,
+            true);
+        m_valueLabel->setToolTip(formattedTip);
         if (m_danglingBadge) {
-            m_danglingBadge->setToolTip(tooltip);
+            m_danglingBadge->setToolTip(formattedTip);
             m_danglingBadge->setVisible(true);
         }
     } else {
         m_valueLabel->setStyleSheet(
-            QStringLiteral("%1font-size: %2px; font-weight: 600; background: transparent;")
+            QStringLiteral("%1font-size: %2px; font-weight: 600;")
                 .arg(cad::ui::ThemeTokens::kMonospaceFamily,
                      QString::number(cad::ui::ThemeTokens::FontLg)));
         m_valueLabel->setToolTip(QString());

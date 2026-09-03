@@ -1,10 +1,11 @@
-﻿#include "ToolManager.h"
+#include "ToolManager.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QKeyEvent>
 
 #include "Tool.h"
 #include "ToolSelect.h"   // dynamic_cast: 活动层切换清选集
+#include "ToolRotate.h"   // dynamic_cast: 继承选择集
 #include "canvas/CanvasScene.h"
 #include "parametric/Attachment.h"   // RotationMode (forwardConnectAngleMode)
 #include "parametric/ParamDocument.h"
@@ -82,6 +83,13 @@ void ToolManager::switchTool(ToolType type)
     if (m_activeType == type && m_activeTool)
         return;
 
+    QSet<QUuid> adoptedSelection;
+    if (m_activeType == ToolType::Select && type == ToolType::Rotate) {
+        if (auto* selTool = dynamic_cast<ToolSelect*>(m_activeTool)) {
+            adoptedSelection = selTool->selection();
+        }
+    }
+
     if (m_activeTool)
         m_activeTool->deactivate();
 
@@ -89,6 +97,12 @@ void ToolManager::switchTool(ToolType type)
     m_activeType = type;
     m_activeTool = next;
     activateTool(*next);
+
+    if (!adoptedSelection.isEmpty()) {
+        if (auto* rotTool = dynamic_cast<ToolRotate*>(next)) {
+            rotTool->adoptSelection(adoptedSelection);
+        }
+    }
 
     emit activeToolChanged(m_activeType, next->name());
 }

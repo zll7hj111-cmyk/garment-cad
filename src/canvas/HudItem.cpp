@@ -10,14 +10,14 @@
 
 namespace {
 
-/// DarkPill 固定色板（toast / 重叠提示的历史视觉，白字 11px）。
-constexpr QColor kPillBg(38, 50, 56, 225);
-constexpr QColor kPillBorder(0, 0, 0, 40);
-constexpr QColor kPillFg(255, 255, 255);
+/// 统一 Endfield 2.0 纸黄色工程图纸面规范
+constexpr QColor kPillBg(255, 250, 209, 245);
+constexpr QColor kPillBorder(216, 204, 128, 220);
+constexpr QColor kPillFg(26, 32, 44);
 
-QFont pillFont()
+QFont hudFont()
 {
-    QFont f;
+    QFont f(QStringLiteral("Segoe UI"));
     f.setPixelSize(11);
     return f;
 }
@@ -35,12 +35,10 @@ void HudItem::setText(const QString& text)
 {
     prepareGeometryChange();
     m_text = text;
-    // 盒 = 字形外扩：ThemeDefault 沿用原轻量 pad；DarkPill = 原 toast/重叠
-    // 提示的 8/4 px 内边距（两处历史值一致，顺带统一）。
-    const QFontMetricsF fm(m_look == Look::DarkPill ? pillFont()
-                                                    : QFont(QStringLiteral("Segoe UI"), 9));
-    const qreal padX = m_look == Look::DarkPill ? 8.0 : 4.0;
-    const qreal padY = m_look == Look::DarkPill ? 4.0 : 2.0;
+    // 盒 = 字形外扩：统一呼吸感内边距 (padX = 7.0, padY = 3.5)
+    const QFontMetricsF fm(hudFont());
+    const qreal padX = 7.0;
+    const qreal padY = 3.5;
     m_rect = fm.boundingRect(m_text).adjusted(-padX, -padY, padX, padY);
 }
 
@@ -77,39 +75,50 @@ void HudItem::place(const QPointF& scenePos, const QGraphicsView* view,
 
 QRectF HudItem::boundingRect() const
 {
-    return m_rect.adjusted(-1.0, -1.0, 1.0, 1.0);
+    // 预留抗锯齿描边 (1px) 与微阴影扩展 (2px) 空间
+    return m_rect.adjusted(-2.0, -1.0, 2.0, 3.0);
 }
 
 void HudItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*)
 {
     if (m_text.isEmpty()) return;
 
-    painter->setRenderHint(QPainter::Antialiasing, false);
+    painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 
-    if (m_look == Look::DarkPill) {
-        painter->setPen(QPen(kPillBorder, 0.5));
-        painter->setBrush(kPillBg);
-        painter->drawRect(m_rect);
-        painter->setPen(kPillFg);
-        painter->setFont(pillFont());
-        painter->drawText(m_rect, Qt::AlignCenter, m_text);
-        return;
-    }
+    // 1. 微柔暖阴影 (向下 1px，微弱透明暖阴影)
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QColor(60, 50, 20, 28));
+    painter->drawRoundedRect(m_rect.adjusted(-0.5, 1.0, 0.5, 2.0), 4.0, 4.0);
 
-    // ThemeDefault: 逐帧取所属场景的 CanvasStyle（跟随亮/暗主题）。
-    QColor bg(255, 255, 255, 215);
-    QColor fg(30, 30, 30);
+    // 2. 底色与边框：优先从场景取主题（或默认纸黄色）
+    QColor bg = kPillBg;
+    QColor fg = kPillFg;
+    QColor border = kPillBorder;
+
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        bg = cs->style()->hudBackground;
-        fg = cs->style()->hudText;
+        if (cs->style()) {
+            bg = cs->style()->hudBackground;
+            fg = cs->style()->hudText;
+            border = cs->style()->dark
+                ? QColor(107, 94, 56, 220)
+                : QColor(216, 204, 128, 220);
+        }
     }
 
-    painter->setPen(QPen(QColor(180, 180, 180), 0.5));
-    painter->setBrush(bg);
-    painter->drawRect(m_rect);
+    if (m_look == Look::DarkPill) {
+        bg = kPillBg;
+        fg = kPillFg;
+        border = kPillBorder;
+    }
 
+    // 3. 绘制反转技术墨面圆角矩形 (3.5px 功能微圆角)
+    painter->setPen(QPen(border, 1.0));
+    painter->setBrush(bg);
+    painter->drawRoundedRect(m_rect, 3.5, 3.5);
+
+    // 4. 文字绘制
     painter->setPen(fg);
-    painter->setFont(QFont(QStringLiteral("Segoe UI"), 9));
+    painter->setFont(hudFont());
     painter->drawText(m_rect, Qt::AlignCenter, m_text);
 }

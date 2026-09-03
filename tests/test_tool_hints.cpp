@@ -15,6 +15,10 @@
 #include <iterator>   // std::size (N6: kAllTypes 与注册序对账)
 
 #include "tools/ToolRegistry.h"
+#include "ui/TooltipFormatter.h"
+#include "ui/Theme.h"
+#include <QLabel>
+#include <QHelpEvent>
 
 using cad::tools::ToolType;
 using cad::tools::toolHintText;
@@ -53,6 +57,8 @@ private slots:
     void registryOrderCoversEveryTool();
     void hintsAreDistinctAndSelfNamed();
     void rotateHintDescribesConfirmGate();
+    void tooltipFormatterProducesBackgroundColor();
+    void toolTipGuardInterceptsWidgetToolTip();
 };
 
 void TestToolHints::everyToolTypeHasHint()
@@ -117,6 +123,36 @@ void TestToolHints::rotateHintDescribesConfirmGate()
     QVERIFY2(hint.contains(QString::fromUtf8("右键或回车确认")),
              qPrintable(QStringLiteral("rotate hint must teach the confirm gate: ")
                         + hint));
+}
+
+void TestToolHints::tooltipFormatterProducesBackgroundColor()
+{
+    const QString bg = cad::ui::Theme::tokens().tooltipBg.name();
+    const QString act = cad::ui::TooltipFormatter::action(QStringLiteral("标题"), QStringLiteral("说明"));
+    QVERIFY(act.contains(QStringLiteral("background-color:") + bg));
+
+    const QString tl = cad::ui::TooltipFormatter::tool(QStringLiteral("工具"), QKeySequence(Qt::Key_V), QStringLiteral("提示"));
+    QVERIFY(tl.contains(QStringLiteral("background-color:") + bg));
+
+    const QString st = cad::ui::TooltipFormatter::status(QStringLiteral("状态"), QStringLiteral("详情"));
+    QVERIFY(st.contains(QStringLiteral("background-color:") + bg));
+
+    const QString pl = cad::ui::TooltipFormatter::plain(QStringLiteral("说明"));
+    QVERIFY(pl.contains(QStringLiteral("background-color:") + bg));
+}
+
+void TestToolHints::toolTipGuardInterceptsWidgetToolTip()
+{
+    cad::ui::Theme::apply(cad::ui::ThemeMode::Light);
+
+    QWidget parent;
+    parent.setStyleSheet(QStringLiteral("background: transparent;"));
+    QLabel label(QStringLiteral("测试"), &parent);
+    label.setToolTip(QStringLiteral("提示内容"));
+
+    QHelpEvent event(QEvent::ToolTip, QPoint(5, 5), label.mapToGlobal(QPoint(5, 5)));
+    const bool handled = QApplication::sendEvent(&label, &event);
+    QVERIFY(handled);
 }
 
 QTEST_MAIN(TestToolHints)

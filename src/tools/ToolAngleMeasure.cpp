@@ -184,7 +184,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
         const double deg = angleBetween(*m_snapA, *m_hoverSnap);
         m_hud->setText(QStringLiteral("%1\u00B0").arg(deg, 0, 'f', 1));
         QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-        m_hud->moveToPoint(cursorPos, view);
+        m_hud->moveToPoint(cursorPos, view, HudItem::kCursorOffset);
         m_hud->setVisible(true);
     } else {
         m_hud->setVisible(false);

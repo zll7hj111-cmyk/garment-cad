@@ -13,6 +13,7 @@
 #include <QVBoxLayout>
 
 #include "ui/Theme.h"
+#include "ui/TooltipFormatter.h"
 
 namespace cad::ui {
 namespace {
@@ -31,12 +32,15 @@ NoteButton::NoteButton(QWidget* parent)
     setFlat(true);
     setFixedSize(kBtnSize, kBtnSize);
     setCursor(Qt::PointingHandCursor);
-    setToolTip(QString::fromUtf8("点击添加注释"));
+    setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("附加注释"),
+        QStringLiteral("点击打开便签，添加详细工艺或测量说明")));
     connect(this, &QPushButton::clicked, this, [this] { openEditor(); });
 }
 
 void NoteButton::setNote(const QString& text)
 {
+    if (m_popup) return;  // 用户正在编辑: 不打断输入
     if (m_note == text) return;
     m_note = text;
     refreshVisual();
@@ -55,7 +59,9 @@ QSize NoteButton::sizeHint() const
 void NoteButton::refreshVisual()
 {
     const bool has = !m_note.trimmed().isEmpty();
-    setToolTip(has ? m_note : QString::fromUtf8("点击添加注释"));
+    setToolTip(has
+        ? cad::ui::TooltipFormatter::status(QStringLiteral("注释内容"), m_note, false)
+        : cad::ui::TooltipFormatter::action(QStringLiteral("附加注释"), QStringLiteral("点击打开便签，添加详细工艺或测量说明")));
     update();
 }
 
@@ -70,14 +76,17 @@ void NoteButton::paintEvent(QPaintEvent*)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    const qreal l = 5.0, tp = 4.0, r = width() - 5.0, b = height() - 4.0;
+    const qreal padX = qBound(3.0, width() * 0.18, 5.0);
+    const qreal padY = qBound(2.5, height() * 0.15, 4.0);
+    const qreal fold = qBound(3.5, qMin(width(), height()) * 0.20, 5.0);
+    const qreal l = padX, tp = padY, r = width() - padX, b = height() - padY;
 
     // 主体: 矩形缺右下角, 斜边即折痕。
     QPainterPath body;
     body.moveTo(l, tp);
     body.lineTo(r, tp);
-    body.lineTo(r, b - kFold);
-    body.lineTo(r - kFold, b);
+    body.lineTo(r, b - fold);
+    body.lineTo(r - fold, b);
     body.lineTo(l, b);
     body.closeSubpath();
 
@@ -86,17 +95,17 @@ void NoteButton::paintEvent(QPaintEvent*)
     p.drawPath(body);
 
     // 折角小三角: 有内容时填浅一档的洗底, 空态不填 (保持描边感)。
-    QPainterPath fold;
-    fold.moveTo(r - kFold, b);
-    fold.lineTo(r, b - kFold);
-    fold.lineTo(r - kFold, b - kFold);
-    fold.closeSubpath();
+    QPainterPath foldPath;
+    foldPath.moveTo(r - fold, b);
+    foldPath.lineTo(r, b - fold);
+    foldPath.lineTo(r - fold, b - fold);
+    foldPath.closeSubpath();
     p.setPen(Qt::NoPen);
     p.setBrush(has ? QBrush(t.accentTint) : Qt::NoBrush);
-    p.drawPath(fold);
+    p.drawPath(foldPath);
     p.setPen(QPen(has ? t.warning : t.text3, 1.0));
     p.setBrush(Qt::NoBrush);
-    p.drawLine(QLineF(r - kFold, b - kFold, r - kFold, b));
+    p.drawLine(QLineF(r - fold, b - fold, r - fold, b));
 }
 
 void NoteButton::openEditor()

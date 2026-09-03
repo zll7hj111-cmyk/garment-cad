@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QColor>
 #include <Qt>
@@ -92,8 +92,8 @@ public:
     /// X marker on a segment body (smart pen: click to quick-create an
     /// auxiliary point). Matches the auxiliary point green.
     QColor auxMarkerColor     = QColor(21, 128, 61);
-    QColor hudBackground      = QColor(255, 255, 255, 240);
-    QColor hudText            = QColor(13, 17, 23);
+    QColor hudBackground      = QColor(255, 250, 209, 245);  // 纸黄色图纸面 (#FFFAD1)
+    QColor hudText            = QColor(26, 32, 44);          // 深碳黑文字 (#1A202C)
     QColor crosshairColor     = QColor(203, 210, 220);
 
     // ── Canvas (Endfield blueprint ground, light theme) ──

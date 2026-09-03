@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QColor>
 #include <QString>
@@ -60,6 +60,7 @@ struct ThemeTokens
     // ── Tooltips (inverted surfaces) ──
     QColor tooltipBg;
     QColor tooltipFg;
+    QColor tooltipBorder;
 
     // ── Type scale (variable-font discipline: hierarchy by size) ──
     static constexpr int FontXs   = 10;  ///< meta labels, tags, badges

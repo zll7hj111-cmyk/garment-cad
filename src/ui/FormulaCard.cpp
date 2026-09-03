@@ -4,6 +4,8 @@
 #include "IconHelper.h"
 #include "geometry/Units.h"
 #include "Theme.h"
+#include "TooltipFormatter.h"
+#include "ui/NoteButton.h"
 
 #include "ElaLineEdit.h"
 #include "ElaText.h"
@@ -34,16 +36,16 @@ cad::param::FormulaVariable FormulaCard::formula() const
 {
     cad::param::FormulaVariable f;
     f.id = m_id;
-    f.name = m_nameChip->text().trimmed();
-    f.expression = m_exprEdit->text().trimmed();
-    const QString at = m_actualEdit->text().trimmed();
+    f.name = m_nameChip ? m_nameChip->text().trimmed() : QString();
+    f.expression = m_exprEdit ? m_exprEdit->text().trimmed() : QString();
+    const QString at = m_actualEdit ? m_actualEdit->text().trimmed() : QString();
     if (!at.isEmpty()) {
         bool ok = false;
         const double v = QLocale::c().toDouble(at, &ok);
         if (ok)
             f.actualValueCm = v;
     }
-    f.comment = m_commentEdit->text().trimmed();
+    f.comment = m_noteBtn ? m_noteBtn->note() : QString();
     f.conditions = m_conditions;
     f.conditionsEnabled = m_conditionsEnabled;
     f.groupId = m_groupId;
@@ -52,26 +54,36 @@ cad::param::FormulaVariable FormulaCard::formula() const
 
 void FormulaCard::focusName()
 {
-    m_nameChip->focusEdit();
+    if (m_nameChip)
+        m_nameChip->focusEdit();
 }
 
 void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
 {
-    // 结果读数与五卡值区同级强化: FontLg Semibold 等宽; 失败态 danger 红 (§6.2)。
-    m_valueLabel->setStyleSheet(
-        QStringLiteral("%1font-size: %2px; font-weight: 600; background: transparent;%3")
-            .arg(cad::ui::ThemeTokens::kMonospaceFamily,
-                 QString::number(cad::ui::ThemeTokens::FontLg),
-                 ok ? QString()
-                    : QStringLiteral(" color: %1;")
-                          .arg(cad::ui::Theme::tokens().danger.name())));
+    if (!m_valueLabel) return;
     if (ok) {
+        m_valueLabel->setStyleSheet(QStringLiteral(
+            "font-family: %1; font-size: %2px; font-weight: 600; color: %3; background: transparent;")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily,
+                 QString::number(cad::ui::ThemeTokens::FontMd),
+                 cad::ui::Theme::tokens().text1.name()));
         m_valueLabel->setText(
             QStringLiteral("= %1").arg(cad::geo::Units::formatNumberTrimmed(valueCm)));
-        m_valueLabel->setToolTip(QStringLiteral("计算结果（只读）"));
+        m_valueLabel->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("计算结果"),
+            QStringLiteral("%1 cm（只读计算值）").arg(cad::geo::Units::formatNumberTrimmed(valueCm)),
+            false));
     } else {
-        m_valueLabel->setText(QStringLiteral("\u2717"));  // ✗
-        m_valueLabel->setToolTip(error);
+        m_valueLabel->setStyleSheet(QStringLiteral(
+            "font-family: %1; font-size: %2px; font-weight: 600; color: %3; background: transparent;")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily,
+                 QString::number(cad::ui::ThemeTokens::FontSm),
+                 cad::ui::Theme::tokens().danger.name()));
+        m_valueLabel->setText(QStringLiteral("! 错误"));
+        m_valueLabel->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("公式求值失败"),
+            error.isEmpty() ? QStringLiteral("表达式无效或引用的变量不存在") : error,
+            true));
     }
 }
 
@@ -87,21 +99,21 @@ void FormulaCard::setGrouped(bool grouped)
     if (m_grouped == grouped)
         return;
     m_grouped = grouped;
-    // 组内成员: 内容整体右移 kGroupIndent (左侧竖线同步右移, paintEvent).
-    m_mainLayout->setContentsMargins((m_grouped ? kGroupIndent : 0) + 12, 7, 8, 7);
+    m_mainLayout->setContentsMargins((m_grouped ? kGroupIndent : 0) + 12, 5, 8, 5);
     update();
 }
 
 void FormulaCard::syncFromModel(const cad::param::FormulaVariable& f)
 {
     m_groupId = f.groupId;
-    m_nameChip->setText(f.name);
-    if (!m_exprEdit->hasFocus()) {
+    if (m_nameChip)
+        m_nameChip->setText(f.name);
+    if (m_exprEdit && !m_exprEdit->hasFocus()) {
         m_exprEdit->blockSignals(true);
         m_exprEdit->setText(f.expression);
         m_exprEdit->blockSignals(false);
     }
-    if (!m_actualEdit->hasFocus()) {
+    if (m_actualEdit && !m_actualEdit->hasFocus()) {
         m_actualEdit->blockSignals(true);
         m_actualEdit->setText(f.actualValueCm.has_value()
             ? cad::geo::Units::formatNumberTrimmed(*f.actualValueCm) : QString());
@@ -118,15 +130,8 @@ void FormulaCard::syncFromModel(const cad::param::FormulaVariable& f)
 void FormulaCard::updateCondRow()
 {
     const bool has = !m_conditions.isEmpty();
+    if (!m_condCheck || !m_condInfo) return;
 
-    // Header dot indicator.
-    m_condDot->setVisible(has);
-    m_condDot->setToolTip(has
-        ? QStringLiteral("%1条条件%2").arg(m_conditions.size())
-              .arg(m_conditionsEnabled ? QString() : QStringLiteral("（已停用）"))
-        : QString());
-
-    // Detail row widgets.
     m_condCheck->setEnabled(has);
     m_condGuard = true;
     m_condCheck->setChecked(has && m_conditionsEnabled);
@@ -134,10 +139,8 @@ void FormulaCard::updateCondRow()
 
     if (has) {
         m_condInfo->setText(QStringLiteral("(%1条)").arg(m_conditions.size()));
-        m_condInfo->setStyleSheet("font-size: 10px; background: transparent;");
     } else {
-        m_condInfo->setText(QString::fromUtf8("（双击添加）"));
-        m_condInfo->setStyleSheet("font-size: 10px; background: transparent;");
+        m_condInfo->setText(QStringLiteral("（条件）"));
     }
 }
 
@@ -150,6 +153,7 @@ void FormulaCard::onCondToggled(bool checked)
 
 void FormulaCard::updateExprEnabled()
 {
+    if (!m_exprEdit || !m_actualEdit) return;
     const bool hasActual = !m_actualEdit->text().trimmed().isEmpty();
     m_exprEdit->setEnabled(!hasActual);
 }
@@ -168,7 +172,6 @@ bool FormulaCard::eventFilter(QObject* obj, QEvent* event)
         }
     }
 
-    // Drag handle: press + move beyond the threshold starts a card drag.
     if (obj == m_indexLabel) {
         if (event->type() == QEvent::MouseButtonPress) {
             auto* me = static_cast<QMouseEvent*>(event);
@@ -201,15 +204,15 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
     setObjectName(QStringLiteral("FormulaCard"));
 
     auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(12, 7, 8, 7);
+    mainLayout->setContentsMargins((m_grouped ? kGroupIndent : 0) + 12, 5, 8, 5);
     mainLayout->setSpacing(3);
     m_mainLayout = mainLayout;
 
-    // === Header row ===
-    auto* header = new QHBoxLayout();
-    header->setSpacing(6);
+    // === Main Tier (推导式主轨) ===
+    auto* mainRow = new QHBoxLayout();
+    mainRow->setSpacing(5);
 
-    // 序号兼拖拽把手 (组内序号, 每次 (re)bind 重设 — 见 setIndex).
+    // 拖拽把手兼序号 (保留 cardIndex 测试契约)
     m_indexLabel = createIndexLabel(QStringLiteral("cardIndex"),
                                     QStringLiteral("拖动排序"));
     m_indexLabel->setAlignment(Qt::AlignCenter);
@@ -220,85 +223,94 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
         "  background: transparent; border-radius: 3px; }"
         "QLabel:hover { background: rgba(0,0,0,0.06); }");
     m_indexLabel->installEventFilter(this);
-    header->addWidget(m_indexLabel, 0);
+    mainRow->addWidget(m_indexLabel, 0);
 
-    header->addWidget(createNameChip(cad::ui::CopyChip::Variant::Formula,
-                                     QStringLiteral("变量名"), formula.name), 1);
+    // 公式变量名（放宽宽度以展示更完整名称）
+    m_nameChip = createNameChip(cad::ui::CopyChip::Variant::Formula,
+                                QStringLiteral("公式名"), formula.name);
+    m_nameChip->setFixedWidth(105);
+    mainRow->addWidget(m_nameChip, 0);
 
-    header->addWidget(createValueLabel(/*bold=*/false), 0);
+    // 等号
+    auto* eqLabel = new ElaText(QStringLiteral("="), 12, this);
+    eqLabel->setObjectName(QStringLiteral("dimText"));
+    eqLabel->setFixedWidth(10);
+    eqLabel->setAlignment(Qt::AlignCenter);
+    mainRow->addWidget(eqLabel, 0);
 
-    m_condDot = new ElaText(QStringLiteral("\u25CF"), 13, this);  // ●
-    m_condDot->setStyleSheet("font-size: 8px; background: transparent;");
-    m_condDot->setVisible(false);
-    header->addWidget(m_condDot, 0);
-
-    appendDeleteButton(header, QStringLiteral("删除公式变量"));
-
-    mainLayout->addLayout(header);
-
-    // === Detail ===
-    m_detail = new QWidget(this);
-    m_detail->setVisible(true);
-    auto* detailLayout = new QVBoxLayout(m_detail);
-    detailLayout->setContentsMargins(0, 0, 0, 0);
-    detailLayout->setSpacing(3);
-
-    // Expression.
-    m_exprEdit = new ElaLineEdit(m_detail);     m_exprEdit->setText(formula.expression);
+    // 表达式输入框
+    m_exprEdit = new ElaLineEdit(this);
+    m_exprEdit->setText(formula.expression);
     m_exprEdit->setPlaceholderText(QStringLiteral("表达式，如: 胸围/2+6"));
     m_exprEdit->setFixedHeight(22);
     m_exprEdit->setStyleSheet(cad::ui::ThemeTokens::kMonospaceMd);
-    detailLayout->addWidget(m_exprEdit);
+    mainRow->addWidget(m_exprEdit, 1);
 
-    // Actual value + condition row (compact).
-    auto* optRow = new QHBoxLayout();
-    optRow->setSpacing(4);
+    // 计算结果 Badge (createValueLabel)
+    m_valueLabel = createValueLabel(/*bold=*/false);
+    mainRow->addWidget(m_valueLabel, 0);
 
-    m_actualEdit = new ElaLineEdit(m_detail);
+    // 删除按钮
+    appendDeleteButton(mainRow, QStringLiteral("删除公式变量"));
+
+    mainLayout->addLayout(mainRow);
+
+    // === Meta Tier (副轨元信息胶囊行) ===
+    auto* metaRow = new QHBoxLayout();
+    metaRow->setSpacing(5);
+
+    // 实际覆盖值
+    m_actualEdit = new ElaLineEdit(this);
     if (formula.actualValueCm.has_value())
         m_actualEdit->setText(cad::geo::Units::formatNumberTrimmed(*formula.actualValueCm));
-    m_actualEdit->setPlaceholderText(QStringLiteral("实际值(留空=按公式)"));
-    m_actualEdit->setFixedHeight(22);
-    m_actualEdit->setFixedWidth(68);
+    m_actualEdit->setPlaceholderText(QStringLiteral("实际覆盖"));
+    m_actualEdit->setFixedHeight(20);
+    m_actualEdit->setFixedWidth(64);
     m_actualEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    optRow->addWidget(m_actualEdit, 0);
+    m_actualEdit->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("实际覆盖值"),
+        QStringLiteral("填入数值可临时覆盖公式求值结果；清空则恢复公式计算")));
+    metaRow->addWidget(m_actualEdit, 0);
 
-    // Condition widgets (inline, compact).
-    m_condRow = new QWidget(m_detail);
-    m_condRow->setFixedHeight(22);
+    // 条件分支组件
+    m_condRow = new QWidget(this);
+    m_condRow->setFixedHeight(20);
     m_condRow->setCursor(Qt::PointingHandCursor);
     m_condRow->installEventFilter(this);
     auto* condLayout = new QHBoxLayout(m_condRow);
     condLayout->setContentsMargins(0, 0, 0, 0);
-    condLayout->setSpacing(3);
+    condLayout->setSpacing(2);
 
-    m_condCheck = new ElaCheckBox(QString::fromUtf8("条件"), m_condRow);
+    m_condCheck = new ElaCheckBox(QStringLiteral("条件"), m_condRow);
     m_condCheck->setCursor(Qt::PointingHandCursor);
     condLayout->addWidget(m_condCheck, 0);
 
-    m_condInfo = new ElaText(QString(), 13, m_condRow);
+    m_condInfo = new ElaText(QString(), 11, m_condRow);
     m_condInfo->installEventFilter(this);
-    condLayout->addWidget(m_condInfo, 1);
+    condLayout->addWidget(m_condInfo, 0);
 
     m_condEditBtn = new ElaToolButton(m_condRow);
     m_condEditBtn->setIcon(cad::ui::IconHelper::iconByName(
         QStringLiteral("funnel"), QColor(0x6C, 0x34, 0x83)));
-    m_condEditBtn->setIconSize(QSize(12, 12));
+    m_condEditBtn->setIconSize(QSize(11, 11));
     m_condEditBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_condEditBtn->setFixedSize(20, 20);
+    m_condEditBtn->setFixedSize(18, 18);
     m_condEditBtn->setCursor(Qt::PointingHandCursor);
-    m_condEditBtn->setToolTip(QStringLiteral("编辑条件"));
+    m_condEditBtn->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("条件分支规则"),
+        QStringLiteral("打开条件规则对话框，配置公式在不同条件下的增减修正量")));
     condLayout->addWidget(m_condEditBtn, 0);
 
-    optRow->addWidget(m_condRow, 1);
-    detailLayout->addLayout(optRow);
+    metaRow->addWidget(m_condRow, 0);
 
-    // Comment.
-    m_commentEdit = createCommentEdit(m_detail);
-    m_commentEdit->setText(formula.comment);
-    detailLayout->addWidget(m_commentEdit);
+    // 注释便利贴按钮 (NoteButton, 20px 高度与元信息行对齐)
+    m_noteBtn = createNoteButton(this, 20);
+    m_noteBtn->setPlaceholder(QStringLiteral("公式说明…"));
+    m_noteBtn->setNote(formula.comment);
+    metaRow->addWidget(m_noteBtn, 0);
+    metaRow->addStretch(1);
 
-    mainLayout->addWidget(m_detail);
+    mainLayout->addLayout(metaRow);
 
     // === Init ===
     updateCondRow();
@@ -315,8 +327,8 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
             [this](const QString&) { updateExprEnabled(); });
     connect(m_actualEdit, &QLineEdit::editingFinished, this,
             [this]() { emit edited(this->formula()); });
-    connect(m_commentEdit, &QLineEdit::editingFinished, this,
-            [this]() { emit edited(this->formula()); });
+    connect(m_noteBtn, &cad::ui::NoteButton::noteEdited, this,
+            [this](const QString&) { emit edited(this->formula()); });
     connect(m_condCheck, &QCheckBox::toggled, this, &FormulaCard::onCondToggled);
     connect(m_condEditBtn, &QToolButton::clicked, this,
             [this]() { emit conditionsEditRequested(m_id); });

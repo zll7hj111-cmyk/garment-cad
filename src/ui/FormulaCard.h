@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -15,11 +15,9 @@ class QVBoxLayout;
 
 namespace cad::ui { class CopyChip; }
 
-/// Single-row card for one formula variable (always expanded).
-/// Layout: [#] [Name] [= result] [条件●]  [✕]
-///         [expression edit]
-///         [cond row] [comment]
-/// The leading index label doubles as the drag handle for reordering.
+/// Streamlined two-tier card for one formula variable (~48px height).
+/// Tier 1 (Main): [cardIndex (drag handle)] [Name] [=] [expression edit] [result badge] [✕]
+/// Tier 2 (Meta): [actual override] [conditions check & edit] [comment edit]
 class FormulaCard : public CardBase
 {
     Q_OBJECT
@@ -35,8 +33,7 @@ public:
     void setResult(bool ok, double valueCm, const QString& error);
     void setConditions(const QList<cad::param::Condition>& conds, bool enabled);
 
-    /// Indent the card to mark it as a group member (内容+左侧竖线右移
-    /// kGroupIndent，与组内公式区分于未分组公式).
+    /// Indent the card to mark it as a group member (shifts contents & accent bar).
     void setGrouped(bool grouped);
 
     /// MIME type carried by a card drag (payload = formula id string).
@@ -57,7 +54,6 @@ signals:
     void conditionsEditRequested(const QUuid& id);
 
 protected:
-    /// Group-member cards shift the accent bar right by kGroupIndent.
     int accentBarX() const override;
     bool eventFilter(QObject* obj, QEvent* event) override;
 
@@ -68,14 +64,13 @@ private:
     void onCondToggled(bool checked);
 
     QUuid m_id;
-    QUuid m_groupId;  ///< Mirrors the model's group membership.
-    bool  m_grouped = false;     ///< 组内成员: 内容+竖线右移 kGroupIndent.
+    QUuid m_groupId;
+    bool  m_grouped = false;
 
     QPoint           m_dragStartPos;
-    ElaText*         m_condDot = nullptr;   ///< Small dot indicator for conditions.
     QVBoxLayout*     m_mainLayout = nullptr;
     ElaLineEdit*     m_exprEdit = nullptr;
-    ElaLineEdit*     m_actualEdit = nullptr; ///< Actual value override (cm).
+    ElaLineEdit*     m_actualEdit = nullptr;
     QWidget*         m_condRow = nullptr;
     ElaCheckBox*     m_condCheck = nullptr;
     ElaText*         m_condInfo = nullptr;

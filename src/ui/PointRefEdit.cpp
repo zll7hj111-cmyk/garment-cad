@@ -16,6 +16,7 @@
 #include "parametric/Segment.h"
 #include "ui/ElaDialogButtons.h"
 #include "ui/Theme.h"
+#include "ui/TooltipFormatter.h"
 #include "parametric/Serial.h"
 
 namespace cad::ui {
@@ -45,9 +46,9 @@ PointRefEdit::PointRefEdit(cad::param::ParamDocument* doc, QWidget* parent)
     , m_doc(doc)
 {
     setPlaceholderText(QString::fromUtf8("P#/L#/名称…"));  // §6.6 名称复用
-    setToolTip(QString::fromUtf8(
-        "输入点编号（如 P12）、线段编号（如 L1）或名称，回车确认。"
-        "同名会弹窗选择，Esc 取消"));
+    setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("引用点定位"),
+        QStringLiteral("输入点编号（如 P12）、线段编号（如 L1）或名称，回车确认；同名将弹窗选择，Esc 取消")));
     // 输入点编号（如 P12）或完整序列号，回车确认。同名点会弹窗选择，Esc 取消
     setMinimumWidth(90);
     // 行内统一高度 (线段属性对话框: ElaLineEdit/ElaComboBox 原生 35px,
@@ -275,7 +276,10 @@ void PointRefEdit::flashError()
         "QLineEdit { color: %1; border: 1px solid %1; border-radius: 3px;"
         "  padding: 2px 5px; background: rgba(220,38,38,32); }")
         .arg(tk.danger.name()));
-    setToolTip(QString::fromUtf8("\u672a\u627e\u5230\u8be5\u70b9\uff08\u6392\u9664\u672c\u7ebf\u6bb5\u6240\u5c5e Block\uff09"));
+    setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("定位失败"),
+        QStringLiteral("未找到该点（已自动排除本线段所属 Block 内部点）"),
+        true));
     // 未找到该点（排除本线段所属 Block）
     QTimer::singleShot(900, this, [this, saved] {
         setStyleSheet(saved);

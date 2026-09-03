@@ -554,7 +554,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
         }
         m_hud->setText(text);
         QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-        m_hud->moveToPoint(cursorPos, view);
+        m_hud->moveToPoint(cursorPos, view, HudItem::kCursorOffset);
         m_hud->setVisible(true);
     }
 }
@@ -680,7 +680,7 @@ void ToolIntersection::commitIntersection()
     if (m_hud && m_scene) {
         m_hud->setText(QString::fromUtf8("\u2713 \u4ea4\u70b9\u5df2\u521b\u5efa"));  // ✓ 交点已创建
         QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-        m_hud->moveToPoint(m_lastCursorPos, view);
+        m_hud->moveToPoint(m_lastCursorPos, view, HudItem::kCursorOffset);
         m_hud->setVisible(true);
     }
 }
@@ -697,7 +697,7 @@ void ToolIntersection::updateStepHud(const cad::geo::Vec2& cursorPos, const QStr
     }
     m_hud->setText(text);
     QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    m_hud->moveToPoint(cursorPos, view);
+    m_hud->moveToPoint(cursorPos, view, HudItem::kCursorOffset);
     m_hud->setVisible(true);
 }
 

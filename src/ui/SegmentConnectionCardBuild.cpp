@@ -11,6 +11,7 @@
 #include <QComboBox>
 
 #include "ui/PointRefEdit.h"
+#include "ui/TooltipFormatter.h"
 #include "ui/FormScaffold.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -68,8 +69,10 @@ void SegmentConnectionCard::buildConnRow(QVBoxLayout* lay)
     // 行组 caption「起点连接」(2026-xx 每端完整连接: 起点 = Attachment 位置+角度)。
     auto* startCap = new ElaText(QString::fromUtf8("起点连接"), 12, m_connRow);
     startCap->setStyleSheet(QStringLiteral("font-size:12px; font-weight:600;"));
-    startCap->setToolTip(QString::fromUtf8(
-        "起点连接 = 本线作为跟随线吸附到基准线段（位置 + 角度跟随）。"));
+    startCap->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("起点连接"),
+        QStringLiteral("本线作为跟随线吸附到基准线段（位置 + 角度跟随）"),
+        false));
     connV->addWidget(startCap);
 
     // 行1: [连接线段][L#·名 140]
@@ -83,8 +86,9 @@ void SegmentConnectionCard::buildConnRow(QVBoxLayout* lay)
     m_refLeaderSeg = new PointRefEdit(m_doc, m_connRow);
     m_refLeaderSeg->setObjectName(QStringLiteral("connSegEdit"));
     m_refLeaderSeg->setFixedWidth(140);
-    m_refLeaderSeg->setToolTip(QString::fromUtf8(
-        "输入连接线段 ID/名称，或该线段上的点 ID；同名会弹窗选择"));
+    m_refLeaderSeg->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("连接线段"),
+        QStringLiteral("输入连接线段 ID/名称，或该线段上的点 ID；同名会弹窗选择")));
     leaderRow->addWidget(m_refLeaderSeg);
     leaderRow->addStretch();
     connV->addLayout(leaderRow);
@@ -103,8 +107,9 @@ void SegmentConnectionCard::buildConnRow(QVBoxLayout* lay)
     m_btnDetach = new QPushButton(QString::fromUtf8("拆开"), m_connRow);
     m_btnDetach->setObjectName(QStringLiteral("connDetachBtn"));
     tuneButton(m_btnDetach);
-    m_btnDetach->setToolTip(QString::fromUtf8(
-        "拆开 = 解除位置吸附（角度仍跟随基准线）；重连 = 位置重新吸附回原宿主并重新焊接"));
+    m_btnDetach->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("拆开/重连"),
+        QStringLiteral("拆开 = 解除位置吸附（角度仍跟随基准线）；重连 = 位置重新吸附回原宿主并重新焊接")));
     m_btnDetach->setVisible(false);
     pointRow->addWidget(m_btnDetach);
     pointRow->addStretch();
@@ -126,10 +131,10 @@ void SegmentConnectionCard::buildEndRow(QVBoxLayout* lay)
 
     auto* endCap = new ElaText(QString::fromUtf8("终点连接"), 12, m_endRow);
     endCap->setStyleSheet(QStringLiteral("font-size:12px; font-weight:600;"));
-    endCap->setToolTip(QString::fromUtf8(
-        "终点连接 = 终点指向目标线段上的目标点（旋转指向）；"
-        "「自动」长度模式会发布测量驱动长度，终点精确落在目标点上。"
-        "两端都连上 = 桥接线。"));
+    endCap->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("终点连接"),
+        QStringLiteral("终点指向目标线段上的目标点（旋转指向）；两端都连上即为桥接线"),
+        false));
     endV->addWidget(endCap);
 
     // 行1: [连接线段][L#·名 140]
@@ -141,8 +146,9 @@ void SegmentConnectionCard::buildEndRow(QVBoxLayout* lay)
     m_refEndLeaderSeg = new PointRefEdit(m_doc, m_endRow);
     m_refEndLeaderSeg->setObjectName(QStringLiteral("endConnSegEdit"));
     m_refEndLeaderSeg->setFixedWidth(140);
-    m_refEndLeaderSeg->setToolTip(QString::fromUtf8(
-        "输入终点连接线段 ID/名称，或该线段上的点 ID；同名会弹窗选择"));
+    m_refEndLeaderSeg->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("终点连接线段"),
+        QStringLiteral("输入终点连接线段 ID/名称，或该线段上的点 ID；同名会弹窗选择")));
     row1->addWidget(m_refEndLeaderSeg);
     row1->addStretch();
     endV->addLayout(row1);
@@ -157,24 +163,26 @@ void SegmentConnectionCard::buildEndRow(QVBoxLayout* lay)
     m_refEndPoint->setObjectName(QStringLiteral("endConnPointEdit"));
     m_refEndPoint->setFixedWidth(140);
     m_refEndPoint->setFixedHeight(kFieldH);
-    m_refEndPoint->setToolTip(QString::fromUtf8(
-        "输入目标点 P 编号回车建立终点连接（终点指向该点）；已有指向则重定向。"));
+    m_refEndPoint->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("终点连接点"),
+        QStringLiteral("输入目标点 P 编号回车建立终点连接（终点指向该点）；已有指向则重定向")));
     row2->addWidget(m_refEndPoint);
     auto* lblOff = new ElaText(QString::fromUtf8("偏移(°)"), 11, m_endRow);
     row2->addWidget(lblOff);
     m_editEndOffset = new ElaLineEdit(m_endRow);
     m_editEndOffset->setFixedWidth(70);
     m_editEndOffset->setPlaceholderText(QString::fromUtf8("0"));
-    m_editEndOffset->setToolTip(QString::fromUtf8(
-        "相对精确指向方向的偏移角，0 = 精确指向目标点。"));
+    m_editEndOffset->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("指向偏移角 (°)"),
+        QStringLiteral("相对精确指向方向的偏移角，0 = 精确指向目标点")));
     tuneEdit(m_editEndOffset);
     row2->addWidget(m_editEndOffset);
     m_btnEndDetach = new QPushButton(QString::fromUtf8("拆开"), m_endRow);
     m_btnEndDetach->setObjectName(QStringLiteral("endConnDetachBtn"));
     tuneButton(m_btnEndDetach);
-    m_btnEndDetach->setToolTip(QString::fromUtf8(
-        "拆开 = 清除终点连接（终点恢复自由，已发布的长度测量保留）；"
-        "重连 = 恢复到最近一次的目标点（宿主已删除则需重新输入）。"));
+    m_btnEndDetach->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("终点拆开/重连"),
+        QStringLiteral("拆开 = 清除终点连接恢复自由；重连 = 恢复到最近一次的目标点")));
     row2->addWidget(m_btnEndDetach);
     row2->addStretch();
     endV->addLayout(row2);

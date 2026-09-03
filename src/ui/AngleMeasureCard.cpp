@@ -30,7 +30,7 @@ cad::param::AngleMeasureVariable AngleMeasureCard::angleMeasureVar() const
     am.id = m_id;
     am.name = m_nameChip->text().trimmed();
     am.refName = m_refName;
-    am.comment = m_commentEdit->text().trimmed();
+    am.comment = m_noteBtn ? m_noteBtn->note() : QString();
     return am;
 }
 

@@ -1,7 +1,8 @@
-﻿#include "ContextStrip.h"
+#include "ContextStrip.h"
 
 #include <cmath>
 
+#include <QApplication>
 #include <QButtonGroup>
 #include <QHBoxLayout>
 #include <QSignalBlocker>
@@ -16,6 +17,7 @@
 #include "ElaPushButton.h"
 
 #include "ui/Theme.h"
+#include "ui/TooltipFormatter.h"
 #include "ui/FormScaffold.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -141,8 +143,12 @@ void ContextStrip::buildUi()
         unitLay->addWidget(b);
         m_unitGroup->addButton(b);
     }
-    m_btnUnitAngle->setToolTip(QString::fromUtf8("角度模式（度）"));
-    m_btnUnitArc->setToolTip(QString::fromUtf8("弧长模式（cm）"));
+    m_btnUnitAngle->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
+        QStringLiteral("角度模式"), QStringLiteral("度 (°)"),
+        QStringLiteral("跟随线相对于基准线以旋转角度约束")));
+    m_btnUnitArc->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
+        QStringLiteral("弧长模式"), QStringLiteral("cm"),
+        QStringLiteral("跟随线端点沿基准线以弧长距离定位约束")));
     connect(m_btnUnitAngle, &QAbstractButton::clicked,
             this, [this] { onUnitToggled(false); });
     connect(m_btnUnitArc, &QAbstractButton::clicked,
@@ -170,12 +176,14 @@ void ContextStrip::buildUi()
     };
     addDimToggle(QString::fromUtf8("连接:"), m_btnPosDetach,
                  QStringLiteral("posDetachBtn"),
-                 QString::fromUtf8("位置维度：拆开 = 解除位置吸附（角度仍跟随基准线）；"
-                                   "重连 = 位置重新吸附回原宿主并重新焊接"));
+                 cad::ui::TooltipFormatter::action(
+                     QStringLiteral("位置连接"),
+                     QStringLiteral("拆开 = 解除位置吸附（角度仍跟随基准线）；重连 = 位置重新吸附回原宿主并重新焊接")));
     addDimToggle(QString::fromUtf8("基准:"), m_btnAngleDetach,
                  QStringLiteral("angleDetachBtn"),
-                 QString::fromUtf8("角度维度：拆开 = 角度不再跟随基准线（独立角，位置保持吸附）；"
-                                   "重连 = 恢复角度跟随（反算零跳变）"));
+                 cad::ui::TooltipFormatter::action(
+                     QStringLiteral("角度基准"),
+                     QStringLiteral("拆开 = 角度不再跟随基准线（独立自由角）；重连 = 恢复角度跟随（反算零跳变）")));
     connect(m_btnPosDetach, &QAbstractButton::clicked,
             this, &ContextStrip::onPosDetachClicked);
     connect(m_btnAngleDetach, &QAbstractButton::clicked,
@@ -194,8 +202,9 @@ void ContextStrip::buildUi()
     m_btnBasis->setObjectName(QStringLiteral("basisBtn"));
     m_btnBasis->setFixedSize(88, kFieldH);
     m_btnBasis->setStyleSheet(QStringLiteral("font-size: 11px;"));
-    m_btnBasis->setToolTip(
-        QString::fromUtf8("角度基准：起点 → 终点（换向后驱动另一端）"));
+    m_btnBasis->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("角度基准"),
+        QStringLiteral("起点 → 终点。换向后修改长度/角度将驱动对端。")));
     lay->addWidget(m_btnBasis);
 
     m_badge = new ElaText(QString(), 11, this);
@@ -324,6 +333,7 @@ void ContextStrip::flushHover()
 {
     if (m_focus == StripFocus::Pinned || m_strokePreview) return;   // 不抢锁定显示
     if (inputHasFocus()) return;                                    // 焦点保护
+    if (QApplication::mouseButtons() != Qt::NoButton) return;       // 鼠标按下期间不抢显悬停条带, 避免打断长按/拖拽
 
     const bool have = !m_hoverBlock.isNull() && !m_hoverSegment.isNull();
     const auto* blk = (have && m_paramDoc) ? m_paramDoc->findBlock(m_hoverBlock) : nullptr;
@@ -369,6 +379,7 @@ void ContextStrip::setPinnedTarget(const QUuid& blockId, const QUuid& segmentId,
 
 void ContextStrip::clearHover()
 {
+    m_hoverTimer->stop();
     m_hoverBlock = QUuid();
     m_hoverSegment = QUuid();
     if (m_focus == StripFocus::Hover) hideBar();
@@ -604,15 +615,22 @@ void ContextStrip::refreshChrome()
         ? QString::fromUtf8("重连") : QString::fromUtf8("拆开"));
     m_btnPosDetach->setEnabled(hasAtt && dimEditable);
     m_btnPosDetach->setToolTip(hasAtt && att->angleOnly
-        ? QString::fromUtf8("重新连接：位置重新吸附回原宿主点并重新焊接，角度基准保留")
-        : QString::fromUtf8("拆开位置连接：解除位置吸附（角度仍跟随基准线）；"
-                            "配合基准「拆开」可让位置与角度都自由（自由线）"));
+        ? cad::ui::TooltipFormatter::action(
+            QStringLiteral("重新连接位置"),
+            QStringLiteral("吸附回原宿主点并重新焊接，角度基准保留"))
+        : cad::ui::TooltipFormatter::action(
+            QStringLiteral("拆开位置连接"),
+            QStringLiteral("解除位置吸附（角度仍跟随基准线）；配合基准「拆开」可转为自由线")));
     m_btnAngleDetach->setText(hasAtt && att->angleIndependent
         ? QString::fromUtf8("重连") : QString::fromUtf8("拆开"));
     m_btnAngleDetach->setEnabled(hasAtt && dimEditable);
     m_btnAngleDetach->setToolTip(hasAtt && att->angleIndependent
-        ? QString::fromUtf8("重新连接角度基准：恢复角度跟随（原基准或位置宿主，反算零跳变）")
-        : QString::fromUtf8("拆开角度基准：角度不再跟随基准线（独立角，位置保持吸附）"));
+        ? cad::ui::TooltipFormatter::action(
+            QStringLiteral("重新连接角度基准"),
+            QStringLiteral("恢复角度跟随（原基准或位置宿主，反算零跳变）"))
+        : cad::ui::TooltipFormatter::action(
+            QStringLiteral("拆开角度基准"),
+            QStringLiteral("角度不再跟随基准线（独立角，位置保持吸附）")));
 
     // 换向: 命令内资格检查为权威, 这里只做预判 (置灰 + 中文原因)。
     // 连接角度会话 (二期) 禁用换向 —— 换向会 push ReverseSegmentCommand,
@@ -624,17 +642,28 @@ void ContextStrip::refreshChrome()
     if (m_rotateSession) {
         canRev = m_rotateCanToggle && m_focus == StripFocus::Pinned;
         reason = canRev
-            ? QString::fromUtf8("切换锚心（起点 ↔ 终点）：旋转将绕另一端，画布箭头随之翻转")
-            : (m_rotateReason.isEmpty()
-                   ? QString::fromUtf8("当前状态不可切换锚心")
-                   : m_rotateReason);
+            ? cad::ui::TooltipFormatter::actionWithShortcut(
+                QStringLiteral("切换锚心"), QStringLiteral("X"),
+                QStringLiteral("切换旋转中心（起点 ↔ 终点）：旋转将绕另一端展开，画布箭头随之翻转"))
+            : cad::ui::TooltipFormatter::actionWithShortcut(
+                QStringLiteral("切换锚心"), QStringLiteral("X"),
+                QStringLiteral("切换旋转中心（起点 ↔ 终点）"),
+                m_rotateReason.isEmpty() ? QStringLiteral("当前状态不可切换锚心") : m_rotateReason);
     } else {
         canRev = m_focus == StripFocus::Pinned
                  && !m_connectSession
                  && cad::cmd::ReverseSegmentCommand::canReverse(
                         m_paramDoc, m_blockId, m_segmentId, &reason);
-        if (canRev)
-            reason = QString::fromUtf8("交换起点/终点身份：换向后修改长度/角度驱动另一端，几何位置不变");
+        if (canRev) {
+            reason = cad::ui::TooltipFormatter::action(
+                QStringLiteral("线段换向"),
+                QStringLiteral("交换起点与终点身份：换向后修改长度/角度驱动另一端，几何位置不变"));
+        } else {
+            reason = cad::ui::TooltipFormatter::action(
+                QStringLiteral("线段换向"),
+                QStringLiteral("交换起点与终点驱动角色"),
+                reason.isEmpty() ? QStringLiteral("当前状态不可换向") : reason);
+        }
     }
     m_btnReverse->setEnabled(canRev);
     m_btnReverse->setToolTip(reason);
@@ -707,10 +736,10 @@ void ContextStrip::refreshChrome()
         m_badge->setText(QString::fromUtf8("自由"));
     }
     if (shadowBasis)
-        m_badge->setToolTip(QString::fromUtf8(
-            "影子基准：角度基准是一条隐藏的影子线（本体拆开瞬间的方向快照）。"
-            "旋转本体不再影响本线；把本线拖到其他线上时影子随之挂载（链式跟随）。"
-            "可在属性面板「影子角度」改基准角，或点「清除影子」转为自由线。"));
+        m_badge->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("影子基准"),
+            QStringLiteral("角度基准为隐藏影子线（本体拆开瞬间的方向快照）。旋转本体不再影响本线；把本线拖到其他线上时影子随之挂载（链式跟随）。可在属性面板改基准角，或点「清除影子」转为自由线。"),
+            false));
 
     // 角度基准读数 (换向按钮已承担切换职能, 这里是只读说明)。
     // 2026-12: 显示真实串号 tag (与属性对话框 SegmentAngleCard 同口径, 换向
@@ -727,8 +756,12 @@ void ContextStrip::refreshChrome()
               tagOf(m_rotateAnchorIsEnd ? sp : ep))
         : QString::fromUtf8("%1 → %2").arg(tagOf(sp), tagOf(ep)));
     m_btnBasis->setToolTip(m_rotateSession
-        ? QString::fromUtf8("锚心：旋转支点所在端（换向 = 切换锚心）")
-        : QString::fromUtf8("角度基准：起点 → 终点（换向后驱动另一端）"));
+        ? cad::ui::TooltipFormatter::action(
+            QStringLiteral("旋转锚心"),
+            QStringLiteral("当前旋转支点所在端。点击换向按钮可切换旋转锚心端。"))
+        : cad::ui::TooltipFormatter::action(
+            QStringLiteral("角度基准"),
+            QStringLiteral("起点 → 终点。换向后修改长度/角度将驱动对端。")));
 
     // 描边与提示: 悬停 = 虚线只读, 锁定 = 实线可编辑 (QSS 由宿主主题提供)。
     setProperty("stripFocus", m_focus == StripFocus::Pinned ? "pinned" : "hover");

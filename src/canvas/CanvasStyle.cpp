@@ -172,8 +172,8 @@ CanvasStyle CanvasStyle::darkTheme()
     s.snapIndicatorColor  = QColor(240, 101, 90);
     s.snapPointColor      = QColor(52, 199, 123);
     s.auxMarkerColor      = QColor(52, 199, 123);
-    s.hudBackground       = QColor(35, 40, 46, 230);
-    s.hudText             = QColor(232, 234, 237);
+    s.hudBackground       = QColor(36, 34, 26, 240);   // 暖灰暗纸面 (#24221A)
+    s.hudText             = QColor(255, 248, 219);     // 暖白文字 (#FFF8DB)
 
     s.m_selectColor       = QColor(76, 141, 255);     // accent family
     s.m_hoverTint         = QColor(76, 141, 255);

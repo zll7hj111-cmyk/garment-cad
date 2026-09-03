@@ -272,6 +272,7 @@ add_library(gcad_ui STATIC
     src/ui/IconHelper.cpp
     src/ui/Theme.h
     src/ui/Theme.cpp
+    src/ui/TooltipFormatter.h
     src/ui/ElaMsgBox.h
     src/ui/ElaDialogButtons.h
     src/ui/FormScaffold.h

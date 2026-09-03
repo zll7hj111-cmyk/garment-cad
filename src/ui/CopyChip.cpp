@@ -3,6 +3,7 @@
 #include "ElaText.h"
 #include "ElaLineEdit.h"
 #include "Theme.h"
+#include "TooltipFormatter.h"
 #include <QVBoxLayout>
 #include <QClipboard>
 #include <QSignalBlocker>
@@ -213,8 +214,8 @@ void CopyChip::updateDisplay()
     }
     m_label->setText(showPlaceholder ? m_placeholder : m_text);
     m_label->setToolTip(showPlaceholder
-        ? QString::fromUtf8("双击编辑")
-        : QString::fromUtf8("单击复制 · 双击编辑"));
+        ? cad::ui::TooltipFormatter::action(QStringLiteral("编辑项目"), QStringLiteral("双击设置名称"))
+        : cad::ui::TooltipFormatter::action(QStringLiteral("名称 / 代号"), QStringLiteral("单击复制 · 双击编辑")));
 }
 
 void CopyChip::enterEdit()

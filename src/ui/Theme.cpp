@@ -1,14 +1,57 @@
-﻿#include "Theme.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QFont>
 #include <QPalette>
 #include <QStyleFactory>
 #include <QWidget>
+#include <QToolTip>
+#include <QHelpEvent>
 
 #include "ElaTheme.h"
 
 namespace cad::ui {
+
+namespace {
+
+/// 全局 ToolTip 防护过滤器：
+/// Qt 默认的 QToolTip::showText(..., this, rect) 会将触发控件作为 QTipLabel 的父级，
+/// 导致该控件及其祖先树上的任何无选择器裸 setStyleSheet（如含有 background: transparent）
+/// 级联污染 QTipLabel，使其在 Windows DWM 下回退合成出纯黑底色大框。
+/// 本过滤器拦截全部 QEvent::ToolTip，通过将关联上下文转为全局屏幕坐标 + nullptr 宿主，
+/// 阻断子树样式的向下渗透，确保 QTipLabel 纯净继承全局 QToolTip 纸黄色技术样式。
+class ToolTipGuard : public QObject
+{
+public:
+    static void install()
+    {
+        static ToolTipGuard* s_guard = nullptr;
+        if (!s_guard && QApplication::instance()) {
+            s_guard = new ToolTipGuard(QApplication::instance());
+            QApplication::instance()->installEventFilter(s_guard);
+        }
+    }
+
+private:
+    explicit ToolTipGuard(QObject* parent) : QObject(parent) {}
+
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::ToolTip) {
+            auto* he = static_cast<QHelpEvent*>(event);
+            auto* w = qobject_cast<QWidget*>(watched);
+            if (w && !w->toolTip().isEmpty()) {
+                const QRect globalRect(w->mapToGlobal(QPoint(0, 0)), w->size());
+                QToolTip::showText(he->globalPos(), w->toolTip(), nullptr, globalRect);
+                event->accept();
+                return true;
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+} // namespace
 
 ThemeTokens Theme::s_tokens = ThemeTokens::light();
 ThemeMode   Theme::s_mode   = ThemeMode::Light;
@@ -51,8 +94,10 @@ ThemeTokens ThemeTokens::light()
     // Row alternation bars removed (ui-redesign-2026-08 §2.5 方案 A):
     // card accent bars now carry the piece type color — see CardBase.
 
-    t.tooltipBg = QColor("#0D1117");
-    t.tooltipFg = QColor("#F8FAFC");
+    // Tooltips (纸黄色工程图纸面规范，高对比度深碳黑文字与暖琥珀细边框)
+    t.tooltipBg     = QColor("#FFFAD1");
+    t.tooltipFg     = QColor("#1A202C");
+    t.tooltipBorder = QColor("#D8CC80");
     return t;
 }
 
@@ -88,8 +133,10 @@ ThemeTokens ThemeTokens::dark()
     t.danger  = QColor("#F0655A");
     t.teal    = QColor("#2BB3A3");
 
-    t.tooltipBg = QColor("#E8EAED");
-    t.tooltipFg = QColor("#1D2126");
+    // Tooltips (暗色主题下的暖调纸面)
+    t.tooltipBg     = QColor("#28251C");
+    t.tooltipFg     = QColor("#FFF8DB");
+    t.tooltipBorder = QColor("#6B5E38");
     return t;
 }
 
@@ -211,21 +258,37 @@ QScrollBar::handle:horizontal:hover { background: @text2; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
-/* ── Tooltip (2026-08 修复: 黑 tooltip) ────────────────────
-   颜色约定：亮色 = 深底浅字（tooltipBg #0D1117 / tooltipFg #F8FAFC），
-   暗色 = 浅底深字。 */
+/* ── SpinBoxes (统一移除上下步进箭头) ─────────────────────── */
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+    width: 0px; height: 0px; border: none;
+}
+
+/* ── Tooltip (Endfield 2.0 统一反转技术墨面) ────────────────
+   颜色约定：统一深色反转技术面，圆角 4px，技术描边，文字 11px */
 
 QToolTip {
-    background: @tooltipBg; color: @tooltipFg;
-    border: 1px solid @borderStrong; border-radius: 2px;
-    padding: 4px 8px; font-size: 12px;
+    background-color: @tooltipBg;
+    background: @tooltipBg;
+    color: @tooltipFg;
+    border: 1px solid @tooltipBorder;
+    border-radius: 4px;
+    padding: 5px 9px;
+    font-size: 11px;
+}
+QLabel#qtooltip_label {
+    background-color: @tooltipBg;
+    background: @tooltipBg;
+    color: @tooltipFg;
+    border: 1px solid @tooltipBorder;
+    border-radius: 4px;
 }
 )QSS");
 
     // 坑: @tooltipFg 曾漏替换 → QSS 颜色声明非法, 文字取回调色板深色,
     // 叠加 @tooltipBg 黑底 → "提示纯黑、字完全看不清" (用户 2026-12 反馈)。
-    s.replace(QStringLiteral("@tooltipFg"),    t.tooltipFg.name());
-    s.replace(QStringLiteral("@tooltipBg"),    t.tooltipBg.name());
+    s.replace(QStringLiteral("@tooltipBorder"), t.tooltipBorder.name());
+    s.replace(QStringLiteral("@tooltipFg"),     t.tooltipFg.name());
+    s.replace(QStringLiteral("@tooltipBg"),     t.tooltipBg.name());
     s.replace(QStringLiteral("@surface2"),     t.surface2.name());  // before @surface
     s.replace(QStringLiteral("@surface"),      t.surface.name());
     s.replace(QStringLiteral("@borderStrong"), t.borderStrong.name());  // before @border
@@ -283,8 +346,8 @@ QString Theme::purpleBadgeStyle()
 
 QString Theme::dimValueStyle()
 {
-    // Secondary readout: tertiary text family on transparent background.
-    return QStringLiteral("color:%1; font-size:11px; background:transparent;")
+    // Secondary readout: tertiary text family (QLabel is naturally transparent).
+    return QStringLiteral("color:%1; font-size:11px;")
         .arg(tokens().text3.name());
 }
 
@@ -337,9 +400,11 @@ void Theme::apply(ThemeMode mode)
     pal.setColor(QPalette::Light,           t.surface2);
     const QPalette::ColorGroup disabled[]{QPalette::Disabled, QPalette::Inactive};
     for (QPalette::ColorGroup g : disabled) {
-        pal.setColor(g, QPalette::WindowText, t.text3);
-        pal.setColor(g, QPalette::Text,       t.text3);
-        pal.setColor(g, QPalette::ButtonText, t.text3);
+        pal.setColor(g, QPalette::WindowText,  t.text3);
+        pal.setColor(g, QPalette::Text,        t.text3);
+        pal.setColor(g, QPalette::ButtonText,  t.text3);
+        pal.setColor(g, QPalette::ToolTipBase, t.tooltipBg);
+        pal.setColor(g, QPalette::ToolTipText, t.tooltipFg);
     }
     QApplication::setPalette(pal);
 
@@ -366,6 +431,9 @@ void Theme::apply(ThemeMode mode)
     // box (user report 2026-08). Cast via QApplication instead.
     if (auto* app = qobject_cast<QApplication*>(QApplication::instance()))
         app->setStyleSheet(buildStylesheet(s_tokens));
+
+    // 全局安装 ToolTip 过滤器，隔离所有局部控件裸样式对悬浮提示的穿透
+    ToolTipGuard::install();
 }
 
 } // namespace cad::ui

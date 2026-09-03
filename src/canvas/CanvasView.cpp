@@ -1,4 +1,4 @@
-﻿#include "CanvasView.h"
+#include "CanvasView.h"
 
 #include <QWheelEvent>
 #include <QMouseEvent>
@@ -139,6 +139,8 @@ void CanvasView::mousePressEvent(QMouseEvent* event)
         sceneEvent.setButtons(event->buttons());
         sceneEvent.setModifiers(event->modifiers());
         m_inputDispatcher->dispatchMousePress(&sceneEvent);
+        event->accept();
+        return;
     }
 
     QGraphicsView::mousePressEvent(event);
@@ -197,6 +199,8 @@ void CanvasView::mouseReleaseEvent(QMouseEvent* event)
         sceneEvent.setButton(Qt::LeftButton);
         sceneEvent.setModifiers(event->modifiers());
         m_inputDispatcher->dispatchMouseRelease(&sceneEvent);
+        event->accept();
+        return;
     }
 
     QGraphicsView::mouseReleaseEvent(event);
@@ -214,6 +218,8 @@ void CanvasView::mouseDoubleClickEvent(QMouseEvent* event)
         sceneEvent.setButtons(event->buttons());
         sceneEvent.setModifiers(event->modifiers());
         m_inputDispatcher->dispatchMouseDoubleClick(&sceneEvent);
+        event->accept();
+        return;
     }
 
     QGraphicsView::mouseDoubleClickEvent(event);

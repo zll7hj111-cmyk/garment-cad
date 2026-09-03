@@ -31,7 +31,7 @@ cad::param::MeasureVariable MeasureCard::measureVar() const
     mv.id = m_id;
     mv.name = m_nameChip->text().trimmed();
     mv.refName = m_refName;
-    mv.comment = m_commentEdit->text().trimmed();
+    mv.comment = m_noteBtn ? m_noteBtn->note() : QString();
     return mv;
 }
 

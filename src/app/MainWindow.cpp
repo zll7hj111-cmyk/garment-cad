@@ -1,4 +1,4 @@
-﻿#include "ContextStrip.h"
+#include "ContextStrip.h"
 #include "ToolDockStyle.h"
 
 #include "MainWindow.h"
@@ -49,6 +49,7 @@
 #include "ui/LayerPanel.h"
 #include "ui/IconHelper.h"
 #include "ui/Theme.h"
+#include "ui/TooltipFormatter.h"
 #include "ui/ElaMsgBox.h"
 #include "document/DocumentFile.h"
 #include "ElaWindow.h"
@@ -184,6 +185,8 @@ MainWindow::MainWindow(QWidget* parent)
     m_recentFiles = settings.value(QStringLiteral("recentFiles")).toStringList();
 
     updateTitle();
+    if (m_canvasView)
+        m_canvasView->setFocus();
 }
 
 MainWindow::~MainWindow()
@@ -306,8 +309,8 @@ void MainWindow::setupMenuBar()
             act->setShortcut(d->shortcut);
             act->setShortcutContext(Qt::ApplicationShortcut);
         }
-        // M3 (TOOL_SYSTEM_AUDIT): 悬停 tooltip = 操作说明全文。
-        act->setToolTip(d->hintText);
+        // M3 (TOOL_SYSTEM_AUDIT): 悬停 tooltip = 结构化工具说明卡 (TooltipFormatter)。
+        act->setToolTip(cad::ui::TooltipFormatter::tool(d->displayName, d->shortcut, d->hintText));
         group->addAction(act);
         toolMenu->addAction(act);
         m_toolActions.insert(type, act);
@@ -466,7 +469,10 @@ void MainWindow::refreshLayerChip()
     m_layerChip->setIcon(dotIcon(dot));
     m_layerChip->setText(aux ? QStringLiteral("辅助：%1").arg(layer->name)
                              : QStringLiteral("图层：%1").arg(layer->name));
-    m_layerChip->setToolTip(QStringLiteral("当前活动图层：%1（点击切换）").arg(layer->name));
+    m_layerChip->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
+        QStringLiteral("当前活动图层"),
+        QStringLiteral("点击快速切换"),
+        QStringLiteral("当前图层：%1。所有新创建的图元均归属此图层。").arg(layer->name)));
 
     // Rebuild the popup menu: all layers, current one checked, click = switch.
     if (m_layerChipMenu) {
@@ -559,7 +565,8 @@ void MainWindow::setupStatusBar()
     m_diagBadge = new QToolButton(this);
     m_diagBadge->setText(QStringLiteral("⚠"));
     m_diagBadge->setCursor(Qt::PointingHandCursor);
-    m_diagBadge->setToolTip(QString::fromUtf8("存在连接问题，点击查看明细"));
+    m_diagBadge->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("连接拓扑诊断"), QStringLiteral("存在连接问题，点击查看明细"), true));
     m_diagBadge->hide();
     connect(m_diagBadge, &QToolButton::clicked, this, [this]() {
         using cad::param::ResolveDiagnostic;
@@ -819,7 +826,8 @@ void MainWindow::onDocumentChanged()
     const auto& diags = m_paramDoc->diagnostics();
     if (diags.empty()) {
         m_diagBadge->setText(QStringLiteral("⚠"));
-        m_diagBadge->setToolTip(QString::fromUtf8("无连接问题"));
+        m_diagBadge->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("连接拓扑诊断"), QStringLiteral("全部连接正常，无拓扑问题"), false));
         m_diagBadge->hide();
         return;
     }
@@ -839,7 +847,10 @@ void MainWindow::onDocumentChanged()
     }
 
     m_diagBadge->setText(QStringLiteral("⚠ %1").arg(diags.size()));
-    m_diagBadge->setToolTip(first);
+    m_diagBadge->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("连接拓扑异常 (共 %1 处)").arg(diags.size()),
+        QStringLiteral("首项：%1（点击查看全部明细）").arg(first),
+        true));
     m_diagBadge->show();
 }
 
@@ -858,7 +869,8 @@ void MainWindow::setToolHint(const QString& text)
 {
     m_toolHintFull = text;
     if (!m_toolHintLabel) return;
-    m_toolHintLabel->setToolTip(text);   // M9 兜底: 悬停看全文
+    m_toolHintLabel->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("工具操作指引"), text, false));   // M9 兜底: 悬停看全文
     applyToolHintElide();
 }
 
@@ -1083,7 +1095,9 @@ void MainWindow::setupPages()
     m_hidePanelBtn = new QToolButton(m_panelHeader);
     m_hidePanelBtn->setCursor(Qt::PointingHandCursor);
     m_hidePanelBtn->setFixedSize(24, 24);
-    m_hidePanelBtn->setToolTip(QString::fromUtf8("隐藏面板"));
+    m_hidePanelBtn->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("折叠面板"),
+        QStringLiteral("收起右侧属性与图层面板，扩展视口绘图区")));
     m_hidePanelBtn->setStyleSheet(ghostBtnQss);
     m_hidePanelBtn->setIcon(cad::ui::IconHelper::iconByName(
         QStringLiteral("x"), tk.text2));
@@ -1099,12 +1113,8 @@ void MainWindow::setupPages()
     m_variablePanel->setUndoStack(m_undoStack);
     m_panelStack->addWidget(m_variablePanel);
 
-    auto* layerPage = new QWidget(m_panelStack);
-    auto* layerLay = new QVBoxLayout(layerPage);
-    layerLay->setContentsMargins(12, 12, 12, 12);
-    m_layerPanel = new LayerPanel(m_paramDoc, layerPage);
-    layerLay->addWidget(m_layerPanel);
-    m_panelStack->addWidget(layerPage);
+    m_layerPanel = new LayerPanel(m_paramDoc, m_panelStack);
+    m_panelStack->addWidget(m_layerPanel);
 
     // 大标签 3: 组件 (从变量面板第 5 子标签升级, §4.2)。
     m_componentTab = new cad::ui::ComponentTab(m_paramDoc, m_panelStack);
@@ -1131,9 +1141,15 @@ void MainWindow::setupPages()
     m_pageTabs->setTabSize(QSize(88, 30));
     m_pageTabs->setIconSize(QSize(14, 14));  // 面板打开时的激活指示圆点
     m_pageTabs->setTabToolTip(1,
-        QString::fromUtf8("面板 · 变量页（点击显示/隐藏）"));
+        cad::ui::TooltipFormatter::actionWithShortcut(
+            QStringLiteral("变量面板"),
+            QStringLiteral("P"),
+            QStringLiteral("显示或折叠右侧参数化变量、公式与测量面板")));
     m_pageTabs->setTabToolTip(2,
-        QString::fromUtf8("面板 · 图层页（点击显示/隐藏）"));
+        cad::ui::TooltipFormatter::actionWithShortcut(
+            QStringLiteral("图层面板"),
+            QStringLiteral("L"),
+            QStringLiteral("显示或折叠右侧设计图层与线段管理面板")));
     // ElaTabBar 默认 closable+movable+drag-drop：每个标签带 × 关闭按钮，
     // 标签还可拖拽换序 —— 换序后 currentChanged 的下标与 QStackedWidget
     // 页面错位（点图层会打开别的页）。锁死为固定网页式标签条。
@@ -1627,7 +1643,8 @@ void MainWindow::updateRecentFilesMenu()
     for (const QString& path : m_recentFiles) {
         QAction* act = m_recentFilesMenu->addAction(QFileInfo(path).fileName());
         act->setData(path);
-        act->setToolTip(path);
+        act->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("工程文件路径"), path, false));
         connect(act, &QAction::triggered, this, &MainWindow::onOpenRecentFile);
     }
 }

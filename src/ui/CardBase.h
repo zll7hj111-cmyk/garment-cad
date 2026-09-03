@@ -6,6 +6,7 @@
 #include <functional>
 
 #include "CopyChip.h"  // CopyChip::Variant is a nested enum — full type required
+#include "ui/NoteButton.h"
 
 class ElaLineEdit;
 class ElaText;
@@ -87,12 +88,11 @@ protected:
     /// same-size transparent placeholder that swaps visibility with the
     /// button on hover, so layout space stays constant (VirtualCardList 不重测).
     void appendDeleteButton(QHBoxLayout* header, const QString& tooltip);
-    /// "注释…" line editor (height 22); caller sets text and adds to layout.
-    ElaLineEdit* createCommentEdit(QWidget* parent);
+    /// 便利贴注释按钮 (NoteButton, 高度/尺寸可配, 默认 22); 子类或骨架添加到布局。
+    cad::ui::NoteButton* createNoteButton(QWidget* parent, int size = 22);
 
     /// Set the comment text without emitting signals, and skip entirely while
-    /// the user is editing (hasFocus guard — the read-only three cards' status
-    /// quo, unified across all five cards).
+    /// the user is editing (m_popup guard in NoteButton).
     void setCommentSilently(const QString& text);
 
     /// Parameter bundle for buildReadOnlySkeleton() — the only per-card
@@ -116,10 +116,10 @@ protected:
     };
 
     /// Build the shared skeleton of the three read-only cards: header
-    /// [ordinal][name chip][value][🔒][✕] + detail [ref chip][source][comment],
+    /// [ordinal][name chip][value][🔒][✕] + detail [ref chip][source][note],
     /// and wire the shared delete/edited connections through the callbacks.
     /// Caller then refreshes the value text (refreshValue) and keeps its own
-    /// per-card members (m_refChip/m_sourceInfo/m_commentEdit are set here).
+    /// per-card members (m_refChip/m_sourceInfo/m_noteBtn are set here).
     void buildReadOnlySkeleton(const ReadOnlySkeletonSpec& spec,
                                std::function<void()> onDelete,
                                std::function<void()> onEdited);
@@ -158,10 +158,10 @@ protected:
     ElaToolButton*  m_deleteBtn = nullptr;
 
     // --- Read-only-card shared members (built by buildReadOnlySkeleton) ---
-    QWidget*          m_detail = nullptr;
-    cad::ui::CopyChip* m_refChip = nullptr;
-    ElaText*          m_sourceInfo = nullptr;
-    ElaLineEdit*      m_commentEdit = nullptr;
+    QWidget*             m_detail = nullptr;
+    cad::ui::CopyChip*   m_refChip = nullptr;
+    ElaText*             m_sourceInfo = nullptr;
+    cad::ui::NoteButton* m_noteBtn = nullptr;
 
     // --- Value refresh guard state ---
     bool   m_danglingStyled = false;  ///< current value-label style state (avoids per-frame setStyleSheet)

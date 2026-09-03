@@ -2,6 +2,8 @@
 
 #include "FormulaCard.h"
 #include "IconHelper.h"
+#include "Theme.h"
+#include "TooltipFormatter.h"
 
 #include "ElaText.h"
 #include "ElaLineEdit.h"
@@ -46,7 +48,9 @@ FormulaGroupHeader::FormulaGroupHeader(const QUuid& groupId, const QString& name
 
     m_nameLabel = new ElaText(name, 13, this);
     m_nameLabel->setObjectName(QStringLiteral("groupName"));
-    m_nameLabel->setToolTip(QStringLiteral("双击重命名"));
+    m_nameLabel->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("公式分组"),
+        QStringLiteral("双击重命名分组")));
     m_nameLabel->installEventFilter(this);
     layout->addWidget(m_nameLabel, 0);
 
@@ -66,7 +70,9 @@ FormulaGroupHeader::FormulaGroupHeader(const QUuid& groupId, const QString& name
     m_dissolveBtn->setIcon(cad::ui::IconHelper::icon2State(
         QStringLiteral("x"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
     m_dissolveBtn->setIconSize(QSize(11, 11));
-    m_dissolveBtn->setToolTip(QStringLiteral("解散分组（成员回到未分组）"));
+    m_dissolveBtn->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("解散分组"),
+        QStringLiteral("移除分组容器，组内成员公式将回到未分组列表")));
     m_dissolveBtn->setFixedSize(18, 18);
     m_dissolveBtn->setCursor(Qt::PointingHandCursor);
     m_dissolveBtn->setVisible(false);

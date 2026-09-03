@@ -21,6 +21,7 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "ui/Theme.h"
+#include "ui/TooltipFormatter.h"
 #include "ui/FormScaffold.h"
 
 namespace cad::ui {
@@ -64,8 +65,9 @@ SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc,
     m_editAngle->setFixedHeight(kFieldH);
     m_editAngle->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_editAngle->setPlaceholderText(cad::ui::kPlaceholderAngleOrFormula);
-    m_editAngle->setToolTip(QString::fromUtf8(
-        "自由线：世界角度；跟随线：构造角。逆时针为正，回车确认"));
+    m_editAngle->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("线段角度"),
+        QStringLiteral("自由线：世界绝对角度；跟随线：相对基准线的构造角。逆时针为正，回车确认")));
     row->addWidget(m_editAngle);
     m_lblFollowValue = new ElaText(QString(), 11, this);
     m_lblFollowValue->setObjectName(QStringLiteral("followValueLabel"));
@@ -84,7 +86,9 @@ SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc,
     m_btnAngleMode->setFixedSize(30, kFieldH);
     m_btnAngleMode->setStyleSheet(cad::ui::chipButtonStyle());
     m_btnAngleMode->setCursor(Qt::PointingHandCursor);
-    m_btnAngleMode->setToolTip(QString::fromUtf8("切换角度/弧长模式"));
+    m_btnAngleMode->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("切换度数/弧长"),
+        QStringLiteral("在角度制（°）与对应基准线弧长制（⌒ mm）之间切换显示与输入模式")));
     row->addWidget(m_btnAngleMode);
     row->addStretch();
     col->addLayout(row);
@@ -535,8 +539,10 @@ void SegmentAngleCard::setBridgeReadOnly(bool bridge)
     m_lblFollowValue->setVisible(false);
     m_lblCaption->setText(QString::fromUtf8("角度"));
     m_lblCaption->setStyleSheet(QString());
-    const QString tip = QString::fromUtf8(
-        "桥接线：长度与角度由两端钉住的宿主点决定，不可编辑");
+    const QString tip = cad::ui::TooltipFormatter::status(
+        QStringLiteral("桥接线（只读）"),
+        QStringLiteral("长度与角度完全由两端吸附钉住的宿主几何决定，不可直接编辑"),
+        false);
     m_editAngle->setToolTip(tip);
 }
 

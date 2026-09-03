@@ -41,6 +41,9 @@ public:
     /// 当前文本 —— 调用方据此做"同值短路"或状态断言, 不必自己再存一份。
     [[nodiscard]] const QString& text() const { return m_text; }
 
+    /// 标准光标避让偏移常量（屏幕像素，位于光标右下方）。
+    static inline const QPointF kCursorOffset{14.0, 14.0};
+
     /// 置盒左上角于世界点 userPos + screenOffset(px) 处；px 偏移落地时
     /// 除以 zoom，屏幕上恒为该像素距离（原重叠提示的 "+12.0 场景单位"
     /// 在缩放下忽远忽近，即此参数所治）。

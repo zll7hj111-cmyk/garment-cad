@@ -1,6 +1,7 @@
-﻿#include "ConditionDialog.h"
+#include "ConditionDialog.h"
 
 #include "Theme.h"
+#include "TooltipFormatter.h"
 #include "parametric/ExpressionEvaluator.h"
 
 #include <QVBoxLayout>
@@ -34,7 +35,7 @@ ElaText* makeText(QWidget* parent, const QString& text)
 {
     auto* l = new ElaText(text, 13, parent);
     const auto& tk = cad::ui::Theme::tokens();
-    l->setStyleSheet(QStringLiteral("font-size: 12px; color: %1; background: transparent;")
+    l->setStyleSheet(QStringLiteral("font-size: 12px; color: %1;")
                          .arg(tk.text2.name()));
     return l;
 }
@@ -169,7 +170,9 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     row->watch->addItems(m_vars);
     const int idx = m_vars.indexOf(cond.watchVar);
     row->watch->setCurrentIndex(idx >= 0 ? idx : 0);
-    row->watch->setToolTip(QString::fromUtf8("被监视的变量（表达式中引用的）"));
+    row->watch->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("监视变量"),
+        QStringLiteral("被条件规则监视的变量（表达式中引用的基准尺寸）")));
     lay->addWidget(makeText(row->widget, QStringLiteral("变量")));
     lay->addWidget(row->watch, 0);
 
@@ -209,7 +212,9 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     // Amount.
     lay->addWidget(makeText(row->widget, QString::fromUtf8("则结果")));
     row->amount = makeSpin(row->widget, cond.amount);
-    row->amount->setToolTip(QString::fromUtf8("修正量（cm，可为负）"));
+    row->amount->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("修正量 (cm)"),
+        QStringLiteral("条件满足时为公式增加或减少的修正数值，可填正负数")));
     lay->addWidget(row->amount, 0);
 
     lay->addStretch();
@@ -218,7 +223,9 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     row->remove = new ElaPushButton(QStringLiteral("✕"), row->widget);
     row->remove->setFixedSize(22, 22);
     row->remove->setCursor(Qt::PointingHandCursor);
-    row->remove->setToolTip(QString::fromUtf8("删除该条件"));
+    row->remove->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("删除规则"),
+        QStringLiteral("从当前公式中移除该条条件判断规则")));
     connect(row->remove, &QPushButton::clicked, this,
             [this, row]() { removeRow(row); });
     lay->addWidget(row->remove, 0);

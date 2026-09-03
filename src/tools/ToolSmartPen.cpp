@@ -1105,7 +1105,7 @@ void ToolSmartPen::updatePreview(const cad::geo::Vec2& effectiveEnd)
         m_scene->notifyLinePreview(cad::geo::Units::mmToCm(lenMm), m_snapAngleDeg);
 
     QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    m_hud->moveToPoint(effectiveEnd, view);
+    m_hud->moveToPoint(effectiveEnd, view, HudItem::kCursorOffset);
 }
 
 void ToolSmartPen::updateSnapIndicator(const cad::geo::Vec2& worldPos)

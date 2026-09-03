@@ -330,7 +330,7 @@ void ToolMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
         }
         m_hud->setText(text);
         QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-        m_hud->moveToPoint(endPos, view);
+        m_hud->moveToPoint(endPos, view, HudItem::kCursorOffset);
         m_hud->setVisible(true);
     }
 }

@@ -31,7 +31,7 @@ cad::param::LinkedVariable LinkedCard::linkedVar() const
     lv.id = m_id;
     lv.name = m_nameChip->text().trimmed();
     lv.refName = m_refName;
-    lv.comment = m_commentEdit->text().trimmed();
+    lv.comment = m_noteBtn ? m_noteBtn->note() : QString();
     return lv;
 }
 

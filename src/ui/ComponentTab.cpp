@@ -24,6 +24,7 @@
 #include "parametric/ConditionEngine.h"
 #include "document/commands/ComponentCommands.h"
 #include "ui/Theme.h"
+#include "ui/TooltipFormatter.h"
 #include "ui/FormScaffold.h"
 
 namespace cad::ui {
@@ -183,7 +184,9 @@ void ComponentTab::rebuild()
         auto* origEdit = new ElaLineEdit(body);
         origEdit->setMinimumWidth(76);
         origEdit->setPlaceholderText(kPlaceholderAngleOrFormula);
-        origEdit->setToolTip(QStringLiteral("组的原始角度（「回正」的目标），可填数值或公式"));
+        origEdit->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("组原始角度"),
+            QStringLiteral("组的基准角度（「回正」的目标），可填数值或公式")));
         origEdit->setText(c.defaultAngleFormula.isEmpty()
             ? QString::number(cad::geo::normalizeDeg360(c.defaultAngleDeg), 'f', 1)
             : c.defaultAngleFormula);
@@ -213,7 +216,9 @@ void ComponentTab::rebuild()
         dockEdit->setMinimumWidth(76);
         dockEdit->setPlaceholderText(kPlaceholderAngleOrFormula);
         dockEdit->setEnabled(false);
-        dockEdit->setToolTip(QStringLiteral("组对接外部线的跟随角（0°=折叠、180°=沿外部线直行），可填数值或公式"));
+        dockEdit->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("对接跟随角"),
+            QStringLiteral("组对接外部基准线的跟随角度（0°=折叠、180°=沿外部线直行），可填数值或公式")));
         auto* dockFx = new ElaText(
             QStringLiteral("<i style='color:%1;'>fx</i>").arg(tok.text2.name()), 13, body);
         dockFx->setFixedWidth(18);
@@ -260,16 +265,19 @@ void ComponentTab::rebuild()
             btn->setFixedHeight(kActionBtnH);
             btn->setCursor(Qt::PointingHandCursor);
         }
-        resetBtn->setToolTip(QStringLiteral("回到初始状态（断开对接 + 转回原始角 + 清除公式）"));
-        detachBtn->setToolTip(QStringLiteral("断开组对接外部线的连接"));
+        resetBtn->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("组件回正"),
+            QStringLiteral("回到初始状态（断开对接 + 转回原始角 + 清除公式）")));
+        detachBtn->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("断开连接"),
+            QStringLiteral("断开组对接外部线的连接约束")));
         detachBtn->setVisible(!compAttId.isNull());
-
-        r3->addWidget(bbox);
-        r3->addStretch();
-        r3->addWidget(resetBtn);
-        r3->addWidget(detachBtn);
-        r3->addWidget(dissolveBtn);
-        r3->addWidget(delBtn);
+        dissolveBtn->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("解散组件"),
+            QStringLiteral("解散组结构，组内图元保持当前绝对位置释放为独立图元")));
+        delBtn->setToolTip(cad::ui::TooltipFormatter::action(
+            QStringLiteral("删除组件"),
+            QStringLiteral("彻底删除当前组件及其所包含的全部图元")));
         v->addLayout(r3);
 
         h->addWidget(body, 1);
