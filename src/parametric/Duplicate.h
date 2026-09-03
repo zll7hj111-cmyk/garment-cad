@@ -8,6 +8,7 @@
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
 #include "parametric/LinkedVariable.h"
+#include "parametric/Component.h"
 
 namespace cad::param {
 
@@ -20,6 +21,7 @@ struct DuplicateResult {
     std::vector<LinkedVariable> newLinked;  ///< Bridge-length linked variables
                                             ///< auto-published for released
                                             ///< bridge copies (may be empty).
+    std::vector<Component> components;      ///< Fully-enclosed components, id-remapped.
     [[nodiscard]] bool isEmpty() const { return blocks.empty(); }
 };
 

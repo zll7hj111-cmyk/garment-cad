@@ -115,6 +115,8 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
             seg.ctrlPoint2Id = remap(idMap, seg.ctrlPoint2Id);
             for (auto& auxId : seg.auxPointIds)
                 auxId = remap(idMap, auxId);
+            for (auto& passId : seg.passPointIds)
+                passId = remap(idMap, passId);
         }
         clone.rebuildPointIndex();
         // Segment IDs were regenerated above — the copied index is stale even
@@ -238,6 +240,28 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
             copy.arcLengthFormula.clear();
             result.attachments.push_back(std::move(copy));
         }
+    }
+
+    // ── Pass 5: clone components whose ALL members are inside the set ──
+    for (const auto& comp : doc.components()) {
+        bool allIn = !comp.memberBlockIds.empty();
+        for (const QUuid& mid : comp.memberBlockIds) {
+            if (!inSet.contains(mid)) {
+                allIn = false;
+                break;
+            }
+        }
+        if (!allIn) continue;
+
+        Component copy = comp;
+        copy.id = QUuid::createUuid();
+        if (!copy.name.isEmpty())
+            copy.name = QStringLiteral("%1 副本").arg(copy.name);
+        for (auto& mid : copy.memberBlockIds)
+            mid = remap(idMap, mid);
+        copy.exposedPointId = remapOrClear(idMap, copy.exposedPointId);
+        copy.exposedSegmentId = remapOrClear(idMap, copy.exposedSegmentId);
+        result.components.push_back(std::move(copy));
     }
 
     return result;

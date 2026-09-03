@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QUuid>
 
 #include <cmath>
@@ -143,6 +143,7 @@ private slots:
     void endTargetOutsideClearedOnClone();
     void endTargetInsideRemappedOnClone();
     void followAndInterpRefOutsideClearedOnClone();
+    void componentPreservedOnDuplicate();
 };
 
 // 单线克隆：除 ID/serial 外信息全同，内部引用重映射，参数联动保留。
@@ -639,6 +640,45 @@ void TestDuplicate::followAndInterpRefOutsideClearedOnClone()
         if (p.constraint == PointConstraint::Interpolated)
             QCOMPARE(p.interpRefPointId, b.startId);
     }
+}
+
+// 复制包含组件的所有成员时，克隆出独立的组件，且其成员正确映射为新块 ID
+void TestDuplicate::componentPreservedOnDuplicate()
+{
+    ParamDocument doc;
+    const LineInfo a = makeLine(doc, {0.0, 0.0}, 100.0);
+    const LineInfo b = makeLine(doc, {0.0, 50.0}, 120.0);
+
+    Component comp;
+    comp.name = QStringLiteral("袖窿组件");
+    comp.memberBlockIds = {a.blockId, b.blockId};
+    comp.exposedPointId = a.startId;
+    comp.exposedSegmentId = a.segId;
+    const QUuid origCompId = doc.addComponent(comp);
+    QVERIFY(!origCompId.isNull());
+
+    // 复制整个组件的所有成员
+    DuplicateResult result = duplicateBlocks(doc, {a.blockId, b.blockId});
+    QCOMPARE(result.blocks.size(), size_t(2));
+    QCOMPARE(result.components.size(), size_t(1));
+
+    const Component& clonedComp = result.components.front();
+    QVERIFY(clonedComp.id != origCompId);
+    QVERIFY(clonedComp.name.contains(QStringLiteral("袖窿组件")));
+    QCOMPARE(clonedComp.memberBlockIds.size(), size_t(2));
+
+    // 成员 ID 必须指向新克隆的 blocks，而不是原件
+    QVERIFY(clonedComp.memberBlockIds[0] == result.blocks[0].id ||
+            clonedComp.memberBlockIds[0] == result.blocks[1].id);
+    QVERIFY(clonedComp.memberBlockIds[1] == result.blocks[0].id ||
+            clonedComp.memberBlockIds[1] == result.blocks[1].id);
+    QVERIFY(clonedComp.memberBlockIds[0] != a.blockId &&
+            clonedComp.memberBlockIds[0] != b.blockId);
+
+    // 仅复制其中一个成员时，组件不被克隆
+    DuplicateResult partialResult = duplicateBlocks(doc, {a.blockId});
+    QCOMPARE(partialResult.blocks.size(), size_t(1));
+    QVERIFY(partialResult.components.empty());
 }
 
 QTEST_MAIN(TestDuplicate)
