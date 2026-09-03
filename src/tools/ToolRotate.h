@@ -1,9 +1,10 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QString>
 #include <QHash>
 #include <QList>
+#include <QSet>
 #include <optional>
 #include <vector>
 
@@ -25,6 +26,7 @@ namespace cad::param { struct Attachment; }
 // 精确输入归上下文属性条 (app 层), 状态提示经 ToolHost::setHintOverride。
 
 namespace cad::tools {
+class MarqueeGesture;
 class RotateCopyGesture;
 class RotateGizmo;
 
@@ -77,14 +79,24 @@ public:
     /// true  = 已确认 (可拖动; 拖动提交后自动回落 false, 再拖需再确认)。
     [[nodiscard]] bool selectionConfirmed() const { return m_selectionConfirmed; }
     /// 当前 gizmo 的确认态视觉 (测试/诊断用; 无 gizmo = false)。RotateGizmo
-    /// 此处仅前向声明, 实现落 ToolRotate.cpp。
+    /// gizmo 确认态查询 (测试用: 选中=false, 确定=true).
     [[nodiscard]] bool gizmoConfirmed() const;
+    [[nodiscard]] const RotateGizmo* gizmo() const { return m_gizmo; }
     /// 旋转会话中 (有单线/选集目标且非 Idle): CanvasView 借此屏蔽右键
     /// 上下文菜单 —— 确认手势独占该按键 (D15 与发布菜单互斥)。
     [[nodiscard]] bool hasSessionTarget() const
     { return m_state == RotateState::Ready || m_state == RotateState::Rotating; }
     /// 当前锚心所在点 id (测试/诊断用; null = 无会话)。
     [[nodiscard]] QUuid anchorPointId() const { return m_anchorPointId; }
+    [[nodiscard]] cad::geo::Vec2 pivot() const { return m_pivot; }
+    [[nodiscard]] bool pivotPicked() const { return m_pivotPicked; }
+    [[nodiscard]] bool hoverSnapped() const { return m_hoverSnapped; }
+    [[nodiscard]] cad::geo::Vec2 hoverSnapPoint() const { return m_hoverSnapPoint; }
+
+    /// 继承选择集 (从选择工具切换进入或外部多选设置)
+    void adoptSelection(const QSet<QUuid>& blockIds);
+    [[nodiscard]] const QSet<QUuid>& selection() const { return m_selection; }
+    [[nodiscard]] bool isMultiSelect() const { return m_selection.size() > 1; }
 
     void mousePress(QGraphicsSceneMouseEvent* event) override;
     void mouseMove(QGraphicsSceneMouseEvent* event) override;
@@ -266,8 +278,10 @@ private:
     double m_localDir = 0.0;       ///< Local direction of the start segment (rad).
 
     // Drag state.
-    double m_dragCursorAngle0 = 0.0;  ///< Cursor polar angle at drag start (rad).
-    double m_dragAngle0 = 0.0;        ///< Effective angle at drag start (deg).
+    double m_dragCursorAngle0 = 0.0;     ///< Cursor polar angle at drag start (rad).
+    double m_dragCursorAnglePrev = 0.0;  ///< Cursor polar angle on previous move frame (rad).
+    double m_accumulatedAngleDeg = 0.0;  ///< Continuous accumulated angle delta (deg).
+    double m_dragAngle0 = 0.0;           ///< Effective angle at drag start (deg).
 
     // Gizmo (extracted: RotateGizmo owns the items).
     RotateGizmo* m_gizmo = nullptr;
@@ -278,6 +292,36 @@ private:
     QGraphicsEllipseItem* m_aimRing = nullptr;  ///< Highlight ring on the candidate.
     /// 临时图元统一登记 (deactivate 统一释放 + 影子置空, TOOL_SYSTEM_AUDIT P1/L1)。
     ManagedItems m_managed;
+
+    // ── Multi-selection & Marquee ──
+    QSet<QUuid> m_selection;
+    bool m_isMarqueeSelected = false;
+    MarqueeGesture* m_marqueeGesture = nullptr;
+    void syncSelectionVisual();
+
+    // ── Yellow Snap Ring (悬停端点黄色预览圈) ──
+    QGraphicsEllipseItem* m_hoverSnapRing = nullptr;
+    cad::geo::Vec2 m_hoverSnapPoint;
+    bool m_hoverSnapped = false;
+    void ensureHoverSnapRing();
+    void updateHoverSnapRing(const cad::geo::Vec2& worldPos);
+    void hideHoverSnapRing();
+
+    // ── Press-pending (点下直接拖动 vs 点下定锚点) ──
+    bool m_pivotPicked = false;
+    bool m_pressPending = false;
+    cad::geo::Vec2 m_pressPos;
+    cad::geo::Vec2 m_pendingPivot;
+    bool m_pendingHoverSnapped = false;
+
+    // ── Multi-block rotation base state ──
+    struct MultiBlockBase {
+        cad::param::Transform2D tf;
+        QUuid endTargetBlock;
+        QUuid endTargetPoint;
+    };
+    QHash<QUuid, MultiBlockBase> m_multiBaseTf;
+    std::vector<cad::param::Attachment> m_multiReleasedAtts;
 
     friend class RotateCopyGesture;
 };

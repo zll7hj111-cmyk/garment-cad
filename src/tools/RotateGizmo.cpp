@@ -1,4 +1,4 @@
-﻿#include "RotateGizmo.h"
+#include "RotateGizmo.h"
 
 #include <cmath>
 
@@ -135,12 +135,14 @@ void RotateGizmo::update(double zoom, double dashRad, double arcStartRad, double
     // to the inner arc, so the linear interpolation never wraps around).
     const double arcR = 40.0 / zoom;
     QPainterPath arcPath;
-    constexpr int kSamples = 40;
-    for (int i = 0; i <= kSamples; ++i) {
-        const double t = arcStartRad + (arcEndRad - arcStartRad) * i / kSamples;
-        const QPointF p(c.x() + arcR * std::cos(t),
-                        c.y() - arcR * std::sin(t));           // scene is y-down
-        if (i == 0) arcPath.moveTo(p); else arcPath.lineTo(p);
+    if (std::abs(arcEndRad - arcStartRad) > 1e-6) {
+        constexpr int kSamples = 40;
+        for (int i = 0; i <= kSamples; ++i) {
+            const double t = arcStartRad + (arcEndRad - arcStartRad) * i / kSamples;
+            const QPointF p(c.x() + arcR * std::cos(t),
+                            c.y() - arcR * std::sin(t));           // scene is y-down
+            if (i == 0) arcPath.moveTo(p); else arcPath.lineTo(p);
+        }
     }
     m_arc->setPath(arcPath);
 
@@ -160,6 +162,11 @@ void RotateGizmo::remove()
     // 统一释放 + 影子置空 (P1/L1); QGraphicsItem 析构自行脱离 scene,
     // 无 scene 时同样安全 —— 幂等。
     m_managed.clear();
+}
+
+bool RotateGizmo::isArcEmpty() const
+{
+    return !m_arc || m_arc->path().isEmpty();
 }
 
 } // namespace cad::tools

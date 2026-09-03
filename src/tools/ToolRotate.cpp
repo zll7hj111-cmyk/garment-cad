@@ -1,4 +1,4 @@
-﻿#include "ToolRotate.h"
+#include "ToolRotate.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
@@ -8,6 +8,7 @@
 #include <QUndoStack>
 #include <QPen>
 #include <QWidget>
+#include <QGuiApplication>
 
 #include <cmath>
 #include <limits>
@@ -27,6 +28,7 @@
 #include "geometry/Angle.h"
 #include "RotateCopyGesture.h"
 #include "RotateGizmo.h"
+#include "MarqueeGesture.h"
 #include "ui/LinePropertyDialog.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"
@@ -56,8 +58,8 @@ ToolDescriptor ToolRotate::describe()
     d.displayName = QString::fromUtf8("旋转(&R)");
     d.iconName = QStringLiteral("rotate");
     d.shortcut = QKeySequence(Qt::Key_R);
-    // H2: 提示必须描述确认门 (选中 ≠ 可直接拖), 旧文案描述的是废弃行为。
-    d.hintText = QString::fromUtf8("旋转：点击线段选中 | 右键或回车确认 | 拖动旋转(Shift吸附15°) | HUD输入角度/公式 | X切换锚心 | Esc反悔");
+    // H2: 提示必须描述确认门 (选中 ≠ 可直接拖), 明确长按 Ctrl 复制快捷键.
+    d.hintText = QString::fromUtf8("旋转：点击线段选中 | X切换锚心 | 右键或回车确认 | 拖动旋转(长按Ctrl复制) | Esc反悔");
     d.factory = [] { return std::make_unique<ToolRotate>(); };
     return d;
 }
@@ -74,6 +76,9 @@ void ToolRotate::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
     // (Re)create the protractor gizmo renderer (scene-bound).
     delete m_gizmo;
     m_gizmo = new RotateGizmo(&scene);
+    // (Re)create the marquee gesture.
+    delete m_marqueeGesture;
+    m_marqueeGesture = new MarqueeGesture(&scene, paramDoc);
 }
 
 void ToolRotate::onDeactivate()
@@ -86,6 +91,17 @@ void ToolRotate::onDeactivate()
     m_copyGesture = nullptr;
     delete m_gizmo;
     m_gizmo = nullptr;
+    if (m_marqueeGesture) {
+        m_marqueeGesture->cancel();
+        delete m_marqueeGesture;
+        m_marqueeGesture = nullptr;
+    }
+    hideHoverSnapRing();
+    m_managed.release(m_hoverSnapRing);
+    m_selection.clear();
+    m_isMarqueeSelected = false;
+    syncSelectionVisual();
+
     // A follower link released by an in-flight rotation is restored — tool
     // switch abandons the gesture (nothing was committed).
     if (m_releaseAttHeld && !m_releaseAttId.isNull() && m_paramDoc) {
@@ -123,16 +139,39 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
     if (event->button() == Qt::RightButton) {
         if (m_state == RotateState::Rotating) {
             cancelRotation();
-            applySelectionConfirmed(false);  // 拖中取消 = 回位并退出确定态 (D15)
+            if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+                m_pivotPicked = false;
+                removeGizmo();
+                updateStatusHint();
+            } else {
+                applySelectionConfirmed(false);  // 拖中取消 = 回位并退出确定态 (D15)
+            }
+            event->accept();
+            return;
         }
-        // 单线确认门 (D15): 选中态右键 = 确认; 确定态右键 = 反悔回选中态。
-        // 空闲路径 (m_blockId 为空) = 清目标。
-        if (m_state == RotateState::Ready && !m_blockId.isNull())
-            applySelectionConfirmed(!m_selectionConfirmed);
-        else
+        if (m_pressPending) {
+            m_pressPending = false;
+        }
+        // 选中态右键 = 确认; 确定态右键 = 反悔回选中态。
+        if (m_state == RotateState::Ready && (!m_selection.isEmpty() || !m_blockId.isNull())) {
+            if (m_selectionConfirmed) {
+                if ((isMultiSelect() || (m_isMarqueeSelected && !m_connected)) && m_pivotPicked) {
+                    m_pivotPicked = false;
+                    removeGizmo();
+                    updateStatusHint();
+                } else {
+                    applySelectionConfirmed(false);
+                }
+            } else {
+                applySelectionConfirmed(true);
+            }
+            event->accept();
+            return;
+        } else {
             clearTarget();
-        event->accept();
-        return;
+            event->accept();
+            return;
+        }
     }
     if (event->button() != Qt::LeftButton) return;
 
@@ -141,19 +180,47 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
         const QUuid id = hitBlock(pos);
         if (!id.isNull()) {
             selectTarget(id, pos);
-            // Ctrl+press selects AND starts a rotate-copy in one gesture
-            // (Ctrl = 复制意图, same language as ToolSelect).
+            // Ctrl+press selects AND starts a rotate-copy in one gesture (快捷捷径)
             if (event->modifiers() & Qt::ControlModifier)
                 m_copyGesture->begin(pos);
+        } else {
+            // 空白处拖拽 = 框选起手
+            if (m_marqueeGesture) {
+                m_marqueeGesture->begin(pos, m_selection);
+            }
         }
         break;
     }
     case RotateState::Ready: {
-        // ── 单线确认门 (D15, 用户拍板 2026-08-27): 已选未确认 = 不可拖动.
         if (!m_selectionConfirmed) {
-            // 端点优先判定 (距离法, 同旧注释: BlockItem::shape() 对线段
-            // 两端不可靠): 点目标线的另一端 = 切换锚向 (选中态专属;
-            // 连接线端点被占用时仍禁切 —— 用户拍板 2026-08).
+            // ── 未确认选区（选择阶段）──
+            if (event->modifiers() & Qt::ShiftModifier) {
+                // Shift 加减选
+                const QUuid hit = hitBlock(pos);
+                if (!hit.isNull()) {
+                    if (m_selection.contains(hit)) m_selection.remove(hit);
+                    else                           m_selection.insert(hit);
+                    adoptSelection(m_selection);
+                } else if (m_marqueeGesture) {
+                    m_marqueeGesture->begin(pos, m_selection);
+                }
+                break;
+            }
+
+            // 多选或框选模式：无 Shift 时点击未选中的线则切换，点击空白则框选
+            if (isMultiSelect() || m_isMarqueeSelected) {
+                const QUuid hit = hitBlock(pos);
+                if (!hit.isNull()) {
+                    if (!m_selection.contains(hit)) {
+                        selectTarget(hit, pos);
+                    }
+                } else if (m_marqueeGesture) {
+                    m_marqueeGesture->begin(pos, m_selection);
+                }
+                break;
+            }
+
+            // 单选非框选模式（保持 D15 既有行为：点端点切锚心，点别的线切目标，点空白清空）
             const QUuid hitEnd = anchorPointAt(pos);
             bool endpointSwitched = false;
             if (!hitEnd.isNull() && hitEnd != m_anchorPointId) {
@@ -182,30 +249,46 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
             }
             if (endpointSwitched) break;
 
-            // 点别的线 = 切换目标 (停留选中态).
             const QUuid self = hitBlock(pos);
             if (!self.isNull() && self != m_blockId) {
                 commitCurrent();
                 selectTarget(self, pos);     // 内部重置确认门
                 break;
             }
-            // 其余按压 (本线身/被禁的端点/空白) = no-op 或取消选择:
-            // 空白 = 取消选择回 Idle; 本线身 = 保持选中.
+
             const auto* tb = m_paramDoc ? m_paramDoc->findBlock(m_blockId) : nullptr;
             if (!tb) { clearTarget(); break; }
-            if (self.isNull()) clearTarget();
+            if (self.isNull()) {
+                clearTarget();
+            }
             break;
         }
-        // ── 确定态: 一切按压 = 拖动起手; Ctrl = 旋转复制起手.
-        const QUuid id = hitBlock(pos);
-        const bool ctrl = (event->modifiers() & Qt::ControlModifier);
-        if (ctrl) {
-            if (id.isNull()) return;
-            if (id != m_blockId) {
-                commitCurrent();
-                selectTarget(id, pos);  // 切目标即落回未确认, Ctrl 失效为普通选中
+
+        // ── 确定态 (m_selectionConfirmed == true) ──
+        if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+            if (!m_pivotPicked) {
+                // 尚未定锚：点击定锚点（优先吸附端点）
+                const cad::geo::Vec2 pivot = m_hoverSnapped ? m_hoverSnapPoint : pos;
+                m_pivot = pivot;
+                m_pivotPicked = true;
+                hideHoverSnapRing();
+                buildGizmo();
+                updateGizmo();
+                m_pressPending = true;
+                m_pressPos = pos;
+                m_pendingPivot = pivot;
+                updateStatusHint();
+                break;
+            } else {
+                // 已定锚：开始拖动旋转
+                beginRotation(pos);
                 break;
             }
+        }
+
+        // 单线确定态（保持 D15 既有行为）
+        const bool ctrl = (event->modifiers() & Qt::ControlModifier);
+        if (ctrl && !isMultiSelect()) {
             m_copyGesture->begin(pos);
             break;
         }
@@ -220,9 +303,33 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
 void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
 {
     const cad::geo::Vec2 pos(event->scenePos().x(), event->scenePos().y());
-    // 非拖动帧: 上报悬停候选给上下文属性条 (只读预览; 节流与焦点保护在
-    // 条带内部)。拖动中不改焦点 —— 焦点始终是被旋转的那条线。
+
+    if (m_marqueeGesture && m_marqueeGesture->active()) {
+        m_marqueeGesture->update(pos);
+        return;
+    }
+
     if (m_state != RotateState::Rotating) {
+        if (m_pressPending) {
+            const double zoom = currentZoom();
+            if ((pos - m_pressPos).length() > 5.0 / zoom) {
+                // 拖动超阈值：点下直接拖动旋转（连贯手势）
+                m_pressPending = false;
+                beginRotation(pos);
+                const bool snap = (event->modifiers() & Qt::ShiftModifier);
+                updateRotation(pos, snap);
+                return;
+            }
+        }
+
+        // 黄色端点预览圈：仅在“确定态且尚未定锚”时显示
+        if (m_state == RotateState::Ready && m_selectionConfirmed &&
+            (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) && !m_pivotPicked) {
+            updateHoverSnapRing(pos);
+        } else {
+            hideHoverSnapRing();
+        }
+
         const QUuid hover = hitBlock(pos);
         if (hover.isNull()) {
             reportHoverTarget(QUuid(), QUuid());
@@ -233,12 +340,11 @@ void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
         }
         return;
     }
-    // 普通旋转拖动中途按下 Ctrl：转为旋转复制（原块回弹 + 副本接手当前角度）。
-    // 判定放在 press 时刻之外，用户先按下鼠标再按 Ctrl 也能得到复制语义。
-    // (Rotating 状态下的 move 必然在拖动中，无需再查 buttons()。)
-    if (!m_copyGesture->active() && (event->modifiers() & Qt::ControlModifier)) {
+
+    // 普通旋转拖动中途按下 Ctrl：转为旋转复制（仅单线）
+    if (!isMultiSelect() && !m_copyGesture->active() && (event->modifiers() & Qt::ControlModifier)) {
         m_copyGesture->convert(pos);
-        if (!m_copyGesture->active()) return;   // 转换被拒（跟随/解挂态）：保持普通旋转
+        if (!m_copyGesture->active()) return;
     }
     const bool snap = (event->modifiers() & Qt::ShiftModifier);
     updateRotation(pos, snap);
@@ -247,11 +353,65 @@ void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
 void ToolRotate::mouseRelease(QGraphicsSceneMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton) return;
+
+    if (m_marqueeGesture && m_marqueeGesture->active()) {
+        const QPointF up = event->scenePos();
+        const cad::geo::Vec2 pos(up.x(), up.y());
+        const double zoom = currentZoom();
+        const double dist = (pos - m_marqueeGesture->startPos()).length();
+        QSet<QUuid> hits = m_marqueeGesture->end(pos);
+
+        if (dist < 3.0 / zoom) {
+            // 点击空白未拖动：若无 Shift 则取消选区回 Idle
+            if (!(event->modifiers() & Qt::ShiftModifier)) {
+                clearTarget();
+                return;
+            }
+        } else {
+            for (auto it = hits.begin(); it != hits.end(); ) {
+                const auto* blk = m_paramDoc ? m_paramDoc->findBlock(*it) : nullptr;
+                if (!blk || blk->isBridge || blk->segments.empty()) {
+                    it = hits.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (!hits.isEmpty()) {
+                adoptSelection(hits);
+                m_isMarqueeSelected = true;
+                applySelectionConfirmed(false);
+            } else {
+                clearTarget();
+            }
+            return;
+        }
+    }
+
+    if (m_pressPending) {
+        // 轻点松开：定下锚点，显示 Gizmo，等待后续拖动旋转
+        m_pressPending = false;
+        m_pivotPicked = true;
+        buildGizmo();
+        updateGizmo();
+        updateStatusHint();
+        return;
+    }
+
     if (m_state != RotateState::Rotating) return;
-    if (m_copyGesture->active()) m_copyGesture->commit();
-    else                           commitRotation();
-    // 拖动提交 = 结束确定态 (D15): 回落选中态, 再次拖动需重新确认.
-    applySelectionConfirmed(false);
+
+    // 真正等鼠标物理抬起时才释放（防中途抖动意外释放）：
+    if (QGuiApplication::mouseButtons() & Qt::LeftButton) {
+        return;
+    }
+
+    if (m_copyGesture->active()) {
+        m_copyGesture->commit();
+        applySelectionConfirmed(false);
+    } else {
+        commitRotation();
+        // 旋转完成后退出状态（用户拍板：每次旋转完成后就退出状态）
+        clearTarget();
+    }
 }
 
 void ToolRotate::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
@@ -297,23 +457,35 @@ void ToolRotate::keyPress(QKeyEvent* event)
 {
     // Fallback path: the key reached the view instead of the HUD widget.
     if (event->key() == Qt::Key_Escape) {
-        // D15 Esc 分层: 确定态反悔 = 退回选中态 (轻一步可反悔);
-        // 拖动中 = 取消回位; 选中态 = 清目标。
-        // (原"HUD 放弃编辑"那层已随 AngleHud 退场 —— 精确输入归上下文属性条。)
-        if (m_state == RotateState::Rotating) {
+        if (m_marqueeGesture && m_marqueeGesture->active()) {
+            m_marqueeGesture->cancel();
+        } else if (m_state == RotateState::Rotating) {
             cancelRotation();
-            applySelectionConfirmed(false);
+            if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+                m_pivotPicked = false;
+                removeGizmo();
+                updateStatusHint();
+            } else {
+                applySelectionConfirmed(false);
+            }
         } else if (m_state == RotateState::Ready && m_selectionConfirmed) {
-            applySelectionConfirmed(false);
+            if ((isMultiSelect() || (m_isMarqueeSelected && !m_connected)) && m_pivotPicked) {
+                // 已定锚按 Esc：撤销定锚，回到请指定锚点
+                m_pivotPicked = false;
+                removeGizmo();
+                updateStatusHint();
+            } else {
+                // 未定锚按 Esc：反悔选区，回到未确认选区态
+                applySelectionConfirmed(false);
+                removeGizmo();
+            }
         } else {
             restoreBase();
             clearTarget();
         }
         event->accept();
-    } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-        // D15: 选中态回车 = 确认选择。确定态回车 no-op (无未提交内容不重复
-        // 确认)。角度的键盘精确输入已归上下文属性条 —— 不再需要"焦点在
-        // 输入框 → 应用数值 / 否则 → 确认"的双重身份仲裁。
+    } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space) {
+        // D15: 选中态回车/空格 = 确认选择。
         if (m_state == RotateState::Ready && !m_selectionConfirmed)
             applySelectionConfirmed(true);
         event->accept();
@@ -503,6 +675,112 @@ void ToolRotate::releaseFollowerIfAnchorMoved()
     if (m_scene) m_scene->refreshAllBlockItems();
 }
 
+void ToolRotate::syncSelectionVisual()
+{
+    if (!m_scene || !m_paramDoc) return;
+    for (const auto& blk : m_paramDoc->blocks()) {
+        if (BlockItem* bi = m_scene->findBlockItem(blk.id)) {
+            const bool inSel = m_selection.contains(blk.id);
+            bi->setToolSelected(inSel);
+            bi->setToolLocked(inSel);
+        }
+    }
+}
+
+void ToolRotate::ensureHoverSnapRing()
+{
+    if (m_hoverSnapRing || !m_scene) return;
+    m_hoverSnapRing = m_scene->addEllipse(0, 0, 12, 12);
+    m_hoverSnapRing->setBrush(Qt::NoBrush);
+    QPen pen(QColor(250, 204, 21), 2.0 / currentZoom());
+    m_hoverSnapRing->setPen(pen);
+    m_hoverSnapRing->setZValue(1000);
+    m_hoverSnapRing->setVisible(false);
+    m_managed.own(m_hoverSnapRing, &m_hoverSnapRing);
+}
+
+void ToolRotate::hideHoverSnapRing()
+{
+    m_hoverSnapped = false;
+    if (m_hoverSnapRing) {
+        m_hoverSnapRing->setVisible(false);
+    }
+}
+
+void ToolRotate::updateHoverSnapRing(const cad::geo::Vec2& worldPos)
+{
+    if (!m_scene || !m_paramDoc || m_selection.isEmpty()) {
+        hideHoverSnapRing();
+        return;
+    }
+    const double zoom = currentZoom();
+    const double tol = 12.0 / zoom;
+    double bestDist = tol;
+    cad::geo::Vec2 bestPt;
+    bool found = false;
+
+    // Search endpoints of all selected blocks
+    for (const QUuid& bId : m_selection) {
+        const auto* blk = m_paramDoc->findBlock(bId);
+        if (!blk) continue;
+        for (const auto& seg : blk->segments) {
+            for (const QUuid& pid : {seg.startPointId, seg.endPointId}) {
+                const auto* p = blk->findPoint(pid);
+                if (p && p->resolved) {
+                    const cad::geo::Vec2 wpt = blk->worldPos(pid);
+                    const double d = wpt.distanceTo(worldPos);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestPt = wpt;
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (found) {
+        m_hoverSnapped = true;
+        m_hoverSnapPoint = bestPt;
+        ensureHoverSnapRing();
+        const double r = 6.0 / zoom;
+        m_hoverSnapRing->setRect(bestPt.x - r, bestPt.y - r, 2 * r, 2 * r);
+        QPen pen(QColor(250, 204, 21), 2.0 / zoom);
+        m_hoverSnapRing->setPen(pen);
+        m_hoverSnapRing->setVisible(true);
+    } else {
+        hideHoverSnapRing();
+    }
+}
+
+void ToolRotate::adoptSelection(const QSet<QUuid>& blockIds)
+{
+    if (!m_paramDoc || !m_scene) return;
+    clearTarget();
+    m_selection = blockIds;
+    for (auto it = m_selection.begin(); it != m_selection.end(); ) {
+        const auto* blk = m_paramDoc->findBlock(*it);
+        if (!blk || blk->isBridge || blk->segments.empty()) {
+            it = m_selection.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (m_selection.isEmpty()) return;
+
+    if (m_selection.size() == 1) {
+        m_blockId = *m_selection.begin();
+        rebuildAnchorState();
+    } else {
+        m_blockId = QUuid();
+    }
+    m_state = RotateState::Ready;
+    applySelectionConfirmed(false);
+    syncSelectionVisual();
+    updateStatusHint();
+    m_scene->refreshAllBlockItems();
+}
+
 void ToolRotate::selectTarget(const QUuid& blockId,
                               const std::optional<cad::geo::Vec2>& clickWorld)
 {
@@ -516,6 +794,11 @@ void ToolRotate::selectTarget(const QUuid& blockId,
         removeGizmo();
 
     m_blockId = blockId;
+    m_selection.clear();
+    m_selection.insert(blockId);
+    m_isMarqueeSelected = false;
+    syncSelectionVisual();
+
     // 锚心初值 (用户拍板 2026-08-27): 跟随点击端 ——
     //   · 连接线: 锚恒取挂连接的一端 (选中即入"编辑跟随角"安全模式, 杜绝
     //     "点空闲端 → 旋转即放弃跟随"误路径; 跟随保护 2026-08 同源);
@@ -567,6 +850,14 @@ void ToolRotate::clearTarget()
     removeGizmo();
     clearAimCandidate();
     m_blockId = QUuid();
+    m_selection.clear();
+    m_isMarqueeSelected = false;
+    m_multiBaseTf.clear();
+    m_multiReleasedAtts.clear();
+    m_pressPending = false;
+    m_pivotPicked = false;
+    hideHoverSnapRing();
+    syncSelectionVisual();
     m_attId = QUuid();
     m_connected = false;
     m_anchorPointId = QUuid();
@@ -593,6 +884,45 @@ void ToolRotate::clearTarget()
 void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
 {
     if (m_state != RotateState::Ready) return;
+
+    if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+        m_multiBaseTf.clear();
+        m_multiReleasedAtts.clear();
+        for (const QUuid& bId : m_selection) {
+            auto* blk = m_paramDoc ? m_paramDoc->findBlock(bId) : nullptr;
+            if (!blk) continue;
+            m_multiBaseTf[bId] = { blk->transform, blk->endTargetBlockId, blk->endTargetPointId };
+            if (!blk->endTargetBlockId.isNull() && !m_selection.contains(blk->endTargetBlockId)) {
+                blk->endTargetBlockId = QUuid();
+                blk->endTargetPointId = QUuid();
+                blk->endTargetOffset = 0.0;
+                blk->endTargetOffsetFormula.clear();
+            }
+        }
+        if (m_paramDoc) {
+            for (const auto& att : m_paramDoc->attachments()) {
+                if (m_selection.contains(att.fromBlockId) && !m_selection.contains(att.toBlockId)) {
+                    m_multiReleasedAtts.push_back(att);
+                }
+            }
+            for (const auto& att : m_multiReleasedAtts) {
+                m_paramDoc->removeAttachment(att.id);
+            }
+        }
+
+        m_state = RotateState::Rotating;
+        const cad::geo::Vec2 d = pos - m_pivot;
+        m_dragCursorAngle0 = std::atan2(d.y, d.x);
+        m_dragCursorAnglePrev = m_dragCursorAngle0;
+        m_accumulatedAngleDeg = 0.0;
+        m_dragAngle0 = 0.0;
+
+        if (m_paramDoc) m_paramDoc->resolveAll();
+        if (m_scene) m_scene->syncBlockPositions();
+        updateStatusHint();
+        return;
+    }
+
     // 变量/公式驱动角度 = 锁定 (用户拍板 2026-12): 旋转工具不得改变角度 ——
     // 不烘焙公式、不覆盖变量。要改角度先移除公式 (属性面板)。旧实现在此
     // 把公式烘焙成数值后继续旋转, 导致变量被覆盖消失。
@@ -625,6 +955,8 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
     m_state = RotateState::Rotating;
     const cad::geo::Vec2 d = pos - m_pivot;
     m_dragCursorAngle0 = std::atan2(d.y, d.x);
+    m_dragCursorAnglePrev = m_dragCursorAngle0;
+    m_accumulatedAngleDeg = 0.0;
     m_dragAngle0 = currentAngleDeg();
 }
 
@@ -642,9 +974,30 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
     if (m_state != RotateState::Rotating) return;
     const cad::geo::Vec2 d = pos - m_pivot;
     const double theta = std::atan2(d.y, d.x);
-    double delta = theta - m_dragCursorAngle0;
-    // Normalise to (-π, π] so crossing the −X axis never causes a jump.
-    delta = cad::geo::normalizeRad(delta);
+    // 连续增量跟踪：逐帧增量归一化到 (-π, π]，避免跨越 ±180° 或负 X 轴时跳跃
+    const double stepRad = cad::geo::normalizeRad(theta - m_dragCursorAnglePrev);
+    m_dragCursorAnglePrev = theta;
+    m_accumulatedAngleDeg += cad::geo::radToDeg(stepRad);
+
+    if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+        double deltaDeg = m_accumulatedAngleDeg;
+        if (snap) deltaDeg = std::round(deltaDeg / 15.0) * 15.0;
+        const double deltaRad = cad::geo::degToRad(deltaDeg);
+
+        for (const QUuid& bId : m_selection) {
+            auto* b = m_paramDoc ? m_paramDoc->findBlock(bId) : nullptr;
+            if (!b) continue;
+            const auto& base = m_multiBaseTf[bId];
+            b->transform.rotation = base.tf.rotation + deltaRad;
+            b->transform.origin = m_pivot + (base.tf.origin - m_pivot).rotated(deltaRad);
+            b->touchGeometry();
+        }
+        if (m_paramDoc) m_paramDoc->resolveForDrag(m_selection.values());
+        if (m_scene) m_scene->syncBlockPositions();
+        updateGizmo();
+        updateStatusHint();
+        return;
+    }
 
     // 拖动约定（2026-08 v3 定稿）：全模式 WYSIWYG（线跟光标）。
     // 复制：相对角（逆时针为正）→ target = 起始 + 增量（复制中 connected 原线
@@ -655,15 +1008,15 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
     // 增大 0→±180，过开平后回落另一侧）。跨 ±180° 缝先归一再包符号。
     double target;
     if (m_copyGesture->active()) {
-        target = m_dragAngle0 + cad::geo::radToDeg(delta);
+        target = m_dragAngle0 + m_accumulatedAngleDeg;
         if (snap) target = std::round(target / 15.0) * 15.0;
     } else if (m_connected) {
         const double alpha0 = cad::geo::normalizeDeg360(m_dragAngle0);
-        double alpha = cad::geo::normalizeDeg360(alpha0 - cad::geo::radToDeg(delta));
+        double alpha = cad::geo::normalizeDeg360(alpha0 - m_accumulatedAngleDeg);
         if (snap) alpha = std::round(alpha / 15.0) * 15.0;
         target = cad::geo::normalizeDeg180(alpha);
     } else {
-        target = m_dragAngle0 + cad::geo::radToDeg(delta);
+        target = m_dragAngle0 + m_accumulatedAngleDeg;
         if (snap) target = std::round(target / 15.0) * 15.0;
     }
 
@@ -768,6 +1121,24 @@ void ToolRotate::applyShadowAngleDeg(double deg)
 
 void ToolRotate::applyModeValue(double value)
 {
+    if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+        m_accumulatedAngleDeg = value;
+        const double deltaRad = cad::geo::degToRad(value);
+        for (const QUuid& bId : m_selection) {
+            auto* b = m_paramDoc ? m_paramDoc->findBlock(bId) : nullptr;
+            if (!b) continue;
+            const auto& base = m_multiBaseTf[bId];
+            b->transform.rotation = base.tf.rotation + deltaRad;
+            b->transform.origin = m_pivot + (base.tf.origin - m_pivot).rotated(deltaRad);
+            b->touchGeometry();
+        }
+        if (m_paramDoc) m_paramDoc->resolveForDrag(m_selection.values());
+        if (m_scene) m_scene->syncBlockPositions();
+        updateGizmo();
+        updateStatusHint();
+        return;
+    }
+
     if (m_rotationMode == cad::param::RotationMode::ArcLength && m_connected) {
         // Arc-length input stores the arc DIRECTLY (never round-trips through
         // the normalized angle, which would collapse multi-turn arcs to 0;
@@ -831,6 +1202,9 @@ void ToolRotate::commitRotation()
 void ToolRotate::cancelRotation()
 {
     if (m_state != RotateState::Rotating) return;
+    if (m_copyGesture && m_copyGesture->active()) {
+        m_copyGesture->cancel();
+    }
     m_state = RotateState::Ready;
     restoreBase();
     clearAimCandidate();
@@ -840,6 +1214,56 @@ void ToolRotate::cancelRotation()
 void ToolRotate::commitCurrent()
 {
     if (!m_paramDoc || !m_undoStack) return;
+
+    if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+        std::vector<cad::cmd::RotateBlocksCommand::BlockTransformSnapshot> snapshots;
+        bool anyChanged = false;
+        for (const QUuid& bId : m_selection) {
+            auto* blk = m_paramDoc ? m_paramDoc->findBlock(bId) : nullptr;
+            if (!blk) continue;
+            const auto& base = m_multiBaseTf[bId];
+            const auto curTf = blk->transform;
+            if (std::abs(curTf.rotation - base.tf.rotation) > 1e-9 ||
+                curTf.origin.distanceTo(base.tf.origin) > 1e-6) {
+                anyChanged = true;
+            }
+            snapshots.push_back({
+                bId,
+                base.tf,
+                curTf,
+                base.endTargetBlock,
+                base.endTargetPoint,
+                blk->endTargetBlockId,
+                blk->endTargetPointId
+            });
+        }
+        if (!anyChanged && m_multiReleasedAtts.empty()) {
+            updateGizmo();
+            return;
+        }
+
+        // Restore-then-replay: put the base state back
+        for (const auto& s : snapshots) {
+            if (auto* b = m_paramDoc->findBlock(s.blockId)) {
+                b->transform = s.oldTf;
+                b->endTargetBlockId = s.oldEndTargetBlock;
+                b->endTargetPointId = s.oldEndTargetPoint;
+                b->touchGeometry();
+            }
+        }
+        for (const auto& a : m_multiReleasedAtts) {
+            cad::param::RawModelAccess::addAttachmentRaw(*m_paramDoc, a);
+        }
+        m_undoStack->push(new cad::cmd::RotateBlocksCommand(
+            m_paramDoc, snapshots, m_multiReleasedAtts));
+
+        for (const auto& s : snapshots) {
+            m_multiBaseTf[s.blockId] = { s.newTf, s.newEndTargetBlock, s.newEndTargetPoint };
+        }
+        m_multiReleasedAtts.clear();
+        updateGizmo();
+        return;
+    }
 
     if (m_connected) {
         // 影子角度通道提交 (R6): restore-then-replay 单步 undo。
@@ -967,6 +1391,25 @@ void ToolRotate::commitCurrent()
 void ToolRotate::restoreBase()
 {
     if (!m_paramDoc) return;
+    if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+        for (const QUuid& bId : m_selection) {
+            if (auto* blk = m_paramDoc->findBlock(bId)) {
+                const auto& base = m_multiBaseTf[bId];
+                blk->transform = base.tf;
+                blk->endTargetBlockId = base.endTargetBlock;
+                blk->endTargetPointId = base.endTargetPoint;
+                blk->touchGeometry();
+            }
+        }
+        for (const auto& a : m_multiReleasedAtts) {
+            cad::param::RawModelAccess::addAttachmentRaw(*m_paramDoc, a);
+        }
+        m_multiReleasedAtts.clear();
+        m_paramDoc->resolveAll();
+        if (m_scene) m_scene->refreshAllBlockItems();
+        return;
+    }
+
     if (m_connected) {
         // 影子角度通道 (Esc): 影子/跟随线回拖前基线 (拆开态) 或 Att1 Δ 回基线。
         if (isAngleLocked() && !m_shadowId.isNull()) {
@@ -1011,6 +1454,9 @@ double ToolRotate::currentAngleDeg() const
 
     if (m_copyGesture && m_copyGesture->active())
         return m_copyGesture->currentRelativeAngle();
+
+    if (isMultiSelect() || (m_isMarqueeSelected && !m_connected))
+        return m_accumulatedAngleDeg;
 
     if (m_connected) {
         const auto* a = editableAttachment();
@@ -1141,6 +1587,20 @@ void ToolRotate::updateStatusHint()
         reportHintOverride(QString::fromUtf8("旋转中 · 松手提交 · Esc 回位"));
         return;
     case RotateState::Ready: {
+        if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+            if (m_selectionConfirmed) {
+                if (m_pivotPicked) {
+                    reportHintOverride(QString::fromUtf8("已指定旋转中心 · 拖动旋转(Shift吸附15°) | Esc重选锚点"));
+                } else {
+                    reportHintOverride(QString::fromUtf8("请指定旋转中心（锚点）：点击线段端点或画布任意位置 | Esc返回选区"));
+                }
+            } else {
+                reportHintOverride(QString::fromUtf8("已选 %1 条线段 · 右键或回车确认选区 | Shift加减选 | Esc清除")
+                    .arg(m_selection.size()));
+            }
+            return;
+        }
+
         // D15 确认门的文字表达 (H2 第三条) —— 原挂在 HUD caption 后缀。
         // 2026-12: 附带锚心端 (确定提示) —— 锚心 = 旋转基准端, 换向/点端点
         // 切换后提示同步刷新, 让"基准在哪端"常驻可见。
@@ -1167,7 +1627,7 @@ void ToolRotate::updateStatusHint()
             return;
         }
         reportHintOverride(m_selectionConfirmed
-            ? QString::fromUtf8("旋转：锚心 %1 · 拖动旋转（Shift 吸附 15°）")
+            ? QString::fromUtf8("旋转：锚心 %1 · 拖动旋转(Shift吸附) | 长按Ctrl拖动复制")
                   .arg(anchorTag)
             : QString::fromUtf8("旋转：锚心 %1 · 右键或回车确认后拖动")
                   .arg(anchorTag));
@@ -1377,7 +1837,6 @@ double ToolRotate::originalWorldRotDeg() const
             }
         }
     }
-    if (m_anchorIsEnd) baseDeg += 180.0;
     return baseDeg;
 }
 
@@ -1385,6 +1844,15 @@ void ToolRotate::applySelectionConfirmed(bool confirmed)
 {
     if (m_selectionConfirmed == confirmed) return;
     m_selectionConfirmed = confirmed;
+    if (!confirmed) {
+        m_pivotPicked = false;
+        m_pressPending = false;
+        hideHoverSnapRing();
+        if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+            removeGizmo();
+        }
+    }
+    syncSelectionVisual();
     updateGizmo();      // gizmo 虚线/空心 ↔ 实线/实心 (H2 ①)
     updateStatusHint();   // 状态栏确认提示 (H2 第三条, 原挂在 HUD caption)
 }
@@ -1402,34 +1870,69 @@ void ToolRotate::updateGizmo()
     // 另经 applySelectionConfirmed 推样式+caption。
     m_gizmo->setConfirmed(m_selectionConfirmed
                           || (m_copyGesture && m_copyGesture->active()));
-    const double deg = currentAngleDeg();
-    // 黄弧永远画“真实夹角”（2026-08 用户拍板，可去掉黄弧上的角度文字）：
-    // 连接线 = 折线 → 直行延续方向（跨度 = 折角 α，含 α > 180° 的 CW 侧）；
-    // 自由线 = 0° → 显示角；复制 = 原线 → 克隆线（基准 = 原线世界方向，
-    // span 归一化到 (−180°, +180°] 取内弧）。
+
     double dashRad = m_refWorldRad;
-    double arcStart;
-    double arcEnd;
+    double arcStart = 0.0;
+    double arcEnd = 0.0;
+
+    if (isMultiSelect() || (m_isMarqueeSelected && !m_connected)) {
+        dashRad = m_dragCursorAngle0;
+        arcStart = m_dragCursorAngle0;
+        arcEnd = m_dragCursorAngle0 + cad::geo::degToRad(m_accumulatedAngleDeg);
+        m_gizmo->update(currentZoom(), dashRad, arcStart, arcEnd);
+        return;
+    }
+
+    const double deg = currentAngleDeg();
+    // 黄弧统一约定：画真实夹角内弧（<= 180°），灰虚线指示旋转参考基准。
+
     if (m_copyGesture && m_copyGesture->active()) {
-        const double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
-        dashRad = origRad;                       // 灰虚线随原线重定位
+        // ── 旋转复制模式 ──
+        // 灰虚线贴合原线；黄弧在原线与克隆线之间画内弧（<= 180°）
+        double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
+        if (m_anchorIsEnd) origRad += M_PI;
+        origRad = cad::geo::normalizeRad(origRad);
+
+        double cloneRad = m_copyGesture->currentWorldRad();
+        if (m_anchorIsEnd) cloneRad += M_PI;
+        cloneRad = cad::geo::normalizeRad(cloneRad);
+
+        dashRad = origRad;                       // 灰虚线贴合原线朝向
         arcStart = origRad;
-        arcEnd = m_copyGesture->currentWorldRad();
-        double span = arcEnd - arcStart;
+        double span = cloneRad - arcStart;
         while (span >  M_PI) span -= 2.0 * M_PI;
         while (span < -M_PI) span += 2.0 * M_PI;
-        arcEnd = arcStart + span;                // 内弧
+        arcEnd = arcStart + span;                // 内弧 (<= 180°)
     } else if (m_connected) {
+        // ── 连接线跟随模式 ──
+        // 灰虚线指向闭合基准方向，黄弧连接跟随线与基准方向，两端完全吻合
+        dashRad = m_refWorldRad + M_PI;
         const double aRad = cad::geo::normalizeDeg360(deg) * M_PI / 180.0;
-        arcStart = m_refWorldRad + M_PI - aRad;  // 折线方向
-        arcEnd = m_refWorldRad + M_PI;           // 直行延续方向
+        arcStart = m_refWorldRad + M_PI - aRad;  // 跟随线方向
+        arcEnd = dashRad;                        // 闭合基准方向
         double span = arcEnd - arcStart;         // = ±α
         while (span >  M_PI) span -= 2.0 * M_PI;
         while (span < -M_PI) span += 2.0 * M_PI;
-        arcEnd = arcStart + span;                // α > 180° 取 CW 短侧
+        arcEnd = arcStart + span;                // 内弧短侧
     } else {
-        arcStart = 0.0;
-        arcEnd = deg * M_PI / 180.0;
+        // ── 自由线普通旋转模式 ──
+        // 灰虚线与黄弧遵循与旋转复制一致的相对夹角约定
+        const double curRad = deg * M_PI / 180.0;
+        if (m_state == RotateState::Rotating) {
+            // 拖动旋转中：灰虚线锁定在拖动起手位置，黄弧展示当前旋转了多少度内弧
+            const double dragStartRad = m_dragAngle0 * M_PI / 180.0;
+            dashRad = dragStartRad;
+            arcStart = dragStartRad;
+            double span = curRad - arcStart;
+            while (span >  M_PI) span -= 2.0 * M_PI;
+            while (span < -M_PI) span += 2.0 * M_PI;
+            arcEnd = arcStart + span;            // 内弧 (<= 180°)
+        } else {
+            // 就绪态/选中态：灰虚线指示当前线段世界朝向，黄弧为 0（无多余半圆/外弧）
+            dashRad = curRad;
+            arcStart = curRad;
+            arcEnd = curRad;
+        }
     }
     m_gizmo->update(currentZoom(), dashRad, arcStart, arcEnd);
     // 状态栏提示随 gizmo 同步 (拖动每帧都刷一次; 普通旋转的文案是常量,

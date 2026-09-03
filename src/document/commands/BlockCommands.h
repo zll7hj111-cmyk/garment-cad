@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUndoCommand>
 #include <QUuid>
@@ -135,6 +135,34 @@ private:
     QUuid m_newEndTargetPoint;
     QUuid m_releasedAttId;                      ///< Attachment detached by redo().
     cad::param::Attachment m_releasedAttBackup; ///< Snapshot restored by undo().
+};
+
+/// Rotate multiple blocks together (rigid body rotation around a pivot).
+/// Snapshots old/new transforms and external attachments detached by the rotation.
+class RotateBlocksCommand : public QUndoCommand
+{
+public:
+    struct BlockTransformSnapshot {
+        QUuid blockId;
+        cad::param::Transform2D oldTf;
+        cad::param::Transform2D newTf;
+        QUuid oldEndTargetBlock;
+        QUuid oldEndTargetPoint;
+        QUuid newEndTargetBlock;
+        QUuid newEndTargetPoint;
+    };
+
+    RotateBlocksCommand(cad::param::ParamDocument* doc,
+                        std::vector<BlockTransformSnapshot> snapshots,
+                        std::vector<cad::param::Attachment> releasedAttachments = {},
+                        QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    std::vector<BlockTransformSnapshot> m_snapshots;
+    std::vector<cad::param::Attachment> m_releasedAttachments;
 };
 
 /// Add the clones produced by a Ctrl+drag quick copy (快捷复制) as ONE

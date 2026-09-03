@@ -1,4 +1,4 @@
-﻿#include "BlockCommands.h"
+#include "BlockCommands.h"
 
 #include <QColor>
 #include <QSet>
@@ -306,6 +306,52 @@ void RotateBlockCommand::undo()
     m_doc->resolveAll();
 }
 
+// ─── RotateBlocksCommand ───
+
+RotateBlocksCommand::RotateBlocksCommand(cad::param::ParamDocument* doc,
+                                         std::vector<BlockTransformSnapshot> snapshots,
+                                         std::vector<cad::param::Attachment> releasedAttachments,
+                                         QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_snapshots(std::move(snapshots))
+    , m_releasedAttachments(std::move(releasedAttachments))
+{
+    setText(QStringLiteral("旋转 %1 条线段").arg(m_snapshots.size()));
+}
+
+void RotateBlocksCommand::redo()
+{
+    for (const auto& s : m_snapshots) {
+        if (auto* b = m_doc->findBlock(s.blockId)) {
+            b->transform = s.newTf;
+            b->endTargetBlockId = s.newEndTargetBlock;
+            b->endTargetPointId = s.newEndTargetPoint;
+            b->touchGeometry();
+        }
+    }
+    for (const auto& a : m_releasedAttachments) {
+        m_doc->removeAttachment(a.id);
+    }
+    m_doc->resolveAll();
+}
+
+void RotateBlocksCommand::undo()
+{
+    for (const auto& s : m_snapshots) {
+        if (auto* b = m_doc->findBlock(s.blockId)) {
+            b->transform = s.oldTf;
+            b->endTargetBlockId = s.oldEndTargetBlock;
+            b->endTargetPointId = s.oldEndTargetPoint;
+            b->touchGeometry();
+        }
+    }
+    for (const auto& a : m_releasedAttachments) {
+        cad::param::RawModelAccess::addAttachmentRaw(*m_doc, a);
+    }
+    m_doc->resolveAll();
+}
+
 // ─── DuplicateBlocksCommand ───
 
 DuplicateBlocksCommand::DuplicateBlocksCommand(cad::param::ParamDocument* doc,
@@ -328,10 +374,15 @@ void DuplicateBlocksCommand::redo()
         m_doc->addBlock(b);
     // Verbatim: cloned connections keep the ORIGINAL's isLocked (复制语义).
     cad::param::RawModelAccess::addAttachmentsRaw(*m_doc, m_result.attachments);
+    for (const auto& c : m_result.components)
+        m_doc->addComponent(c);
+    m_doc->resolveAll();
 }
 
 void DuplicateBlocksCommand::undo()
 {
+    for (const auto& c : m_result.components)
+        m_doc->removeComponentRecord(c.id);
     // removeBlock also drops any attachment touching the clone; cloned
     // bridges may get mutated (released) when their first pin goes away,
     // but they are removed right after, so the mutation is irrelevant.

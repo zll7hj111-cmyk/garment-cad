@@ -42,12 +42,16 @@ void RotateCopyGesture::begin(const Vec2& pos)
     const cad::param::Block& clone = m_copyResult.blocks.front();
     m_cloneBlockId = clone.id;
 
-    // 副本挂接点恒用副本线段的起点（用户拍板 2026-08: "复制的线段以终点
-    // 为锚心，并且把自己的终点调换成起点"）——锚心决定挂在原线的哪个点
-    // （起点或终点），副本侧一律以自己的起点作为 fromPoint，线段从锚心
-    // 伸出。不再取"与锚心同序号的克隆点"（终点锚心时那会是副本终点）。
+    // 副本对齐点对齐旋转锚点（用户拍板 2026-09）:
+    // 旋转锚心是起点时，副本以自身起点为对齐点；锚心是终点时，副本以自身终点为对齐点。
     if (clone.segments.empty()) { m_copyResult = {}; return; }
-    m_clonePivotPointId = clone.segments.front().startPointId;
+    const auto& origSeg = orig->segments.front();
+    const auto& cloneSeg = clone.segments.front();
+    if (m_pivotPointId == origSeg.endPointId) {
+        m_clonePivotPointId = cloneSeg.endPointId;
+    } else {
+        m_clonePivotPointId = cloneSeg.startPointId;
+    }
 
     // The clone must NOT inherit the original's endpoint-aim constraint — the
     // resolver would pull the copy straight back to the target point on every
@@ -96,6 +100,8 @@ void RotateCopyGesture::begin(const Vec2& pos)
     // 原样——endpointAtAngle / gizmo 直接读工具参考方向。
     const Vec2 d = pos - o.m_pivot;
     o.m_dragCursorAngle0 = std::atan2(d.y, d.x);
+    o.m_dragCursorAnglePrev = o.m_dragCursorAngle0;
+    o.m_accumulatedAngleDeg = 0.0;
     o.m_dragAngle0 = 0.0;   // relative angle starts at 0 (clone on original)
 
     m_copyMode = true;
@@ -134,9 +140,15 @@ void RotateCopyGesture::convert(const Vec2& pos)
     const cad::param::Block& clone = m_copyResult.blocks.front();
     m_cloneBlockId = clone.id;
 
-    // 副本挂接点恒用副本线段的起点（与 begin() 一致，用户拍板）。
+    // 副本对齐点对齐旋转锚点（与 begin() 一致，用户拍板 2026-09）。
     if (clone.segments.empty()) { m_copyResult = {}; return; }
-    m_clonePivotPointId = clone.segments.front().startPointId;
+    const auto& origSeg = blk->segments.front();
+    const auto& cloneSeg = clone.segments.front();
+    if (m_pivotPointId == origSeg.endPointId) {
+        m_clonePivotPointId = cloneSeg.endPointId;
+    } else {
+        m_clonePivotPointId = cloneSeg.startPointId;
+    }
 
     // 复制基准 = 原线旋转前（base 姿态）的世界朝向（相对 0° = 与原线 base
     // 姿态重叠）——此时原块尚未回弹（仍处于旋转后的姿态），不能读 live
@@ -154,7 +166,6 @@ void RotateCopyGesture::convert(const Vec2& pos)
         }
     }
     baseOrigRotDeg += o.m_baseTf.rotation * 180.0 / M_PI;
-    if (o.m_anchorIsEnd) baseOrigRotDeg += 180.0;
     m_attachExitRad = o.m_baseTf.rotation + blk->exitDirectionAtPoint(m_pivotPointId,
                                                                       m_leaderSegmentId);
     m_baseOffsetDeg = baseOrigRotDeg - cad::geo::radToDeg(m_attachExitRad);
@@ -200,6 +211,8 @@ void RotateCopyGesture::convert(const Vec2& pos)
     // 朝向 + 相对角，2026-08 定稿）。
     const Vec2 d = pos - o.m_pivot;
     o.m_dragCursorAngle0 = std::atan2(d.y, d.x);
+    o.m_dragCursorAnglePrev = o.m_dragCursorAngle0;
+    o.m_accumulatedAngleDeg = 0.0;
     // 相对角显示 = relDeg（逆时针为正，2026-08 v3 定稿），显示空间即拖动空间。
     o.m_dragAngle0 = relDeg;
 

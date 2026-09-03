@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QPointF>
 
@@ -48,6 +48,8 @@ public:
     void remove();
 
     [[nodiscard]] bool visible() const { return m_arc != nullptr; }
+    [[nodiscard]] double refWorldRad() const { return m_refWorldRad; }
+    [[nodiscard]] bool isArcEmpty() const;
 
 private:
     CanvasScene* m_scene = nullptr;
