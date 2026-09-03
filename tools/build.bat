@@ -12,7 +12,11 @@ if errorlevel 1 exit /b 1
 cmake --preset %PRESET%
 if errorlevel 1 exit /b 1
 
-cmake --build --preset %PRESET%
+if not "%~2"=="" (
+    cmake --build --preset %PRESET% --target %~2
+) else (
+    cmake --build --preset %PRESET%
+)
 if errorlevel 1 exit /b 1
 
 endlocal

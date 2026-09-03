@@ -178,3 +178,189 @@ foreach(f ${ELA_APPBAR_CPPS})
         content "${content}")
     file(WRITE "${f}" "${content}")
 endforeach()
+
+# ---------------------------------------------------------------------------
+# Part 5 — SpinBox: support QAbstractSpinBox::NoButtons.
+#
+# ElaSpinBoxStyle unconditionally drew Add/Sub buttons and icons (AngleUp/Down)
+# ignoring buttonSymbols(). It also did not adjust editField rect when buttons
+# are hidden. We update ElaSpinBoxStyle to respect NoButtons, and default
+# ElaDoubleSpinBox and ElaSpinBox to NoButtons.
+# ---------------------------------------------------------------------------
+
+file(GLOB_RECURSE ELA_SPIN_CPPS "ElaWidgetTools/ElaDoubleSpinBox.cpp" "ElaWidgetTools/ElaSpinBox.cpp")
+foreach(f ${ELA_SPIN_CPPS})
+    file(READ "${f}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    if(NOT content MATCHES "setButtonSymbols\\(QAbstractSpinBox::NoButtons\\)")
+        string(REPLACE
+"    setStyle(d->_style);
+    lineEdit()->setAlignment"
+"    setStyle(d->_style);
+    setButtonSymbols(QAbstractSpinBox::NoButtons);
+    lineEdit()->setAlignment"
+            content "${content}")
+        file(WRITE "${f}" "${content}")
+    endif()
+endforeach()
+
+file(GLOB_RECURSE ELA_STYLE_CPPS "ElaWidgetTools/DeveloperComponents/ElaSpinBoxStyle.cpp")
+foreach(f ${ELA_STYLE_CPPS})
+    file(READ "${f}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    if(NOT content MATCHES "sopt->buttonSymbols != QAbstractSpinBox::NoButtons")
+        string(REPLACE
+"        painter->drawRoundedRect(spinBoxRect, 4, 4);
+        //添加按钮
+        QRect addLineRect = subControlRect(control, sopt, SC_ScrollBarAddLine, widget);
+        //减少按钮
+        QRect subLineRect = subControlRect(control, sopt, SC_ScrollBarSubLine, widget);
+        if (isEnable)
+        {
+            //添加按钮
+            if (sopt->activeSubControls == SC_ScrollBarAddLine)
+            {
+                painter->setPen(Qt::NoPen);
+                if (sopt->state & QStyle::State_Sunken && sopt->state & QStyle::State_MouseOver)
+                {
+                    painter->setBrush(ElaThemeColor(_themeMode, BasicPressAlpha));
+                }
+                else
+                {
+                    if (sopt->state & QStyle::State_MouseOver)
+                    {
+                        painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
+                    }
+                }
+                painter->drawRoundedRect(addLineRect, 4, 4);
+            }
+            //减少按钮
+            if (sopt->activeSubControls == SC_ScrollBarSubLine)
+            {
+                painter->setPen(Qt::NoPen);
+                if (sopt->state & QStyle::State_Sunken && sopt->state & QStyle::State_MouseOver)
+                {
+                    painter->setBrush(ElaThemeColor(_themeMode, BasicPressAlpha));
+                }
+                else
+                {
+                    if (sopt->state & QStyle::State_MouseOver)
+                    {
+                        painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
+                    }
+                }
+                painter->drawRoundedRect(subLineRect, 4, 4);
+            }
+        }
+        //底边线
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(ElaThemeColor(_themeMode, BasicHemline));
+        QPainterPath path;
+        path.moveTo(4, spinBoxRect.y() + spinBoxRect.height());
+        path.lineTo(spinBoxRect.width() - 4, spinBoxRect.y() + spinBoxRect.height());
+        path.arcTo(QRectF(spinBoxRect.width() - 8, spinBoxRect.y() + spinBoxRect.height() - 8, 8, 8), -90, 45);
+        path.lineTo(4 - 2 * std::sqrt(2), spinBoxRect.y() + spinBoxRect.height() - (4 - 2 * std::sqrt(2)));
+        path.arcTo(QRectF(0, spinBoxRect.y() + spinBoxRect.height() - 8, 8, 8), 225, 45);
+        path.closeSubpath();
+        painter->drawPath(path);
+
+        //添加图标
+        QFont iconFont = QFont(\"ElaAwesome\");
+        iconFont.setPixelSize(17);
+        painter->setFont(iconFont);
+        painter->setPen(isEnable ? ElaThemeColor(_themeMode, BasicText) : ElaThemeColor(_themeMode, BasicTextDisable));
+        painter->drawText(addLineRect, Qt::AlignCenter, _pButtonMode == ElaSpinBoxType::PMSide ? QChar(char16_t(char16_t(ElaIconType::Plus))) : QChar(char16_t(char16_t(ElaIconType::AngleUp))));
+        //减小图标
+        painter->drawText(subLineRect, Qt::AlignCenter, _pButtonMode == ElaSpinBoxType::PMSide ? QChar(char16_t(char16_t(ElaIconType::Minus))) : QChar(char16_t(char16_t(ElaIconType::AngleDown))));"
+"        painter->drawRoundedRect(spinBoxRect, 4, 4);
+        //底边线
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(ElaThemeColor(_themeMode, BasicHemline));
+        QPainterPath path;
+        path.moveTo(4, spinBoxRect.y() + spinBoxRect.height());
+        path.lineTo(spinBoxRect.width() - 4, spinBoxRect.y() + spinBoxRect.height());
+        path.arcTo(QRectF(spinBoxRect.width() - 8, spinBoxRect.y() + spinBoxRect.height() - 8, 8, 8), -90, 45);
+        path.lineTo(4 - 2 * std::sqrt(2), spinBoxRect.y() + spinBoxRect.height() - (4 - 2 * std::sqrt(2)));
+        path.arcTo(QRectF(0, spinBoxRect.y() + spinBoxRect.height() - 8, 8, 8), 225, 45);
+        path.closeSubpath();
+        painter->drawPath(path);
+
+        if (sopt->buttonSymbols != QAbstractSpinBox::NoButtons)
+        {
+            //添加按钮
+            QRect addLineRect = subControlRect(control, sopt, SC_ScrollBarAddLine, widget);
+            //减少按钮
+            QRect subLineRect = subControlRect(control, sopt, SC_ScrollBarSubLine, widget);
+            if (isEnable)
+            {
+                //添加按钮
+                if (sopt->activeSubControls == SC_ScrollBarAddLine)
+                {
+                    painter->setPen(Qt::NoPen);
+                    if (sopt->state & QStyle::State_Sunken && sopt->state & QStyle::State_MouseOver)
+                    {
+                        painter->setBrush(ElaThemeColor(_themeMode, BasicPressAlpha));
+                    }
+                    else
+                    {
+                        if (sopt->state & QStyle::State_MouseOver)
+                        {
+                            painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
+                        }
+                    }
+                    painter->drawRoundedRect(addLineRect, 4, 4);
+                }
+                //减少按钮
+                if (sopt->activeSubControls == SC_ScrollBarSubLine)
+                {
+                    painter->setPen(Qt::NoPen);
+                    if (sopt->state & QStyle::State_Sunken && sopt->state & QStyle::State_MouseOver)
+                    {
+                        painter->setBrush(ElaThemeColor(_themeMode, BasicPressAlpha));
+                    }
+                    else
+                    {
+                        if (sopt->state & QStyle::State_MouseOver)
+                        {
+                            painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
+                        }
+                    }
+                    painter->drawRoundedRect(subLineRect, 4, 4);
+                }
+            }
+
+            //添加图标
+            QFont iconFont = QFont(\"ElaAwesome\");
+            iconFont.setPixelSize(17);
+            painter->setFont(iconFont);
+            painter->setPen(isEnable ? ElaThemeColor(_themeMode, BasicText) : ElaThemeColor(_themeMode, BasicTextDisable));
+            painter->drawText(addLineRect, Qt::AlignCenter, _pButtonMode == ElaSpinBoxType::PMSide ? QChar(char16_t(char16_t(ElaIconType::Plus))) : QChar(char16_t(char16_t(ElaIconType::AngleUp))));
+            //减小图标
+            painter->drawText(subLineRect, Qt::AlignCenter, _pButtonMode == ElaSpinBoxType::PMSide ? QChar(char16_t(char16_t(ElaIconType::Minus))) : QChar(char16_t(char16_t(ElaIconType::AngleDown))));
+        }"
+            content "${content}")
+
+        string(REPLACE
+"    case CC_SpinBox:
+    {
+        switch (sc)"
+"    case CC_SpinBox:
+    {
+        const QStyleOptionSpinBox* sopt = qstyleoption_cast<const QStyleOptionSpinBox*>(opt);
+        if (sopt && sopt->buttonSymbols == QAbstractSpinBox::NoButtons)
+        {
+            if (sc == SC_SpinBoxEditField)
+            {
+                QRect spinBoxRect = QProxyStyle::subControlRect(cc, opt, SC_SpinBoxFrame, widget);
+                return {spinBoxRect.x(), spinBoxRect.y(), spinBoxRect.width(), spinBoxRect.height()};
+            }
+            if (sc == SC_ScrollBarAddLine || sc == SC_ScrollBarSubLine)
+            {
+                return QRect();
+            }
+        }
+        switch (sc)"
+            content "${content}")
+        file(WRITE "${f}" "${content}")
+    endif()
+endforeach()

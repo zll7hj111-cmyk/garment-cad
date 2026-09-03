@@ -76,7 +76,7 @@ Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指�
 
 ## 依赖管理
 
-- FetchContent 内嵌于 CMakeLists.txt：miniz 3.0.2 / ElaWidgetTools（GIT_TAG aa1856b8，PATCH_COMMAND 4 个 Part 幂等，LNK4217 正常）/ spdlog v1.17.0 / Tracy v0.14.0（TRACY_ON_DEMAND=ON）。
+- FetchContent 内嵌于 CMakeLists.txt：miniz 3.0.2 / ElaWidgetTools（GIT_TAG aa1856b8，PATCH_COMMAND 5 个 Part 幂等，LNK4217 正常）/ spdlog v1.17.0 / Tracy v0.14.0（TRACY_ON_DEMAND=ON）。
 - Qt6 组件：Widgets Svg OpenGLWidgets Test；AUTOMOC/AUTORCC/AUTOUIC 已启用。
 - 图标：Phosphor Icons SVG（MIT），resources/icons/ + icons.qrc（前缀 `:/icons/`），统一经 `src/ui/IconHelper.h`。
 
