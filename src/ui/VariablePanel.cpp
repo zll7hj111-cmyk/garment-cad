@@ -12,6 +12,7 @@
 #include "ElaToolButton.h"
 #include "ElaText.h"
 #include "Theme.h"
+#include "TooltipFormatter.h"
 #include "PanelSubTabBar.h"
 #include <QFrame>
 #include <QRect>
@@ -154,6 +155,18 @@ void VariablePanel::setupUi()
         m_tabBar->setTabProfile(2, tk.piece4, true);   // 关联 = 钴蓝 (只读)
         m_tabBar->setTabProfile(3, tk.piece3, true);   // 测量 = 陶土 (只读)
     }
+    m_tabBar->setTabToolTip(0, cad::ui::TooltipFormatter::action(
+        QStringLiteral("变量列表"),
+        QStringLiteral("基础设计规格与固定尺寸数值")));
+    m_tabBar->setTabToolTip(1, cad::ui::TooltipFormatter::action(
+        QStringLiteral("公式列表"),
+        QStringLiteral("由算术与几何关系计算得出的动态尺寸公式")));
+    m_tabBar->setTabToolTip(2, cad::ui::TooltipFormatter::action(
+        QStringLiteral("关联参数（只读）"),
+        QStringLiteral("从当前线段或实体引用的实时长度与角度属性")));
+    m_tabBar->setTabToolTip(3, cad::ui::TooltipFormatter::action(
+        QStringLiteral("测量参数（只读）"),
+        QStringLiteral("画布两点间距、角度测量生成的只读参数")));
     headerLayout->addWidget(m_tabBar);
 
     auto* metaRow = new QWidget(header);
@@ -163,6 +176,10 @@ void VariablePanel::setupUi()
 
     m_countLabel = new ElaText(QString(), 13, metaRow);
     m_countLabel->setObjectName(QStringLiteral("panelCountPill"));
+    m_countLabel->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("项目统计"),
+        QStringLiteral("当前子页签中的项目总数"),
+        false));
     metaLayout->addWidget(m_countLabel);
 
     metaLayout->addStretch();
@@ -171,7 +188,9 @@ void VariablePanel::setupUi()
     m_addGroupBtn->setIcon(cad::ui::IconHelper::iconByName(
         QStringLiteral("tree-structure"), cad::ui::Theme::tokens().text1));
     m_addGroupBtn->setIconSize(QSize(14, 14));
-    m_addGroupBtn->setToolTip(QStringLiteral("新建分组"));
+    m_addGroupBtn->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("新建分组"),
+        QStringLiteral("为公式变量创建逻辑分类分组，便于折叠和结构化管理")));
     m_addGroupBtn->setFixedSize(26, 26);
     m_addGroupBtn->setCursor(Qt::PointingHandCursor);
     m_addGroupBtn->setVisible(false);  // Formula tab only.
@@ -182,6 +201,9 @@ void VariablePanel::setupUi()
     m_addBtn->setIcon(cad::ui::IconHelper::iconByName(QStringLiteral("plus"), Qt::white));
     m_addBtn->setIconSize(QSize(12, 12));
     m_addBtn->setCursor(Qt::PointingHandCursor);
+    m_addBtn->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("添加新项"),
+        QStringLiteral("在当前选中的子页签中创建新的变量或公式")));
     m_addBtn->setObjectName(QStringLiteral("primaryButton"));
     metaLayout->addWidget(m_addBtn);
 
@@ -503,6 +525,7 @@ void VariablePanel::onAddClicked()
 void VariablePanel::addNewVariable()
 {
     cad::param::Variable v;
+    v.refName = nextRefName();
     v.name = QStringLiteral("新变量");
     v.value = 0.0;
 

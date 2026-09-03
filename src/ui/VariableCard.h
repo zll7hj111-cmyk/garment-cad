@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -10,11 +10,10 @@ class ElaLineEdit;
 class QDoubleSpinBox;
 class ElaText;
 
-namespace cad::ui { class CopyChip; }
+namespace cad::ui { class CompoundChip; }
 
-/// Single-row card for one variable (always expanded).
-/// Layout: [Name] [Value]        [✕]
-///         [refName chip] [value spin] [comment edit]
+/// Streamlined single-row card for one plain variable (~32px height).
+/// Layout: [varIndex] [CompoundChip: refName | name] [value spin] [cm] [comment edit] [✕]
 class VariableCard : public CardBase
 {
     Q_OBJECT
@@ -38,9 +37,9 @@ signals:
 
 private:
     void setupUi(const cad::param::Variable& var);
-    void updateValueLabel();
 
     QUuid m_id;
 
-    QDoubleSpinBox*   m_valueSpin = nullptr;
+    cad::ui::CompoundChip* m_compoundChip = nullptr;
+    QDoubleSpinBox*        m_valueSpin = nullptr;
 };

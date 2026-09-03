@@ -5,12 +5,13 @@
 #include "ElaDoubleSpinBox.h"
 #include "ElaToolButton.h"
 #include <QHBoxLayout>
-#include <QVBoxLayout>
 #include <QMouseEvent>
 
-#include "CopyChip.h"
+#include "CompoundChip.h"
 #include "geometry/Units.h"
 #include "Theme.h"
+#include "TooltipFormatter.h"
+#include "ui/NoteButton.h"
 
 namespace {
 
@@ -30,7 +31,7 @@ public:
 VariableCard::VariableCard(const cad::param::Variable& var, bool alternate,
                            QWidget* parent)
     : CardBase(alternate, parent)
-     , m_id(var.id)
+    , m_id(var.id)
 {
     setAccentRole(cad::ui::CardAccent::Variable);  // 变量 = 碳灰竖线 (方案 A)
     setupUi(var);
@@ -40,106 +41,87 @@ cad::param::Variable VariableCard::variable() const
 {
     cad::param::Variable v;
     v.id = m_id;
-    v.name = m_nameChip->text().trimmed();
-    v.refName = m_refChip->text().trimmed();
+    v.name = m_compoundChip->name();
+    v.refName = m_compoundChip->refName();
     v.value = cad::geo::Units::cmToMm(m_valueSpin->value());
-    v.comment = m_commentEdit->text().trimmed();
+    v.comment = m_noteBtn ? m_noteBtn->note() : QString();
     return v;
 }
 
 void VariableCard::focusName()
 {
-    m_nameChip->focusEdit();
+    m_compoundChip->focusNameEdit();
 }
 
 void VariableCard::syncFromModel(const cad::param::Variable& var)
 {
-    m_nameChip->setText(var.name);
-    m_refChip->setText(var.refName);
+    m_compoundChip->setName(var.name);
+    m_compoundChip->setRefName(var.refName);
     if (!m_valueSpin->hasFocus()) {
         m_valueSpin->blockSignals(true);
         m_valueSpin->setValue(cad::geo::Units::mmToCm(var.value));
         m_valueSpin->blockSignals(false);
     }
     setCommentSilently(var.comment);
-    updateValueLabel();
-}
-
-void VariableCard::updateValueLabel()
-{
-    m_valueLabel->setText(
-        cad::geo::Units::formatCmTrimmed(cad::geo::Units::cmToMm(m_valueSpin->value())));
 }
 
 void VariableCard::setupUi(const cad::param::Variable& var)
 {
     setObjectName(QStringLiteral("VariableCard"));
+    setFixedHeight(34);
 
-    auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(12, 7, 8, 7);
-    mainLayout->setSpacing(3);
-
-    // === Header row ===
-    auto* header = new QHBoxLayout();
-    header->setSpacing(6);
+    auto* rowLayout = new QHBoxLayout(this);
+    rowLayout->setContentsMargins(10, 5, 8, 5);
+    rowLayout->setSpacing(6);
 
     // 视图行序号 (虚拟化跨行复用, 每次 (re)bind 重设 — 见 setIndex).
-    header->addWidget(createIndexLabel(QStringLiteral("varIndex"),
-                                       QStringLiteral("变量序号（视图行号）")), 0);
+    m_indexLabel = createIndexLabel(QStringLiteral("varIndex"),
+                                    QStringLiteral("变量序号（视图行号）"));
+    m_indexLabel->setAlignment(Qt::AlignCenter);
+    m_indexLabel->setFixedWidth(18);
+    rowLayout->addWidget(m_indexLabel, 0);
 
-    header->addWidget(createNameChip(cad::ui::CopyChip::Variant::Name,
-                                     QStringLiteral("名称"), var.name), 1);
+    // 复合胶囊标签 [ refName | name ]：充分利用整行可用空间
+    m_compoundChip = new cad::ui::CompoundChip(this);
+    m_compoundChip->setName(var.name);
+    m_compoundChip->setRefName(var.refName);
+    m_compoundChip->setMinimumWidth(110);
+    rowLayout->addWidget(m_compoundChip, 1);
 
-    header->addWidget(createValueLabel(), 0);
-    header->addWidget(createUnitLabel(QStringLiteral("cm")), 0);  // §4.3 值第一焦点, 单位退居 10px
-
-    appendDeleteButton(header, QStringLiteral("删除变量"));
-
-    mainLayout->addLayout(header);
-
-    // === Detail row ===
-    m_detail = new QWidget(this);
-    m_detail->setVisible(true);
-    auto* detailLayout = new QHBoxLayout(m_detail);
-    detailLayout->setContentsMargins(0, 0, 0, 0);
-    detailLayout->setSpacing(6);
-
-    m_refChip = new cad::ui::CopyChip(cad::ui::CopyChip::Variant::Ref, m_detail);
-    m_refChip->setPlaceholderText(QString());  // 无引用名时保持纯空, 不显示占位文字
-    m_refChip->setText(var.refName);
-    m_refChip->setFixedWidth(56);
-    detailLayout->addWidget(m_refChip, 0);
-
-    m_valueSpin = new CompactSpinBox(m_detail);
+    // 数值输入框 (cm)
+    m_valueSpin = new CompactSpinBox(this);
     m_valueSpin->setRange(-99999.0, 99999.0);
     m_valueSpin->setDecimals(2);
     m_valueSpin->setSingleStep(0.5);
     m_valueSpin->setValue(cad::geo::Units::mmToCm(var.value));
-    m_valueSpin->setFixedWidth(80);
+    m_valueSpin->setFixedWidth(74);
     m_valueSpin->setFixedHeight(22);
     m_valueSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_valueSpin->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_valueSpin->setStyleSheet(cad::ui::ThemeTokens::kMonospaceMd);
-    detailLayout->addWidget(m_valueSpin, 0);
+    m_valueSpin->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("变量数值 (cm)"),
+        QStringLiteral("输入该参数的基准尺寸数值，内部存储单位为厘米（cm）")));
+    rowLayout->addWidget(m_valueSpin, 0);
 
-    m_commentEdit = createCommentEdit(m_detail);
-    m_commentEdit->setText(var.comment);
-    detailLayout->addWidget(m_commentEdit, 1);
+    // 注释便利贴按钮 (NoteButton, 22px 高度与数值框对齐)
+    m_noteBtn = createNoteButton(this, 22);
+    m_noteBtn->setPlaceholder(QStringLiteral("变量说明…"));
+    m_noteBtn->setNote(var.comment);
+    rowLayout->addWidget(m_noteBtn, 0);
 
-    mainLayout->addWidget(m_detail);
-
-    // === Init display ===
-    updateValueLabel();
+    // 悬停删除按钮
+    appendDeleteButton(rowLayout, QStringLiteral("删除变量"));
 
     // === Connections ===
     connect(m_deleteBtn, &QToolButton::clicked, this,
             [this]() { emit deleteRequested(m_id); });
-    connect(m_nameChip, &cad::ui::CopyChip::edited, this,
-            [this](const QString&) { updateValueLabel(); emit edited(variable()); });
-    connect(m_refChip, &cad::ui::CopyChip::edited, this,
+    connect(m_compoundChip, &cad::ui::CompoundChip::nameEdited, this,
             [this](const QString&) { emit edited(variable()); });
-    connect(m_commentEdit, &QLineEdit::editingFinished, this,
-            [this]() { emit edited(variable()); });
+    connect(m_compoundChip, &cad::ui::CompoundChip::refEdited, this,
+            [this](const QString&) { emit edited(variable()); });
     connect(m_valueSpin, &QDoubleSpinBox::editingFinished, this,
-            [this]() { updateValueLabel(); emit edited(variable()); });
+            [this]() { emit edited(variable()); });
+    connect(m_noteBtn, &cad::ui::NoteButton::noteEdited, this,
+            [this](const QString&) { emit edited(variable()); });
 }

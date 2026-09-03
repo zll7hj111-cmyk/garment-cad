@@ -234,6 +234,8 @@ add_library(gcad_ui STATIC
     src/ui/VariableCard.cpp
     src/ui/CopyChip.h
     src/ui/CopyChip.cpp
+    src/ui/CompoundChip.h
+    src/ui/CompoundChip.cpp
     src/ui/FormulaCard.h
     src/ui/FormulaCard.cpp
     src/ui/FormulaGroupHeader.h
