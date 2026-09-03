@@ -1,10 +1,11 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QStandardItemModel>
+#include <QMenu>
 
 #include <cmath>
 
@@ -45,6 +46,9 @@ class TestSelectWKey : public QObject
 private slots:
     void wTogglesMultiSelectionThroughFullEventChain();
     void ctrlDragCopiesAfterConfirm();
+    void ctrlDragUnselectedBlockDirectly();
+    void ctrlClickJitterDoesNotDuplicate();
+    void ctrlDragUndoRedo();
     void multiSelectMarqueeSelectsBothLines();
     void endpointClickAfterConfirmKeepsSelectionOperable();
     void endpointDragConnectsToTargetEndToEnd();
@@ -83,6 +87,9 @@ private slots:
     void endTargetOvershootExtendsAlongAim();
     // ── 终点连接行 (2026-xx 每端完整连接: 起点 Attachment + 终点 endTarget) ──
     void connectionCardEndConnection();
+    // ── 选择工具多选移动图层 ──
+    void multiSelectMoveToLayer();
+    void multiSelectRightClickMoveToLayerMenu();
 };
 
 /// Strongly-curved Bezier block (off-chord anchor 45mm) on the active layer.
@@ -360,6 +367,165 @@ void TestSelectWKey::ctrlDragCopiesAfterConfirm()
     // Clone landed at origin + (120, 0): same shape, new position.
     QVERIFY(clone->transform.origin.distanceTo(Vec2(120.0, 0.0)) < 1e-6);
     QVERIFY(orig->segments.size() == clone->segments.size());
+}
+
+// 未选中的线段直接按住 Ctrl 拖拽：必须直接发起快捷复制，原图不动且生成副本
+void TestSelectWKey::ctrlDragUnselectedBlockDirectly()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+
+    auto a = makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton,
+                       mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 此时线段 A 完全未选中
+    QVERIFY(!scene.findBlockItem(a.blockId)->toolSelected());
+
+    // 直接 Ctrl+按住在未选线段上并向右拖动 100mm
+    const QPoint hit = vp(50.0, 0.0);
+    sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, vp(100.0, 0.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, vp(150.0, 0.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(150.0, 0.0), Qt::LeftButton, Qt::ControlModifier);
+
+    // 成功复制为两条
+    QCOMPARE(doc.blocks().size(), size_t(2));
+    const Block* orig = doc.findBlock(a.blockId);
+    QVERIFY(orig);
+    // 原线段位置未被破坏移动 (原点仍为 0,0)
+    QVERIFY(orig->transform.origin.distanceTo(Vec2::zero()) < 1e-6);
+
+    const Block* clone = nullptr;
+    for (const auto& b : doc.blocks())
+        if (b.id != a.blockId) { clone = &b; break; }
+    QVERIFY(clone);
+    QVERIFY(clone->transform.origin.distanceTo(Vec2(100.0, 0.0)) < 1e-6);
+}
+
+// 按住 Ctrl 在图元上微颤点击 (< 5px 屏幕抖动)：视为误触，不生成幽灵死线
+void TestSelectWKey::ctrlClickJitterDoesNotDuplicate()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+
+    auto a = makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton,
+                       mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 按住 Ctrl 点击，但只有 1 像素屏幕位移 (模拟手抖微颤)
+    const QPoint hit = vp(50.0, 0.0);
+    sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, hit + QPoint(1, 0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, hit + QPoint(1, 0), Qt::LeftButton, Qt::ControlModifier);
+
+    // 不应生成新副本，仍只有 1 个 block
+    QCOMPARE(doc.blocks().size(), size_t(1));
+    QCOMPARE(stack.count(), 0);
+}
+
+// 快捷复制的 Undo / Redo 回放与撤销
+void TestSelectWKey::ctrlDragUndoRedo()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+
+    auto a = makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton,
+                       mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 快捷复制
+    const QPoint hit = vp(50.0, 0.0);
+    sendMouse(QEvent::MouseButtonPress, hit, Qt::LeftButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseMove, vp(150.0, 0.0), Qt::NoButton, Qt::ControlModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(150.0, 0.0), Qt::LeftButton, Qt::ControlModifier);
+
+    QCOMPARE(doc.blocks().size(), size_t(2));
+    QVERIFY(doc.undoStack() != nullptr);
+    QCOMPARE(doc.undoStack()->count(), 1);
+
+    // 撤销
+    doc.undoStack()->undo();
+    QCOMPARE(doc.blocks().size(), size_t(1));
+
+    // 重做
+    doc.undoStack()->redo();
+    QCOMPARE(doc.blocks().size(), size_t(2));
 }
 
 // 多选模式下空白处拖拽必须显示并应用框选（回归：手势提取时丢失了
@@ -2717,6 +2883,198 @@ void TestSelectWKey::doubleClickCrossingPrefersActiveLayer()
         }
         for (auto* d : dialogs) d->close();
     }
+}
+
+void TestSelectWKey::multiSelectMoveToLayer()
+{
+    ParamDocument doc;
+    const QUuid work1 = layerIdAt(doc, 1);
+    doc.setActiveLayer(work1);
+    const QUuid work2 = doc.addLayer(QStringLiteral("图层 2"));
+
+    CanvasScene scene(&doc);
+    auto a = makeLine(doc, 100.0);
+    auto b = makeLine(doc, 100.0, Vec2{0.0, -50.0});
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    view.setInputDispatcher(&tm);
+    auto* sel = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
+    QVERIFY(sel);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto click = [&](double x, double y) {
+        const QPoint vpPos = vp(x, y);
+        const QPoint global = view.viewport()->mapToGlobal(vpPos);
+        QMouseEvent press(QEvent::MouseButtonPress, vpPos, global,
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, vpPos, global,
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &release);
+        QTest::qWait(20);
+    };
+    auto pressW = [&]() {
+        QKeyEvent key(QEvent::KeyPress, Qt::Key_W, Qt::NoModifier);
+        QApplication::sendEvent(&view, &key);
+        QTest::qWait(20);
+    };
+
+    // 切换到多选模式
+    pressW();
+
+    // 点选两根线
+    click(50.0, 0.0);
+    click(50.0, -50.0);
+    QCOMPARE(sel->selection().size(), 2);
+    QVERIFY(sel->selection().contains(a.blockId));
+    QVERIFY(sel->selection().contains(b.blockId));
+
+    // 执行移动到 work2
+    sel->moveSelectionToLayer(work2);
+
+    // 验证选择集已清空，回到 Idle
+    QVERIFY(sel->selection().isEmpty());
+    QCOMPARE(sel->state(), cad::tools::SelectState::Idle);
+
+    // 验证两根线的图层属性已变为 work2
+    const auto* blkA = doc.findBlock(a.blockId);
+    const auto* blkB = doc.findBlock(b.blockId);
+    QVERIFY(blkA && blkA->layer == work2);
+    QVERIFY(blkB && blkB->layer == work2);
+
+    // 验证原子撤销 (Ctrl+Z)
+    QCOMPARE(stack.count(), 1);
+    stack.undo();
+    blkA = doc.findBlock(a.blockId);
+    blkB = doc.findBlock(b.blockId);
+    QVERIFY(blkA && blkA->layer == work1);
+    QVERIFY(blkB && blkB->layer == work1);
+
+    // 验证重做 (Ctrl+Y)
+    stack.redo();
+    blkA = doc.findBlock(a.blockId);
+    blkB = doc.findBlock(b.blockId);
+    QVERIFY(blkA && blkA->layer == work2);
+    QVERIFY(blkB && blkB->layer == work2);
+
+    // 移动到辅助层
+    const QUuid auxId = doc.layersView().auxLayerId();
+    doc.setActiveLayer(work2);
+    pressW();
+    click(50.0, 0.0);
+    QCOMPARE(sel->selection().size(), 1);
+    sel->moveSelectionToLayer(auxId);
+    blkA = doc.findBlock(a.blockId);
+    QVERIFY(blkA && blkA->layer == auxId);
+
+    // 撤销移动到辅助层
+    stack.undo();
+    blkA = doc.findBlock(a.blockId);
+    QVERIFY(blkA && blkA->layer == work2);
+}
+
+void TestSelectWKey::multiSelectRightClickMoveToLayerMenu()
+{
+    ParamDocument doc;
+    const QUuid work1 = layerIdAt(doc, 1);
+    doc.setActiveLayer(work1);
+    const QUuid work2 = doc.addLayer(QStringLiteral("工作层 2"));
+
+    CanvasScene scene(&doc);
+    auto a = makeLine(doc, 100.0);
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    view.setInputDispatcher(&tm);
+    auto* sel = dynamic_cast<cad::tools::ToolSelect*>(tm.activeTool());
+    QVERIFY(sel);
+
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+
+    // 选中线 A
+    const QPoint vpPos = vp(50.0, 0.0);
+    const QPoint global = view.viewport()->mapToGlobal(vpPos);
+    QMouseEvent press(QEvent::MouseButtonPress, vpPos, global,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(view.viewport(), &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, vpPos, global,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(view.viewport(), &release);
+    QTest::qWait(20);
+
+    QCOMPARE(sel->selection().size(), 1);
+
+    bool menuFound = false;
+    bool actionTriggered = false;
+    bool auxFound = false;
+
+    // 定时器在菜单弹出后查找并触发“工作层 2”Action
+    QTimer::singleShot(100, [&]() {
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (auto* m = qobject_cast<QMenu*>(w)) {
+                if (m->isVisible()) {
+                    menuFound = true;
+                    for (QAction* act : m->actions()) {
+                        if (act->menu()) {
+                            QAction* targetAct = nullptr;
+                            for (QAction* subAct : act->menu()->actions()) {
+                                if (subAct->text() == QStringLiteral("辅助层")) {
+                                    auxFound = true;
+                                }
+                                if (subAct->text() == QStringLiteral("工作层 2")) {
+                                    targetAct = subAct;
+                                }
+                            }
+                            if (targetAct) {
+                                actionTriggered = true;
+                                targetAct->trigger();
+                                m->close();
+                                return;
+                            }
+                        }
+                    }
+                    m->close();
+                }
+            }
+        }
+    });
+
+    // 发送右键点击
+    QMouseEvent rPress(QEvent::MouseButtonPress, vpPos, global,
+                       Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+    QApplication::sendEvent(view.viewport(), &rPress);
+    QTest::qWait(200);
+
+    QVERIFY(menuFound);
+    QVERIFY(auxFound);
+    QVERIFY(actionTriggered);
+
+    const auto* blkA = doc.findBlock(a.blockId);
+    QVERIFY(blkA && blkA->layer == work2);
+    QVERIFY(sel->selection().isEmpty());
 }
 
 QTEST_MAIN(TestSelectWKey)

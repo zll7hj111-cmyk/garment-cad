@@ -131,6 +131,66 @@ void MoveBlockToLayerCommand::undo()
     }
 }
 
+// ─── MoveBlocksToLayerCommand ───
+
+MoveBlocksToLayerCommand::MoveBlocksToLayerCommand(cad::param::ParamDocument* doc,
+                                                   const QList<QUuid>& blockIds,
+                                                   const QUuid& targetLayerId,
+                                                   QUndoCommand* parent)
+    : QUndoCommand(parent), m_doc(doc), m_blockIds(blockIds), m_targetLayer(targetLayerId)
+{
+    QString targetName;
+    for (const auto& l : doc->layersView().all()) {
+        if (l.id == targetLayerId) {
+            targetName = l.name;
+            break;
+        }
+    }
+    if (targetName.isEmpty())
+        targetName = QStringLiteral("其他图层");
+
+    setText(QStringLiteral("移动 %1 条线段到「%2」").arg(blockIds.size()).arg(targetName));
+
+    m_oldLayers.reserve(blockIds.size());
+    for (const auto& id : blockIds) {
+        if (const auto* b = doc->findBlock(id)) {
+            m_oldLayers.append({id, b->layer});
+        }
+    }
+}
+
+void MoveBlocksToLayerCommand::redo()
+{
+    bool anyChanged = false;
+    for (const auto& id : m_blockIds) {
+        if (auto* b = m_doc->findBlock(id)) {
+            if (b->layer != m_targetLayer) {
+                b->layer = m_targetLayer;
+                anyChanged = true;
+            }
+        }
+    }
+    if (anyChanged) {
+        emit m_doc->layersChanged();
+    }
+}
+
+void MoveBlocksToLayerCommand::undo()
+{
+    bool anyChanged = false;
+    for (const auto& [id, oldLayer] : m_oldLayers) {
+        if (auto* b = m_doc->findBlock(id)) {
+            if (b->layer != oldLayer) {
+                b->layer = oldLayer;
+                anyChanged = true;
+            }
+        }
+    }
+    if (anyChanged) {
+        emit m_doc->layersChanged();
+    }
+}
+
 // ─── SetLayerVisibleCommand ───
 
 SetLayerVisibleCommand::SetLayerVisibleCommand(cad::param::ParamDocument* doc,

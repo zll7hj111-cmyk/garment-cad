@@ -45,6 +45,8 @@ void CopyDragController::begin(const QSet<QUuid>& selection,
         m_paramDoc->addBlock(b);
     // Verbatim: cloned connections keep the ORIGINAL's isLocked (复制语义).
     cad::param::RawModelAccess::addAttachmentsRaw(*m_paramDoc, m_copyResult.attachments);
+    for (const auto& c : m_copyResult.components)
+        m_paramDoc->addComponent(c);
 
     // Anchor the drag on the LIVE origins (followers were just resolver-placed).
     m_copyStartPos = pos;
@@ -79,10 +81,13 @@ void CopyDragController::release(const Vec2& pos)
     const Vec2 delta = pos - m_copyStartPos;
 
     // Remove the preview clones, then replay the copy as ONE undo step at
-    // the drop position. A zero-delta release (accidental Ctrl+click) drops
-    // the copy — an exact overlap of the original would be invisible.
+    // the drop position. A jitter/zero-delta release (accidental Ctrl+click,
+    // < 5 screen px) drops the copy — an exact overlap of the original would
+    // be invisible or create ghost duplicate geometry.
     removeCopyPreview();
-    if (delta.lengthSquared() > 1e-10 && m_undoStack) {
+    const double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    const double thresh = 5.0 / (zoom > 1e-9 ? zoom : 1.0);
+    if (delta.length() > thresh && m_undoStack) {
         for (auto& b : m_copyResult.blocks)
             b.transform.origin = b.transform.origin + delta;
         m_undoStack->push(new cad::cmd::DuplicateBlocksCommand(
@@ -108,6 +113,8 @@ void CopyDragController::cancel()
 void CopyDragController::removeCopyPreview()
 {
     if (!m_paramDoc) return;
+    for (const auto& c : m_copyResult.components)
+        m_paramDoc->removeComponentRecord(c.id);
     // Attachments first (removeBlock would drop them anyway); new linked
     // variables last — they reference ORIGINAL blocks and survive removeBlock.
     for (const auto& att : m_copyResult.attachments)

@@ -83,6 +83,24 @@ private:
     QUuid m_newLayer;
 };
 
+/// Move multiple blocks to a target layer in a single atomic undo step.
+class MoveBlocksToLayerCommand : public QUndoCommand
+{
+public:
+    MoveBlocksToLayerCommand(cad::param::ParamDocument* doc,
+                             const QList<QUuid>& blockIds,
+                             const QUuid& targetLayerId,
+                             QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QList<QUuid> m_blockIds;
+    QUuid m_targetLayer;
+    QList<std::pair<QUuid, QUuid>> m_oldLayers;
+};
+
 /// Toggle a layer's visibility. The flag is persisted in the file, so a
 /// non-undoable toggle would silently break the dirty flag (save → toggle →
 /// close would lose the change without prompting).

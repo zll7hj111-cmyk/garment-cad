@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QRectF>
 #include <QSet>
@@ -38,6 +38,7 @@ public:
     void cancel();
 
     [[nodiscard]] bool active() const { return m_item != nullptr; }
+    [[nodiscard]] cad::geo::Vec2 startPos() const { return m_start; }
 
     /// Group expansion (group = minimal selection unit) — shared by the
     /// selection tool (selectBlocksExternally).

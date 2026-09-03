@@ -1,7 +1,8 @@
-﻿#include "ToolSelect.h"
+#include "ToolSelect.h"
 #include "ToolManager.h"
 
 #include <QGraphicsSceneMouseEvent>
+#include <QGuiApplication>
 #include <QGraphicsView>
 #include <QGraphicsRectItem>
 #include <QGraphicsSimpleTextItem>
@@ -41,7 +42,7 @@
 #include "document/commands/ComponentCommands.h"
 #include "document/commands/DocumentCommands.h"
 #include "document/commands/AttachmentCommands.h"
-#include "document/commands/AttachmentCommands.h"
+#include "document/commands/LayerCommands.h"
 #include "ui/DeleteImpactConfirm.h"
 
 namespace cad::tools {
@@ -413,10 +414,56 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         QMenu menu;
         QAction* actCancel = nullptr;
         QAction* actComponent = nullptr;
+        QMenu* layerMenu = nullptr;
+        QList<std::pair<QAction*, QUuid>> layerActions;
+        bool layerMoved = false;
         QMenu* overlapMenu = nullptr;
+
         if (!m_selection.isEmpty()) {
             if (m_selection.size() >= 2)
                 actComponent = menu.addAction(QString::fromUtf8("创建组件"));
+
+            layerMenu = menu.addMenu(QString::fromUtf8("移动到图层"));
+            const QUuid activeLayerId = m_paramDoc ? m_paramDoc->activeLayer() : QUuid();
+            if (m_paramDoc) {
+                // 工作图层
+                for (const auto& layer : m_paramDoc->layersView().all()) {
+                    if (m_paramDoc->layersView().isAuxLayer(layer.id))
+                        continue;
+                    if (layer.id == activeLayerId)
+                        continue;
+                    auto* act = layerMenu->addAction(layer.name);
+                    const QUuid targetId = layer.id;
+                    QObject::connect(act, &QAction::triggered, [this, targetId, &layerMoved]() {
+                        if (!layerMoved) {
+                            layerMoved = true;
+                            deactivateOverlapContext();
+                            moveSelectionToLayer(targetId);
+                        }
+                    });
+                    layerActions.append({act, layer.id});
+                }
+
+                // 辅助层 (若当前不在辅助层，则允许移入辅助层)
+                const QUuid auxId = m_paramDoc->layersView().auxLayerId();
+                if (!auxId.isNull() && auxId != activeLayerId) {
+                    if (!layerActions.isEmpty())
+                        layerMenu->addSeparator();
+                    auto* act = layerMenu->addAction(QString::fromUtf8("辅助层"));
+                    QObject::connect(act, &QAction::triggered, [this, auxId, &layerMoved]() {
+                        if (!layerMoved) {
+                            layerMoved = true;
+                            deactivateOverlapContext();
+                            moveSelectionToLayer(auxId);
+                        }
+                    });
+                    layerActions.append({act, auxId});
+                }
+            }
+            if (layerActions.isEmpty()) {
+                layerMenu->setEnabled(false);
+            }
+
             actCancel = menu.addAction(QString::fromUtf8("取消选择"));
         }
         if (cands.size() >= 2) {
@@ -435,7 +482,7 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         }
         // L6 (TOOL_SYSTEM_AUDIT): 末项 cands.size() < 2 与首项 overlapMenu
         // == nullptr 等价 (overlapMenu 仅在候选 ≥2 时创建), 冗余 —— 删。
-        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr) {
+        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr && layerMenu == nullptr) {
             // 既有行为: 无选中 + 空白右键 = 切智能笔.
             if (m_selection.isEmpty() && hitBlock(pos).isNull())
                 requestToolSwitch(ToolType::SmartPen);
@@ -452,19 +499,37 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
             // 点名选定: 选中后退出循环上下文 (菜单是显式终点, 不再需要 W)。
             pickOverlapCandidate(chosen->property("overlapPick").toInt());
             deactivateOverlapContext();
+        } else if (chosen && !layerMoved) {
+            for (const auto& [act, targetLayerId] : layerActions) {
+                if (chosen == act) {
+                    deactivateOverlapContext();
+                    moveSelectionToLayer(targetLayerId);
+                    break;
+                }
+            }
         }
         return;
     }
     if (event->button() != Qt::LeftButton) return;
 
-    // ── Ctrl+press on a SELECTED block → quick copy drag (快捷复制) ──
-    // 2026-09 取消确认基准: 选中即就绪, 无需右键确认.
-    if ((event->modifiers() & Qt::ControlModifier)
-        && !m_selection.isEmpty() && m_copyDrag) {
+    // ── Ctrl+press on a block → quick copy drag (快捷复制) ──
+    // 按住 Ctrl 在任意活动层图元上按下拖动即触发快捷复制 (未预选时自动作为复制源,
+    // 避免误走普通移动逻辑破坏原版型; 闭包展开保证刚体组件/锁定连接整组复制)。
+    if ((event->modifiers() & Qt::ControlModifier) && m_copyDrag) {
         const QUuid blockHit = hitBlock(pos);
-        if (!blockHit.isNull() && m_selection.contains(blockHit)) {
+        if (!blockHit.isNull()) {
             deactivateOverlapContext();  // 复制拖拽与循环上下文互斥
-            m_copyDrag->begin(m_selection, blockHit, pos);
+            if (!m_selection.contains(blockHit)) {
+                m_lastHitSegmentId = hitSegmentAt(pos);
+                m_selection = {blockHit};
+                syncSelectionVisual();
+                setState(SelectState::Selecting);
+                notifyEditTarget();
+            }
+            const QSet<QUuid> copySet =
+                m_paramDoc->componentsView().closure(
+                    m_paramDoc->attachmentsView().lockedClosure(m_selection));
+            m_copyDrag->begin(copySet, blockHit, pos);
             return;
         }
     }
@@ -1141,6 +1206,39 @@ void ToolSelect::createComponentFromSelection()
     clearSelectionAndIdle();
 }
 
+void ToolSelect::moveSelectionToLayer(const QUuid& targetLayerId)
+{
+    if (!m_paramDoc || m_selection.isEmpty() || targetLayerId.isNull()) return;
+
+    QString targetName;
+    for (const auto& l : m_paramDoc->layersView().all()) {
+        if (l.id == targetLayerId) {
+            targetName = l.name;
+            break;
+        }
+    }
+    if (targetName.isEmpty())
+        targetName = QStringLiteral("其他图层");
+
+    const QList<QUuid> blockIds = m_selection.values();
+    if (m_undoStack) {
+        m_undoStack->push(new cad::cmd::MoveBlocksToLayerCommand(
+            m_paramDoc, blockIds, targetLayerId));
+    } else {
+        for (const auto& id : blockIds) {
+            if (auto* b = m_paramDoc->findBlock(id)) {
+                b->layer = targetLayerId;
+            }
+        }
+        emit m_paramDoc->layersChanged();
+    }
+
+    showToast(QStringLiteral("已将 %1 条线段移动到「%2」")
+                  .arg(blockIds.size())
+                  .arg(targetName));
+    clearSelectionAndIdle();
+}
+
 void ToolSelect::deleteSelectedBlocks()
 {
     if (!m_scene || !m_paramDoc || m_selection.isEmpty()) return;
@@ -1239,7 +1337,10 @@ void ToolSelect::updateHoverCursor(const cad::geo::Vec2& pos)
         const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
         const auto hits = blockHitsAtScene(*m_scene, *m_paramDoc, scenePt);
         const QUuid blockHit = hits.empty() ? QUuid() : hits.front().blockId;
-        if (!blockHit.isNull() && m_selection.contains(blockHit)) {
+        if (!blockHit.isNull() && (QGuiApplication::keyboardModifiers() & Qt::ControlModifier)) {
+            // Ctrl 悬停在线元上 → 提示可快捷复制
+            cur = Qt::DragCopyCursor;
+        } else if (!blockHit.isNull() && m_selection.contains(blockHit)) {
             // 已选块的端点 (抓取半径内) → 十字 (提示可连接);
             // 否则线身 → 抓手 (提示可拖动).
             double zoom = m_scene->currentZoom();

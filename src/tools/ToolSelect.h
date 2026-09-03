@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QList>
@@ -98,6 +98,9 @@ public:
     [[nodiscard]] QString overlapHintText() const { return m_overlapHitText; }
     /// 命令式选中第 @p index 个候选 (W 循环与右键「重叠候选」菜单共用入口).
     void pickOverlapCandidate(int index);
+
+    /// 移动当前选择集中的全部线段到指定图层 (通过 MoveBlocksToLayerCommand).
+    void moveSelectionToLayer(const QUuid& targetLayerId);
 
 private:
     // ── State transitions ──
