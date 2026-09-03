@@ -9,6 +9,7 @@ class QVBoxLayout;
 class ElaText;
 class QFrame;
 class QToolButton;
+class QPushButton;
 
 namespace cad::param { class ParamDocument; }
 
@@ -63,19 +64,19 @@ private:
     void showLayerMenu(const QPoint& globalPos, int layerIndex);
     void showSegmentMenu(const QPoint& globalPos, const QUuid& blockId);
 
-    /// Begin inline rename of a layer name label.
-    void startRename(int layerIndex, ElaText* nameLabel);
+    /// Begin inline rename of a layer.
+    void startRename(int layerIndex);
 
     cad::param::ParamDocument* m_doc = nullptr;
 
     ElaScrollArea* m_scroll    = nullptr;
-    QWidget*     m_container = nullptr;
-    QVBoxLayout* m_listLayout = nullptr;
-    ElaText*     m_countLabel = nullptr;   ///< Header pill: total layer count.
-    ElaText*     m_emptyHint  = nullptr;   ///< Shown when no blocks exist at all.
-    QWidget*     m_header     = nullptr;   ///< Header bar (styled from tokens).
-    QFrame*      m_sep        = nullptr;   ///< Header separator line.
-    QToolButton* m_addBtn     = nullptr;   ///< "new layer" header button.
+    QWidget*     m_container   = nullptr;
+    QVBoxLayout* m_listLayout  = nullptr;
+    ElaText*     m_countLabel  = nullptr;   ///< Header pill: total layer count.
+    QWidget*     m_emptyHint   = nullptr;   ///< Shown when no blocks exist at all.
+    QWidget*     m_header      = nullptr;   ///< Header bar (styled from tokens).
+    QFrame*      m_sep         = nullptr;   ///< Header separator line.
+    QPushButton* m_addBtn      = nullptr;   ///< "new layer" header button.
     QSet<QUuid>  m_collapsed;              ///< Layer ids whose card is collapsed
                                            ///< (persists across refreshes).
     /// Cards in layout order (index = layer index). The concrete type
