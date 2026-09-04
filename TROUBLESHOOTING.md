@@ -372,11 +372,15 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
   **全量 ctest 34/34 全绿（2026-09-02 实测两次）**。
 - **环境漂移红**：test_intersection_update（5 用例）+ test_extend::savedDocFormulaStartExtendRenders 依赖
   活档 `E:/3.gcad`，用户一改该文件就红（交点偏移 29.17mm / 缺变量「后长补正」），非代码回归；缺该文件则 QSKIP。
-- **test_hold_show 整批失败（2026-09-04 诊断入档）**：整批 ctest 与该测试单跑均 **exit 1 且无任何 QTest 输出**
-  （LastTest.log 只有 `<end of output>`，非断言失败）。经 git stash 基线对照实验确认**代码未改即红**（纯
-  git HEAD 同样失败），与工具拆分无关联。该测试用 `QGraphicsView::grab` 渲染像素断言（forceName/forceLength
-  全部 N/L 揭示），疑似渲染后端/软渲染/字体环境漂移。**判据：空输出 + 快速失败（<1s）+ 基线对照复现 = 环境漂移，
-  非本次改动引入。**测试入口 `tests/test_hold_show.cpp`（QTEST_MAIN，无独立 main）。
+- **test_hold_show 空输出 exit 1（2026-09-04 根因确诊并修复）**：根因 = **`renderNonWhitePixels` 的隔行/隔列采样
+  在 100% DPI 下把 10px 长度标签「10.00 cm」数量被测小**：标签实际渲染约 161 个设备像素（绿色小字，diff
+  bbox 41×6），但步进 2 采样只数到 36，低于按 125% DPI 校准的 50px 阈值（`forced - baseline > 50`）→
+  `forceLengthRevealsLengthLabels` 断言假红。**「空输出」是全环境 QtTest 现象**：该机 Qt 6.11.1 debug
+  版 stdout/stderr 整体为空（连纯数学的 test_curve / 通过的 test_aux_layer / test_smartpen_aux 都 0 字节），
+  与失败无关；判据：`-functions` 正常（moc/插件加载 OK）→ 必在用例执行期；用 `-o <file>,txt` 把结果写
+  文件绕过 console 即见完整 `Totals: 8 passed, 1 failed`。**修复**：`renderNonWhitePixels` 去掉 step-2
+  采样、改全像素扫描（差异只有 161 个物理像素，按步进 2 采样会系统性漏算小标签，阈值按 125% DPI 校准，
+  100% DPI 下正好跌破）。修复后 9 用例全绿，全量 ctest 41/41 通过（详见 CONVENTIONS.md「test_hold_show 修复」）。
 - **GUI 时序抖动**：test_dialog_tabs::switchBackAfterTyping / test_aux_layer / test_rotate_copy 在整批 ctest
   压力下偶发失败，单跑即过 —— 先单跑复现再判回归。**test_select_wkey 也在此列（2026-08-29 实测：
   整批 3 次里挂 1 次，单跑连续通过）**，它有 50 处 `qWait`（AGENTS.md P2-3），本就是抖动候选。

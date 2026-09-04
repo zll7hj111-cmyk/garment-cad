@@ -45,10 +45,21 @@ int renderNonWhitePixels(CanvasScene& scene, const QString& dumpPath = {})
     view.hide();
     if (!dumpPath.isEmpty())
         img.save(dumpPath);
+    // Full-pixel scan — NO step-2 sampling. The sampled count under-sizes
+    // small labels at 100% DPI: the 10px length label "10.00 cm" is only
+    // ~161 device pixels, and step-2 sampling counts ~36, below the 50px
+    // threshold that was calibrated on a 125% DPI display. Single-pixel
+    // sampling (1 of 4) is inherent under-reporting — the count is
+    // physical pixels here, so no sampling is needed.
+    img = img.convertToFormat(QImage::Format_RGB32);
+    const uchar* bits = img.constBits();
+    const int bpl = img.bytesPerLine();
     int count = 0;
-    for (int y = 0; y < img.height(); y += 2) {          // sample every 2nd row —
-        for (int x = 0; x < img.width(); x += 2) {       // plenty for text pixels
-            if (img.pixel(x, y) != qRgb(255, 255, 255))
+    for (int y = 0; y < img.height(); ++y) {
+        const uchar* line = bits + y * bpl;
+        for (int x = 0; x < img.width(); ++x) {
+            const uchar* p = line + x * 4;
+            if (p[0] != 255 || p[1] != 255 || p[2] != 255)
                 ++count;
         }
     }
