@@ -23,12 +23,12 @@ void RotateCopyGesture::begin(const Vec2& pos)
     ToolRotate& o = *m_owner;
     if (o.m_state != RotateState::Ready || !o.m_paramDoc) return;
 
-    const cad::param::Block* orig = o.m_paramDoc->findBlock(o.m_blockId);
+    const cad::param::Block* orig = o.m_paramDoc->findBlock(o.m_session.blockId());
     if (!orig || orig->segments.empty()) return;
 
     // 挂接点 = 当前锚心点（起点或终点，X/点击可切换）。
     // 克隆挂回原块，跟随角度 = 相对原线当前朝向的角度。
-    m_pivotPointId = o.m_anchorPointId;
+    m_pivotPointId = o.m_session.anchor().pointId;
     // 参考线段 = pivot 点的出口线段（闭合基准 2026-08: followerAngle
     // 0° = 折叠重叠、180° = 沿原线继续直行）。
     m_leaderSegmentId = orig->exitSegmentAtPoint(m_pivotPointId);
@@ -37,7 +37,7 @@ void RotateCopyGesture::begin(const Vec2& pos)
 
     // Clone the single target block: outside attachments/groups are dropped,
     // so the clone starts as an independent copy overlapping the original.
-    m_copyResult = cad::param::duplicateBlocks(*o.m_paramDoc, {o.m_blockId});
+    m_copyResult = cad::param::duplicateBlocks(*o.m_paramDoc, {o.m_session.blockId()});
     if (m_copyResult.isEmpty()) return;
     const cad::param::Block& clone = m_copyResult.blocks.front();
     m_cloneBlockId = clone.id;
@@ -80,7 +80,7 @@ void RotateCopyGesture::begin(const Vec2& pos)
     cad::param::Attachment cloneAtt;
     cloneAtt.fromBlockId = m_cloneBlockId;
     cloneAtt.fromPointId = m_clonePivotPointId;
-    cloneAtt.toBlockId = o.m_blockId;
+    cloneAtt.toBlockId = o.m_session.blockId();
     cloneAtt.toPointId = m_pivotPointId;
     cloneAtt.toSegmentId = m_leaderSegmentId;
     cloneAtt.followerAngle = 180.0 - m_baseOffsetDeg;   // 闭合基准存储
@@ -98,7 +98,7 @@ void RotateCopyGesture::begin(const Vec2& pos)
     // 拖动基准：克隆从"当前相对角 0°"开始拖（相对角 = 工具参考方向 +
     // 锚心偏移，显示空间即拖动空间，2026-08 v3 定稿）。m_refWorldRad 保持
     // 原样——endpointAtAngle / gizmo 直接读工具参考方向。
-    const Vec2 d = pos - o.m_pivot;
+    const Vec2 d = pos - o.m_session.pivot();
     o.m_dragCursorAngle0 = std::atan2(d.y, d.x);
     o.m_dragCursorAnglePrev = o.m_dragCursorAngle0;
     o.m_accumulatedAngleDeg = 0.0;
@@ -118,24 +118,24 @@ void RotateCopyGesture::convert(const Vec2& pos)
     ToolRotate& o = *m_owner;
     if (o.m_state != RotateState::Rotating || m_copyMode || !o.m_paramDoc) return;
     // 跟随模式 / 已释放挂接的普通旋转语义复杂，中途转换不做（保持原样）。
-    if (o.m_connected || o.m_releaseAttHeld) return;
+    if (o.m_session.isConnected() || o.m_session.anchor().releaseAttHeld) return;
 
-    cad::param::Block* blk = o.m_paramDoc->findBlock(o.m_blockId);
+    cad::param::Block* blk = o.m_paramDoc->findBlock(o.m_session.blockId());
     if (!blk || blk->segments.empty()) return;
 
     // 已转的相对角度 = 当前世界方向 − 原块初始世界方向。
     const double relRad = cad::geo::normalizeRad(
-        (blk->transform.rotation + o.m_localDir)
-        - (o.m_baseTf.rotation + o.m_localDir));
+        (blk->transform.rotation + o.m_session.localDir())
+        - (o.m_session.base().baseTf.rotation + o.m_session.localDir()));
     const double relDeg = cad::geo::radToDeg(relRad);
 
     // 与 beginRotateCopy 相同的克隆/挂接流程。
-    m_pivotPointId = o.m_anchorPointId;
+    m_pivotPointId = o.m_session.anchor().pointId;
     m_leaderSegmentId = blk->exitSegmentAtPoint(m_pivotPointId);
     if (m_leaderSegmentId.isNull() && !blk->segments.empty())
         m_leaderSegmentId = blk->segments.front().id;
 
-    m_copyResult = cad::param::duplicateBlocks(*o.m_paramDoc, {o.m_blockId});
+    m_copyResult = cad::param::duplicateBlocks(*o.m_paramDoc, {o.m_session.blockId()});
     if (m_copyResult.isEmpty()) return;
     const cad::param::Block& clone = m_copyResult.blocks.front();
     m_cloneBlockId = clone.id;
@@ -165,8 +165,8 @@ void RotateCopyGesture::convert(const Vec2& pos)
             baseOrigRotDeg = std::atan2(d.y, d.x) * 180.0 / M_PI;
         }
     }
-    baseOrigRotDeg += o.m_baseTf.rotation * 180.0 / M_PI;
-    m_attachExitRad = o.m_baseTf.rotation + blk->exitDirectionAtPoint(m_pivotPointId,
+    baseOrigRotDeg += o.m_session.base().baseTf.rotation * 180.0 / M_PI;
+    m_attachExitRad = o.m_session.base().baseTf.rotation + blk->exitDirectionAtPoint(m_pivotPointId,
                                                                       m_leaderSegmentId);
     m_baseOffsetDeg = baseOrigRotDeg - cad::geo::radToDeg(m_attachExitRad);
 
@@ -182,7 +182,7 @@ void RotateCopyGesture::convert(const Vec2& pos)
     cad::param::Attachment cloneAtt;
     cloneAtt.fromBlockId = m_cloneBlockId;
     cloneAtt.fromPointId = m_clonePivotPointId;
-    cloneAtt.toBlockId = o.m_blockId;
+    cloneAtt.toBlockId = o.m_session.blockId();
     cloneAtt.toPointId = m_pivotPointId;
     cloneAtt.toSegmentId = m_leaderSegmentId;
     cloneAtt.followerAngle = 180.0 - (m_baseOffsetDeg + relDeg);   // 闭合基准存储
@@ -197,19 +197,19 @@ void RotateCopyGesture::convert(const Vec2& pos)
     }
 
     // addBlock 可能使 m_blocks 重新分配，原 blk 指针已悬挂——重新查找。
-    blk = o.m_paramDoc->findBlock(o.m_blockId);
+    blk = o.m_paramDoc->findBlock(o.m_session.blockId());
     if (!blk) { removeCopyPreview(); m_copyResult = {}; return; }
     // 原块回弹到旋转前姿态（含终点指向：普通旋转已清除的约束一并恢复），
     // 已转角度转移到副本——与从开始就 Ctrl+press 的复制效果一致。
-    blk->transform = o.m_baseTf;
-    blk->endTargetBlockId = o.m_baseEndTargetBlock;
-    blk->endTargetPointId = o.m_baseEndTargetPoint;
+    blk->transform = o.m_session.base().baseTf;
+    blk->endTargetBlockId = o.m_session.base().baseEndTargetBlock;
+    blk->endTargetPointId = o.m_session.base().baseEndTargetPoint;
     // 原块回弹 base 姿态后跟随线由 Resolver 按基准自动回位, 无需工具回写。
     o.m_paramDoc->resolveAll();
 
     // 拖动基准切换到当前位置：后续 delta 从转换点继续（相对角 = 原线 base
     // 朝向 + 相对角，2026-08 定稿）。
-    const Vec2 d = pos - o.m_pivot;
+    const Vec2 d = pos - o.m_session.pivot();
     o.m_dragCursorAngle0 = std::atan2(d.y, d.x);
     o.m_dragCursorAnglePrev = o.m_dragCursorAngle0;
     o.m_accumulatedAngleDeg = 0.0;
@@ -333,7 +333,7 @@ void RotateCopyGesture::commit()
     // Restore-then-replay: ONE undo step re-creates clone + attachment with
     // the final relative angle.
     o.m_undoStack->push(new cad::cmd::RotateCopyCommand(
-        o.m_paramDoc, std::move(m_copyResult), o.m_blockId, m_pivotPointId,
+        o.m_paramDoc, std::move(m_copyResult), o.m_session.blockId(), m_pivotPointId,
         m_clonePivotPointId, m_leaderSegmentId, finalAngle, finalFormula));
     reset();
     // 同上: 副本已落地, 相对角语义结束 —— 条带锁定回原线段。

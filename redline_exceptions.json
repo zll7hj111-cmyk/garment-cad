@@ -1,0 +1,103 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "2.0",
+  "created_at": "2026-09-04",
+  "rules_reference": "E:/e/file_split_rules_v2_final.md",
+  "description": "Baseline exceptions for file split rules v2.0. Invariant: This list may only shrink over time, never expand.",
+  "file_size_exceptions": {
+    "src/app/MainWindow.cpp": {
+      "lines": 1650,
+      "threshold": 900,
+      "reason": "Application main window and menu/action coordination center; scheduled for Phase 3.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/parametric/Block.cpp": {
+      "lines": 1432,
+      "threshold": 900,
+      "reason": "Core parametric block entity model and effective geometry calculation; scheduled for Phase 3.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/tools/LineFactory.cpp": {
+      "lines": 1293,
+      "threshold": 900,
+      "reason": "Line segment creation logic; scheduled for Phase 3.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/app/ContextStrip.cpp": {
+      "lines": 1154,
+      "threshold": 900,
+      "reason": "Context property strip UI layout and field sync; scheduled for Phase 3.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/document/DocumentSerializer.cpp": {
+      "lines": 979,
+      "threshold": 900,
+      "reason": "Exempt per Rule 附1: high cohesion, single serialization/deserialization responsibility.",
+      "scheduled_phase": "Exempt"
+    },
+    "src/parametric/Resolver.cpp": {
+      "lines": 960,
+      "threshold": 900,
+      "reason": "Constraint resolver; resolveAll 553-line function scheduled for pipeline refactor.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/ui/VariablePanel.cpp": {
+      "lines": 942,
+      "threshold": 800,
+      "reason": "Variable dock panel UI; scheduled for Phase 3.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/canvas/BlockItem.cpp": {
+      "lines": 941,
+      "threshold": 900,
+      "reason": "Canvas block QGraphicsItem rendering and hit testing; scheduled for Phase 3.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/geometry/CurveMath.cpp": {
+      "lines": 906,
+      "threshold": 500,
+      "reason": "Pure bezier and curve geometry algorithms; scheduled for Phase 3 sub-math extraction.",
+      "scheduled_phase": "Phase 3"
+    },
+    "src/document/commands/ReverseSegmentCommand.cpp": {
+      "lines": 451,
+      "threshold": 400,
+      "reason": "Reverse segment command implementation; minor overshoot of 400-line model command target.",
+      "scheduled_phase": "Phase 3"
+    }
+  },
+  "test_size_exceptions": {
+    "tests/test_rotate_copy.cpp": {
+      "lines": 3373,
+      "threshold": 2500,
+      "reason": "Giant rotate-copy test suite; scheduled for Phase 3 split.",
+      "scheduled_phase": "Phase 3"
+    },
+    "tests/test_select_wkey.cpp": {
+      "lines": 3081,
+      "threshold": 2500,
+      "reason": "Giant select-wkey test suite; scheduled for Phase 3 split.",
+      "scheduled_phase": "Phase 3"
+    }
+  },
+  "bool_flag_exceptions": {
+    "ParamPoint": {
+      "file": "src/parametric/ParamPoint.h",
+      "count": 10,
+      "reason": "Constraint & interpolation flag fields on data entity struct; evaluated as model fields. EVALUATED 2026-09-04: isAuxiliary/visible/selectable/showName/resolved are persistent model fields; tangentLocked/autoTangent/interBidirectional are tangent/interpolation config flags each independently driving render/resolve branches, no composite hidden state machine; retained per Rule 附1 (pure data/config fields exempt).",
+      "scheduled_phase": "Exempt"
+    },
+    "ContextStrip": {
+      "file": "src/app/ContextStrip.h",
+      "count": 6,
+      "reason": "Session & pin state flags in strip; EVALUATED 2026-09-04: m_connectSession/m_rotateSession/m_strokePreview/m_creationPinned are INDEPENDENT session markers driving distinct UI conditions (no boolean cross-product hidden states); retained per Rule 附1 (pure config/session fields exempt).",
+      "scheduled_phase": "Exempt"
+    },
+    "Props": {
+      "file": "src/document/commands/SegmentPropertyCommands.h",
+      "count": 6,
+      "reason": "Snapshot property struct fields mirroring Segment visibility toggles.",
+      "scheduled_phase": "Exempt"
+    }
+  }
+}

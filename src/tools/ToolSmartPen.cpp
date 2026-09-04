@@ -79,8 +79,14 @@ void ToolSmartPen::onActivate(CanvasScene& scene, cad::param::ParamDocument* par
     // (Re)create the extracted collaborators with the current context.
     delete m_lineFactory;
     delete m_leaderPicker;
+    delete m_strokeInput;
     m_lineFactory = new LineFactory(m_paramDoc, m_undoStack, m_scene);
     m_leaderPicker = new LeaderCandidatePicker(m_scene, m_paramDoc);
+    m_strokeInput = new SmartPenStrokeInput(
+        m_paramDoc,
+        [this](const QString& msg) {
+            if (m_scene) m_scene->showToast(msg);
+        });
     // 常驻实例下每次进入都要把状态栏刷回直线模式 —— 和画布反馈同理, 否则
     // 上次会话停在省道线而状态栏还写着直线。
     refreshModeIndicator();
@@ -105,6 +111,8 @@ void ToolSmartPen::onDeactivate()
     m_lineFactory = nullptr;
     delete m_leaderPicker;
     m_leaderPicker = nullptr;
+    delete m_strokeInput;
+    m_strokeInput = nullptr;
 }
 
 void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
@@ -203,7 +211,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         // --- Set end point and commit ---
         // 预输入约束优先：长度/角度已由状态栏给定，终点按约束计算，
         // 不再借用线段身辅助点或终点吸附（预输入 = 几何已确定）。
-        if (m_strokeInput.hasLength || m_strokeInput.hasAngle) {
+        if (m_strokeInput->hasConstraint()) {
             const cad::geo::Vec2 end = applyPreInputConstraints(clickPos);
             if (m_startPoint.distanceSquaredTo(end) < 1e-10) {
                 cancelLine();
@@ -306,9 +314,13 @@ void ToolSmartPen::startStroke(Qt::KeyboardModifiers mods)
     captureStrokeInput();
 
     // 预输入完整（长度+角度）：一次点击即可成线，无需第二击。
-    if (m_strokeInput.hasLength && m_strokeInput.hasAngle) {
-        commitLine(fixedPreInputEnd(), std::nullopt);
-        return;
+    if (m_strokeInput->hasConstraint()) {
+        // 仅当长度与角度都有效时才单击成线; 只长度或只角度仍需第二击
+        // (方向/距离由第二击确定)。
+        if (m_strokeInput->hasLength() && m_strokeInput->hasAngle()) {
+            commitLine(fixedPreInputEnd(), std::nullopt);
+            return;
+        }
     }
 
     beginStroke(mods);
@@ -316,118 +328,38 @@ void ToolSmartPen::startStroke(Qt::KeyboardModifiers mods)
 
 void ToolSmartPen::captureStrokeInput()
 {
-    m_strokeInput = StrokeInput{};
-    m_strokeInput.raw = m_preInput;
-
-    const QString lenText = m_preInput.lengthCm.trimmed();
-    if (!lenText.isEmpty()) {
-        const auto parsed = cad::geo::parseNumberOrFormula(lenText);
-        if (parsed.isNumber) {
-            m_strokeInput.hasLength = true;
-            m_strokeInput.lengthMm = cad::geo::Units::cmToMm(parsed.value);
-        } else if (m_paramDoc) {
-            if (cad::param::ConditionEngine::evaluateLengthMm(
-                    parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions(),
-                    m_strokeInput.lengthMm)) {
-                m_strokeInput.hasLength = true;
-                m_strokeInput.lengthFormula = parsed.formula;
-            } else if (m_scene) {
-                m_scene->showToast(QString::fromUtf8("预输入长度无法计算，已忽略"));
-            }
-        }
-    }
-
-    const QString angText = m_preInput.angleDeg.trimmed();
-    if (!angText.isEmpty()) {
-        const auto parsed = cad::geo::parseNumberOrFormula(angText);
-        if (parsed.isNumber) {
-            m_strokeInput.hasAngle = true;
-            m_strokeInput.displayAngleDeg = parsed.value;
-        } else if (m_paramDoc) {
-            auto r = cad::param::ConditionEngine::evaluate(
-                parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
-            if (r.ok) {
-                m_strokeInput.hasAngle = true;
-                m_strokeInput.displayAngleDeg = r.value;
-                m_strokeInput.angleFormula = parsed.formula;
-            } else if (m_scene) {
-                m_scene->showToast(QString::fromUtf8("预输入角度无法计算，已忽略"));
-            }
-        }
-    }
+    m_strokeInput->capture(m_preInput);
 }
 
-cad::geo::Vec2 ToolSmartPen::applyPreInputConstraints(const cad::geo::Vec2& cursor) const
+cad::geo::Vec2 ToolSmartPen::applyPreInputConstraints(const cad::geo::Vec2& cursor)
 {
-    if (m_strokeInput.hasAngle) {
-        // 角度已定：光标沿固定方向射线投影，第二击只决定长度。
-        const double worldDeg = toWorldAngleDeg(m_strokeInput.displayAngleDeg);
-        const double rad = worldDeg * M_PI / 180.0;
-        const cad::geo::Vec2 dir(std::cos(rad), std::sin(rad));
-        double t = (cursor - m_startPoint).dot(dir);
-        if (t < 0.0) t = 0.0;
-        m_snapAngleDeg = m_strokeInput.displayAngleDeg;
-        return m_startPoint + dir * t;
-    }
-
-    // 长度已定：沿用（可 Shift 吸附的）光标方向，距离固定。
-    cad::geo::Vec2 end = applyAngleSnap(cursor);
-    const cad::geo::Vec2 delta = end - m_startPoint;
-    const double dist = delta.length();
-    if (dist > 1e-12)
-        end = m_startPoint + delta * (m_strokeInput.lengthMm / dist);
+    const cad::geo::Vec2 end = m_strokeInput->applyToCursor(
+        cursor, m_startPoint,
+        applyAngleSnap(cursor),
+        [this]() -> double {
+            const bool snapped = m_startSnap.has_value();
+            const double refDir = m_leaderPicker ? m_leaderPicker->refDirDeg() : 0.0;
+            return m_strokeInput->toWorldAngleDeg(
+                m_strokeInput->displayAngleDeg(), snapped, refDir);
+        });
+    // HUD 显示角回写 (原 applyPreInputConstraints 的角度分支赋值 m_snapAngleDeg)。
+    m_snapAngleDeg = m_strokeInput->currentDisplayAngle();
     return end;
 }
 
 cad::geo::Vec2 ToolSmartPen::fixedPreInputEnd() const
 {
-    const double worldDeg = toWorldAngleDeg(m_strokeInput.displayAngleDeg);
-    const double rad = worldDeg * M_PI / 180.0;
-    return m_startPoint
-        + cad::geo::Vec2(std::cos(rad), std::sin(rad)) * m_strokeInput.lengthMm;
-}
-
-double ToolSmartPen::toWorldAngleDeg(double displayDeg) const
-{
-    // 附着起点：显示角 = 跟随折角（闭合基准 α = 180° − 相对角）；
-    // 自由起点：显示角 = 绝对世界角。
-    if (m_startSnap)
-        return m_leaderPicker->refDirDeg() + (180.0 - displayDeg);
-    return displayDeg;
+    return m_strokeInput->fixedEnd(m_startPoint);
 }
 
 LineBuildOptions ToolSmartPen::strokeBuildOptions() const
 {
-    LineBuildOptions opts;
-    opts.name = m_strokeInput.raw.name.trimmed();
-    if (m_strokeInput.hasLength) {
-        opts.hasLength = true;
-        opts.lengthMm = m_strokeInput.lengthMm;
-        opts.lengthFormula = m_strokeInput.lengthFormula;
-    }
-    if (m_strokeInput.hasAngle) {
-        opts.hasAngle = true;
-        opts.displayAngleDeg = m_strokeInput.displayAngleDeg;
-        opts.angleFormula = m_strokeInput.angleFormula;
-    }
-    return opts;
+    return m_strokeInput->buildOptions(m_strokeInput->raw().name);
 }
 
 void ToolSmartPen::consumePreInput()
 {
-    // 一次性预输入：只清空本次真正生效的字段（内容被使用后就清空）。
-    // 仅当状态栏文本仍等于快照时才清——若用户在画线过程中又输入了新值，
-    // 新值保留给下一条线。名称随任何成功创建的线生效。
-    auto consume = [](QString& current, const QString& used, bool usedThisTime) {
-        if (usedThisTime && !used.isEmpty() && current == used)
-            current.clear();
-    };
-    consume(m_preInput.name, m_strokeInput.raw.name, true);
-    consume(m_preInput.lengthCm, m_strokeInput.raw.lengthCm,
-            m_strokeInput.hasLength);
-    consume(m_preInput.angleDeg, m_strokeInput.raw.angleDeg,
-            m_strokeInput.hasAngle);
-    m_strokeInput = StrokeInput{};
+    m_strokeInput->consume(m_preInput);
 }
 
 void ToolSmartPen::beginStroke(Qt::KeyboardModifiers mods)
@@ -522,7 +454,7 @@ void ToolSmartPen::mouseMove(QGraphicsSceneMouseEvent* event)
     m_angleSnap = event->modifiers() & Qt::ShiftModifier;
 
     const cad::geo::Vec2 effectiveEnd =
-        (m_strokeInput.hasLength || m_strokeInput.hasAngle)
+        m_strokeInput->hasConstraint()
             ? applyPreInputConstraints(cursorPos)
             : applyAngleSnap(cursorPos);
 
@@ -635,10 +567,6 @@ void ToolSmartPen::cancelLine()
     if (m_scene) m_scene->notifyLinePreview(0.0, 0.0);
 }
 
-// ---------------------------------------------------------------------------
-// 省道线模式 (dart line, 用户拍板 2026-08)
-// ---------------------------------------------------------------------------
-
 void ToolSmartPen::setState(State s)
 {
     m_state = s;
@@ -722,310 +650,6 @@ void ToolSmartPen::clearDialogBlockedCursor()
     m_lastDialogToast.clear();   // 下次打开同类弹窗重新 toast
     if (m_scene && !m_scene->views().isEmpty())
         m_scene->views().first()->viewport()->unsetCursor();
-}
-
-void ToolSmartPen::openDartDialog(const SnapResult& bSnap)
-{
-    if (!m_startSnap || !m_paramDoc || !m_scene || m_dartDialog) return;
-
-    QWidget* parent = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    auto* dlg = new QDialog(parent);
-    dlg->setWindowTitle(QStringLiteral("\u7701\u9053\u7ebf"));
-    // NON-modal on purpose: the user must be able to switch to the
-    // variable/formula panel and copy a name/expression while this dialog
-    // stays open.
-    dlg->setModal(false);
-    auto* form = new QFormLayout(dlg);
-    auto* nameEdit = new QLineEdit(dlg);
-    nameEdit->setPlaceholderText(QStringLiteral("\u7ebf\u6bb5\u540d\u79f0\uff08\u53ef\u9009\uff09"));
-    nameEdit->setText(m_preInput.name.trimmed());
-    auto* offEdit = new QLineEdit(dlg);
-    offEdit->setPlaceholderText(QStringLiteral("\u504f\u79fb\u8ddd\u79bb d\uff08\u6570\u5b57=mm\uff1b\u516c\u5f0f=cm \u57df\uff09"));
-    auto* angEdit = new QLineEdit(dlg);
-    angEdit->setText(QStringLiteral("90"));
-    form->addRow(QStringLiteral("\u540d\u79f0"), nameEdit);
-    form->addRow(QStringLiteral("\u504f\u79fb d"), offEdit);
-    form->addRow(QStringLiteral("\u89d2\u5ea6 \u03b2"), angEdit);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
-    form->addRow(buttons);
-
-    // Validate + commit on OK, but keep the dialog open when the input is
-    // invalid so the user can fix it (or go copy a variable name).
-    QObject::connect(buttons, &QDialogButtonBox::accepted, dlg,
-        [this, dlg, bSnap, nameEdit, offEdit, angEdit]() {
-            if (!m_startSnap || !m_paramDoc || !m_lineFactory) return;
-
-            // Offset d: a pure number is mm; anything else is a cm-domain formula.
-            const QString offText = offEdit->text().trimmed();
-            if (offText.isEmpty()) {
-                if (m_scene)
-                    m_scene->showToast(QStringLiteral("\u504f\u79fb\u8ddd\u79bb d \u4e0d\u80fd\u4e3a\u7a7a"));
-                return;
-            }
-            QString offsetFormula;
-            const auto parsedOffset = cad::geo::parseNumberOrFormula(offText);
-            double offsetMm = parsedOffset.value;
-            if (!parsedOffset.isNumber) {
-                if (!cad::param::ConditionEngine::evaluateLengthMm(
-                        parsedOffset.formula, m_paramDoc->parameters(), m_paramDoc->conditions(),
-                        offsetMm)) {
-                    if (m_scene)
-                        m_scene->showToast(QStringLiteral("\u504f\u79fb\u8ddd\u79bb\u516c\u5f0f\u65e0\u6cd5\u8ba1\u7b97"));
-                    return;
-                }
-                offsetFormula = parsedOffset.formula;
-            }
-
-            // Angle β relative to the reference segment (default 90°).
-            QString angleFormula;
-            double betaDeg = 90.0;
-            const QString angText = angEdit->text().trimmed();
-            if (!angText.isEmpty()) {
-                const auto parsedAng = cad::geo::parseNumberOrFormula(angText);
-                betaDeg = parsedAng.value;
-                if (!parsedAng.isNumber) {
-                    auto r = cad::param::ConditionEngine::evaluate(
-                        parsedAng.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
-                    if (!r.ok) {
-                        if (m_scene)
-                            m_scene->showToast(QStringLiteral("\u89d2\u5ea6\u516c\u5f0f\u65e0\u6cd5\u8ba1\u7b97"));
-                        return;
-                    }
-                    betaDeg = r.value;
-                    angleFormula = parsedAng.formula;
-                }
-            }
-
-            commitDartLine(m_startSnap->blockId, m_startSnap->pointId,
-                           bSnap.blockId, bSnap.pointId,
-                           offsetMm, betaDeg, nameEdit->text().trimmed(),
-                           offsetFormula, angleFormula);
-            dlg->accept();
-        });
-    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
-
-    m_dartDialog = dlg;
-    showDialogBlockedFeedback();
-    QObject::connect(dlg, &QDialog::finished, dlg, [this, dlg](int result) {
-        if (m_dartDialog == dlg) {
-            m_dartDialog = nullptr;
-            clearDialogBlockedCursor();   // M10: 关闭即恢复画布光标
-        }
-        dlg->deleteLater();
-        // Rejected / closed: nothing committed — Drawing keeps its rubber
-        // band so the user may pick another offset point B.
-        (void)result;
-    });
-
-    dlg->show();
-    dlg->raise();
-    dlg->activateWindow();
-}
-
-void ToolSmartPen::commitDartLine(const QUuid& aBlockId, const QUuid& aPointId,
-                                  const QUuid& bBlockId, const QUuid& bPointId,
-                                  double offsetMm, double angleDeg,
-                                  const QString& name,
-                                  const QString& offsetFormula,
-                                  const QString& angleFormula)
-{
-    if (!m_lineFactory || !m_paramDoc || !m_startSnap) return;
-
-    const SnapResult aSnap{m_startSnap->worldPos, aBlockId, aPointId};
-    const SnapResult bSnap{cad::geo::Vec2(), bBlockId, bPointId};
-    // The pre-input strip does not drive dart geometry (calculated from
-    // A/B/d/β); only the dialog-provided name is forwarded.
-    LineBuildOptions opts;
-    opts.name = name;
-    m_lineFactory->createDartLine(aSnap, bSnap, offsetMm, angleDeg,
-                                  opts, offsetFormula, angleFormula);
-
-    consumePreInput();
-    m_leaderPicker->clear();
-    clearPreview();
-    setState(State::Idle);
-    m_startSnap.reset();
-    m_currentSnap.reset();
-    resetStrokeTargets();
-
-    if (m_scene && m_paramDoc && !m_paramDoc->blocks().empty()) {
-        const auto& lastBlock = m_paramDoc->blocks().back();
-        if (!lastBlock.segments.empty())
-            m_scene->notifyLineCreated(lastBlock.id, lastBlock.segments.back().id);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 落点确认 (stacked-point disambiguation)
-// ---------------------------------------------------------------------------
-
-std::vector<SnapResult> ToolSmartPen::overlapPool(
-    const cad::geo::Vec2& spot, const SnapResult& snap) const
-{
-    std::vector<SnapResult> out;
-    if (!m_paramDoc) return out;
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    // findSnapCandidates applies the same layer policy as findSnap
-    // (layerSnappable) — only LEGAL attachment targets ever enter the pool,
-    // so a switch can never propose a rejected cross-layer attachment.
-    const auto cands = m_snapEngine.findSnapCandidates(spot, m_paramDoc, zoom);
-    for (const auto& c : cands)
-        if (c.worldPos.distanceTo(snap.worldPos) <= kSnapOverlapEps)
-            out.push_back(c);
-    return out;
-}
-
-std::optional<SnapResult> ToolSmartPen::preferActiveLayer(
-    const std::vector<SnapResult>& pool,
-    const std::optional<SnapResult>& fallback) const
-{
-    if (!m_paramDoc) return fallback;
-    const QUuid active = m_paramDoc->activeLayer();
-    for (const auto& c : pool) {   // nearest first
-        const auto* blk = m_paramDoc->findBlock(c.blockId);
-        if (blk && blk->layer == active) return c;
-    }
-    return fallback;
-}
-
-void ToolSmartPen::enterEndConfirm(const SnapResult& snap,
-                                   const std::vector<SnapResult>& pool)
-{
-    // 先选活动层: the default end target is the active layer's stacked
-    // point (fallback = the raw nearest pick; findSnap already resolves
-    // exact coincidences to the active layer too).
-    m_endAutoPick = preferActiveLayer(pool, snap);
-
-    // Confirmable segments: every segment incident (endpoint or interpolated
-    // host) to any pool point — same collection rule as the leader picker.
-    m_endCands.clear();
-    QSet<QUuid> seen;
-    for (const auto& p : pool) {
-        const auto* blk = m_paramDoc ? m_paramDoc->findBlock(p.blockId) : nullptr;
-        if (!blk) continue;
-        for (const auto& seg : blk->segments) {
-            const bool isEndpoint = (seg.startPointId == p.pointId
-                                     || seg.endPointId == p.pointId);
-            bool isHost = false;
-            if (const auto* pt = blk->findPoint(p.pointId))
-                isHost = (pt->constraint == cad::param::PointConstraint::Interpolated
-                          && pt->hostSegmentId == seg.id);
-            if (!isEndpoint && !isHost) continue;
-            if (seen.contains(seg.id)) continue;
-            seen.insert(seg.id);
-            m_endCands.push_back({p.blockId, seg.id, p.pointId, p});
-        }
-    }
-
-    setState(State::ConfirmEnd);
-    if (m_scene)
-        m_scene->showToast(QString::fromUtf8(
-            "落点存在多个重叠点：点选线段切换落点，空白点击接受默认，Esc 取消"));
-    if (m_endAutoPick)
-        updatePreview(m_endAutoPick->worldPos);   // lock the rubber band
-}
-
-void ToolSmartPen::handleConfirmEndPress(const cad::geo::Vec2& clickPos)
-{
-    if (!m_endAutoPick) { cancelLine(); return; }
-
-    std::optional<SnapResult> confirmed;
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    const auto segSnap = m_snapEngine.findSegmentSnap(
-        clickPos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
-    if (segSnap) {
-        for (const auto& cand : m_endCands) {
-            if (cand.blockId == segSnap->blockId
-                && cand.segId == segSnap->segmentId) {
-                confirmed = cand.snap;
-                break;
-            }
-        }
-    }
-    // Candidate segment → that point; blank click = accept the default
-    // (active-layer) pick. Esc cancels the whole stroke (see keyPress).
-    commitEndSnap(confirmed.value_or(*m_endAutoPick));
-}
-
-void ToolSmartPen::commitEndSnap(const SnapResult& endSnap)
-{
-    if (!m_startSnap) {
-        // 用户拍板: 起点自由 + 终点吸附 = 翻转新线 —— 吸附点成为新线
-        // 起点, 原起点位置成为自由终点 (终点线变起点, 解开后语义不变:
-        // 线段几何/长度/角度完全一致, 仅端点身份互换). 这样终点吸附
-        // 也能走统一的“起点连接”路径创建连接, 而非被忽略成自由线.
-        const cad::geo::Vec2 origStart = m_startPoint;
-        m_startPoint = endSnap.worldPos;
-        m_startSnap  = endSnap;
-        m_leaderPicker->setRefDirDeg(0.0);
-        commitLine(origStart, std::nullopt);
-        return;
-    }
-    commitLine(endSnap.worldPos, endSnap);
-}
-
-bool ToolSmartPen::trySwitchStartPoint(const LeaderCandidate& cand, int candIndex)
-{
-    if (!m_startSnap) return false;
-    if (cand.pointId == m_startSnap->pointId) return false;
-    // Only pool members (legal, snappable targets) may become the start
-    // point — a grayed-layer segment in the leader list stays a pure angle
-    // reference and cannot hijack the attachment.
-    for (const auto& p : m_startPool) {
-        if (p.blockId == cand.blockId && p.pointId == cand.pointId) {
-            m_startPoint = p.worldPos;
-            m_startSnap  = p;
-            // Keep the clicked segment as the construction-angle reference.
-            m_leaderPicker->setIndex(candIndex);
-            return true;
-        }
-    }
-    return false;
-}
-
-void ToolSmartPen::updateEndConfirmHighlight(const cad::geo::Vec2& worldPos)
-{
-    if (!m_paramDoc || !m_scene) return;
-    double zoom = m_scene->currentZoom();
-
-    QUuid hitBlock, hitSeg;
-    const auto segSnap = m_snapEngine.findSegmentSnap(
-        worldPos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
-    if (segSnap) {
-        for (const auto& cand : m_endCands) {
-            if (cand.blockId == segSnap->blockId
-                && cand.segId == segSnap->segmentId) {
-                hitBlock = cand.blockId;
-                hitSeg = cand.segId;
-                break;
-            }
-        }
-    }
-    if (hitBlock == m_endHighlightBlockId && hitSeg == m_endHighlightSegId)
-        return;
-    clearEndConfirmHighlight();
-    m_endHighlightBlockId = hitBlock;
-    m_endHighlightSegId = hitSeg;
-    if (!hitBlock.isNull())
-        if (auto* item = m_scene->findBlockItem(hitBlock))
-            item->setLeaderHighlight(hitSeg);
-}
-
-void ToolSmartPen::clearEndConfirmHighlight()
-{
-    if (m_scene && !m_endHighlightBlockId.isNull())
-        if (auto* item = m_scene->findBlockItem(m_endHighlightBlockId))
-            item->setLeaderHighlight(QUuid());
-    m_endHighlightBlockId = QUuid();
-    m_endHighlightSegId = QUuid();
-}
-
-void ToolSmartPen::resetStrokeTargets()
-{
-    m_startPool.clear();
-    m_endCands.clear();
-    m_endAutoPick.reset();
-    clearEndConfirmHighlight();
 }
 
 void ToolSmartPen::clearPreview()
@@ -1190,127 +814,6 @@ void ToolSmartPen::hideSegMarker()
 {
     if (m_segMarker)
         m_segMarker->setVisible(false);
-}
-
-void ToolSmartPen::openAuxDialog(const SegmentSnapResult& segSnap, bool forStart)
-{
-    if (!m_paramDoc || m_auxDialog) return;
-    auto* block = m_paramDoc->findBlock(segSnap.blockId);
-    auto* seg = block ? block->findSegment(segSnap.segmentId) : nullptr;
-    if (!block || !seg) return;
-
-    // 端点延长线 D7 (EXTEND_LINE_DESIGN.md): 尾巴上不允许建立辅助点 —— 辅助点
-    // 按本体定义, 落在尾巴上会与"比例点不随延长漂移"冲突。吸附/连接/测量仍可用。
-    if (!block->segmentSnapWithinBase(segSnap.segmentId, segSnap.t)) {
-        if (m_scene)
-            m_scene->showToast(QString::fromUtf8(
-                "请在本体范围内建立辅助点（延长尾巴上不支持建点）"));
-        return;
-    }
-
-    hideSegMarker();
-
-    // Prepared point: Interpolated defaults, percent = projection t so the
-    // confirmed point lands exactly under the X marker. The name stays empty
-    // — the serial is the identity (dual-track naming).
-    cad::param::ParamPoint pt;
-    pt.constraint = cad::param::PointConstraint::Interpolated;
-    pt.hostSegmentId = seg->id;
-    pt.isAuxiliary = true;
-    pt.visible = true;
-    pt.showName = false;
-    pt.interpPercent = segSnap.t;
-    pt.serial = m_paramDoc->newPointSerial();
-
-    QWidget* parentWidget = m_scene && !m_scene->views().isEmpty()
-        ? m_scene->views().first() : nullptr;
-    auto* dlg = new cad::ui::QuickAuxDialog(pt, block->findPoint(seg->startPointId),
-                                   block->findPoint(seg->endPointId), parentWidget);
-    // NOTE: no WA_DeleteOnClose — the dialog schedules its own deleteLater()
-    // on close (ElaAppBar's default close path would destroy it mid-call).
-    // NON-modal on purpose: the user must be able to switch to the variable
-    // panel and copy a formula while this dialog stays open.
-    m_auxDialog = dlg;
-    m_auxDialogForStart = forStart;
-    m_auxDialogSegSnap = segSnap;
-    showDialogBlockedFeedback();
-
-    QObject::connect(dlg, &QDialog::finished, dlg, [this](int result) {
-        auto* dlg = m_auxDialog.data();
-        m_auxDialog = nullptr;
-        clearDialogBlockedCursor();   // M10: 关闭即恢复画布光标
-        if (result == QDialog::Accepted && dlg)
-            onAuxDialogAccepted(dlg->point());
-        // Rejected / closed: nothing created, stroke state untouched
-        // (Idle stays Idle; Drawing keeps its rubber band).
-    });
-    dlg->show();
-    dlg->raise();
-    dlg->activateWindow();
-}
-
-void ToolSmartPen::onAuxDialogAccepted(const cad::param::ParamPoint& pt)
-{
-    if (!m_paramDoc || !m_scene) return;
-
-    auto snap = commitAuxPoint(pt, m_auxDialogSegSnap.blockId,
-                               m_auxDialogSegSnap.segmentId);
-    if (!snap) return;  // host segment vanished while the dialog was open
-
-    if (m_auxDialogForStart) {
-        if (m_state != State::Idle) return;  // safety: state drifted
-        setupSnappedStart(*snap);
-        startStroke(Qt::NoModifier);
-    } else {
-        if (m_state != State::Drawing) return;  // safety: state drifted
-        // 起点自由 + 终点辅助点 = 翻转 (与 mousePress 终点吸附同一规则):
-        // 辅助点成为新线起点, 原起点位置成为自由终点, 然后走统一的起点
-        // 连接路径 —— 否则 commitLine 会退化成 createFreeLine, 连接根本
-        // 不建立 (无 Attachment → 拖动保护失效, 用户双击面板手动连才生效).
-        if (!m_startSnap) {
-            const cad::geo::Vec2 origStart = m_startPoint;
-            m_startPoint = snap->worldPos;
-            m_startSnap = snap;
-            m_leaderPicker->setRefDirDeg(0.0);
-            commitLine(origStart, std::nullopt);
-            return;
-        }
-        commitLine(snap->worldPos, snap);
-    }
-}
-
-std::optional<SnapResult> ToolSmartPen::commitAuxPoint(
-    const cad::param::ParamPoint& pt,
-    const QUuid& blockId, const QUuid& segmentId)
-{
-    if (!m_paramDoc) return std::nullopt;
-    auto* block = m_paramDoc->findBlock(blockId);
-    auto* seg = block ? block->findSegment(segmentId) : nullptr;
-    if (!block || !seg) return std::nullopt;
-
-    // Own undo step (建点与建线分开撤销): the aux point belongs to the host
-    // segment and survives deletion of the borrowing line.
-    if (m_undoStack) {
-        m_undoStack->push(new cad::cmd::AddAuxPointCommand(
-            m_paramDoc, blockId, segmentId, pt));
-    } else {
-        block->addPoint(pt);
-        seg->auxPointIds.push_back(pt.id);
-        m_paramDoc->resolveAll();
-    }
-
-    // Synthesize a SnapResult on the resolved point so the normal
-    // attached/bridge flow can pin to it.
-    const auto* hb = m_paramDoc->findBlock(blockId);
-    const auto* created = hb ? hb->findPoint(pt.id) : nullptr;
-    if (!created || !created->resolved)
-        return std::nullopt;
-    return SnapResult{
-        .worldPos  = hb->transform.toWorld(created->resolvedPos),
-        .blockId   = blockId,
-        .pointId   = pt.id,
-        .pointName = created->name
-    };
 }
 
 } // namespace cad::tools

@@ -4,6 +4,8 @@
 #include "ToolRegistry.h"
 #include "SnapEngine.h"
 #include "LineFactory.h"
+#include "LinePreInput.h"
+#include "SmartPenStrokeInput.h"
 #include "geometry/Vec2.h"
 
 #include <QGraphicsItem>
@@ -29,24 +31,6 @@ class HudItem;
 
 namespace cad::tools {
 class LeaderCandidatePicker;
-
-/// One-shot pre-input for the NEXT line the smart pen creates (预输入).
-/// Typed in the status-bar pre-input strip while the smart pen is active;
-/// the values are consumed by the next committed line and then cleared.
-/// Length is in cm and angle in degrees — both accept numbers or formulas,
-/// matching the SegmentEditBar semantics.
-struct LinePreInput
-{
-    QString name;      ///< Segment name for the next line.
-    QString lengthCm;  ///< Length in cm: number or formula.
-    QString angleDeg;  ///< Angle in degrees: number or formula.
-
-    /// Angle display convention (与 HUD/闭合基准一致): with a snapped start
-    /// it is the follower fold angle (0° = 折叠重叠, 180° = 直行延续);
-    /// with a free start it is the absolute world angle (0~360° CCW).
-    [[nodiscard]] bool hasLength() const { return !lengthCm.trimmed().isEmpty(); }
-    [[nodiscard]] bool hasAngle() const { return !angleDeg.trimmed().isEmpty(); }
-};
 
 // HudItem 已收口到 src/canvas/HudItem.h（cad::canvas，TOOL_SYSTEM_AUDIT
 // P1/M1）：1/zoom 缩放补偿全仓唯一实现，toast/重叠提示/跟随标签共用。
@@ -210,9 +194,7 @@ private:
     void startStroke(Qt::KeyboardModifiers mods);
     /// Parse/evaluate the current pre-input into m_strokeInput.
     void captureStrokeInput();
-    /// Apply active pre-input constraints to the cursor position (length-only:
-    /// keeps the cursor direction; angle-only: projects onto the fixed ray).
-    [[nodiscard]] cad::geo::Vec2 applyPreInputConstraints(const cad::geo::Vec2& cursor) const;
+    [[nodiscard]] cad::geo::Vec2 applyPreInputConstraints(const cad::geo::Vec2& cursor);
     /// Fully determined endpoint (both length and angle present).
     [[nodiscard]] cad::geo::Vec2 fixedPreInputEnd() const;
     /// Input-space angle → world angle: follower convention for a snapped
@@ -227,16 +209,9 @@ private:
     Mode  m_mode  = Mode::Line;  ///< Construction mode (W cycles while Idle).
 
     LinePreInput m_preInput;       ///< Pending pre-input from the status bar.
-    struct StrokeInput {
-        LinePreInput raw;          ///< Snapshot taken at stroke start.
-        bool   hasLength  = false;
-        double lengthMm   = 0.0;   ///< Evaluated length (mm).
-        QString lengthFormula;     ///< Non-empty when the length was a formula.
-        bool   hasAngle   = false;
-        double displayAngleDeg = 0.0;  ///< Input-space angle (follower/world).
-        QString angleFormula;      ///< Non-empty when the angle was a formula.
-    };
-    StrokeInput m_strokeInput;     ///< Active stroke's pre-input snapshot.
+    /// 预输入值计算 (阶段 3 拆分): capture/apply/fixed/build/consume 迁入
+    /// SmartPenStrokeInput; onActivate 与 m_lineFactory 同期重建。
+    SmartPenStrokeInput* m_strokeInput = nullptr;
 
     cad::geo::Vec2 m_startPoint;
     bool m_angleSnap = false;

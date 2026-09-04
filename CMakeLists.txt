@@ -111,6 +111,8 @@ add_library(gcad_geometry STATIC
     src/geometry/Angle.h
     src/geometry/CurveMath.h
     src/geometry/CurveMath.cpp
+    src/geometry/CurveSplitter.h
+    src/geometry/CurveSplitter.cpp
     src/geometry/TriangleUnfold.h
     src/geometry/TriangleUnfold.cpp
 )
@@ -130,12 +132,14 @@ add_library(gcad_parametric STATIC
     src/parametric/MeasurementsView.h
     src/parametric/LayersView.h
     src/parametric/VariablesView.h
+    src/parametric/DomainViews.h
     src/parametric/Component.h
     src/parametric/Attachment.h
     src/parametric/AttachmentGraph.h
     src/parametric/FollowerAngle.h
     src/parametric/Resolver.h
     src/parametric/Resolver.cpp
+    src/parametric/ParamDocumentDetail.h
     src/parametric/ParamDocument.h
     src/parametric/ParamDocument.cpp
     src/parametric/ParamDocumentStores.cpp
@@ -208,7 +212,18 @@ add_library(gcad_document STATIC
     src/document/FormatMigration.h
     src/document/FormatMigration.cpp
     src/document/commands/BlockCommands.h
-    src/document/commands/BlockCommands.cpp
+    src/document/commands/BlockTransformCommands.h
+    src/document/commands/BlockTransformCommands.cpp
+    src/document/commands/BlockLifecycleCommands.h
+    src/document/commands/BlockLifecycleCommands.cpp
+    src/document/commands/SegmentPropertyCommands.h
+    src/document/commands/SegmentPropertyCommands.cpp
+    src/document/commands/ReverseSegmentCommand.h
+    src/document/commands/ReverseSegmentCommand.cpp
+    src/document/commands/CurveCommands.h
+    src/document/commands/CurveCommands.cpp
+    src/document/commands/EndpointCommands.h
+    src/document/commands/EndpointCommands.cpp
     src/document/commands/CommandIds.h
     src/document/commands/ComponentCommands.h
     src/document/commands/ComponentCommands.cpp
@@ -216,10 +231,23 @@ add_library(gcad_document STATIC
     src/document/commands/LayerCommands.cpp
     src/document/commands/AttachmentCommands.h
     src/document/commands/AttachmentCommands.cpp
+    src/document/commands/AttachmentLifecycleCommands.h
+    src/document/commands/AttachmentLifecycleCommands.cpp
+    src/document/commands/AttachmentAngleCommands.h
+    src/document/commands/AttachmentAngleCommands.cpp
+    src/document/commands/AttachmentSlideCommands.h
+    src/document/commands/AttachmentSlideCommands.cpp
     src/document/commands/VariableCommands.h
     src/document/commands/VariableCommands.cpp
     src/document/commands/DocumentCommands.h
     src/document/commands/DocumentCommands.cpp
+    src/document/commands/BreakState.h
+    src/document/commands/BreakAnalysis.h
+    src/document/commands/BreakAnalysis.cpp
+    src/document/commands/BreakEvaluate.cpp
+    src/document/commands/BreakExecution.h
+    src/document/commands/BreakExecution.cpp
+    src/document/commands/BreakFinish.cpp
     src/document/commands/BreakCommands.h
     src/document/commands/BreakCommands.cpp
 )
@@ -266,6 +294,8 @@ add_library(gcad_ui STATIC
     src/ui/FormulaTabModel.cpp
     src/ui/SerialDelegate.h
     src/ui/SerialDelegate.cpp
+    src/ui/LayerCard.h
+    src/ui/LayerCard.cpp
     src/ui/LayerPanel.h
     src/ui/LayerPanel.cpp
     src/ui/IconHelper.h
@@ -291,6 +321,14 @@ add_library(gcad_ui STATIC
     src/ui/IntersectionForm.cpp
     src/ui/LinePropertyDialog.h
     src/ui/LinePropertyDialog.cpp
+    src/ui/LinePropertySession.h
+    src/ui/LinePropertySession.cpp
+    src/ui/LineEndpointSection.h
+    src/ui/LineEndpointSection.cpp
+    src/ui/LineAppearanceSection.h
+    src/ui/LineAppearanceSection.cpp
+    src/ui/LineGeometrySection.h
+    src/ui/LineGeometrySection.cpp
     src/ui/SegmentAnchorTab.h
     src/ui/SegmentAnchorTab.cpp
     src/ui/SegmentAuxTab.h
@@ -322,15 +360,34 @@ add_library(gcad_tools STATIC
     src/tools/ToolManager.cpp
     src/tools/ToolSelect.h
     src/tools/ToolSelect.cpp
+    src/tools/ToolSelectHitTest.cpp
+    src/tools/ToolSelectActions.cpp
+    src/tools/SelectDragController.h
+    src/tools/SelectDragController.cpp
+    src/tools/CurveAnchorDragSession.h
+    src/tools/CurveAnchorDragSession.cpp
+    src/tools/OverlapDisambiguationController.h
+    src/tools/OverlapDisambiguationController.cpp
+    src/tools/SelectHoverFeedback.h
+    src/tools/SelectHoverFeedback.cpp
     src/tools/MarqueeGesture.h
     src/tools/MarqueeGesture.cpp
     src/tools/SelectState.h
     src/tools/ConnectGesture.h
     src/tools/ConnectGesture.cpp
+    src/tools/ConnectGestureAttach.cpp
+    src/tools/ConnectGestureAngleSession.cpp
+    src/tools/ConnectOverlapResolver.h
+    src/tools/ConnectOverlapResolver.cpp
     src/tools/CopyDragController.h
     src/tools/CopyDragController.cpp
     src/tools/ToolSmartPen.h
     src/tools/ToolSmartPen.cpp
+    src/tools/SmartPenEndConfirm.cpp
+    src/tools/SmartPenDart.cpp
+    src/tools/SmartPenAuxPoint.cpp
+    src/tools/SmartPenStrokeInput.h
+    src/tools/SmartPenStrokeInput.cpp
     src/tools/LineFactory.h
     src/tools/LineFactory.cpp
     src/tools/LeaderCandidatePicker.h
@@ -343,6 +400,14 @@ add_library(gcad_tools STATIC
     src/tools/RotateCopyGesture.cpp
     src/tools/RotateGizmo.h
     src/tools/RotateGizmo.cpp
+    src/tools/RotateAimSnap.h
+    src/tools/RotateAimSnap.cpp
+    src/tools/RotateInputTracker.h
+    src/tools/RotateInputTracker.cpp
+    src/tools/RotateSession.h
+    src/tools/RotateSession.cpp
+    src/tools/MultiRotateSession.h
+    src/tools/MultiRotateSession.cpp
     src/tools/ToolBreak.h
     src/tools/ToolBreak.cpp
     src/tools/ToolIntersection.h
@@ -399,7 +464,20 @@ add_test(NAME check_test_fixtures
 add_test(NAME check_hardcoded_colors
          COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
                  python ${CMAKE_SOURCE_DIR}/tools/check_hardcoded_colors.py)
+add_test(NAME check_file_size
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_file_size.py)
+add_test(NAME check_header_classification
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_header_classification.py)
+add_test(NAME check_bool_flags
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_bool_flags.py)
+add_test(NAME check_test_split
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_test_split.py)
 set_tests_properties(check_layering check_test_fixtures check_hardcoded_colors
+                     check_file_size check_header_classification check_bool_flags check_test_split
     PROPERTIES RUN_SERIAL TRUE)
 
 # ── Test: Tool hint completeness (TOOL_SYSTEM_AUDIT H3) ──
@@ -478,11 +556,26 @@ target_link_libraries(test_component PRIVATE
     Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_component COMMAND test_component)
 
-# ── Test: document commands (BlockCommands + VariableCommands undo/redo) ──
-add_executable(test_commands tests/test_commands.cpp)
-target_include_directories(test_commands PRIVATE ${GCAD_SRC})
-target_link_libraries(test_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
-add_test(NAME test_commands COMMAND test_commands)
+# ── Domain-specific command test suites (Rule VIII test decomposition) ──
+add_executable(test_block_commands tests/test_block_commands.cpp)
+target_include_directories(test_block_commands PRIVATE ${GCAD_SRC})
+target_link_libraries(test_block_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_block_commands COMMAND test_block_commands)
+
+add_executable(test_attachment_commands tests/test_attachment_commands.cpp)
+target_include_directories(test_attachment_commands PRIVATE ${GCAD_SRC})
+target_link_libraries(test_attachment_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_attachment_commands COMMAND test_attachment_commands)
+
+add_executable(test_variable_layer_commands tests/test_variable_layer_commands.cpp)
+target_include_directories(test_variable_layer_commands PRIVATE ${GCAD_SRC})
+target_link_libraries(test_variable_layer_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_variable_layer_commands COMMAND test_variable_layer_commands)
+
+add_executable(test_reverse_segment_commands tests/test_reverse_segment_commands.cpp)
+target_include_directories(test_reverse_segment_commands PRIVATE ${GCAD_SRC})
+target_link_libraries(test_reverse_segment_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_reverse_segment_commands COMMAND test_reverse_segment_commands)
 
 # ── Test: CurveMath (Bezier / Catmull-Rom / arc length / projection / intersection) ──
 add_executable(test_curve tests/test_curve.cpp)

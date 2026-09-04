@@ -397,6 +397,10 @@ private:
                               const QHash<QString, QList<Condition>>& conditioned = {},
                               EvalContext* ctx = nullptr);
 
+    /// 辅助点安全限位钳制：向内收缩（负延长量）不能越过线段上的辅助点，
+    /// 无辅助点时保证有效线长 >= 1mm，杜绝退化与反向倒挂。
+    void clampExtendLimits(const Segment& seg, double& inOutStartMm, double& inOutEndMm) const;
+
     std::vector<CurveSpanEntry> m_curveSpans;  ///< Frame cache, rebuilt in resolve().
     /// segmentId -> index into m_curveSpans (rebuilt together with the spans).
     /// curveSpanEntry() is on the per-frame snap/paint path, so a linear scan

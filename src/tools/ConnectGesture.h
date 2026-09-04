@@ -12,6 +12,8 @@
 #include "parametric/Attachment.h"
 #include "tools/SnapEngine.h"
 #include "tools/SelectState.h"
+#include "tools/ConnectConfirm.h"       // ConfirmCandidate (阶段 3 拆分)
+#include "tools/ConnectOverlapResolver.h"  // m_overlap (阶段 3 拆分)
 
 class QKeyEvent;
 class QGraphicsEllipseItem;
@@ -33,15 +35,6 @@ inline constexpr double kConnectSnapRadius = 7.5;
 /// must feel easy (10px), dropping must stay precise (7.5px). ToolSelect's
 /// hover endpoint hint uses the same value.
 inline constexpr double kConnectGrabRadius = 10.0;
-
-/// Candidate leader segment for overlapping-target disambiguation
-/// (ConfirmTarget state): a segment whose endpoint lies on the connection
-/// spot. Clicking it confirms the leader point + reference segment.
-struct ConfirmCandidate {
-    QUuid blockId;
-    QUuid segId;
-    QUuid pointId;   ///< The endpoint ON the connection position.
-};
 
 /// Connection gesture of the selection tool: dragging from an endpoint to
 /// establish a new attachment, with snap-ring feedback, overlapping-target
@@ -183,20 +176,15 @@ private:
     /// Mouse move during ConfirmTarget: highlight the hovered candidate line.
     void updateCandidateHighlight(const Vec2& pos,
                                   const std::vector<ConfirmCandidate>& candidates);
+    /// 以下 7 个为薄转发 (阶段 3): 图元管理迁入 ConnectOverlapResolver,
+    /// 调用点保持原签名, 实现只转发给 m_overlap。
     void removeConfirmHighlight();
-    /// Show/move the small source-port marker at the selected source line's
-    /// overlapping endpoint (replaces the old yellow line in ConfirmSource).
     void updateSourcePortMarker();
     void removeSourcePortMarker();
-    /// Collect leader segments whose endpoint lies on the connection spot
-    /// (overlapping-target disambiguation candidates).
-    std::vector<ConfirmCandidate> collectConfirmCandidates(
-        const Vec2& connWorldPos) const;
-    /// 组件级连接重叠切换: leader segments whose endpoint ALSO stacks on the
-    /// component connection spot — excluding the current leader and the
-    /// component's own members (自身成员 = 环). Drives the AngleInput re-pick.
-    std::vector<ConfirmCandidate> collectComponentSwitchCandidates(
-        const Vec2& connWorldPos, const QUuid& curBlockId, const QUuid& curSegId) const;
+    void updateConnectMarker();
+    void removeConnectMarker();
+    void updateConnectHalo();
+    void removeConnectHalo();
     /// Re-target the in-flight component-level attachment (AngleInput stage)
     /// onto the confirmed candidate; uses the same angle back-solve as a fresh
     /// attach (zero visual jump) and rolls back on validation failure.
@@ -209,16 +197,6 @@ private:
     void endAngleSession();
 
     void finalizeConnection();                       ///< Snapshot→remove→push cmd.
-
-    /// Show/move/hide the snap-target ring.
-    void updateConnectMarker();
-    void removeConnectMarker();
-    /// Drop the source-point halo.
-    void removeConnectHalo();
-    /// Create/reposition the source-point halo: a dashed ring around the
-    /// dragged point whose radius equals the connect snap radius (the
-    /// magnet's reach) — a target entering the halo will be snapped.
-    void updateConnectHalo();
 
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
@@ -256,8 +234,9 @@ private:
     double m_connectOldSlidePerp  = 0.0;          ///< Pre-drag slidePerpMm (undo restore).
     SnapEngine m_snapEngine;
     std::optional<SnapResult> m_connectTarget;
-    QGraphicsEllipseItem* m_connectMarker = nullptr;  ///< Snap-target ring (owned).
-    QGraphicsEllipseItem* m_connectHalo   = nullptr;  ///< Source-point halo (owned).
+    /// 画布图元 + 重叠候选收集 (阶段 3 拆分): ConfirmTarget/Source 高亮/标记、
+    /// 吸附环、源光晕, 以及候选线段收集。same-lifetime as this gesture.
+    ConnectOverlapResolver m_overlap;
 
     // Overlapping-target disambiguation (ConfirmTarget state): candidate
     // leader SEGMENTS whose endpoint lies on the connection spot.
@@ -266,8 +245,7 @@ private:
     /// a segment, this remembers the chosen endpoint so the source-port
     /// marker persists until the connection is committed or cancelled.
     std::optional<ConfirmCandidate> m_selectedSourceCandidate;
-    QGraphicsPathItem* m_confirmHighlight = nullptr;  ///< Hovered candidate line (ConfirmTarget only).
-    QGraphicsEllipseItem* m_sourcePortMarker = nullptr;  ///< Selected source endpoint marker.
+
     /// AngleInput 重叠切换候选 (组件级连接, 用户要求 2026-09): leader segments
     /// whose endpoints stack on the connection spot. Empty for line-level
     /// connections / no overlaps. Clicking one re-picks the followed object.

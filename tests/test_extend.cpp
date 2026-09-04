@@ -1,4 +1,4 @@
-#include <QtTest>
+﻿#include <QtTest>
 #include <QUuid>
 
 #include <cmath>
@@ -257,19 +257,30 @@ private slots:
                  "follower must follow the extended (effective) endpoint (D4)");
     }
 
-    // D2: 负延长量防御性钳制为 0 (只往外)。
+    // D2 (2026-09 演进): 负延长量向内收缩；过度收缩时防御性安全限位。
     void negativeExtendClamped()
     {
         ParamDocument doc;
         auto L = makeLine(doc, 100.0);
         auto* b = doc.findBlock(L.blockId);
         auto* s = b->findSegment(L.segId);
+        // 1. 合法负延长量 (-20mm): 向内收缩 20mm，有效终点从 100 缩短到 80
         s->extendEndMm = -20.0;
         doc.resolveAll();
-        QVERIFY2(std::abs(b->segmentExtendEnd(L.segId)) < 1e-9,
-                 "negative extension must clamp to 0 (D2)");
-        QVERIFY2(b->worldPos(L.endId).distanceTo(Vec2(100.0, 0.0)) < 1e-6,
-                 "effective end stays at base when clamped");
+        QVERIFY2(std::abs(b->segmentExtendEnd(L.segId) - (-20.0)) < 1e-9,
+                 "negative extension within safe range is preserved (D2)");
+        QVERIFY2(b->worldPos(L.endId).distanceTo(Vec2(80.0, 0.0)) < 1e-6,
+                 "effective end moves inward by 20mm to (80,0)");
+        QVERIFY2(std::abs(b->segmentEffectiveLength(L.segId) - 80.0) < 1e-6,
+                 "effective length shrinks to 80mm");
+
+        // 2. 过度收缩 (-150mm > 100mm): 钳制在最小线长 1mm (即最大收缩 99mm)
+        s->extendEndMm = -150.0;
+        doc.resolveAll();
+        QVERIFY2(std::abs(b->segmentExtendEnd(L.segId) - (-99.0)) < 1e-6,
+                 "excessive shrink is clamped to preserve 1mm min line length");
+        QVERIFY2(b->worldPos(L.endId).distanceTo(Vec2(1.0, 0.0)) < 1e-6,
+                 "effective end clamped at (1,0)");
     }
 
     // D8: 打断后延长量随端点归属 (前段断点=0, 后段继承原终点延长量)。
@@ -784,6 +795,133 @@ private slots:
         QVERIFY2(widthWithTail > widthBase + 40.0,
                  qPrintable(QStringLiteral("起点延长后包围盒应增宽 ~50mm (%1 → %2)")
                                 .arg(widthBase).arg(widthWithTail)));
+    }
+
+    // 验证回归：当变量改变驱动延长量从 0 变到 >0 时（此时上一帧 m_effectiveLocal 为空），
+    // applyEffectivePositions 必须正确触发 touchGeometry()，使 BlockItem 在 syncBlockPositions()
+    // 时能够重新构建绘制缓存，包围盒增宽，避免"线条正确移动但自身形状没变"的刷新盲区。
+    void variableChangeFromZeroToExtendRefreshesCanvas()
+    {
+        ParamDocument doc;
+        const auto L = makeLine(doc, 100.0);  // (0,0) -> (100,0)
+
+        Variable v;
+        v.name = QStringLiteral("延长变量");
+        v.refName = QStringLiteral("ext");
+        v.value = 0.0;  // 初始为 0！无延长！
+        doc.addVariable(v);
+
+        auto* b0 = doc.findBlock(L.blockId);
+        QVERIFY(b0);
+        auto* s0 = b0->findSegment(L.segId);
+        QVERIFY(s0);
+        s0->extendEndMm = 0.0;
+        s0->extendEndFormula = QStringLiteral("ext");
+        doc.resolveAll();
+
+        CanvasScene scene(&doc);
+        for (const auto& blk : doc.blocks())
+            scene.addBlockItem(blk.id);
+        scene.syncBlockPositions();
+
+        auto* item = scene.findBlockItem(L.blockId);
+        QVERIFY(item);
+        const double baseWidth = item->boundingRect().width();
+        const quint64 baseEpoch = doc.findBlock(L.blockId)->geometryEpoch();
+
+        // 将变量由 0 改为 5.0 (5cm = 50mm)
+        doc.setParameter(QStringLiteral("ext"), 5.0);
+        const quint64 newEpoch = doc.findBlock(L.blockId)->geometryEpoch();
+        QVERIFY2(newEpoch > baseEpoch,
+                 "geometryEpoch must bump when extend changes from 0 to positive via variable");
+
+        scene.syncBlockPositions();
+        const double extendedWidth = item->boundingRect().width();
+        QVERIFY2(extendedWidth > baseWidth + 40.0,
+                 qPrintable(QStringLiteral("从0到有延长后包围盒应增宽 ~50mm (%1 → %2)")
+                                .arg(baseWidth).arg(extendedWidth)));
+    }
+
+    // 负延长量向内收缩 + 辅助点安全限位钳制 (方案1拍板)
+    void negativeExtendShrinksLineWithoutCrossingAuxPoint()
+    {
+        ParamDocument doc;
+        // 100mm 直线 (0,0) -> (100,0)
+        auto L = makeLine(doc, 100.0);
+        // 在 30mm (0.3) 和 70mm (0.7) 各添加一个辅助点
+        const QUuid aux1 = addAuxPoint(doc, L.blockId, L.segId, 0.3);
+        const QUuid aux2 = addAuxPoint(doc, L.blockId, L.segId, 0.7);
+        doc.resolveAll();
+
+        auto* b = doc.findBlock(L.blockId);
+        auto* seg = b->findSegment(L.segId);
+
+        // 1. 设置起点负延长量 -50mm (试图越过 30mm 处的 aux1)
+        seg->extendStartMm = -50.0;
+        doc.resolveAll();
+
+        // 断言起点被严格钳制在 30mm 辅助点处，绝不能穿过辅助点
+        QVERIFY2(std::abs(b->segmentExtendStart(L.segId) - (-30.0)) < 1e-6,
+                 "起点向内收缩必须被 30mm 辅助点阻挡钳制在 -30mm");
+        QVERIFY2(b->worldPos(L.startId).distanceTo(Vec2(30.0, 0.0)) < 1e-6,
+                 "起点有效位置必须停在辅助点 (30,0)");
+
+        // 2. 设置终点负延长量 -50mm (试图越过 70mm 处的 aux2)
+        seg->extendEndMm = -50.0;
+        doc.resolveAll();
+
+        // 终点到 aux2 的距离是 100 - 70 = 30mm，因此最多收缩 30mm
+        QVERIFY2(std::abs(b->segmentExtendEnd(L.segId) - (-30.0)) < 1e-6,
+                 "终点向内收缩必须被 70mm 辅助点阻挡钳制在 -30mm");
+        QVERIFY2(b->worldPos(L.endId).distanceTo(Vec2(70.0, 0.0)) < 1e-6,
+                 "终点有效位置必须停在辅助点 (70,0)");
+
+        // 有效线段长度应为 70 - 30 = 40mm
+        QVERIFY2(std::abs(b->segmentEffectiveLength(L.segId) - 40.0) < 1e-6,
+                 "有效线长应为 40mm");
+
+        // 3. 测试无辅助点时的双端安全保护
+        ParamDocument doc2;
+        auto L2 = makeLine(doc2, 100.0);
+        auto* b2 = doc2.findBlock(L2.blockId);
+        auto* seg2 = b2->findSegment(L2.segId);
+        // 两端同时大幅向内收缩 (各 -60mm，总收缩 120mm > 100mm)
+        seg2->extendStartMm = -60.0;
+        seg2->extendEndMm = -60.0;
+        doc2.resolveAll();
+
+        // 有效长度必须保持 >= 1.0mm，绝不能退化为 0 或反转倒挂
+        const double effLen = b2->segmentEffectiveLength(L2.segId);
+        QVERIFY2(effLen >= 0.999,
+                 "无辅助点过度收缩时必须保有 >=1mm 最小安全线长");
+        // 有效起点必须在有效终点左侧 (x_start < x_end)
+        QVERIFY2(b2->worldPos(L2.startId).x < b2->worldPos(L2.endId).x,
+                 "有效起点终点空间方向绝不能反向倒置");
+    }
+
+    // 负延长量序列化 round-trip 保留
+    void negativeExtendSerializationRoundTrip()
+    {
+        ParamDocument doc;
+        auto L = makeLine(doc, 100.0);
+        auto* b = doc.findBlock(L.blockId);
+        auto* seg = b->findSegment(L.segId);
+        seg->extendStartMm = -20.0;
+        seg->extendEndMm = -15.0;
+        seg->extendStartFormula = QStringLiteral("-ext_a");
+        seg->extendEndFormula = QStringLiteral("-ext_b");
+
+        const QJsonObject json = DocumentSerializer::serialize(doc);
+        ParamDocument restored;
+        DocumentSerializer::deserialize(restored, json);
+        const auto* b2 = restored.findBlock(L.blockId);
+        QVERIFY(b2);
+        const auto* s2 = b2->findSegment(L.segId);
+        QVERIFY(s2);
+        QCOMPARE(s2->extendStartMm, -20.0);
+        QCOMPARE(s2->extendEndMm, -15.0);
+        QCOMPARE(s2->extendStartFormula, QStringLiteral("-ext_a"));
+        QCOMPARE(s2->extendEndFormula, QStringLiteral("-ext_b"));
     }
 };
 

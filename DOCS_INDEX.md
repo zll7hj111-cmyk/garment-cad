@@ -57,6 +57,7 @@
 | `CONTRIBUTING.md` | Git 提交规范 + 代码格式化/静态检查命令（2026-09-02 新建） |
 | `docs/archive/SUMMARY.md` | 归档化石摘要（2026-09-02 建档） |
 | `DETACH_SHADOW_PLAN.md` | 拆开影子线段 实现计划（分级计划树落盘副本：北极星/需求/非目标/假设 + 7 大类/20 小类验收口径，供新会话重建同口径计划） | 📦 任务完成（2026-09-03 全量 ctest 34/34 绿），留作验收口径档案 |
+| `FILE_SPLIT_PLAN_V2.md` | 代码拆分实操规范 v2.0 全局实施计划书（四阶段规划/红线守护/实施明细/阶段3 Backlog） | 📝 阶段 0/1/2 已落地，阶段 3 待办中 |
 | `.reasonix/skills/*/SKILL.md` | 工具链技能定义（arch-optimize / make-ui-not-ai） |
 | `.workbuddy/memory/` | 工作记忆存档（含 C1 指针句柄化审计报告；2026-08-31 连接考古笔记部分过时，以源码为准） |
 

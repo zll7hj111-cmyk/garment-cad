@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QObject>
 #include <QUuid>
@@ -22,26 +22,19 @@
 #include "parametric/MeasureVariable.h"
 #include "parametric/AngleMeasureVariable.h"
 #include "parametric/Condition.h"
+#include "parametric/ParamDocumentDetail.h"
 
 namespace cad::param {
 
 class LayerRegistry;
 class VariableStore;
 class MeasurementStore;
-/// Trusted-pipeline accessor for the silent-restore (*Raw) API — the only
-/// friend allowed to call it. See parametric/ParamDocumentRaw.h (P1-2).
 struct RawModelAccess;
-/// 按域分组的只读窄接口视图 (B1 门面分组试点) — 完整定义见 parametric/BlockView.h。
 class BlocksView;
-/// 按域分组的只读窄接口视图 — 附着域 (B2)，见 parametric/AttachmentsView.h。
 class AttachmentsView;
-/// 按域分组的只读窄接口视图 — 组件域 (B2)，见 parametric/ComponentsView.h。
 class ComponentsView;
-/// 按域分组的只读窄接口视图 — 测量域 (B2)，见 parametric/MeasurementsView.h。
 class MeasurementsView;
-/// 按域分组的只读窄接口视图 — 图层域 (B3)，见 parametric/LayersView.h。
 class LayersView;
-/// 按域分组的只读窄接口视图 — 变量域 (B3)，见 parametric/VariablesView.h。
 class VariablesView;
 
 /// The parametric document holds all Blocks, free points, attachments,
@@ -114,45 +107,8 @@ public:
     /// Compiles to `true` in release (no cost, no behaviour change).
     bool blockPointerInRange(const Block* p) const noexcept;
 
-    /// Predicted consequences of removing one block — every counter mirrors
-    /// one cascade branch of removeBlock() (删除影响报告). Kept in sync with
-    /// the cleanup logic; advisory only (the deletion itself is unconditional).
-    struct DeleteImpact {
-        int attachmentsRemoved   = 0;  ///< 连接数（attachment）。
-        int bridgesReleased      = 0;  ///< 释放为独立线段的桥接线（保留几何）。
-        int intersectionsFrozen  = 0;  ///< 冻结在原位置的交点（射线原点消失）。
-        int intersectionsAimCleared = 0; ///< 交点回退为固定角度的指向点（指向点被删）。
-        int linkedFrozen         = 0;  ///< 长度引用固化为数值的段/点（引用对象被删）。
-        int linkedVarsRemoved    = 0;  ///< 删除的关联长度变量。
-        int measureVarsRemoved   = 0;  ///< 删除的测量变量（不可恢复）。
-        int angleVarsRemoved     = 0;  ///< 删除的角度测量变量（不可恢复）。
-        int formulasBroken       = 0;  ///< 引用被删测量名的公式（将失效报错）。
-        int dartLinesDegraded    = 0;  ///< 失去起点/偏移点而降级为普通线的省道线。
-
-        [[nodiscard]] bool hasImpact() const
-        {
-            return attachmentsRemoved > 0 || bridgesReleased > 0 ||
-                   intersectionsFrozen > 0 || intersectionsAimCleared > 0 ||
-                   linkedFrozen > 0 ||
-                   linkedVarsRemoved > 0 || measureVarsRemoved > 0 ||
-                   angleVarsRemoved > 0 || formulasBroken > 0 ||
-                   dartLinesDegraded > 0;
-        }
-        DeleteImpact& operator+=(const DeleteImpact& o)
-        {
-            attachmentsRemoved  += o.attachmentsRemoved;
-            bridgesReleased     += o.bridgesReleased;
-            intersectionsFrozen += o.intersectionsFrozen;
-            intersectionsAimCleared += o.intersectionsAimCleared;
-            linkedFrozen        += o.linkedFrozen;
-            linkedVarsRemoved   += o.linkedVarsRemoved;
-            measureVarsRemoved  += o.measureVarsRemoved;
-            angleVarsRemoved    += o.angleVarsRemoved;
-            formulasBroken      += o.formulasBroken;
-            dartLinesDegraded   += o.dartLinesDegraded;
-            return *this;
-        }
-    };
+    /// Predicted consequences of removing one block (删除影响报告, defined in ParamDocumentDetail.h).
+    using DeleteImpact = cad::param::DeleteImpact;
 
     /// Delete-impact report for @p id (prediction, no mutation).
     [[nodiscard]] DeleteImpact deleteImpactReport(const QUuid& id) const;
@@ -835,11 +791,5 @@ private:
 
 } // namespace cad::param
 
-// B1 门面分组: blocks 域窄接口视图。放在类定义之后, 内联成员 blocksView()
-// 的定义需要完整的 ParamDocument (定义体在 BlockView.h 中)。
-#include "parametric/BlockView.h"
-#include "parametric/AttachmentsView.h"
-#include "parametric/ComponentsView.h"
-#include "parametric/MeasurementsView.h"
-#include "parametric/LayersView.h"
-#include "parametric/VariablesView.h"
+// B1 门面分组: blocks 域窄接口视图 (DomainViews.h 聚合).
+#include "parametric/DomainViews.h"

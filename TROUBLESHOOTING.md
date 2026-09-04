@@ -1,4 +1,4 @@
-﻿# TROUBLESHOOTING —— 踩坑经验库
+# TROUBLESHOOTING —— 踩坑经验库
 
 按需查阅（不注入会话）：修改 bug 前先 grep 本文件相关关键词；修复了本清单之外的 bug 后，把根因 + 修复追加到对应主题分组。
 
@@ -248,6 +248,10 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
 - **线条属性端点连接摘要（跟随/挂载/指向）上下截断（2026-09 用户报告「线条属性的线段挂载信息会被上下截断」，已彻底修复）**：
   - **根因分析**：`LinePropertyDialog::buildEndpoint`（LinePropertyDialog.cpp:832）中端点连接摘要标签 `connSummary`（`m_lblStartConn` / `m_lblEndConn`）被硬编码了 `connSummary->setFixedHeight(16)`。然而其样式 `dimMono`（来自 `Theme::dimValueStyle()`）指定了 `font-size: 11px`，在 Windows 环境下中文字体（如微软雅黑）由于行间距与基线度量，11px 字号的实际行高通常在 18~22px（若开启 125% 或 150% 等高 DPI 缩放则更大）。由于固定高度仅 16px 且 QLabel 默认垂直居中对齐，导致字符顶部笔画（如汉字顶端）与底部笔画（如汉字撇捺勾或小写字母下延）被视口上下边界直接裁切（上下截断）。此外，使用 `v->addWidget(connSummary, 0, Qt::AlignLeft)` 限制了宽度展开，导致多项挂载时可能触发不合理的折行。
   - **修复**：①移除 `connSummary->setFixedHeight(16)`，将构造字号同步为 11px，让标签依据字体度量与 DPI 自动计算高度（`sizeHint()`）；②将 `v->addWidget(connSummary, 0, Qt::AlignLeft)` 调整为 `v->addWidget(connSummary)`，使其占满面板可用宽度，多条挂载自然横排或折行；③在 `test_dialog_tabs` 的 `endConnectionRowAndBadge` 测试中追加宿主线打开属性对话框验证 `ldrEndConn` 显示「挂载」摘要且 `height() >= fontMetrics().height()`，杜绝截断回归。
+- **端点延长量从 0 变到非 0 画布渲染未更新（2026-09 修复，用户报告「有时候触发延长量，画布线条正确移动但形状没变」）**：
+  - **根因分析**：在 `Block::applyEffectivePositions`（Block.cpp:1167）中，用于检测可视几何变动并触发重绘的逻辑写成了 `if (!m_effectiveLocal.isEmpty()) { ... if (moved) touchGeometry(); }`。当一条线段初始无延长量（`m_effectiveLocal` 为空，如初建线段、新读档或延长公式变量由 0 改为非 0）时，该分支直接为假，漏掉了 `touchGeometry()` 调用！导致被延长的线段所在 Block 的 `geometryEpoch` 未自增，画布 `BlockItem::syncFromBlock` 判定“几何未改变”而跳过了 `updateFromBlock()`（旧渲染缓存未重建，形状没变）；而挂在该端点上的跟随线（Follower）因为在求解时通过 `worldPos` 读到了新的有效端点坐标，导致跟随线所在图元在画布上正确发生了位移，视觉呈现为“连线走了，本体形状没变”。
+  - **修复**：完善 `applyEffectivePositions` 的几何变化检测：当 `m_effectiveLocal.isEmpty()` 时，只要本帧 `eff` 中存在任意端点偏离本体 `resolvedPos`（有有效延长外移），即判定 `moved = true` 并显式调用 `touchGeometry()`；与非空时的增量逐点比对互为完整闭环。
+  - 回归测试：`tests/test_extend.cpp` 新增 `variableChangeFromZeroToExtendRefreshesCanvas`（测试变量驱动延长量从 0 到 50mm 时 `geometryEpoch` 自增且画布 `BlockItem` 包围盒增宽 ~50mm，100% 通过）。
 - **滑轨面板流三坑（2026-12 用户反馈"滑轨功能好像是坏的，没有生效的痕迹"）**：①**只填一轴被静默拒绝**——`SegmentConnectionCard::onSlideOffsetEdited` 原要求两轴都能解析（`if (!okA || !okP) { refreshCard(); return; }`），只填「水平」留空「垂直」（tooltip 承诺"留空/0 表示不偏移"）时直接 return + refreshCard 清空输入 → 输入被悄悄丢弃、无任何生效痕迹；修复 = 空串按 0 解析（SegmentConnectionCardConn.cpp:474-481；留空/0 + 另一轴非 0 自动选 AlongLeader/PerpLeader，双轴 0 或空 = 退回全连接）。②**任意 ElaLineEdit 按回车会悄悄关闭整个属性对话框**——ElaLineEdit 未覆盖 keyPressEvent，回车事件沿父链传播到 QDialog 的 default-button/accept 路径 → 对话框瞬间关闭（输入内容看似被丢弃）；修复 = `LinePropertyDialog::keyPressEvent` 吞掉 Return/Enter（提交语义由 editingFinished 承担；Esc 照旧走 reject()/撤销全部，LinePropertyDialog.cpp）。③**滑轨输入回车后关闭对话框触发 Qt 6.11 析构断言**——`emit changed(SlideModeChanged)` 的信号发放本身（空槽也复现，几经二分定位）令对话框析构期 `QtPrivate::assertObjectType` 断言（"class destructor may have already run"，qobjectdefs_impl.h:107，QTest qFatal）；修复 = 滑轨路径不再 emit changed（画布刷新经 `m_doc->resolveAll()` → `ParamDocument::resolved` → CanvasScene 观察者链自动完成；onConnCardChanged 对 SlideModeChanged 本就 default no-op）。验证：test_dialog_tabs 9/9 + test_rotate_copy::propertyDialogShowsFollowValue + test_select_wkey::connectionCardNewSemantics + test_commands::slideMode_alongAndPerpConstraints/slideMode_dragOffsetsUndoRedo 全绿；probeSlideFlow 临时探针（面板滑轨流 = 只填水平 2 → AlongLeader/along=20mm/字段保留/对话框不关/析构无断言）用后已移除。提示：滑轨"沿线"方向 = 基准线在吸附点的出口方向（起点锚点 = end→start、终点锚点 = start→end，与折叠角参考系一致）。
 - **独立角度（angleIndependent）三处编辑失效（2026-12 用户报告「勾选独立角度后，角度就无法输入调整了，选择工具拖动改变角度也无效。输入角度会不断跳动」）**：独立角 = 位置仍焊在宿主、角度自管（Resolver.cpp applyAttachment 对 angleIndependent 保留 from.transform.rotation、**忽略 followerAngle**），因此**所有角度编辑路径都不得把它当普通跟随线写 followerAngle**。三处修复：
   ①**条带（ContextStrip）**——applyAngle/refreshFields 原按 findEditAttachment() 命中即写/读 followerAngle（静默无效 / 显示陈旧值）。修复 = att && !att->angleIndependent 才走跟随线分支，独立角落入自由线分支（写端点 Polar 角 ep->angle = targetDeg − rotDeg、读世界角 ep->angle + rotDeg），并 st.attId = QUuid() 不碰附件；refreshChrome 的 °/⌒ 单位切换与「跟随」徽标对独立角禁用/改写（弧长模式对独立角无意义）。
@@ -368,6 +372,11 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
   **全量 ctest 34/34 全绿（2026-09-02 实测两次）**。
 - **环境漂移红**：test_intersection_update（5 用例）+ test_extend::savedDocFormulaStartExtendRenders 依赖
   活档 `E:/3.gcad`，用户一改该文件就红（交点偏移 29.17mm / 缺变量「后长补正」），非代码回归；缺该文件则 QSKIP。
+- **test_hold_show 整批失败（2026-09-04 诊断入档）**：整批 ctest 与该测试单跑均 **exit 1 且无任何 QTest 输出**
+  （LastTest.log 只有 `<end of output>`，非断言失败）。经 git stash 基线对照实验确认**代码未改即红**（纯
+  git HEAD 同样失败），与工具拆分无关联。该测试用 `QGraphicsView::grab` 渲染像素断言（forceName/forceLength
+  全部 N/L 揭示），疑似渲染后端/软渲染/字体环境漂移。**判据：空输出 + 快速失败（<1s）+ 基线对照复现 = 环境漂移，
+  非本次改动引入。**测试入口 `tests/test_hold_show.cpp`（QTEST_MAIN，无独立 main）。
 - **GUI 时序抖动**：test_dialog_tabs::switchBackAfterTyping / test_aux_layer / test_rotate_copy 在整批 ctest
   压力下偶发失败，单跑即过 —— 先单跑复现再判回归。**test_select_wkey 也在此列（2026-08-29 实测：
   整批 3 次里挂 1 次，单跑连续通过）**，它有 50 处 `qWait`（AGENTS.md P2-3），本就是抖动候选。

@@ -12,6 +12,7 @@
 #include "ui/SegmentAngleCard.h"
 #include "ui/SegmentConnectionCard.h"
 #include "ui/SegmentRefCard.h"
+#include "ui/LinePropertySession.h"
 
 class QKeyEvent;
 class ElaLineEdit;
@@ -46,6 +47,9 @@ class AuxPointForm;
 class IntersectionForm;
 class NoteButton;      ///< 便利贴注释按钮 (可复用控件, 见 ui/NoteButton.h).
 class PointRefEdit;
+class LineEndpointSection;
+class LineAppearanceSection;
+class LineGeometrySection;
 class SegmentAnchorTab;
 class SegmentAuxTab;
 
@@ -97,23 +101,9 @@ void reject() override;
 
 private slots:
     void onLiveUpdate();       ///< Apply current widget values to model + re-resolve + refresh.
-    void onLengthApply();      ///< Apply length (triggered by debounce / Enter / focus-loss).
-    void onLengthDirty();      ///< Mark length field as having pending changes.
-    void onDebounceTimeout();  ///< Global 200ms debounce: apply all pending text fields.
-    void onColorPick();        ///< Open color picker for segment color.
     void onAccepted();
     void onRejected();         ///< Revert to snapshot.
-    void onPublishLength();    ///< Publish this segment's length as a linked variable.
-    /// 长度模式 (2026-xx §6.3): 自动/指定 切换 (仅非双端连接时可改)。
-    void onLengthModeChanged(bool autoMode);
-    /// 滑轨 (2026-xx §3 从连接卡拆到摆放分区)。
-    void onSlideModeChanged(int index);
-    void onSlideOffsetEdited();
-    /// 端点组内连接 (2026-xx §3): 起点/终点「连接到」+ 拆开/重连。
-    void onStartConnectResolved(const QUuid& blockId, const QUuid& pointId);
-    void onStartDetachClicked();
-    void onEndConnectResolved(const QUuid& blockId, const QUuid& pointId);
-    void onEndDetachClicked();
+    void onDebounceTimeout();  ///< Debounce timer for angle/aux live apply.
     /// 刷新滑轨行状态。
     void refreshSlideRow();
 
@@ -121,24 +111,9 @@ private slots:
     // push」—— 本对话框是会话制, onAccepted 会把「打开快照 → 确认状态」推成
     // 一条 SetLinePropertiesCommand, 注释随之一起进入撤销链。
     void onSegNoteEdited(const QString& text);    ///< 段注释 (Segment::annotation).
-    void onStartNoteEdited(const QString& text);  ///< 起点注释 (ParamPoint::annotation).
-    void onEndNoteEdited(const QString& text);    ///< 终点注释.
-    /// 朝向箭头点击 (2026-xx, §6.1): 翻转 P1/P2 身份 (ReverseSegmentCommand).
     void onDirectionArrowClicked();
-    /// 刷新朝向箭头: 显示/隐藏 (换向资格) + 箭头方向 (P1→P2 世界朝向).
     void refreshDirectionArrow();
-    /// 端点延长量编辑 (2026-xx, §6.2): 上/下槽各一栏, SetSegmentExtendCommand
-    /// (按槽内点的当前角色写 extendStart/End)。
-    void onStartExtendEdited();
-    void onEndExtendEdited();
-    /// 刷新端点延长量输入 (置灰 + 回填数值/公式)。
     void refreshEndpointExtends();
-    /// 单端延长量应用 (数值/公式解析 + 命令)。isTop = 上槽 (P1 物理点)。
-    void applyEndpointExtend(ElaLineEdit* edit, bool isTop);
-    /// 单端延长置灰原因 (空 = 允许)。pointId = 物理点, 由调用方按槽内点传入。
-    [[nodiscard]] QString endpointExtendDisableReason(
-        const cad::param::Block& block, const cad::param::Segment& seg,
-        const QUuid& pointId) const;
 
     // ── 连接 card (extracted to SegmentConnectionCard) ──
     void onConnCardChanged();
@@ -189,39 +164,7 @@ private:
     SegmentRefCard*   m_refCard = nullptr;        ///< 引用线段 card (角度基准 + 指向点).
     SegmentAngleCard* m_angleCard = nullptr;      ///< 角度 card (行组, 嵌入几何卡).
 
-    // Snapshot for cancel-revert
-    struct Snapshot {
-        QString segName;
-        QString segAnnotation;    ///< 段便利贴注释 (NoteButton, 撤销时还原).
-        bool showName;
-        bool showLength;
-        bool visible;
-        int role;
-        QString lengthFormula;
-        double distance;
-        QString distanceFormula;  ///< End-point distance formula (for revert).
-        double angle = 0;         ///< End-point Polar angle (free lines; angle
-        QString angleFormula;     ///< editing may also flip the constraint).
-        int constraint = 0;       ///< End-point constraint at open time (角度编辑
-        QUuid refPointId;         ///< 会把非 Polar 点改写为 Polar, revert 需还原).
-        double tension = 0;       ///< Curve tension (曲线张力).
-        QString startName, startAnno;
-        bool startShowName;
-        QString endName, endAnno;
-        bool endShowName;
-        int lineStyle;
-        double weight;
-        QColor color;
-        /// 长度模式 (2026-xx §6.3): 自动/指定 —— 2026-09 审核收口, 撤销全部
-        /// 需还原打开时的模式。
-        bool lengthAuto = false;
-        std::optional<cad::param::Attachment> followerAtt;  ///< Attachment where this block is the follower.
-        QUuid endTargetBlockId;      ///< Endpoint-aim state (for revert).
-        QUuid endTargetPointId;
-        double endTargetOffset = 0;
-        QString endTargetOffsetFormula;
-    };
-    Snapshot m_snapshot;
+    LinePropertySession m_session;
     /// True when the dialog was opened right after the smart pen CREATED the
     /// line — 撤销全部 then means 取消线段创建 (delete the line), not revert
     /// the snapshot. False (double-click / rotate entry) = edit state: 撤销
@@ -234,77 +177,19 @@ private:
     NoteButton*     m_noteSeg       = nullptr;   ///< 段注释便利贴 (名称输入框右侧).
     ElaComboBox*    m_cmbRole       = nullptr;   ///< Segment role: 轮廓线/内部线/辅助线.
 
-    // Page 1 widgets — 几何
-    ElaLineEdit*    m_editLength    = nullptr;   ///< Enter/blur to apply; orange border when dirty.
-    ElaText*      m_lblFx         = nullptr;   ///< "fx" indicator shown when length is a formula.
-    QPushButton*    m_btnLenAuto    = nullptr;   ///< 长度模式: 自动 (两端钉死).
-    QPushButton*    m_btnLenSpec    = nullptr;   ///< 长度模式: 指定 (起点钉死 + 长度).
-    class QButtonGroup* m_lenGroup   = nullptr;
-    QPushButton*    m_chkShowLength = nullptr;   ///< 显示 chip (外观区, checkable).
-    ElaText*      m_lblActualLength = nullptr; ///< Read-only resolved length (dim mono), 长度行内.
-    QPushButton*  m_btnPublishLen = nullptr;   ///< "发布长度参数" button (类型下拉框正下方, 与之左缘/同宽对齐).
-    // 滑轨行 (2026-xx §3 从连接卡拆到摆放分区).
-    QWidget*      m_slideRow       = nullptr;
-    ElaText*      m_lblSlideBadge  = nullptr;
-    class QComboBox* m_cmbSlideMode = nullptr;
-    ElaLineEdit*  m_editSlideAlong = nullptr;
-    ElaLineEdit*  m_editSlidePerp  = nullptr;
-    ElaText*      m_lblArcLength  = nullptr;   ///< Read-only arc length display (curve only).
-    ElaLineEdit*    m_editTension   = nullptr;   ///< Curve tension (curve only).
-    QWidget*      m_arcRow        = nullptr;   ///< Container for arc-length row (curve only).
-    QWidget*      m_tensionRow    = nullptr;   ///< Container for tension row (curve only, 含转为直线).
-    QPushButton*  m_btnConvert    = nullptr;   ///< "转为直线" button (curve only: removes all curve points).
+    // Page 1 widgets — 外观 (extracted to LineAppearanceSection)
+    LineAppearanceSection* m_appearanceSection = nullptr;
 
-    // Page 1 widgets — 外观 (2026-12: 分段预览按钮 + toggle chips)
-    QPushButton*    m_styleBtns[3]  = {nullptr, nullptr, nullptr};  ///< 线型: 实线/虚线/点线 (图标分段).
-    QButtonGroup*   m_styleGroup    = nullptr;
-    QPushButton*    m_weightBtns[3] = {nullptr, nullptr, nullptr};  ///< 粗细: 细/中/粗 (分段; 无选中=自定义).
-    QButtonGroup*   m_weightGroup   = nullptr;
-    ElaDoubleSpinBox* m_spinWeight  = nullptr;   ///< 粗细数值 (真值来源, 常量可见).
-    QPushButton*  m_btnColor      = nullptr;   ///< Color swatch button.
-    ElaText*      m_lblColorHex   = nullptr;   ///< 颜色 hex 读数 (mono dim).
-    QPushButton*    m_chkVisible    = nullptr;   ///< 显示 chip: 可见.
-    QPushButton*    m_chkShowName   = nullptr;   ///< 显示 chip: 名称.
+    // Page 1 widgets — 几何 (extracted to LineGeometrySection)
+    LineGeometrySection*   m_geometrySection   = nullptr;
 
-    // Page 1 widgets — 端点 (双列微卡, objectName startPointCard/endPointCard)
-    // 2026-08 用户再拍板: 槽位绑定**物理点** (创建序) —— 上槽恒 = 先建的点
-    // (P1), 下槽恒 = 后建点 (P2), 换向只交换"进出"，不交换面板位置。
-    // 控件名沿用 Start/End (上/下槽), 角色语义见 m_topIsStart。
-    ElaText*      m_lblStartPtId  = nullptr;
-    ElaLineEdit*    m_editStartName = nullptr;
-    QPushButton*    m_chkShowStartName = nullptr;  ///< 显示 chip.
-    NoteButton*     m_noteStart     = nullptr;   ///< 起点注释便利贴 (原「备注」长输入框).
-    /// 只读连接行 (方案 A, 2026-xx): 「跟随/挂载 …」; 双卡同构保证等高。
-    ElaText*      m_lblStartConn  = nullptr;
-    ElaText*      m_lblEndPtId    = nullptr;
-    ElaLineEdit*    m_editEndName   = nullptr;
-    QPushButton*    m_chkShowEndName = nullptr;    ///< 显示 chip.
-    NoteButton*     m_noteEnd       = nullptr;   ///< 终点注释便利贴 (原「备注」长输入框).
-    ElaText*      m_lblEndConn    = nullptr;
-    /// 朝向箭头 (2026-xx, §6.1): 两个端点组之间的换向按钮, 点击翻转 P1/P2 身份.
-    QPushButton*  m_btnDirectionArrow = nullptr;
-    /// 端点延长量输入 (2026-xx, §6.2): 起/终各一栏, 数值或公式 cm (≥0).
-    ElaLineEdit*  m_editStartExtend = nullptr;
-    ElaLineEdit*  m_editEndExtend   = nullptr;
-    // 端点组内连接控件 (2026-xx §3): 连接到 + 拆开/重连。
-    class PointRefEdit* m_refStartConnect = nullptr;
-    QPushButton* m_btnStartDetach = nullptr;
-    class PointRefEdit* m_refEndConnect = nullptr;
-    QPushButton* m_btnEndDetach = nullptr;
+    // Page 1 widgets — 端点 (extracted to LineEndpointSection)
+    LineEndpointSection* m_endpointSection = nullptr;
 
     // Page 1 widgets — 连接
     ElaText*      m_lblConnHint   = nullptr;   ///< 分区标题右侧状态 (未连接/已连接 L#·名).
 
-    QColor m_currentColor;  ///< Current segment color.
-
-    // 端点槽位语义 (2026-08 用户再拍板, 取代 2026-08-31 的"槽位随角色"): 槽位
-    // 绑定**物理点**—— 上槽恒 = 先建的点 (P1), 下槽 = 后建点 (P2); 换向
-    // (进出互换) 不改变点在面板上的位置, 唯一变化 = 朝向箭头翻面 + 各槽的
-    // 延长量/连接行改按该点**当前角色** (start/end) 取值与写回。
-    // m_topIsStart = 上槽点当前是否为模型 start 端 (每次 populate 刷新)。
-    bool m_topIsStart = true;
-
-    QTimer*       m_debounce       = nullptr;   ///< Global 200ms debounce timer for text field auto-apply.
+    QTimer*       m_debounce       = nullptr;
     /// Coalescing guard for refreshScene(): heavy resolveAll + refreshAllBlockItems
     /// runs deferred on the event loop instead of inside focus-loss / click
     /// handlers, so tab clicks are never blocked by a synchronous re-resolve.
