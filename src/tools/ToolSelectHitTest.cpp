@@ -1,55 +1,17 @@
 ﻿#include "ToolSelect.h"
-#include "ToolManager.h"
 
-#include "SelectDragController.h"
-#include "CurveAnchorDragSession.h"
-#include "OverlapDisambiguationController.h"
-#include "SelectHoverFeedback.h"
-
-#include <QGraphicsSceneMouseEvent>
-#include <QGuiApplication>
-#include <QGraphicsView>
-#include <QGraphicsRectItem>
-#include <QGraphicsSimpleTextItem>
-#include <QKeyEvent>
-#include <QMenu>
-#include <QUndoStack>
-#include <QPen>
-#include <QFontMetrics>
-#include <QLineEdit>
-#include <QInputDialog>
-#include <QWidget>
-#include <QEvent>
-
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <functional>
+#include <vector>
+#include <utility>
 
 #include "canvas/CanvasScene.h"
 #include "HitTester.h"
-#include "canvas/BlockItem.h"
-#include "canvas/HudItem.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
-#include "parametric/AttachmentGraph.h"
-#include "parametric/ConditionEngine.h"
 #include "parametric/DomainViews.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
-#include "geometry/Angle.h"
-#include "geometry/CurveMath.h"
-#include "parametric/FollowerAngle.h"
-#include "ui/LinePropertyDialog.h"
+#include "CurveAnchorDragSession.h"
 #include "ConnectGesture.h"
-#include "CopyDragController.h"
-#include "MarqueeGesture.h"
-#include "document/commands/BlockCommands.h"
-#include "document/commands/ComponentCommands.h"
-#include "document/commands/DocumentCommands.h"
-#include "document/commands/AttachmentCommands.h"
-#include "document/commands/LayerCommands.h"
-#include "ui/DeleteImpactConfirm.h"
 
 namespace cad::tools {
 // ═══════════════════════════════════════════════════════════════════════════════

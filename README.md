@@ -26,8 +26,8 @@ cd build\out
 ctest
 ```
 
-- 全量 ctest 是收尾/跨模块大改的最终验证；日常按影响面选测（纯几何 → test_curve + test_expression；parametric 引擎 → test_resolver + test_commands + test_serializer + test_migration；工具/UI → test_select_wkey / test_rotate_copy / test_context_strip / test_dialog_tabs 等）。
-- 单测：`ctest -R <名>`；守卫脚本（check_layering / check_hardcoded_colors / check_test_fixtures）已进 ctest，全量即覆盖。
+- 全量 ctest 是收尾/跨模块大改的最终验证；日常按影响面选测（纯几何 → test_curve + test_expression；parametric 引擎 → test_resolver + test_block_commands + test_attachment_commands + test_variable_layer_commands + test_reverse_segment_commands + test_serializer + test_migration；工具/UI → test_select_wkey / test_rotate_copy / test_context_strip / test_dialog_tabs 等）。
+- 单测：`ctest -R <名>`；七守卫（check_layering / check_hardcoded_colors / check_test_fixtures / check_file_size / check_header_classification / check_bool_flags / check_test_split）已进 ctest，全量即覆盖。
 - 不进 ctest 需手动跑：test_realdoc_perf、test_realdoc_full（env `GCAD_DOC`）、test_nav_smoke。
 - 回归基线红 = 0；环境漂移红（test_intersection_update 全部 + test_extend::savedDocFormulaStartExtendRenders）依赖活档 E:/3.gcad，非代码回归。详见 CONVENTIONS.md 验证命令区。
 

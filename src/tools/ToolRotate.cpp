@@ -1,4 +1,4 @@
-#include "ToolRotate.h"
+﻿#include "ToolRotate.h"
 
 #include <cmath>
 #include <algorithm>
@@ -42,37 +42,26 @@ ToolDescriptor ToolRotate::describe()
     return d;
 }
 
-ToolRotate::~ToolRotate()
-{
-    delete m_copyGesture;
-    delete m_gizmo;
-    delete m_marqueeGesture;
-}
+ToolRotate::~ToolRotate() = default;
 
 void ToolRotate::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
 {
     (void)paramDoc;
     m_state = RotateState::Idle;
-    delete m_copyGesture;
-    m_copyGesture = new RotateCopyGesture(this);
-    delete m_gizmo;
-    m_gizmo = new RotateGizmo(&scene);
-    delete m_marqueeGesture;
-    m_marqueeGesture = new MarqueeGesture(&scene, paramDoc);
+    m_copyGesture = std::make_unique<RotateCopyGesture>(this);
+    m_gizmo = std::make_unique<RotateGizmo>(&scene);
+    m_marqueeGesture = std::make_unique<MarqueeGesture>(&scene, paramDoc);
 }
 
 void ToolRotate::onDeactivate()
 {
     if (m_copyGesture && m_copyGesture->active())
         m_copyGesture->cancel();
-    delete m_copyGesture;
-    m_copyGesture = nullptr;
-    delete m_gizmo;
-    m_gizmo = nullptr;
+    m_copyGesture.reset();
+    m_gizmo.reset();
     if (m_marqueeGesture) {
         m_marqueeGesture->cancel();
-        delete m_marqueeGesture;
-        m_marqueeGesture = nullptr;
+        m_marqueeGesture.reset();
     }
     m_input.teardown();
     m_aimSnap.teardown();
@@ -605,7 +594,7 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
 
 void ToolRotate::applyAngleDeg(double deg)
 {
-    m_session.applyAngleDeg(m_paramDoc, m_scene, deg, m_copyGesture, m_dragAngle0);
+    m_session.applyAngleDeg(m_paramDoc, m_scene, deg, m_copyGesture.get(), m_dragAngle0);
 }
 
 void ToolRotate::applyShadowAngleDeg(double deg)
@@ -621,7 +610,7 @@ void ToolRotate::applyModeValue(double value)
         updateStatusHint();
         return;
     }
-    m_session.applyModeValue(m_paramDoc, m_scene, value, m_copyGesture);
+    m_session.applyModeValue(m_paramDoc, m_scene, value, m_copyGesture.get());
 }
 
 double ToolRotate::segmentRadius() const
@@ -631,7 +620,7 @@ double ToolRotate::segmentRadius() const
 
 double ToolRotate::currentModeValue() const
 {
-    return m_session.currentModeValue(m_paramDoc, m_copyGesture);
+    return m_session.currentModeValue(m_paramDoc, m_copyGesture.get());
 }
 
 void ToolRotate::commitRotation()
@@ -680,12 +669,12 @@ double ToolRotate::currentAngleDeg() const
 {
     if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected()))
         return m_multi.accumulatedAngleDeg();
-    return m_session.currentAngleDeg(m_paramDoc, m_copyGesture);
+    return m_session.currentAngleDeg(m_paramDoc, m_copyGesture.get());
 }
 
 bool ToolRotate::isAngleLocked() const
 {
-    return m_session.isAngleLocked(m_copyGesture);
+    return m_session.isAngleLocked(m_copyGesture.get());
 }
 
 void ToolRotate::reportStripTarget()
@@ -786,7 +775,7 @@ cad::geo::Vec2 ToolRotate::endpointAtAngle(double angleDeg) const
 {
     return RotateAimSnap::endpointAtAngle(m_paramDoc, m_session.blockId(),
                                           m_session.pivot(), m_session.refWorldRad(),
-                                          m_session.isConnected(), m_copyGesture, angleDeg);
+                                          m_session.isConnected(), m_copyGesture.get(), angleDeg);
 }
 
 void ToolRotate::checkEndpointAimSnap(double& angleDeg)
@@ -794,7 +783,7 @@ void ToolRotate::checkEndpointAimSnap(double& angleDeg)
     m_aimSnap.checkSnap(m_paramDoc, m_scene, m_session.blockId(),
                         m_session.pivot(), m_session.refWorldRad(),
                         m_session.isConnected(), currentZoom(),
-                        m_copyGesture, angleDeg);
+                        m_copyGesture.get(), angleDeg);
 }
 
 void ToolRotate::clearAimCandidate()

@@ -67,12 +67,6 @@
     }
   },
   "test_size_exceptions": {
-    "tests/test_rotate_copy.cpp": {
-      "lines": 3373,
-      "threshold": 2500,
-      "reason": "Giant rotate-copy test suite; scheduled for Phase 3 split.",
-      "scheduled_phase": "Phase 3"
-    },
     "tests/test_select_wkey.cpp": {
       "lines": 3081,
       "threshold": 2500,

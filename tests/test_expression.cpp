@@ -511,6 +511,17 @@ void TestExpression::inverseTrigFunctions()
     QVERIFY(r.ok);
     const double expected = std::atan2(1.825, 14.336 - 1.825) * 180.0 / M_PI;
     QVERIFY(qAbs(r.value - expected) < 1e-9);
+
+    // Epsilon tolerance test: slight overshoot within [-1-1e-9, 1+1e-9] is clamped and succeeds
+    vars["x_near"] = 1.0 + 1e-11;
+    r = ExpressionEvaluator::evaluate("asin(x_near)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 90.0) < 1e-9);
+
+    vars["x_neg_near"] = -1.0 - 1e-11;
+    r = ExpressionEvaluator::evaluate("acos(x_neg_near)", vars);
+    QVERIFY(r.ok);
+    QVERIFY(qAbs(r.value - 180.0) < 1e-9);
 }
 
 void TestExpression::twoArgFunctions()
@@ -643,11 +654,17 @@ void TestExpression::functionNamingFallback()
 void TestExpression::functionDomainErrors()
 {
     QHash<QString, double> vars;
-    // asin/acos outside [-1,1].
+    // asin/acos outside [-1,1] (truly exceeding 1e-9 tolerance).
     auto r = ExpressionEvaluator::evaluate("asin(2)", vars);
     QVERIFY(!r.ok);
     QVERIFY(!r.error.isEmpty());
+    r = ExpressionEvaluator::evaluate("asin(1.0001)", vars);
+    QVERIFY(!r.ok);
+    QVERIFY(!r.error.isEmpty());
     r = ExpressionEvaluator::evaluate("acos(-1.5)", vars);
+    QVERIFY(!r.ok);
+    QVERIFY(!r.error.isEmpty());
+    r = ExpressionEvaluator::evaluate("acos(-1.0001)", vars);
     QVERIFY(!r.ok);
     QVERIFY(!r.error.isEmpty());
 

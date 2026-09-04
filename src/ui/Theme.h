@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QColor>
 #include <QString>
@@ -30,6 +30,7 @@ struct ThemeTokens
     QColor surface3;      ///< Alternate card stripe (must differ from surface2).
     QColor border;        ///< Hairline borders / dividers.
     QColor borderStrong;  ///< Input borders, stronger separators.
+    QColor chipBorder;    ///< 中灰微徽标/胶囊描边 (CopyChip, CompoundChip).
 
     // ── Text ──
     QColor text1;  ///< Primary text.

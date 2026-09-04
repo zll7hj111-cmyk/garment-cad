@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <deque>
+#include <algorithm>
 
 namespace cad::param {
 
@@ -278,20 +279,24 @@ ExpressionEvaluator::execute(const Compiled& code,
         }
         case Op::Atan: stack[sp - 1] = std::atan(stack[sp - 1]) / kDegToRad; break;
         case Op::Asin: {
-            const double a = stack[sp - 1];
-            if (a < -1.0 || a > 1.0) {
+            double a = stack[sp - 1];
+            constexpr double kEps = 1e-9;
+            if (a < -1.0 - kEps || a > 1.0 + kEps) {
                 r.error = QStringLiteral("asin 参数超出 [-1, 1]");
                 return r;
             }
+            a = std::clamp(a, -1.0, 1.0);
             stack[sp - 1] = std::asin(a) / kDegToRad;
             break;
         }
         case Op::Acos: {
-            const double a = stack[sp - 1];
-            if (a < -1.0 || a > 1.0) {
+            double a = stack[sp - 1];
+            constexpr double kEps = 1e-9;
+            if (a < -1.0 - kEps || a > 1.0 + kEps) {
                 r.error = QStringLiteral("acos 参数超出 [-1, 1]");
                 return r;
             }
+            a = std::clamp(a, -1.0, 1.0);
             stack[sp - 1] = std::acos(a) / kDegToRad;
             break;
         }

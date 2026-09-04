@@ -1,10 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QList>
 #include <QSet>
 #include <QRectF>
 #include <QCursor>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -50,8 +51,8 @@ class CurveAnchorDragSession;
 class ToolSelect : public Tool
 {
 public:
-    // 无自定义析构: 全部清理都在 onDeactivate()。ToolManager 析构时会先
-    // deactivate 激活工具, 保证这条路径对"退出时仍在激活的那个工具"也成立 (N5)。
+    ToolSelect();
+    ~ToolSelect() override;
 
     void onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc) override;
     void onDeactivate() override;
@@ -143,14 +144,14 @@ private:
     QUuid m_lastHitSegmentId;
 
     // ── Extracted gesture controllers (阶段 3 拆分, onActivate 时构造) ──
-    SelectDragController*                m_dragCtl = nullptr;
-    CurveAnchorDragSession*              m_anchorDrag = nullptr;
-    OverlapDisambiguationController*     m_overlapCtl = nullptr;
-    SelectHoverFeedback                  m_hoverCtl;  // 无外部依赖, 直接持有
+    std::unique_ptr<SelectDragController>            m_dragCtl;
+    std::unique_ptr<CurveAnchorDragSession>          m_anchorDrag;
+    std::unique_ptr<OverlapDisambiguationController> m_overlapCtl;
+    SelectHoverFeedback                              m_hoverCtl;  // 无外部依赖, 直接持有
 
-    ConnectGesture*    m_connectGesture = nullptr;
-    CopyDragController* m_copyDrag = nullptr;
-    MarqueeGesture*    m_marqueeGesture = nullptr;
+    std::unique_ptr<ConnectGesture>                  m_connectGesture;
+    std::unique_ptr<CopyDragController>              m_copyDrag;
+    std::unique_ptr<MarqueeGesture>                  m_marqueeGesture;
 
     // 桥接: 供提取控制器回调 ToolSelect 的受保护方法
     friend class SelectDragController;

@@ -699,6 +699,7 @@ add_test(NAME test_curve_edit COMMAND test_curve_edit)
 # ── Test: rotate-copy (Ctrl+drag in ToolRotate) ──
 add_executable(test_rotate_copy
     tests/test_rotate_copy.cpp
+    tests/test_rotate_copy_gestures.cpp
     resources/icons.qrc
 )
 target_include_directories(test_rotate_copy PRIVATE ${GCAD_SRC})

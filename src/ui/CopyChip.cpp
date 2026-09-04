@@ -51,10 +51,7 @@ void ChipLabel::paintEvent(QPaintEvent* event)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     const auto& t = cad::ui::Theme::tokens();
-    const bool dark = cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark;
-    const QColor borderColor = dark ? QColor(0x4E, 0x58, 0x66)   // 暗: 中灰, 比底亮一档
-                                    : QColor(0x9A, 0xA4, 0xB2);   // 亮: 中灰, 纸色上清晰可见
-    p.setPen(QPen(borderColor, 1));
+    p.setPen(QPen(t.chipBorder, 1));
     p.setBrush(m_hovered ? t.surface2 : t.surface);
     p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 3, 3);
     ElaText::paintEvent(event);

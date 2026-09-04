@@ -19,7 +19,7 @@
 
 W 键组件整组旋转模态已删除（执行 ROTATE_REDESIGN_DESIGN.md D1 拍板：整组模式被多选旋转覆盖）。
 选集旋转路径（RotateBlocksCommand / AimRelease / DartRelease）同批删除。
-当前产品内无整组旋转入口；重新设计时参考 ROTATE_REDESIGN_DESIGN.md §2.5/§2.6 判定表。
+**2026-09-04 选集旋转已重新设计回归**（MarqueeGesture 框选 + adoptSelection + RotateBlocksCommand，产品现有整组旋转入口），本摘要记录的是 2026-08-29 删除时刻的历史状态；重新设计时参考 ROTATE_REDESIGN_DESIGN.md §2.5/§2.6 判定表。
 
 ### CLEANUP_REFACTOR_DESIGN.md —— 清理与收口重构任务书（已收尾 2026-08-29）
 

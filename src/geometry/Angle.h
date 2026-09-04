@@ -25,9 +25,11 @@ constexpr double radToDeg(double rad) { return rad * 180.0 / kPi; }
 /// as signedFoldDeg in ToolRotate/ConnectGesture/SegmentConnectionCard.
 inline double normalizeDeg180(double deg)
 {
-    while (deg >  180.0) deg -= 360.0;
-    while (deg <= -180.0) deg += 360.0;
-    return deg;
+    if (!std::isfinite(deg)) return 0.0;
+    double a = std::fmod(deg, 360.0);
+    if (a >  180.0) a -= 360.0;
+    if (a <= -180.0) a += 360.0;
+    return a;
 }
 
 /// Normalize an angle in degrees to the storage domain [0, 360) (存储域 α —
@@ -35,6 +37,7 @@ inline double normalizeDeg180(double deg)
 /// alphaFromSignedFold in ToolRotate/ConnectGesture/SegmentConnectionCard.
 inline double normalizeDeg360(double deg)
 {
+    if (!std::isfinite(deg)) return 0.0;
     double a = std::fmod(deg, 360.0);
     if (a < 0.0) a += 360.0;
     return a;
@@ -43,9 +46,11 @@ inline double normalizeDeg360(double deg)
 /// Normalize an angle in radians to the range (-π, π].
 inline double normalizeRad(double rad)
 {
-    while (rad >  kPi) rad -= 2.0 * kPi;
-    while (rad <= -kPi) rad += 2.0 * kPi;
-    return rad;
+    if (!std::isfinite(rad)) return 0.0;
+    double a = std::fmod(rad, 2.0 * kPi);
+    if (a >  kPi) a -= 2.0 * kPi;
+    if (a <= -kPi) a += 2.0 * kPi;
+    return a;
 }
 
 // ─── Arc length ↔ angle conversion (闭合基准, 2026-08 定稿) ────────────────────

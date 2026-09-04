@@ -29,7 +29,7 @@ The canvas is the authority and the panels are live views of the same parametric
 - All-day sessions; docked panels on the right (variables/measures/formulas/layers/groups), floating pill tool dock top-center, canvas dominant.
 - Pattern-maker vocabulary is the language: cm/° units, L3-style serial labels, 前片/后片 blocks, 辅助层 vs 工作层, 桥接线 with follow/absolute angle semantics.
 - Existing shortcuts are product facts: 8 single-letter tool keys, W toggle, Shift 45°/15° snap, H aux-layer round-trip, Ctrl+D theme swap, Esc cancel-everything.
-- Default theme is Dark (main.cpp), light mode available; native Windows title bar (DWM).
+- Default theme is **Light** (`Theme::apply(ThemeMode::Light)`, src/main.cpp), dark via 视图→暗色主题 (Ctrl+D) explicit toggle; native Windows title bar (DWM).
 
 ## Capabilities and Constraints
 

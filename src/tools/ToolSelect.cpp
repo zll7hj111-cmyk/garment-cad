@@ -1,4 +1,4 @@
-#include "ToolSelect.h"
+﻿#include "ToolSelect.h"
 #include "ToolManager.h"
 
 #include "SelectDragController.h"
@@ -76,6 +76,9 @@ ToolDescriptor ToolSelect::describe()
     return d;
 }
 
+ToolSelect::ToolSelect() = default;
+ToolSelect::~ToolSelect() = default;
+
 void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
 {
     (void)scene;
@@ -86,14 +89,11 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
     QUndoStack* const undo = m_paramDoc ? m_paramDoc->undoStack() : nullptr;
 
     // ── Extracted gesture controllers (阶段 3 拆分) ──
-    delete m_dragCtl;
-    delete m_anchorDrag;
-    delete m_overlapCtl;
-    m_dragCtl = new SelectDragController(
+    m_dragCtl = std::make_unique<SelectDragController>(
         m_paramDoc, undo,
         [this](SelectState s) { setState(s); });
-    m_anchorDrag = new CurveAnchorDragSession(m_paramDoc, undo);
-    m_overlapCtl = new OverlapDisambiguationController(
+    m_anchorDrag = std::make_unique<CurveAnchorDragSession>(m_paramDoc, undo);
+    m_overlapCtl = std::make_unique<OverlapDisambiguationController>(
         m_scene, m_paramDoc,
         [this](const QUuid& bid, const QUuid& sid) {
             // 把候选写回选择集 + 编辑目标 (与单击选中语义一致).
@@ -109,9 +109,7 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
     // forward their state transitions / selection queries through callbacks.
     // (The document may be null during ToolManager construction; the gestures
     // no-op on missing doc until setParamDocument wires the real one in.)
-    delete m_connectGesture;
-    delete m_copyDrag;
-    m_connectGesture = new ConnectGesture(
+    m_connectGesture = std::make_unique<ConnectGesture>(
         m_scene, m_paramDoc, undo,
         [this](SelectState s) { setState(s); },
         [this](const QString& t) { showToast(t); },
@@ -121,7 +119,7 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
             reportConnectAngleSession(bid, sid, attId, initial);
         },
         [this](bool valid) { reportConnectAngleValidity(valid); });
-    m_copyDrag = new CopyDragController(
+    m_copyDrag = std::make_unique<CopyDragController>(
         m_scene, m_paramDoc, undo,
         [this](SelectState s) { setState(s); },
         [this]() {
@@ -130,7 +128,7 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
                                            : SelectState::Selecting);
         },
         [this]() { clearSelectionAndIdle(); });
-    m_marqueeGesture = new MarqueeGesture(m_scene, m_paramDoc);
+    m_marqueeGesture = std::make_unique<MarqueeGesture>(m_scene, m_paramDoc);
     refreshModeIndicator();
 }
 
@@ -141,18 +139,12 @@ void ToolSelect::onDeactivate()
     if (m_connectGesture && m_connectGesture->active())
         m_connectGesture->cancel();
     if (m_overlapCtl) m_overlapCtl->dispose();
-    delete m_connectGesture;
-    m_connectGesture = nullptr;
-    delete m_copyDrag;
-    m_copyDrag = nullptr;
-    delete m_marqueeGesture;
-    m_marqueeGesture = nullptr;
-    delete m_dragCtl;
-    m_dragCtl = nullptr;
-    delete m_anchorDrag;
-    m_anchorDrag = nullptr;
-    delete m_overlapCtl;
-    m_overlapCtl = nullptr;
+    m_connectGesture.reset();
+    m_copyDrag.reset();
+    m_marqueeGesture.reset();
+    m_dragCtl.reset();
+    m_anchorDrag.reset();
+    m_overlapCtl.reset();
 
     m_selection.clear();
     if (m_scene && m_paramDoc)

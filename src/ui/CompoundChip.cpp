@@ -54,14 +54,10 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         const auto& t = cad::ui::Theme::tokens();
-        const bool dark = cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark;
-        const QColor borderColor = dark ? QColor(0x4E, 0x58, 0x66)
-                                        : QColor(0x9A, 0xA4, 0xB2);
-
         const qreal r = 3.0;
         const QRectF rect(0.5, 0.5, width() - 1.0, height() - 1.0);
 
-        p.setPen(QPen(borderColor, 1));
+        p.setPen(QPen(t.chipBorder, 1));
 
         if (m_part == Part::Ref) {
             // Ref part: solid slightly tinted background, left rounded corners

@@ -1,9 +1,11 @@
 ﻿#include <QtTest>
 #include <cmath>
 #include <vector>
+#include <limits>
 
 #include "geometry/CurveMath.h"
 #include "geometry/Vec2.h"
+#include "geometry/Angle.h"
 
 using namespace cad::geo;
 
@@ -41,6 +43,7 @@ private slots:
     void hobbyNormalShapeUnclamped();
     void arcLengthToParamPrecision();
     void projectHairpinGlobalMin();
+    void angleNormalizationRobustness();
 };
 
 // ─── Catmull-Rom tangent ────────────────────────────────────────────────────
@@ -642,6 +645,57 @@ void TestCurve::projectHairpinGlobalMin()
         QVERIFY2(std::abs(proj.t - refT) < 2.0 * sampleStep,
                  "projection parameter must land in the global basin");
     }
+}
+
+void TestCurve::angleNormalizationRobustness()
+{
+    // 1. Regular angles
+    QCOMPARE(normalizeDeg180(0.0), 0.0);
+    QCOMPARE(normalizeDeg180(45.0), 45.0);
+    QCOMPARE(normalizeDeg180(90.0), 90.0);
+    QCOMPARE(normalizeDeg180(-90.0), -90.0);
+    QCOMPARE(normalizeDeg180(270.0), -90.0);
+    QCOMPARE(normalizeDeg180(-270.0), 90.0);
+
+    // 2. Exact (-180, 180] boundary: +180 and -180 must both map to +180
+    QCOMPARE(normalizeDeg180(180.0), 180.0);
+    QCOMPARE(normalizeDeg180(-180.0), 180.0);
+    QCOMPARE(normalizeDeg180(540.0), 180.0);
+    QCOMPARE(normalizeDeg180(-540.0), 180.0);
+
+    // 3. normalizeDeg360 domain [0, 360)
+    QCOMPARE(normalizeDeg360(0.0), 0.0);
+    QCOMPARE(normalizeDeg360(360.0), 0.0);
+    QCOMPARE(normalizeDeg360(720.0), 0.0);
+    QCOMPARE(normalizeDeg360(-90.0), 270.0);
+    QCOMPARE(normalizeDeg360(450.0), 90.0);
+
+    // 4. normalizeRad domain (-π, π]
+    QCOMPARE(normalizeRad(0.0), 0.0);
+    QVERIFY(std::abs(normalizeRad(kPi) - kPi) < 1e-12);
+    QVERIFY(std::abs(normalizeRad(-kPi) - kPi) < 1e-12);
+    QVERIFY(std::abs(normalizeRad(3.0 * kPi) - kPi) < 1e-12);
+    QVERIFY(std::abs(normalizeRad(-3.0 * kPi) - kPi) < 1e-12);
+
+    // 5. Extreme large numbers / multi-periods (O(1) execution without loops)
+    const double largeAngle = 1e12 + 45.0;
+    const double normLarge = normalizeDeg180(largeAngle);
+    QVERIFY(normLarge > -180.0 && normLarge <= 180.0);
+    const double negLarge = normalizeDeg180(-largeAngle);
+    QVERIFY(negLarge > -180.0 && negLarge <= 180.0);
+
+    // 6. Non-finite values: Infinity & NaN must safely return 0.0 and never hang
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    QCOMPARE(normalizeDeg180(inf), 0.0);
+    QCOMPARE(normalizeDeg180(-inf), 0.0);
+    QCOMPARE(normalizeDeg180(nan), 0.0);
+    QCOMPARE(normalizeDeg360(inf), 0.0);
+    QCOMPARE(normalizeDeg360(-inf), 0.0);
+    QCOMPARE(normalizeDeg360(nan), 0.0);
+    QCOMPARE(normalizeRad(inf), 0.0);
+    QCOMPARE(normalizeRad(-inf), 0.0);
+    QCOMPARE(normalizeRad(nan), 0.0);
 }
 
 QTEST_GUILESS_MAIN(TestCurve)

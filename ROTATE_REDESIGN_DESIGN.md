@@ -1,7 +1,8 @@
 ﻿# 旋转工具交互重设计 ROTATE_REDESIGN_DESIGN.md（已落地）
 
 > 状态：**已落地（2026-08-27 起，D15 确认门等）**。本文档是"旋转工具重设计"唯一权威设计记录。
-> 注意：选集旋转部分已于 2026-08-29 删除（用户拍板），§2.5/§2.6 判定表与影子机制仍可复用。
+> 注意：选集旋转曾于 2026-08-29 删除（用户拍板），**2026-09-04 已重新设计回归**（MarqueeGesture
+> 框选 + adoptSelection + RotateBlocksCommand，见下方追加记录）；§2.5/§2.6 判定表与影子机制仍可复用。
 > 实现接线清单见文末 §8，动代码前逐条核对。
 >
 > **2026-08-27 讨论增补**：§2.5 线段角度状态四格模型 + 写入规则（讨论定稿）、
@@ -28,6 +29,16 @@
 > `AimRelease`/`DartRelease`、选集/影子八用例全部移除；当前多选后按 R = 普通单线旋转，产品内无整组
 > 旋转入口。**`baselineOffsetDeg` 字段与 §2.6 机制保留**（连接卡「基准偏转/归零」仍唯一写入方），
 > 重新设计时 §2.5/§2.6 的判定表与影子机制可直接取用（缺的只是工具入口）。
+>
+> **2026-09-04 选集旋转回归（重新设计后落地，`61e2cee`）**：多选框选刚体旋转经
+> `MarqueeGesture` 框选手势 + `ToolRotate::adoptSelection`（选区继承，`ToolManager.cpp:103` 接线）
+> → `RotateBlocksCommand`（`BlockTransformCommands.h:104`，快照多块变换与被释放的外部连接，
+> 一步 undo/redo）重新实现；测试 `tests/test_rotate_copy.cpp::marqueeSelectionAndPivotSnapRotate`
+> （:3172）锁定。**产品内现有整组旋转入口**：多选（框选/选区继承）→ 旋转工具 = 多块刚体旋转。
+> 与旧版差异：**无影子偏转**（该功能 2026-09 已删除，见 DECISIONS「影子偏转」条目）；
+> `baselineOffsetDeg` 字段本身已随影子偏转删除（`src/parametric/Attachment.h` 无此字段，仅
+> `FormatMigration.cpp:186-206` 清理 v11 旧档残留键）。**W 键绑定仍无**（框选承载多选，未走
+> W 键模态；TROUBLESHOOTING 快捷键登记表第 35 行「旋转工具现无 W 键绑定」仍有效）。
 >
 > **2026-09 落地（影子锚点推导重设计，用户拍板）**：旧累计账本（offset += δ 由旋转工具会话逐帧
 > 回写）在移动时产生累计角度偏差，用户提出"影子挂靠连接线"的心智模型。§2.6 的 baselineOffsetDeg

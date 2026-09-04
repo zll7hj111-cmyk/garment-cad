@@ -7,6 +7,7 @@
 #include <QSet>
 #include <optional>
 #include <vector>
+#include <memory>
 
 #include "Tool.h"
 #include "ToolRegistry.h"
@@ -80,7 +81,7 @@ public:
     /// 当前 gizmo 的确认态视觉 (测试/诊断用; 无 gizmo = false)。RotateGizmo
     /// gizmo 确认态查询 (测试用: 选中=false, 确定=true).
     [[nodiscard]] bool gizmoConfirmed() const;
-    [[nodiscard]] const RotateGizmo* gizmo() const { return m_gizmo; }
+    [[nodiscard]] const RotateGizmo* gizmo() const { return m_gizmo.get(); }
     /// 旋转会话中 (有单线/选集目标且非 Idle): CanvasView 借此屏蔽右键
     /// 上下文菜单 —— 确认手势独占该按键 (D15 与发布菜单互斥)。
     [[nodiscard]] bool hasSessionTarget() const
@@ -180,9 +181,9 @@ private:
     double m_dragAngle0 = 0.0;
 
     // ── Gestures & Gizmo ──
-    RotateCopyGesture* m_copyGesture = nullptr;
-    MarqueeGesture* m_marqueeGesture = nullptr;
-    RotateGizmo* m_gizmo = nullptr;
+    std::unique_ptr<RotateCopyGesture> m_copyGesture;
+    std::unique_ptr<MarqueeGesture> m_marqueeGesture;
+    std::unique_ptr<RotateGizmo> m_gizmo;
     ManagedItems m_managed;
 
     friend class RotateCopyGesture;

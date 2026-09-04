@@ -1,4 +1,4 @@
-#include "Theme.h"
+﻿#include "Theme.h"
 
 #include <QApplication>
 #include <QFont>
@@ -69,6 +69,7 @@ ThemeTokens ThemeTokens::light()
     t.surface3     = QColor("#EAEDF2");
     t.border       = QColor("#CBD2DC");   // Clean technical hairline
     t.borderStrong = QColor("#1A202C");   // High-contrast carbon border
+    t.chipBorder   = QColor("#9AA4B2");   // Medium gray chip outline (visible on paper)
 
     t.text1 = QColor("#0D1117");   // Deep carbon black
     t.text2 = QColor("#4A5568");   // Industrial slate secondary
@@ -110,6 +111,7 @@ ThemeTokens ThemeTokens::dark()
     t.surface3     = QColor("#272D34");
     t.border       = QColor("#333A42");
     t.borderStrong = QColor("#444D57");
+    t.chipBorder   = QColor("#4E5866");   // Medium gray chip outline (one step brighter than dark surface)
 
     t.text1 = QColor("#E8EAED");
     t.text2 = QColor("#9AA3AD");

@@ -164,7 +164,7 @@ flowchart TD
 
 ---
 
-## 五、阶段 3 首轮实施进展（2026-09-04，待批次收尾）
+## 五、阶段 3 实施进展（2026-09-04 首轮+两轮，批次已收尾）
 
 | 目标文件 | 规划状态 | 首轮实际结果 |
 |---|:---:|---|
@@ -200,6 +200,8 @@ flowchart TD
 - **豁免清单**：本轮再净减少 **2 项**（BreakAnalysis.cpp / BreakExecution.cpp 清退）；ReverseSegmentCommand.cpp 保留（451 行，评估后保留仍在清单）；
 - **新建源文件**：`BreakEvaluate.cpp` / `BreakFinish.cpp`（已注册进 CMakeLists 的 gcad_document 源列表，均 UTF-8 BOM）。
 - **隐式状态评估**：`ParamPoint`（10 bool）/ `ContextStrip`（6 bool）经评估**保留**（均为独立模型字段/会话标记，不构成复合隐式状态机，豁免状态更新为 Exempt）；`test_rotate_copy` / `test_select_wkey` 巨石经评估**保留**（QTest 类成员 + 新 exe + PDB 四链成本超收益，规则四停止）。
+
+**阶段 3 批次状态（2026-09-04）**：首轮 + 二轮（tools 拆 7 控制器）+ 二轮（commands 小超线）已全部收尾；`test_hold_show` 已于同日 `58f25fc` 根治（见 TROUBLESHOOTING 第 5 组），当前全量 ctest **41/41 全绿**；红线守卫（含 check_layering）全绿；豁免清单净减 7 项，监测项 15 → 10。剩余保留项（Resolver/Block/CurveMath/ReverseSegmentCommand/test 巨石等）均为「评估后保留」或「规则四停止」，属**持续治理 backlog**，非待办缺口。
 
 ---
 
