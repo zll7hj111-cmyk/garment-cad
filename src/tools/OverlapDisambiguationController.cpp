@@ -1,4 +1,4 @@
-﻿#include "OverlapDisambiguationController.h"
+#include "OverlapDisambiguationController.h"
 
 #include "canvas/CanvasScene.h"
 #include "canvas/BlockItem.h"
@@ -66,16 +66,21 @@ OverlapDisambiguationController::makeCandidate(const cad::param::Block& blk,
     else if (seg && !seg->serial.isEmpty()) c.name = seg->serial;
     else                                    c.name = QString::fromUtf8("(未命名)");
 
-    c.roleText = segmentRoleText(seg ? seg->role : cad::param::SegmentRole::Outline);
+    bool isOrtho = false;
+    if (seg) {
+        if (const auto* ep = blk.findPoint(seg->endPointId)) {
+            isOrtho = (ep->constraint == cad::param::PointConstraint::OrthoOffset &&
+                       (std::abs(ep->orthoOffsetDist) > 1e-6 || !ep->orthoOffsetDistFormula.isEmpty()));
+        }
+    }
+    c.roleText = (isOrtho ? QString::fromUtf8("偏置") : QString())
+        + segmentRoleText(seg ? seg->role : cad::param::SegmentRole::Outline);
     c.layerName.clear();
     for (const auto& l : m_paramDoc->layers())
         if (l.id == blk.layer) { c.layerName = l.name; break; }
 
     if (seg) {
-        const auto* sp = blk.findPoint(seg->startPointId);
-        const auto* ep = blk.findPoint(seg->endPointId);
-        if (sp && ep && sp->resolved && ep->resolved)
-            c.lengthMm = sp->resolvedPos.distanceTo(ep->resolvedPos);
+        c.lengthMm = blk.segmentEffectiveLength(seg->id);
     }
     return c;
 }

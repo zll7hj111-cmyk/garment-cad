@@ -1,4 +1,4 @@
-﻿#include "parametric/MeasurementStore.h"
+#include "parametric/MeasurementStore.h"
 
 #include <algorithm>
 #include <cmath>
@@ -149,7 +149,8 @@ bool MeasurementStore::measureLinkedVars(bool skipAuxSource)
         if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
 
         // Block is a rigid body (scale = 1), so local distance == world distance.
-        const double len = sp->resolvedPos.distanceTo(ep->resolvedPos);
+        // 以实际线段为主：正交偏置取实际端点斜长，曲线取弧长，支持延长
+        const double len = blk->segmentEffectiveLength(seg->id);
         lv.dangling = false;
         if (std::abs(len - lv.value) > 1e-9) {
             lv.value = len;

@@ -146,10 +146,8 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
         result.attachments.push_back(std::move(copy));
     }
 
-    // ── Pass 3.5: numeric lengths keep tracking the original (长度关联) ──
-    // A formula-driven length already follows its variables; a plain numeric
-    // length would go dead on the copy, so drive it with the ORIGINAL
-    // segment's linked variable instead (用户拍板: 只关联长度, 角度保持数值).
+    // ── Pass 3.5: 复制线段长度关联母线参数 ──
+    // 复制的线段不使用母线的表达式，而是先把母线的长度参数发布，然后引用母线的长度参数。
     for (auto& clone : result.blocks) {
         if (clone.isBridge) continue;   // bridge copies handled in Pass 4
         const Block* orig = doc.blockById(origOf.value(clone.id));
@@ -158,15 +156,25 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
             Segment* cloneSeg = clone.findSegment(remap(idMap, origSeg.id));
             if (!cloneSeg) continue;
             ParamPoint* pEnd = clone.findPoint(cloneSeg->endPointId);
-            // Only a Polar end point measured from the segment's own start
-            // is the length driver; anything else defines other geometry.
-            if (!pEnd || pEnd->constraint != PointConstraint::Polar) continue;
-            if (pEnd->refPointId != cloneSeg->startPointId) continue;
-            if (!pEnd->distanceFormula.isEmpty()) continue;
-            const QString refName =
-                linkedRefForSegment(doc, *orig, origSeg, result);
-            cloneSeg->lengthFormula = refName;
-            pEnd->distanceFormula = refName;
+            if (!pEnd) continue;
+
+            if (pEnd->constraint == PointConstraint::Polar) {
+                if (pEnd->refPointId != cloneSeg->startPointId) continue;
+                const QString refName =
+                    linkedRefForSegment(doc, *orig, origSeg, result);
+                cloneSeg->lengthFormula = refName;
+                pEnd->distanceFormula = refName;
+            } else if (pEnd->constraint == PointConstraint::OrthoOffset) {
+                // 拐角偏置线复制：母线发布实际偏置斜长，克隆线转为引用母线实际斜长的直线
+                const QString refName =
+                    linkedRefForSegment(doc, *orig, origSeg, result);
+                pEnd->constraint = PointConstraint::Polar;
+                pEnd->orthoOffsetDist = 0.0;
+                pEnd->orthoOffsetDistFormula.clear();
+                cloneSeg->showOrthoAxis = false;
+                cloneSeg->lengthFormula = refName;
+                pEnd->distanceFormula = refName;
+            }
         }
     }
 

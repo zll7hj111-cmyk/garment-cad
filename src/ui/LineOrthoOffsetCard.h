@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -58,7 +58,6 @@ private:
 
     ElaText*       m_lblOrthoFx       = nullptr;
     ElaLineEdit*   m_editOrthoDist    = nullptr;
-    QPushButton*   m_btnOrthoNone     = nullptr;
     QPushButton*   m_btnOrthoLeft     = nullptr;
     QPushButton*   m_btnOrthoRight    = nullptr;
     QButtonGroup*  m_orthoDirGroup    = nullptr;

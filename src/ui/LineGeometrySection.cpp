@@ -172,6 +172,7 @@ LineGeometrySection::LineGeometrySection(cad::param::ParamDocument* paramDoc,
     connect(m_orthoCard, &LineOrthoOffsetCard::orthoChanged, this, [this]() {
         onLengthDirty();
         onLengthApply();
+        emit liveUpdated();
     });
     connect(m_orthoCard, &LineOrthoOffsetCard::liveUpdated, this, &LineGeometrySection::liveUpdated);
     connect(m_orthoCard, &LineOrthoOffsetCard::sceneRefreshRequested, this, &LineGeometrySection::sceneRefreshRequested);
@@ -493,6 +494,7 @@ void LineGeometrySection::onLengthApply()
     if (!block || !seg) return;
 
     applyToModel(block, seg);
+    refreshActualLengthLabel();
     emit sceneRefreshRequested();
     emit lengthApplied();
 }
@@ -593,6 +595,9 @@ void LineGeometrySection::onPublishLength()
     if (!m_paramDoc) return;
     if (m_paramDoc->findLinkedBySource(m_blockId, m_segmentId)) return;
 
+    onLengthApply();
+    m_paramDoc->resolveAll();
+
     const auto* blk = m_paramDoc->findBlock(m_blockId);
     if (!blk) return;
     const auto* seg = blk->findSegment(m_segmentId);
@@ -604,6 +609,8 @@ void LineGeometrySection::onPublishLength()
         stack->push(new cad::cmd::AddLinkedCommand(m_paramDoc, lv));
     else
         m_paramDoc->addLinked(lv);
+
+    m_paramDoc->resolveAll();
 
     m_btnPublishLen->setEnabled(false);
     m_btnPublishLen->setText(QString::fromUtf8("已发布"));

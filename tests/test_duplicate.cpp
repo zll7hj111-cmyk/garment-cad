@@ -169,8 +169,8 @@ void TestDuplicate::singleLineClone()
     QCOMPARE(doc.blocks().size(), blockCountBefore);
 
     QCOMPARE(result.blocks.size(), size_t(1));
-    QVERIFY(result.attachments.empty());
-    QVERIFY(result.newLinked.empty());
+    QCOMPARE(result.newLinked.size(), size_t(1));
+    const QString expectedRef = result.newLinked.front().refName;
 
     const Block& clone = result.blocks.front();
     QVERIFY(clone.id != orig->id);
@@ -185,7 +185,8 @@ void TestDuplicate::singleLineClone()
     QVERIFY(!clone.points[0].serial.isEmpty());
     QVERIFY(clone.points[0].serial != orig->points[0].serial);
     QVERIFY(clone.points[1].serial != orig->points[1].serial);
-    QCOMPARE(clone.points[1].distanceFormula, QStringLiteral("b/2"));
+    // 复制的线段不使用母线的表达式，而是引用母线发布的长度参数
+    QCOMPARE(clone.points[1].distanceFormula, expectedRef);
 
     const Segment& cseg = clone.segments.front();
     QVERIFY(cseg.id != line.segId);
@@ -200,7 +201,9 @@ void TestDuplicate::singleLineClone()
     QCOMPARE(cseg.endPointId, clone.points[1].id);
     QCOMPARE(clone.points[1].refPointId, clone.points[0].id);
 
-    // The clone keeps following the parameter after joining the document.
+    // The clone keeps following the parameter through mother's linked var after joining the document.
+    for (const auto& lv : result.newLinked)
+        doc.addLinked(lv);
     const QUuid cloneId = clone.id;
     doc.addBlock(clone);
     doc.setParameter(QStringLiteral("b"), 60.0);  // → 30cm → 300mm

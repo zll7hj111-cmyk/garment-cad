@@ -16,10 +16,19 @@ LinkedVariable LinkedVariable::fromSegment(const Block& blk, const Segment& seg)
         ? seg.serial + QStringLiteral("长")
         : seg.name + QStringLiteral("长");
 
-    const auto* sp = blk.findPoint(seg.startPointId);
-    const auto* ep = blk.findPoint(seg.endPointId);
-    if (sp && ep && sp->resolved && ep->resolved)
-        lv.value = sp->resolvedPos.distanceTo(ep->resolvedPos);
+    lv.value = blk.segmentEffectiveLength(seg.id);
+    if (lv.value <= 1e-6) {
+        const auto* sp = blk.findPoint(seg.startPointId);
+        const auto* ep = blk.findPoint(seg.endPointId);
+        if (sp && ep) {
+            if (ep->constraint == PointConstraint::OrthoOffset)
+                lv.value = std::hypot(ep->distance, ep->orthoOffsetDist);
+            else if (ep->constraint == PointConstraint::Polar)
+                lv.value = ep->distance;
+            else if (sp->resolved && ep->resolved)
+                lv.value = sp->resolvedPos.distanceTo(ep->resolvedPos);
+        }
+    }
 
     return lv;
 }

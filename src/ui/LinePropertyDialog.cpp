@@ -1,19 +1,14 @@
-﻿#include "ui/LinePropertyDialog.h"
+#include "ui/LinePropertyDialog.h"
 
 #include <algorithm>
 #include <cmath>
 
 #include "ElaTabWidget.h"
-#include <QFormLayout>
-#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include "ElaLineEdit.h"
-#include <QDebug>
 #include "ElaComboBox.h"
 #include "ElaText.h"
-#include "ElaDoubleSpinBox.h"
-#include <QGroupBox>
 #include "ElaScrollArea.h"
 #include <QScreen>
 #include "ElaPushButton.h"
@@ -21,14 +16,9 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QFrame>
-#include <QPainter>
 #include "ui/ElaDialogButtons.h"
-#include <QMouseEvent>
-#include "ElaColorDialog.h"
-#include <QListWidget>
-#include <QApplication>
-#include <QClipboard>
 #include <QSignalBlocker>
+#include <QKeyEvent>
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -39,7 +29,6 @@
 #include "canvas/CanvasScene.h"
 #include "canvas/BlockItem.h"
 #include "geometry/Units.h"
-#include "geometry/CurveMath.h"
 #include "geometry/Angle.h"
 #include "ui/Theme.h"
 #include "ui/FormScaffold.h"
@@ -226,15 +215,13 @@ LinePropertyDialog::~LinePropertyDialog()
 
 void LinePropertyDialog::applyCanvasHighlight()
 {
-    if (m_scene && !m_blockId.isNull())
-        m_scene->selectBlock(m_blockId);
+    if (m_scene && !m_blockId.isNull()) m_scene->selectBlock(m_blockId);
 }
 
 void LinePropertyDialog::clearCanvasHighlight()
 {
     if (m_scene)
-        if (auto* item = m_scene->findBlockItem(m_blockId))
-            item->setSelected(false);
+        if (auto* item = m_scene->findBlockItem(m_blockId)) item->setSelected(false);
 }
 
 void LinePropertyDialog::connectLiveSignals()
@@ -371,7 +358,7 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     // 角度区 (§3 顺序): ①对齐点+方向两段式行 对齐点 [P1] 方向：点1→点2 [独立]
     // (文案 v2, 2026-12 用户拍板) → ②角度输入行。方向行在前:
     // 先回答"对齐到什么方向", 再给数值。
-    m_angleCard = new SegmentAngleCard(m_paramDoc, m_scene, page);
+    m_angleCard = new SegmentAngleCard(m_paramDoc, page);
     layout->addWidget(m_refCard);
     layout->addWidget(m_angleCard);
 
@@ -385,6 +372,20 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     pageLay->addWidget(scroll, 1);
 
     tabs->addTab(page, QString::fromUtf8("属性"));  // 属性
+}
+
+void LinePropertyDialog::refreshRoleItems(bool isOrtho)
+{
+    if (!m_cmbRole) return;
+    const QSignalBlocker bRole(m_cmbRole);
+    int curIdx = m_cmbRole->currentIndex();
+    if (curIdx < 0) curIdx = 0;
+    m_cmbRole->clear();
+    const QString prefix = isOrtho ? QString::fromUtf8("偏置") : QString();
+    m_cmbRole->addItem(prefix + QString::fromUtf8("轮廓线"));
+    m_cmbRole->addItem(prefix + QString::fromUtf8("内部线"));
+    m_cmbRole->addItem(prefix + QString::fromUtf8("辅助线"));
+    m_cmbRole->setCurrentIndex(curIdx);
 }
 
 void LinePropertyDialog::populateFromModel()
@@ -408,6 +409,10 @@ void LinePropertyDialog::populateFromModel()
     m_lblSegId->setText(cad::param::Serial::toHtml(seg->serial));
     m_editName->setText(seg->name);
     m_noteSeg->setNote(seg->annotation);  ///< setNote 不发 noteEdited (非用户编辑).
+    const auto* epRole = block->findPoint(seg->endPointId);
+    const bool isOrthoRole = epRole && epRole->constraint == cad::param::PointConstraint::OrthoOffset &&
+        (std::abs(epRole->orthoOffsetDist) > 1e-6 || !epRole->orthoOffsetDistFormula.isEmpty());
+    refreshRoleItems(isOrthoRole);
     m_cmbRole->setCurrentIndex(static_cast<int>(seg->role));
 
     if (m_appearanceSection)
@@ -612,35 +617,28 @@ void LinePropertyDialog::refreshScene()
     });
 }
 
-void LinePropertyDialog::refreshActualLengthLabel()
-{
-    if (m_geometrySection)
-        m_geometrySection->refreshActualLengthLabel();
-}
-
-void LinePropertyDialog::refreshLengthMode()
-{
-    if (m_geometrySection)
-        m_geometrySection->refreshLengthMode();
-}
-
-void LinePropertyDialog::refreshSlideRow()
-{
-    if (m_geometrySection)
-        m_geometrySection->refreshSlideRow();
-}
+void LinePropertyDialog::refreshActualLengthLabel() { if (m_geometrySection) m_geometrySection->refreshActualLengthLabel(); }
+void LinePropertyDialog::refreshLengthMode() { if (m_geometrySection) m_geometrySection->refreshLengthMode(); }
+void LinePropertyDialog::refreshSlideRow() { if (m_geometrySection) m_geometrySection->refreshSlideRow(); }
 
 void LinePropertyDialog::onLiveUpdate()
 {
     applyToModel();
+    if (m_paramDoc) {
+        if (const auto* blk = m_paramDoc->findBlock(m_blockId)) {
+            if (const auto* seg = blk->findSegment(m_segmentId)) {
+                if (const auto* ep = blk->findPoint(seg->endPointId)) {
+                    const bool isOrtho = ep->constraint == cad::param::PointConstraint::OrthoOffset &&
+                        (std::abs(ep->orthoOffsetDist) > 1e-6 || !ep->orthoOffsetDistFormula.isEmpty());
+                    refreshRoleItems(isOrtho);
+                }
+            }
+        }
+    }
     refreshScene();
 }
 
-void LinePropertyDialog::updateWeightControls()
-{
-    if (m_appearanceSection)
-        m_appearanceSection->updateWeightControls();
-}
+void LinePropertyDialog::updateWeightControls() { if (m_appearanceSection) m_appearanceSection->updateWeightControls(); }
 
 void LinePropertyDialog::reject()
 {
@@ -736,11 +734,7 @@ void LinePropertyDialog::onSegNoteEdited(const QString& text)
             s->annotation = text;
 }
 
-void LinePropertyDialog::refreshEndpointExtends()
-{
-    if (m_endpointSection)
-        m_endpointSection->refreshEndpointExtends();
-}
+void LinePropertyDialog::refreshEndpointExtends() { if (m_endpointSection) m_endpointSection->refreshEndpointExtends(); }
 
 void LinePropertyDialog::onDirectionArrowClicked()
 {
@@ -762,11 +756,7 @@ void LinePropertyDialog::onDirectionArrowClicked()
     refreshDirectionArrow();
 }
 
-void LinePropertyDialog::refreshDirectionArrow()
-{
-    if (m_endpointSection)
-        m_endpointSection->refreshDirectionArrow();
-}
+void LinePropertyDialog::refreshDirectionArrow() { if (m_endpointSection) m_endpointSection->refreshDirectionArrow(); }
 
 // ---------------------------------------------------------------------------
 const cad::param::MeasureVariable* LinePropertyDialog::findBridgeMeasure() const

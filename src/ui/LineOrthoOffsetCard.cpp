@@ -1,4 +1,4 @@
-﻿#include "ui/LineOrthoOffsetCard.h"
+#include "ui/LineOrthoOffsetCard.h"
 
 #include <cmath>
 #include <numbers>
@@ -72,13 +72,6 @@ LineOrthoOffsetCard::LineOrthoOffsetCard(QWidget* parent)
     connect(m_editOrthoDist, &QLineEdit::editingFinished, this, &LineOrthoOffsetCard::onOrthoDistEdited);
     orthoLayout->addWidget(m_editOrthoDist);
 
-    m_btnOrthoNone = new QPushButton(QString::fromUtf8("无"), this);
-    m_btnOrthoNone->setCheckable(true);
-    m_btnOrthoNone->setChecked(true);
-    m_btnOrthoNone->setFixedSize(36, kFieldH);
-    m_btnOrthoNone->setStyleSheet(chips);
-    m_btnOrthoNone->setCursor(Qt::PointingHandCursor);
-
     m_btnOrthoLeft = new QPushButton(QString::fromUtf8("左"), this);
     m_btnOrthoLeft->setCheckable(true);
     m_btnOrthoLeft->setFixedSize(36, kFieldH);
@@ -93,12 +86,10 @@ LineOrthoOffsetCard::LineOrthoOffsetCard(QWidget* parent)
 
     m_orthoDirGroup = new QButtonGroup(this);
     m_orthoDirGroup->setObjectName(QStringLiteral("orthoDirGroup"));
-    m_orthoDirGroup->addButton(m_btnOrthoNone, 0);
     m_orthoDirGroup->addButton(m_btnOrthoLeft, 1);
     m_orthoDirGroup->addButton(m_btnOrthoRight, 2);
     connect(m_orthoDirGroup, &QButtonGroup::idClicked, this, &LineOrthoOffsetCard::onOrthoDirChanged);
 
-    orthoLayout->addWidget(m_btnOrthoNone);
     orthoLayout->addWidget(m_btnOrthoLeft);
     orthoLayout->addWidget(m_btnOrthoRight);
 
@@ -151,9 +142,7 @@ void LineOrthoOffsetCard::populate(const cad::param::Block& block, const cad::pa
             m_editOrthoDist->setText(cad::geo::Units::formatNumberTrimmed(distCm));
         }
 
-        if (std::abs(ep->orthoOffsetDist) < 1e-6 && ep->orthoOffsetDistFormula.isEmpty()) {
-            m_btnOrthoNone->setChecked(true);
-        } else if (ep->orthoOffsetDist < 0.0 || ep->orthoOffsetDistFormula.startsWith(QLatin1Char('-'))) {
+        if (ep->orthoOffsetDist < 0.0 || ep->orthoOffsetDistFormula.startsWith(QLatin1Char('-'))) {
             m_btnOrthoRight->setChecked(true);
         } else {
             m_btnOrthoLeft->setChecked(true);
@@ -168,7 +157,11 @@ void LineOrthoOffsetCard::populate(const cad::param::Block& block, const cad::pa
         const QSignalBlocker bGroup(m_orthoDirGroup);
         m_editOrthoDist->clear();
         m_lblOrthoFx->setVisible(false);
-        m_btnOrthoNone->setChecked(true);
+        if (auto* checked = m_orthoDirGroup->checkedButton()) {
+            m_orthoDirGroup->setExclusive(false);
+            checked->setChecked(false);
+            m_orthoDirGroup->setExclusive(true);
+        }
         if (m_btnToggleAxis) m_btnToggleAxis->setVisible(false);
     }
 
@@ -196,8 +189,16 @@ void LineOrthoOffsetCard::apply(cad::param::Block* block, cad::param::Segment* s
     auto* ep = block->findPoint(seg->endPointId);
     if (!ep) return;
 
-    const int dirId = m_orthoDirGroup->checkedId();
-    if (dirId > 0) {
+    const QString rawText = m_editOrthoDist->text().trimmed();
+    const bool hasOffset = !rawText.isEmpty();
+    if (hasOffset) {
+        int dirId = m_orthoDirGroup->checkedId();
+        if (dirId <= 0) {
+            const QSignalBlocker b(m_orthoDirGroup);
+            m_btnOrthoLeft->setChecked(true);
+            dirId = 1;
+        }
+
         // 首次开启拐角偏置时锁死当前几何基准角与基准长
         if (ep->constraint != cad::param::PointConstraint::OrthoOffset) {
             const auto* sp = block->findPoint(seg->startPointId);
@@ -227,7 +228,7 @@ void LineOrthoOffsetCard::apply(cad::param::Block* block, cad::param::Segment* s
             ep->refPointId = seg->startPointId;
         }
 
-        const auto parsedOrtho = cad::geo::parseNumberOrFormula(m_editOrthoDist->text());
+        const auto parsedOrtho = cad::geo::parseNumberOrFormula(rawText);
         double sign = (dirId == 2) ? -1.0 : 1.0; // 1=左(正), 2=右(负)
         if (parsedOrtho.isNumber) {
             ep->orthoOffsetDist = sign * std::abs(cad::geo::Units::cmToMm(parsedOrtho.value));
@@ -243,14 +244,31 @@ void LineOrthoOffsetCard::apply(cad::param::Block* block, cad::param::Segment* s
         ep->constraint = cad::param::PointConstraint::Polar;
         ep->orthoOffsetDist = 0.0;
         ep->orthoOffsetDistFormula.clear();
+        if (auto* checked = m_orthoDirGroup->checkedButton()) {
+            m_orthoDirGroup->setExclusive(false);
+            checked->setChecked(false);
+            m_orthoDirGroup->setExclusive(true);
+        }
     }
+
+    // 立即同步 UI 控件状态 (修复需求4: 即时显示基准轴虚线开关与偏置斜长，无需重开面板)
+    if (m_btnToggleAxis) {
+        m_btnToggleAxis->setVisible(hasOffset);
+        m_btnToggleAxis->setChecked(seg->showOrthoAxis);
+    }
+    refreshHypotLabel(*block, *seg);
 }
 
 void LineOrthoOffsetCard::onOrthoDistEdited()
 {
-    if (!m_editOrthoDist->text().trimmed().isEmpty() && m_orthoDirGroup->checkedId() == 0) {
+    const QString text = m_editOrthoDist->text().trimmed();
+    if (!text.isEmpty() && m_orthoDirGroup->checkedId() <= 0) {
         const QSignalBlocker b(m_orthoDirGroup);
         m_btnOrthoLeft->setChecked(true);
+    } else if (text.isEmpty() && m_orthoDirGroup->checkedButton()) {
+        m_orthoDirGroup->setExclusive(false);
+        m_orthoDirGroup->checkedButton()->setChecked(false);
+        m_orthoDirGroup->setExclusive(true);
     }
     emit orthoChanged();
 }

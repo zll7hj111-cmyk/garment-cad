@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <cmath>
 #include <numbers>
 
@@ -31,6 +31,7 @@ private slots:
     void orthoOffsetLengthDecoupledFromHypot();
     void centerAxisToggleAndSerialization();
     void orthoOffsetUiControls();
+    void orthoOffsetPublishLengthUsesHypot();
 };
 
 void TestOrthoOffset::orthoDistInputAutoSwitchesDirection()
@@ -68,8 +69,8 @@ void TestOrthoOffset::orthoDistInputAutoSwitchesDirection()
     QVERIFY(editOrtho != nullptr);
     QVERIFY(groupOrtho != nullptr);
 
-    // 初始状态应为 0（无偏置）
-    QCOMPARE(groupOrtho->checkedId(), 0);
+    // 初始状态无偏置（未选中方向）
+    QCOMPARE(groupOrtho->checkedId(), -1);
 
     // 模拟用户在偏置框输入 "1.5" (cm)
     editOrtho->setText("1.5");
@@ -356,12 +357,70 @@ void TestOrthoOffset::orthoOffsetUiControls()
     QVERIFY(editOrtho != nullptr);
     QVERIFY(btnAxis != nullptr);
 
-    // 切换到无偏置
-    groupOrtho->button(0)->click();
+    // 输入偏置数值后，应自动切换为左，并即时显示基准轴开关和斜长
+    editOrtho->setText("1.0");
+    QMetaObject::invokeMethod(&section, "onOrthoDistEdited");
+    QCOMPARE(groupOrtho->checkedId(), 1);
+    QVERIFY(!btnAxis->isHidden());
+
+    auto* lblHypot = section.findChild<ElaText*>("lblOrthoHypot");
+    QVERIFY(lblHypot != nullptr);
+    QVERIFY(!lblHypot->isHidden());
+
+    // 清空输入框即恢复普通直线
+    editOrtho->clear();
+    QMetaObject::invokeMethod(&section, "onOrthoDistEdited");
     const auto* bNone = doc.findBlock(blockId);
     const auto* epNone = bNone->findPoint(idEnd);
     QCOMPARE(epNone->constraint, PointConstraint::Polar);
     QCOMPARE(epNone->orthoOffsetDist, 0.0);
+    QCOMPARE(groupOrtho->checkedId(), -1);
+    QVERIFY(btnAxis->isHidden());
+    QVERIFY(lblHypot->isHidden());
+}
+
+void TestOrthoOffset::orthoOffsetPublishLengthUsesHypot()
+{
+    ParamDocument doc;
+    Block block;
+    block.name = "PublishTest";
+
+    ParamPoint pStart;
+    pStart.name = "A";
+    pStart.constraint = PointConstraint::Free;
+    pStart.freePos = {0.0, 0.0};
+    QUuid idStart = block.addPoint(pStart);
+
+    ParamPoint pEnd;
+    pEnd.name = "B";
+    pEnd.constraint = PointConstraint::OrthoOffset;
+    pEnd.refPointId = idStart;
+    pEnd.distance = 30.0; // 3cm
+    pEnd.angle = 0.0;
+    pEnd.orthoOffsetDist = 40.0; // 4cm, hypot should be 50.0mm (5cm)
+    QUuid idEnd = block.addPoint(pEnd);
+
+    Segment seg;
+    seg.name = "L1";
+    seg.startPointId = idStart;
+    seg.endPointId = idEnd;
+    QUuid segId = block.addSegment(seg);
+    QUuid blockId = doc.addBlock(std::move(block));
+    doc.resolveAll();
+
+    LineGeometrySection section(&doc, nullptr);
+    section.setTarget(blockId, segId);
+    section.populateFromModel(*doc.findBlock(blockId), *doc.findBlock(blockId)->findSegment(segId));
+
+    // 发布长度参数
+    QMetaObject::invokeMethod(&section, "onPublishLength");
+
+    const auto* lv = doc.findLinkedBySource(blockId, segId);
+    QVERIFY(lv != nullptr);
+    // 发布参数的值应以偏置斜长为准：sqrt(30^2 + 40^2) = 50mm
+    QCOMPARE(lv->value, 50.0);
+    // 参数表中的 cm 值应为 5.0 cm
+    QCOMPARE(doc.parameter(lv->refName), 5.0);
 }
 
 QTEST_MAIN(TestOrthoOffset)

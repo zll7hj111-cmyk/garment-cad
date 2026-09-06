@@ -72,11 +72,9 @@ cad::cmd::SegmentEditBarCommand::State captureEditStripState(
 }
 } // namespace
 
-SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc,
-                                   CanvasScene* scene, QWidget* parent)
+SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc, QWidget* parent)
     : QWidget(parent)
     , m_doc(doc)
-    , m_scene(scene)
 {
     // 纯行组: 无边框/无底色 (与相邻行一致, 不做"卡中卡")。
     setStyleSheet(QStringLiteral(

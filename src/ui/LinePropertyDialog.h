@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "ElaDialog.h"
 #include "ElaText.h"
@@ -129,6 +129,7 @@ private:
     /// by their two host points. Grey out + disable the length/angle editors,
     /// hide the fx indicators, and show a caption hint. No-op for normal lines.
     void applyBridgeReadOnly();
+    void refreshRoleItems(bool isOrtho);
     /// 刷新长度模式 chips (自动/指定) 的选中与启用态。
     void refreshLengthMode();
     void applyToModel();

@@ -15,8 +15,6 @@ class Block;
 struct Segment;
 }
 
-class CanvasScene;
-
 namespace cad::ui {
 
 /// 「角度」行组 (2026-12 面板重设计): 原 SegmentConnectionCard 的角度/弧长
@@ -31,8 +29,7 @@ class SegmentAngleCard : public QWidget
     Q_OBJECT
 
 public:
-    explicit SegmentAngleCard(cad::param::ParamDocument* doc,
-                              CanvasScene* scene, QWidget* parent = nullptr);
+    explicit SegmentAngleCard(cad::param::ParamDocument* doc, QWidget* parent = nullptr);
 
     /// 切换编辑目标 (对话框 setTarget 时同步)。
     void setTarget(const QUuid& blockId, const QUuid& segmentId);
@@ -60,7 +57,6 @@ private:
     [[nodiscard]] const cad::param::Attachment* findFollowerAttachment() const;
 
     cad::param::ParamDocument* m_doc = nullptr;
-    CanvasScene* m_scene = nullptr;   // unused now (保留构造签名一致性).
     QUuid m_blockId;
     QUuid m_segmentId;
 
