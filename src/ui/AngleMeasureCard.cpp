@@ -24,6 +24,11 @@ AngleMeasureCard::AngleMeasureCard(const cad::param::AngleMeasureVariable& am,
     setupUi(am, sourceLabel);
 }
 
+AngleMeasureCard::~AngleMeasureCard()
+{
+    emit highlightCleared(m_id);
+}
+
 cad::param::AngleMeasureVariable AngleMeasureCard::angleMeasureVar() const
 {
     cad::param::AngleMeasureVariable am;
@@ -57,6 +62,7 @@ void AngleMeasureCard::refreshValue(double valueDeg, bool dangling)
 void AngleMeasureCard::syncFromModel(const cad::param::AngleMeasureVariable& am,
                                      const QString& sourceLabel)
 {
+    m_id = am.id;  // 虚拟化复用: 确保行复用后发射正确的测量 ID
     m_nameChip->setText(am.name);
     m_refName = am.refName;
     m_refChip->setText(am.refName);
@@ -76,6 +82,18 @@ void AngleMeasureCard::enterEvent(QEnterEvent* event)
 {
     emit sourceClicked(m_id);
     CardBase::enterEvent(event);
+}
+
+void AngleMeasureCard::leaveEvent(QEvent* event)
+{
+    CardBase::leaveEvent(event);
+    emit highlightCleared(m_id);
+}
+
+void AngleMeasureCard::hideEvent(QHideEvent* event)
+{
+    CardBase::hideEvent(event);
+    emit highlightCleared(m_id);
 }
 
 void AngleMeasureCard::setupUi(const cad::param::AngleMeasureVariable& am,

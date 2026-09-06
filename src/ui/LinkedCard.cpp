@@ -53,6 +53,8 @@ void LinkedCard::refreshValue(double valueMm, bool dangling)
 void LinkedCard::syncFromModel(const cad::param::LinkedVariable& lv,
                                const QString& sourceLabel)
 {
+    m_id = lv.id;
+    m_sourceBlockId = lv.sourceBlockId;
     m_nameChip->setText(lv.name);
     m_refName = lv.refName;
     m_refChip->setText(lv.refName);

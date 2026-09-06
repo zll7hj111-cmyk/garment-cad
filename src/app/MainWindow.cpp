@@ -1,4 +1,4 @@
-#include "ContextStrip.h"
+﻿#include "ContextStrip.h"
 #include "ToolDockStyle.h"
 
 #include "MainWindow.h"
@@ -1389,62 +1389,42 @@ void MainWindow::setupPages()
         });
     });
 
-    // Hover/click a measure card → flash the TWO measured points precisely.
+    // Hover/click a measure card → show the TWO measured points precisely.
     // Bridge-line measurements (ownerBlockId set) and dangling/unresolved
     // sources keep the existing whole-block highlight path.
+    // Highlight persists as long as hovered; cleared immediately on unhover.
     connect(m_variablePanel, &cad::ui::VariablePanel::highlightMeasureRequested,
             this, [this](const QUuid& measureId) {
         const auto* mv = m_paramDoc->findMeasure(measureId);
         if (!mv) return;
 
-        QUuid fallbackBlock;
         if (!mv->ownerBlockId.isNull()) {
-            // Owned (bridge) measurement: keep the whole-block flash.
-            fallbackBlock = mv->ownerBlockId;
+            m_canvasScene->highlightMeasureBlock(measureId, mv->ownerBlockId);
         } else if (!m_canvasScene->flashMeasure(mv->blockA, mv->pointA,
                                                  mv->blockB, mv->pointB,
-                                                   mv->kind)) {
-            // Points missing / unresolved: fall back to source block A.
-            fallbackBlock = mv->blockA;
-        } else {
-            return;  // precise flash shown — done.
+                                                 mv->kind, measureId)) {
+            m_canvasScene->highlightMeasureBlock(measureId, mv->blockA);
         }
-
-        auto* bi = m_canvasScene->findBlockItem(fallbackBlock);
-        if (!bi) return;
-        bi->setToolLocked(true);
-        m_canvasScene->refreshAllBlockItems();
-        // Auto-clear after 1.5 seconds.
-        QTimer::singleShot(1500, this, [this, fallbackBlock]() {
-            auto* item = m_canvasScene->findBlockItem(fallbackBlock);
-            if (item) {
-                item->setToolLocked(false);
-                m_canvasScene->refreshAllBlockItems();
-            }
-        });
     });
 
-    // Hover/click an angle measure card → flash the two source segments plus
-    // the half-arc (previously only the reference block was highlighted).
+    // Hover/click an angle measure card → show the two source segments plus
+    // the half-arc (falls back to source block A).
+    // Highlight persists as long as hovered; cleared immediately on unhover.
     connect(m_variablePanel, &cad::ui::VariablePanel::highlightAngleMeasureRequested,
             this, [this](const QUuid& angleMeasureId) {
         const auto* am = m_paramDoc->findAngleMeasure(angleMeasureId);
         if (!am) return;
         if (!m_canvasScene->flashAngleMeasure(am->blockA, am->segmentA,
                                               am->blockB, am->segmentB,
-                                              am->flipA, am->flipB)) {
-            auto* bi = m_canvasScene->findBlockItem(am->blockA);
-            if (!bi) return;
-            bi->setToolLocked(true);
-            m_canvasScene->refreshAllBlockItems();
-            QTimer::singleShot(1500, this, [this, blockId = am->blockA]() {
-                auto* item = m_canvasScene->findBlockItem(blockId);
-                if (item) {
-                    item->setToolLocked(false);
-                    m_canvasScene->refreshAllBlockItems();
-                }
-            });
+                                              am->flipA, am->flipB,
+                                              angleMeasureId)) {
+            m_canvasScene->highlightMeasureBlock(angleMeasureId, am->blockA);
         }
+    });
+
+    connect(m_variablePanel, &cad::ui::VariablePanel::clearMeasureHighlightRequested,
+            this, [this](const QUuid& measureId) {
+        m_canvasScene->clearMeasureHighlight(measureId);
     });
 
 }

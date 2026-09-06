@@ -1,4 +1,4 @@
-﻿#include "FormulaCard.h"
+#include "FormulaCard.h"
 
 #include "CopyChip.h"
 #include "IconHelper.h"
@@ -73,12 +73,10 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
         m_valueLabel->setText(cad::geo::Units::formatNumberTrimmed(valueCm));
         m_valueLabel->setToolTip(cad::ui::TooltipFormatter::status(
             hasActual ? QStringLiteral("实际覆盖结果") : QStringLiteral("计算结果"),
-            QStringLiteral("%1 cm（%2）")
+            QStringLiteral("%1（%2）")
                 .arg(cad::geo::Units::formatNumberTrimmed(valueCm),
                      hasActual ? QStringLiteral("实际覆盖值接管") : QStringLiteral("只读计算值")),
             false));
-        if (m_unitLabel)
-            m_unitLabel->setVisible(true);
 
         if (m_statusBadge) {
             if (hasActual) {
@@ -110,8 +108,6 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
                 QStringLiteral("公式未填写"),
                 QStringLiteral("请在输入框中填入公式表达式（如：胸围/4 + 1.5）"),
                 false));
-            if (m_unitLabel)
-                m_unitLabel->setVisible(false);
 
             if (m_statusBadge) {
                 m_statusBadge->setText(QStringLiteral("待输入"));
@@ -132,8 +128,6 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
                 QStringLiteral("公式求值失败"),
                 error.isEmpty() ? QStringLiteral("表达式无效或引用的变量不存在") : error,
                 true));
-            if (m_unitLabel)
-                m_unitLabel->setVisible(false);
 
             if (m_statusBadge) {
                 m_statusBadge->setText(QStringLiteral("求值错误"));
@@ -368,16 +362,6 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
     m_nameChip->setFixedWidth(95);
     topRow->addWidget(m_nameChip, 0);
 
-    // 类型徽标 [FORMULA]
-    auto* typeTag = new ElaText(QStringLiteral("FORMULA"), 10, this);
-    typeTag->setStyleSheet(QStringLiteral(
-        "QLabel { font-family: %1; font-size: 9px; font-weight: bold; color: %2; "
-        "background: %3; border: 1px solid %4; border-radius: 2px; padding: 0px 3px; }")
-        .arg(cad::ui::ThemeTokens::kMonospaceFamily,
-             tokens.text3.name(),
-             tokens.surface2.name(),
-             tokens.border.name()));
-    topRow->addWidget(typeTag, 0);
 
     topRow->addStretch(1);
 
@@ -442,9 +426,6 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
     m_valueLabel = createValueLabel(/*bold=*/true);
     bottomRow->addWidget(m_valueLabel, 0);
 
-    // 单位标签 ("cm")
-    m_unitLabel = createUnitLabel(QStringLiteral("cm"));
-    bottomRow->addWidget(m_unitLabel, 0);
 
     bottomRow->addStretch(1);
 

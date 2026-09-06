@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -23,6 +23,7 @@ public:
                          const QString& sourceLabel,
                          bool alternate = false,
                          QWidget* parent = nullptr);
+    ~MeasureCard() override;
 
     [[nodiscard]] QUuid measureId() const { return m_id; }
     [[nodiscard]] cad::param::MeasureVariable measureVar() const;
@@ -40,11 +41,15 @@ signals:
     /// measure's id). Hover is the primary trigger; the click path is kept as a
     /// fallback for input methods without hover.
     void sourceClicked(const QUuid& measureId);
+    /// Emitted when hover leaves the card or the card is destroyed/hidden.
+    void highlightCleared(const QUuid& measureId);
 
 protected:
     /// "测 N" prefix for the row ordinal.
     QString indexText(int n) const override;
     void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
 
 private:

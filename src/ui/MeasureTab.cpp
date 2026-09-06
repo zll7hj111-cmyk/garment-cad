@@ -1,4 +1,4 @@
-#include "MeasureTab.h"
+﻿#include "MeasureTab.h"
 
 #include "ElaScrollArea.h"
 #include <QVBoxLayout>
@@ -190,6 +190,8 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
                 // MainWindow when the points are missing/unresolved).
                 connect(card, &MeasureCard::sourceClicked,
                         this, &MeasureTab::highlightMeasureRequested);
+                connect(card, &MeasureCard::highlightCleared,
+                        this, &MeasureTab::clearMeasureHighlightRequested);
                 return card;
             }
             const int ai = row - m;
@@ -203,6 +205,8 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
                     this, &MeasureTab::onAngleMeasureEdited);
             connect(card, &AngleMeasureCard::sourceClicked,
                     this, &MeasureTab::highlightAngleMeasureRequested);
+            connect(card, &AngleMeasureCard::highlightCleared,
+                    this, &MeasureTab::clearMeasureHighlightRequested);
             return card;
         },
         [this](int row, QWidget* w) {
@@ -293,8 +297,15 @@ void MeasureTab::sync()
     m_emptyHint->setVisible(measures.empty() && angles.empty());
 }
 
+void MeasureTab::hideEvent(QHideEvent* event)
+{
+    QWidget::hideEvent(event);
+    emit clearMeasureHighlightRequested();
+}
+
 void MeasureTab::onMeasureDeleted(const QUuid& id)
 {
+    emit clearMeasureHighlightRequested(id);
     if (m_undoStack)
         m_undoStack->push(new cad::cmd::RemoveMeasureCommand(m_doc, id));
     else
@@ -316,6 +327,7 @@ void MeasureTab::onMeasureEdited(const cad::param::MeasureVariable& mv)
 
 void MeasureTab::onAngleMeasureDeleted(const QUuid& id)
 {
+    emit clearMeasureHighlightRequested(id);
     if (m_undoStack)
         m_undoStack->push(new cad::cmd::RemoveAngleMeasureCommand(m_doc, id));
     else

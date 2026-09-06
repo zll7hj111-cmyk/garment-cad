@@ -106,19 +106,29 @@ public:
 
     /// Flash the two source points of a measurement: amber rings on both
     /// points plus an amber dashed connector (ToolMeasure preview style).
-    /// The transient graphics self-destruct after ~1.5 s. Returns false when
-    /// either block/point is missing or unresolved (caller falls back to a
+    /// Persistent until clearMeasureHighlight() or next highlight. Returns false
+    /// when either block/point is missing or unresolved (caller falls back to a
     /// whole-block highlight).
     bool flashMeasure(const QUuid& blockA, const QUuid& pointA,
                        const QUuid& blockB, const QUuid& pointB,
-                       cad::param::MeasureKind kind = cad::param::MeasureKind::Distance);
+                       cad::param::MeasureKind kind = cad::param::MeasureKind::Distance,
+                       const QUuid& measureId = QUuid());
 
     /// Flash an angle measurement: its two source segments plus a half arc at
-    /// the line intersection. The transient graphics self-destruct after
-    /// ~1.5 s. Returns false when either segment is missing/unresolved.
+    /// the line intersection. Persistent until clearMeasureHighlight() or next
+    /// highlight. Returns false when either segment is missing/unresolved.
     bool flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
                            const QUuid& blockB, const QUuid& segmentB,
-                           bool flipA = false, bool flipB = false);
+                           bool flipA = false, bool flipB = false,
+                           const QUuid& angleMeasureId = QUuid());
+
+    /// Highlight a specific block for measurement preview (bridge line or fallback).
+    void highlightMeasureBlock(const QUuid& measureId, const QUuid& blockId);
+
+    /// Clear any active measurement hover highlight overlay and unlock highlighted block.
+    /// If @p measureId is non-null, only clears if it matches the active measurement.
+    void clearMeasureHighlight(const QUuid& measureId = QUuid());
+
     /// Notify listeners (MainWindow) that a segment was just created by the
     /// smart pen. The host shows the status-bar edit strip (SegmentEditBar)
     /// for immediate naming/length/angle edits — no creation dialog.
@@ -173,4 +183,9 @@ private:
     bool m_forceShowName = false;
     bool m_forceShowLength = false;
     bool m_directionArrowsEnabled = true;  ///< 线段方向基准箭头全局开关 (2026-12).
+
+    // Active measurement card hover overlay.
+    QList<QGraphicsItem*> m_measureHighlightOverlay;
+    QUuid m_measureHighlightBlock;
+    QUuid m_activeMeasureId;
 };

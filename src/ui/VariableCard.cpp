@@ -1,4 +1,4 @@
-﻿#include "VariableCard.h"
+#include "VariableCard.h"
 
 #include "ElaText.h"
 #include "ElaLineEdit.h"
@@ -51,6 +51,11 @@ cad::param::Variable VariableCard::variable() const
 void VariableCard::focusName()
 {
     m_compoundChip->focusNameEdit();
+}
+
+void VariableCard::focusRef()
+{
+    m_compoundChip->focusRefEdit();
 }
 
 void VariableCard::syncFromModel(const cad::param::Variable& var)

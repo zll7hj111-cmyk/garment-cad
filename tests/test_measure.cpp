@@ -17,9 +17,12 @@
 #include <cmath>
 
 #include "canvas/CanvasScene.h"
+#include "canvas/BlockItem.h"
 #include "tools/ToolMeasure.h"
 #include "tools/ToolAngleMeasure.h"
 #include "ui/MeasureResultDialog.h"
+#include "ui/MeasureCard.h"
+#include "ui/AngleMeasureCard.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/MeasureVariable.h"
 #include "parametric/FormulaVariable.h"
@@ -27,6 +30,7 @@
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
 #include "TestHelpers.h"
+#include <QSignalSpy>
 
 using namespace cad::param;
 using cad::geo::Vec2;
@@ -149,6 +153,8 @@ private slots:
     void formulaConsumesAngleMeasure();
     void formulaConsumesDistanceAndLinkedMeasure();
     void formulaUpdatesWhenGeometryMoves();
+    // ── 测量卡片悬停: 实时持续显示 + 移开即刻取消 ──
+    void measureCardHoverPersistentAndClearOnUnhover();
 };
 
 void TestMeasure::distanceModeIsEuclidean()
@@ -544,6 +550,113 @@ void TestMeasure::formulaUpdatesWhenGeometryMoves()
     QVERIFY(sfAfter && sfAfter->valid);
     QVERIFY(std::abs(cad::geo::Units::mmToCm(sfAfter->baseValue) - 10.0) < 1e-6);
     QVERIFY(std::abs(doc.parameter("SegHalf") - 10.0) < 1e-6);
+}
+
+void TestMeasure::measureCardHoverPersistentAndClearOnUnhover()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    const QUuid layer1 = layerIdAt(doc, 1);
+
+    auto setup1 = makeSegmentOnLayer(doc, layer1, Vec2(0.0, 0.0), Vec2(100.0, 0.0));
+    auto setup2 = makeSegmentOnLayer(doc, layer1, Vec2(0.0, 0.0), Vec2(0.0, 100.0));
+    doc.resolveAll();
+
+    // 1. Test CanvasScene::flashMeasure persistence (no auto-timeout) and clearMeasureHighlight
+    const int baseItemCount = scene.items().size();
+    MeasureVariable mv;
+    mv.blockA = setup1.blockId;
+    mv.pointA = setup1.startId;
+    mv.blockB = setup1.blockId;
+    mv.pointB = setup1.endId;
+    mv.kind = MeasureKind::Distance;
+    doc.addMeasure(mv);
+
+    bool flashed = scene.flashMeasure(mv.blockA, mv.pointA, mv.blockB, mv.pointB, mv.kind, mv.id);
+    QVERIFY(flashed);
+    // 2 rings + 1 line = 3 items added
+    QCOMPARE(scene.items().size(), baseItemCount + 3);
+
+    // Wait 50 ms to ensure it does not disappear unexpectedly
+    QTest::qWait(50);
+    QCOMPARE(scene.items().size(), baseItemCount + 3);
+
+    // clearMeasureHighlight with matching id -> removed immediately
+    scene.clearMeasureHighlight(mv.id);
+    QCOMPARE(scene.items().size(), baseItemCount);
+
+    // 2. Test CanvasScene::highlightMeasureBlock persistence and clear
+    scene.highlightMeasureBlock(mv.id, setup1.blockId);
+    auto* bi = scene.findBlockItem(setup1.blockId);
+    QVERIFY(bi && bi->toolLocked());
+
+    scene.clearMeasureHighlight(mv.id);
+    QVERIFY(bi && !bi->toolLocked());
+
+    // 3. Test CanvasScene::flashAngleMeasure persistence and clear
+    AngleMeasureVariable am;
+    am.blockA = setup1.blockId;
+    am.segmentA = setup1.segId;
+    am.blockB = setup2.blockId;
+    am.segmentB = setup2.segId;
+    doc.addAngleMeasure(am);
+
+    bool angleFlashed = scene.flashAngleMeasure(am.blockA, am.segmentA, am.blockB, am.segmentB,
+                                                am.flipA, am.flipB, am.id);
+    QVERIFY(angleFlashed);
+    // 2 segment lines + 1 arc = 3 items added
+    QCOMPARE(scene.items().size(), baseItemCount + 3);
+
+    scene.clearMeasureHighlight(am.id);
+    QCOMPARE(scene.items().size(), baseItemCount);
+
+    // 4. Test MeasureCard signals and syncFromModel
+    MeasureCard card(mv, QStringLiteral("P1·P2"));
+    QSignalSpy spyClick(&card, &MeasureCard::sourceClicked);
+    QSignalSpy spyClear(&card, &MeasureCard::highlightCleared);
+
+    // Simulate mouse hover enter
+    QEnterEvent enterEv(QPointF(5, 5), QPointF(5, 5), QPointF(5, 5));
+    QApplication::sendEvent(&card, &enterEv);
+    QCOMPARE(spyClick.count(), 1);
+    QCOMPARE(spyClick.takeFirst().at(0).toUuid(), mv.id);
+
+    // syncFromModel with new ID
+    MeasureVariable mv2;
+    mv2.name = QStringLiteral("M2");
+    mv2.refName = QStringLiteral("M_two");
+    card.syncFromModel(mv2, QStringLiteral("P3·P4"));
+    QCOMPARE(card.measureId(), mv2.id);
+
+    // Simulate enter again
+    QApplication::sendEvent(&card, &enterEv);
+    QCOMPARE(spyClick.count(), 1);
+    QCOMPARE(spyClick.takeFirst().at(0).toUuid(), mv2.id);
+
+    // Simulate mouse leave
+    QEvent leaveEv(QEvent::Leave);
+    QApplication::sendEvent(&card, &leaveEv);
+    QCOMPARE(spyClear.count(), 1);
+    QCOMPARE(spyClear.takeFirst().at(0).toUuid(), mv2.id);
+
+    // 5. Test AngleMeasureCard signals and syncFromModel
+    AngleMeasureCard aCard(am, QStringLiteral("S1·S2"));
+    QSignalSpy spyAClick(&aCard, &AngleMeasureCard::sourceClicked);
+    QSignalSpy spyAClear(&aCard, &AngleMeasureCard::highlightCleared);
+
+    QApplication::sendEvent(&aCard, &enterEv);
+    QCOMPARE(spyAClick.count(), 1);
+    QCOMPARE(spyAClick.takeFirst().at(0).toUuid(), am.id);
+
+    AngleMeasureVariable am2;
+    am2.name = QStringLiteral("MA2");
+    am2.refName = QStringLiteral("MA_two");
+    aCard.syncFromModel(am2, QStringLiteral("S3·S4"));
+    QCOMPARE(aCard.angleMeasureId(), am2.id);
+
+    QApplication::sendEvent(&aCard, &leaveEv);
+    QCOMPARE(spyAClear.count(), 1);
+    QCOMPARE(spyAClear.takeFirst().at(0).toUuid(), am2.id);
 }
 
 QTEST_MAIN(TestMeasure)

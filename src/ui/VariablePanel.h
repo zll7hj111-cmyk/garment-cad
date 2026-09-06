@@ -58,10 +58,13 @@ signals:
     /// Emitted when the user hovers/clicks an angle measure card (flash the
     /// two source segments + half arc).
     void highlightAngleMeasureRequested(const QUuid& angleMeasureId);
+    /// Emitted when measurement highlight should be cleared on canvas.
+    void clearMeasureHighlightRequested(const QUuid& measureId = QUuid());
 
 protected:
     /// Drag-and-drop handling for the formula list container.
     bool eventFilter(QObject* obj, QEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 private:
     void setupUi();

@@ -25,6 +25,11 @@ MeasureCard::MeasureCard(const cad::param::MeasureVariable& mv,
     setupUi(mv, sourceLabel);
 }
 
+MeasureCard::~MeasureCard()
+{
+    emit highlightCleared(m_id);
+}
+
 cad::param::MeasureVariable MeasureCard::measureVar() const
 {
     cad::param::MeasureVariable mv;
@@ -79,6 +84,7 @@ void MeasureCard::refreshValue(double valueMm, bool dangling)
 void MeasureCard::syncFromModel(const cad::param::MeasureVariable& mv,
                                 const QString& sourceLabel)
 {
+    m_id = mv.id;  // 虚拟化复用: 确保行复用后发射正确的测量 ID
     m_nameChip->setText(mv.name);
     m_refName = mv.refName;
     m_refChip->setText(mv.refName);
@@ -99,6 +105,18 @@ void MeasureCard::enterEvent(QEnterEvent* event)
 {
     emit sourceClicked(m_id);
     CardBase::enterEvent(event);
+}
+
+void MeasureCard::leaveEvent(QEvent* event)
+{
+    CardBase::leaveEvent(event);
+    emit highlightCleared(m_id);
+}
+
+void MeasureCard::hideEvent(QHideEvent* event)
+{
+    CardBase::hideEvent(event);
+    emit highlightCleared(m_id);
 }
 
 

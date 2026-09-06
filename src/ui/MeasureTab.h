@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -51,6 +51,11 @@ signals:
     void highlightAngleMeasureRequested(const QUuid& angleMeasureId);
     /// Highlight a source block on canvas (linked cards / fallback paths).
     void highlightBlockRequested(const QUuid& blockId);
+    /// Clear active measurement hover highlight on canvas.
+    void clearMeasureHighlightRequested(const QUuid& measureId = QUuid());
+
+protected:
+    void hideEvent(QHideEvent* event) override;
 
 private:
     void onMeasureDeleted(const QUuid& id);

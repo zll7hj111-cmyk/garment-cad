@@ -30,6 +30,7 @@ public:
     void syncFromModel(const cad::param::Variable& var);
 
     void focusName();
+    void focusRef();
 
 signals:
     void deleteRequested(const QUuid& id);

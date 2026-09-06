@@ -66,7 +66,10 @@ CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
             });
 }
 
-CanvasScene::~CanvasScene() = default;
+CanvasScene::~CanvasScene()
+{
+    clearMeasureHighlight();
+}
 
 double CanvasScene::currentZoom() const
 {
@@ -91,6 +94,9 @@ void CanvasScene::addBlockItem(const QUuid& blockId)
 
 void CanvasScene::removeBlockItem(const QUuid& blockId)
 {
+    if (m_measureHighlightBlock == blockId)
+        m_measureHighlightBlock = QUuid();
+
     auto it = m_blockItems.find(blockId);
     if (it != m_blockItems.end()) {
         m_animator.removeOwner(it.value());
@@ -102,6 +108,7 @@ void CanvasScene::removeBlockItem(const QUuid& blockId)
 
 void CanvasScene::clearAllBlockItems()
 {
+    clearMeasureHighlight();
     for (auto* item : m_blockItems) {
         m_animator.removeOwner(item);
         removeItem(item);
@@ -398,8 +405,11 @@ void CanvasScene::connectModeBadgeViewSignals()
 
 bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
                                 const QUuid& blockB, const QUuid& pointB,
-                                cad::param::MeasureKind kind)
+                                cad::param::MeasureKind kind,
+                                const QUuid& measureId)
 {
+    clearMeasureHighlight();
+    m_activeMeasureId = measureId;
     if (!m_paramDoc) return false;
 
     // Both endpoints must exist AND be resolved, otherwise the caller falls
@@ -414,9 +424,8 @@ bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
     const QPointF sa = cad::geo::Coord::toScene(bA->worldPos(pointA));
     const QPointF sb = cad::geo::Coord::toScene(bB->worldPos(pointB));
 
-    // Transient overlay set: two amber rings + one amber dashed connector
+    // Persistent overlay set: two amber rings + one amber dashed connector
     // (style mirrors the ToolMeasure preview).
-    QList<QGraphicsItem*> overlay;
     const QColor amber(0xFF, 0x98, 0x00);
     constexpr double ringR = 5.0;
     for (const QPointF& p : { sa, sb }) {
@@ -428,12 +437,10 @@ bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
         ring->setZValue(102.0);
         ring->setPos(p);
         addItem(ring);
-        overlay.append(ring);
+        m_measureHighlightOverlay.append(ring);
     }
     // Mirror the ToolMeasure preview: distance draws a straight connector;
-    // horizontal/vertical draw the projected span line (the "already built"
-    // dimension-style display was only on the live measure tool, not on card
-    // flashes).
+    // horizontal/vertical draw the projected span line.
     QPointF lineStart = sa;
     switch (kind) {
         case cad::param::MeasureKind::Horizontal:
@@ -452,24 +459,18 @@ bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
     line->setPen(linePen);
     line->setZValue(102.0);
     addItem(line);
-    overlay.append(line);
+    m_measureHighlightOverlay.append(line);
 
-    // Self-destruct after 1.5 s (remove BEFORE delete — never rely on
-    // QObject parenting for QGraphicsItems).
-    QTimer::singleShot(1500, this, [this, overlay]() {
-        for (QGraphicsItem* item : overlay) {
-            if (item->scene() == this)
-                removeItem(item);
-            delete item;
-        }
-    });
     return true;
 }
 
 bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
                                     const QUuid& blockB, const QUuid& segmentB,
-                                    bool flipA, bool flipB)
+                                    bool flipA, bool flipB,
+                                    const QUuid& angleMeasureId)
 {
+    clearMeasureHighlight();
+    m_activeMeasureId = angleMeasureId;
     if (!m_paramDoc) return false;
 
     const cad::param::Block* bA = m_paramDoc->blocksView().byId(blockA);
@@ -522,7 +523,6 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
     }
 
     const QColor amber(0xFF, 0x98, 0x00);
-    QList<QGraphicsItem*> overlay;
 
     // Two source segments.
     for (const auto& [p0, p1] : { std::pair<QPointF, QPointF>{a0s, a1s},
@@ -533,7 +533,7 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
         seg->setPen(pen);
         seg->setZValue(102.0);
         addItem(seg);
-        overlay.append(seg);
+        m_measureHighlightOverlay.append(seg);
     }
 
     // Half arc. Follow the recorded ray directions (flipA/flipB) from the pivot.
@@ -569,16 +569,42 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
     arc->setPen(arcPen);
     arc->setZValue(102.0);
     addItem(arc);
-    overlay.append(arc);
+    m_measureHighlightOverlay.append(arc);
 
-    QTimer::singleShot(1500, this, [this, overlay]() {
-        for (QGraphicsItem* item : overlay) {
-            if (item->scene() == this)
-                removeItem(item);
-            delete item;
-        }
-    });
     return true;
+}
+
+void CanvasScene::highlightMeasureBlock(const QUuid& measureId, const QUuid& blockId)
+{
+    clearMeasureHighlight();
+    m_activeMeasureId = measureId;
+    if (auto* bi = findBlockItem(blockId)) {
+        m_measureHighlightBlock = blockId;
+        bi->setToolLocked(true);
+        refreshAllBlockItems();
+    }
+}
+
+void CanvasScene::clearMeasureHighlight(const QUuid& measureId)
+{
+    if (!measureId.isNull() && !m_activeMeasureId.isNull() && measureId != m_activeMeasureId)
+        return;
+
+    for (QGraphicsItem* item : m_measureHighlightOverlay) {
+        if (item->scene() == this)
+            removeItem(item);
+        delete item;
+    }
+    m_measureHighlightOverlay.clear();
+
+    if (!m_measureHighlightBlock.isNull()) {
+        if (auto* bi = findBlockItem(m_measureHighlightBlock)) {
+            bi->setToolLocked(false);
+            refreshAllBlockItems();
+        }
+        m_measureHighlightBlock = QUuid();
+    }
+    m_activeMeasureId = QUuid();
 }
 
 

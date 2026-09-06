@@ -1,4 +1,4 @@
-﻿#include "VariablePanel.h"
+#include "VariablePanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -312,6 +312,8 @@ void VariablePanel::setupUi()
             this, &VariablePanel::highlightMeasureRequested);
     connect(m_measureTab, &MeasureTab::highlightAngleMeasureRequested,
             this, &VariablePanel::highlightAngleMeasureRequested);
+    connect(m_measureTab, &MeasureTab::clearMeasureHighlightRequested,
+            this, &VariablePanel::clearMeasureHighlightRequested);
     // Measure data flow: must be wired AFTER the tab exists — connecting to
     // a null receiver would silently never fire (the tab would stay empty).
     connect(m_doc, &cad::param::ParamDocument::measureVarsChanged,
@@ -580,7 +582,7 @@ void VariablePanel::onAddClicked()
 void VariablePanel::addNewVariable()
 {
     cad::param::Variable v;
-    v.refName = nextRefName();
+    v.refName.clear(); // 新建变量代码默认为空
     v.name = QStringLiteral("新变量");
     v.value = 0.0;
 
@@ -590,14 +592,14 @@ void VariablePanel::addNewVariable()
         m_doc->addVariable(v);
 
     // The new card may sit below the window: materialize it, scroll down,
-    // then focus its name editor.
+    // then focus its ref editor.
     const QUuid id = v.id;
     QTimer::singleShot(0, this, [this, id]() {
         m_varHost->ensureMaterialized(id);
         auto* bar = m_varScroll->verticalScrollBar();
         bar->setValue(bar->maximum());
         if (auto* card = qobject_cast<VariableCard*>(m_varHost->widgetFor(id)))
-            card->focusName();
+            card->focusRef();
     });
 }
 
@@ -1018,4 +1020,11 @@ void VariablePanel::updateCountLabel()
                                    && m_doc->formulaGroups().empty());
     m_linkedEmptyHint->setVisible(m_doc->linkedVars().empty());
 }
+
+void VariablePanel::hideEvent(QHideEvent* event)
+{
+    QWidget::hideEvent(event);
+    emit clearMeasureHighlightRequested();
+}
+
 } // namespace cad::ui
