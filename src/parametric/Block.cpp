@@ -1,4 +1,4 @@
-﻿#include "Block.h"
+#include "Block.h"
 
 #include <algorithm>
 #include <cmath>
@@ -544,7 +544,12 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
                                            /*tolerateStaleEndpoints=*/true);
         if (spans.empty()) return false;
 
-        double totalArc = geo::totalArcLength(spans);
+        // Per-span cumulative arc length built ONCE here (5-point GL per span),
+        // shared by the total and the arc-length→parameter lookup — the old
+        // code ran totalArcLength() and arcLengthToParam() separately, each
+        // re-integrating every span.
+        const std::vector<double> cumLen = geo::buildCumulativeArcLength(spans);
+        const double totalArc = cumLen.back();
         if (totalArc < 1e-9) {
             // Degenerate curve — sit on the start anchor (spans[0].p0).
             pt.resolvedPos = spans[0].p0;
@@ -569,7 +574,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
         targetS = std::clamp(targetS, 0.0, totalArc);
 
         // Arc-length → parameter T → point + tangent
-        double T = geo::arcLengthToParam(spans, targetS);
+        double T = geo::arcLengthToParam(spans, targetS, &cumLen);
         geo::Vec2 basePos = geo::evalCurve(spans, T);
         geo::Vec2 tangent = geo::evalCurveTangent(spans, T);
         double baseAngle = std::atan2(tangent.y, tangent.x);
@@ -807,11 +812,17 @@ void Block::rebuildCurveCache()
         entry.bboxMax = hi;
         entry.flatLocal    = geo::flattenBezierSpans(entry.spans, 0.1);
         entry.arcLengthMm  = geo::totalArcLength(entry.spans);
+        // Per-span cumulative arc-length table, built once here so the
+        // hot-path consumers (SnapEngine projection, interpolated-point
+        // arc-length lookup) reuse it instead of re-integrating every span
+        // per call.
+        entry.cumArcLengthMm = geo::buildCumulativeArcLength(entry.spans);
         // Label anchor: the ARC-LENGTH midpoint of the whole curve. The old
         // evalCurve(spans, 0.5) was the parametric middle of span 0 — on
         // multi-anchor curves (3+ spans) the name/length labels drifted
         // toward the start of the curve instead of sitting at its middle.
-        const double tMid = geo::arcLengthToParam(entry.spans, entry.arcLengthMm * 0.5);
+        const double tMid = geo::arcLengthToParam(entry.spans, entry.arcLengthMm * 0.5,
+                                                  &entry.cumArcLengthMm);
         entry.labelLocal   = geo::evalCurve(entry.spans, tMid);
         entry.labelLocalDir = geo::evalCurveTangent(entry.spans, tMid);
         m_curveSpanIndex.insert(seg.id, static_cast<int>(m_curveSpans.size()));
@@ -976,7 +987,8 @@ double Block::exitDirectionAtPoint(const QUuid& pointId) const
             if (sp && ep && sp->resolved && ep->resolved) {
                 if (const CurveSpanEntry* entry = curveSpanEntry(hostSeg->id);
                     entry && !entry->spans.empty()) {
-                    auto proj = geo::projectPointOnCurve(pt->resolvedPos, entry->spans);
+                    auto proj = geo::projectPointOnCurve(pt->resolvedPos, entry->spans,
+                                                         &entry->cumArcLengthMm);
                     if (proj.valid && proj.tangent.lengthSquared() > 1e-12)
                         return std::atan2(proj.tangent.y, proj.tangent.x);
                 }
@@ -1116,7 +1128,7 @@ double Block::segmentBaseLength(const QUuid& segmentId) const
     if (seg->isCurve()) {
         if (const CurveSpanEntry* entry = curveSpanEntry(seg->id);
             entry && !entry->spans.empty())
-            return geo::totalArcLength(entry->spans);
+            return entry->arcLengthMm;  // exact arc length cached with the spans
     }
     return ep->resolved ? sp->resolvedPos.distanceTo(ep->resolvedPos) : 0.0;
 }

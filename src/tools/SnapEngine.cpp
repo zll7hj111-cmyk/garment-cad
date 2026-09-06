@@ -1,4 +1,4 @@
-﻿#include "SnapEngine.h"
+#include "SnapEngine.h"
 
 #include <algorithm>
 #include <cmath>
@@ -278,7 +278,8 @@ std::optional<SegmentSnapResult> SnapEngine::findSegmentSnap(
                     localCursor.y > entry->bboxMax.y + cull)
                     continue;
 
-                auto proj = cad::geo::projectPointOnCurve(localCursor, spans);
+                auto proj = cad::geo::projectPointOnCurve(localCursor, spans,
+                                                         &entry->cumArcLengthMm);
                 if (!proj.valid) continue;
 
                 if (proj.distance < bestDist) {

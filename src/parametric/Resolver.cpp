@@ -29,6 +29,34 @@ void report(std::vector<ResolveDiagnostic>* diagnostics,
     diagnostics->push_back({kind, attachmentId});
 }
 
+/// Find a resolved point by UUID and return its world position.
+/// Checks localBlock first as a fast path. Since UUIDs are globally unique,
+/// locating the point in any block immediately halts the search (if unresolved,
+/// it cannot exist in any subsequent block).
+bool findResolvedPointWorld(const std::vector<Block>& blocks, const Block& localBlock,
+                            const QUuid& pointId, geo::Vec2& outPos)
+{
+    if (pointId.isNull()) return false;
+    if (const ParamPoint* lp = localBlock.findPoint(pointId)) {
+        if (lp->resolved) {
+            outPos = localBlock.worldPos(pointId);
+            return true;
+        }
+        return false;
+    }
+    for (const auto& ob : blocks) {
+        if (&ob == &localBlock) continue;
+        if (const ParamPoint* op = ob.findPoint(pointId)) {
+            if (op->resolved) {
+                outPos = ob.worldPos(pointId);
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 bool Resolver::resolveCrossBlockIntersection(
@@ -44,18 +72,9 @@ bool Resolver::resolveCrossBlockIntersection(
         && (pt.interAimPointId.isNull() || block.findPoint(pt.interAimPointId)))
         return false;
 
-    // Find the origin point in another block.
+    // Find the origin point.
     geo::Vec2 originWorld;
-    bool found = false;
-    for (const auto& ob : blocks) {
-        const ParamPoint* op = ob.findPoint(pt.refPointA);
-        if (op && op->resolved) {
-            originWorld = ob.worldPos(pt.refPointA);
-            found = true;
-            break;
-        }
-    }
-    if (!found) {
+    if (!findResolvedPointWorld(blocks, block, pt.refPointA, originWorld)) {
         if (idbg::enabled())
             idbg::log(QStringLiteral("[inter] origin NOT resolved pt=%1 pass=%2 scope=%3")
                           .arg(pt.serial).arg(pass).arg(int(scope)));
@@ -106,16 +125,8 @@ bool Resolver::resolveCrossBlockIntersection(
     double theta;
     if (!pt.interAimPointId.isNull()) {
         geo::Vec2 aimWorld;
-        bool aimFound = false;
-        for (const auto& ob : blocks) {
-            const ParamPoint* ap = ob.findPoint(pt.interAimPointId);
-            if (ap && ap->resolved) {
-                aimWorld = ob.worldPos(pt.interAimPointId);
-                aimFound = true;
-                break;
-            }
-        }
-        if (!aimFound) return false;
+        if (!findResolvedPointWorld(blocks, block, pt.interAimPointId, aimWorld))
+            return false;
         geo::Vec2 toAim = aimWorld - originWorld;
         if (toAim.lengthSquared() < 1e-12) return false;  // Coincident with origin.
         theta = std::atan2(toAim.y, toAim.x);

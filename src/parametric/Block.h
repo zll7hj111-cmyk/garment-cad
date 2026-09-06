@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -38,6 +38,13 @@ struct CurveSpanEntry {
     geo::Vec2 labelLocal;                ///< Arc-length midpoint of the curve (local).
     geo::Vec2 labelLocalDir;             ///< Unit tangent at the arc-length midpoint.
     double    arcLengthMm = 0.0;         ///< Exact arc length (mm).
+
+    /// Per-span cumulative arc length (size spans.size()+1), built once
+    /// alongside the spans. index i = arc length at the START of span i; the
+    /// last entry is the total arc length. Lets arcLengthToParam /
+    /// projectPointOnCurve avoid re-integrating every span per call — the hot
+    /// path for per-frame snap projection and interpolated-point evaluation.
+    std::vector<double> cumArcLengthMm;
 };
 
 /// Rigid-body 2D transform: translation + rotation.

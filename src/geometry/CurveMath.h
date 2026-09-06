@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "geometry/Vec2.h"
 
@@ -155,11 +155,25 @@ enum class AutoCurveMode { C2, Hobby };
 /// Total arc length of a multi-span curve.
 [[nodiscard]] double totalArcLength(const std::vector<BezierSpan>& spans);
 
+/// Build the per-span cumulative arc-length table ONCE (same construction the
+/// arc-length functions were internally re-doing per call). Returns size
+/// (spans.size() + 1): index i is the arc length accumulated at the START of
+/// span i, and the last entry is the total arc length. This table makes
+/// arcLengthToParam / projectPointOnCurve O(log n + Newton) instead of
+/// re-integrating every span on every call — the hot path on per-frame snap /
+/// interpolated-point evaluation.
+[[nodiscard]] std::vector<double> buildCumulativeArcLength(
+    const std::vector<BezierSpan>& spans);
+
 /// Convert an arc-length distance to a global parameter T.
 /// Safeguarded Newton within the located span (bisection guards the bracket,
 /// Newton accelerates with speed = |B'(t)|). Returns T ∈ [0, spanCount].
+/// @param cumLen Optional per-span cumulative arc-length table (size n+1,
+///        from buildCumulativeArcLength). When null (the default) the table
+///        is rebuilt internally — behaviour identical to before.
 [[nodiscard]] double arcLengthToParam(const std::vector<BezierSpan>& spans,
-                                      double targetS);
+                                      double targetS,
+                                      const std::vector<double>* cumLen = nullptr);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Projection & Intersection
@@ -167,8 +181,12 @@ enum class AutoCurveMode { C2, Hobby };
 
 /// Project a query point onto the curve: find the closest point.
 /// Returns the projection with distance, tangent, and normal.
+/// @param cumLen Optional per-span cumulative arc-length table (size n+1,
+///        from buildCumulativeArcLength). When null (the default) the table
+///        is rebuilt internally — behaviour identical to before.
 [[nodiscard]] CurveProjection projectPointOnCurve(
-    const Vec2& query, const std::vector<BezierSpan>& spans);
+    const Vec2& query, const std::vector<BezierSpan>& spans,
+    const std::vector<double>* cumLen = nullptr);
 
 /// Find all intersections of a ray with the curve.
 /// @param origin         Ray origin.

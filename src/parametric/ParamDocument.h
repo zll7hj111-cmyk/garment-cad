@@ -740,14 +740,10 @@ private:
     /// Returns the ids of the bridges released.
     std::vector<QUuid> releaseOrphanedBridges();
 
-    /// Degrade Intersection points whose ray origin (refPointA) or target
-    /// segment (hostSegmentId) no longer exists. The point is frozen at its
-    /// last resolved position as a Free point (or OnSegment if the target
-    /// segment still exists and t can be computed).
+    /// Degrade Intersection points whose ray origin or target segment no longer exists.
     void degradeOrphanedIntersections();
 
-    /// Convert a single bridge that lost at least one pin into a normal block
-    /// (see releaseOrphanedBridges for the semantics).
+    /// Convert a single bridge that lost at least one pin into a normal block.
     void releaseBridge(Block& b);
 
     /// Shared resolve pipeline. @p emitDocChanged controls whether the
@@ -757,6 +753,12 @@ private:
     void resolveAllInternal(bool emitDocChanged,
                             const QSet<QUuid>* affectedOnly = nullptr,
                             const QList<QUuid>* ignoredAttachments = nullptr);
+
+    /// One Resolver pass, assembling the Resolver::resolveAll argument list (收口).
+    void runResolvePass(Resolver::Scope scope,
+                        const std::vector<Attachment>& passAttachments,
+                        std::vector<ResolveDiagnostic>& diag,
+                        const QSet<QUuid>* affected);
 
     // ── Dirty-subgraph machinery (阶段2: 依赖边表 + 脏传播) ──
     /// Rebuild the leader→followers edge table from m_attachments when stale.

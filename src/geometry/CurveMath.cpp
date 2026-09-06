@@ -1,4 +1,4 @@
-﻿#include "CurveMath.h"
+#include "CurveMath.h"
 
 #include <QPainterPath>
 
@@ -602,28 +602,44 @@ double totalArcLength(const std::vector<BezierSpan>& spans)
     return total;
 }
 
-double arcLengthToParam(const std::vector<BezierSpan>& spans, double targetS)
+std::vector<double> buildCumulativeArcLength(const std::vector<BezierSpan>& spans)
+{
+    std::vector<double> cum(spans.size() + 1, 0.0);
+    for (std::size_t i = 0; i < spans.size(); ++i)
+        cum[i + 1] = cum[i] + spanArcLength(spans[i]);
+    return cum;
+}
+
+double arcLengthToParam(const std::vector<BezierSpan>& spans, double targetS,
+                        const std::vector<double>* cumLen)
 {
     if (spans.empty()) return 0.0;
 
     const int n = static_cast<int>(spans.size());
     if (targetS <= 0.0) return 0.0;
 
-    // Pre-compute cumulative span lengths
-    std::vector<double> cumLen(n + 1, 0.0);
-    for (int i = 0; i < n; ++i)
-        cumLen[i + 1] = cumLen[i] + spanArcLength(spans[i]);
+    // Pre-compute cumulative span lengths. Callers on the hot path (per-frame
+    // snap / interpolated-point evaluation) pass a prebuilt table so the
+    // per-span arc-length integration (5-point GL = 5 derivative evals per
+    // span) is amortised across every consumer of the same curve instead of
+    // repeated per call.
+    std::vector<double> cumLenLocal;
+    const std::vector<double>* cum = cumLen;
+    if (cum == nullptr || cum->size() != static_cast<std::size_t>(n) + 1) {
+        cumLenLocal = buildCumulativeArcLength(spans);
+        cum = &cumLenLocal;
+    }
 
-    double totalLen = cumLen[n];
+    double totalLen = (*cum)[n];
     if (targetS >= totalLen) return static_cast<double>(n);
 
     // Find which span contains the target arc length
     int spanIdx = static_cast<int>(
-        std::upper_bound(cumLen.begin(), cumLen.end(), targetS) - cumLen.begin()) - 1;
+        std::upper_bound(cum->begin(), cum->end(), targetS) - cum->begin()) - 1;
     spanIdx = std::clamp(spanIdx, 0, n - 1);
 
-    double localTarget = targetS - cumLen[spanIdx];
-    double spanLen = cumLen[spanIdx + 1] - cumLen[spanIdx];
+    double localTarget = targetS - (*cum)[spanIdx];
+    double spanLen = (*cum)[spanIdx + 1] - (*cum)[spanIdx];
     if (spanLen < 1e-9) return static_cast<double>(spanIdx);
 
     // Safeguarded Newton within the span. Arc length over [0, t] is monotone
@@ -659,7 +675,8 @@ double arcLengthToParam(const std::vector<BezierSpan>& spans, double targetS)
 // ─────────────────────────────────────────────────────────────────────────────
 
 CurveProjection projectPointOnCurve(const Vec2& query,
-                                    const std::vector<BezierSpan>& spans)
+                                    const std::vector<BezierSpan>& spans,
+                                    const std::vector<double>* cumLen)
 {
     CurveProjection best;
     if (spans.empty()) return best;
@@ -667,10 +684,15 @@ CurveProjection projectPointOnCurve(const Vec2& query,
     const int n = static_cast<int>(spans.size());
     double bestDistSq = 1e30;
 
-    // Cumulative arc lengths for computing s
-    std::vector<double> cumLen(n + 1, 0.0);
-    for (int i = 0; i < n; ++i)
-        cumLen[i + 1] = cumLen[i] + spanArcLength(spans[i]);
+    // Cumulative arc lengths for computing s. Hot path (per-frame snap /
+    // interpolated-point evaluation) passes a prebuilt table so the per-span
+    // arc-length integration is amortised per curve instead of per projection.
+    std::vector<double> cumLenLocal;
+    const std::vector<double>* cum = cumLen;
+    if (cum == nullptr || cum->size() != static_cast<std::size_t>(n) + 1) {
+        cumLenLocal = buildCumulativeArcLength(spans);
+        cum = &cumLenLocal;
+    }
 
     for (int i = 0; i < n; ++i) {
         const BezierSpan& sp = spans[i];
@@ -747,7 +769,7 @@ CurveProjection projectPointOnCurve(const Vec2& query,
                 double w = bestLocalT * 0.5 * GL_WEIGHTS[k];
                 localS += w * evalBezierDerivative(sp, tt).length();
             }
-            best.s = cumLen[i] + localS;
+            best.s = (*cum)[i] + localS;
         }
     }
     return best;
