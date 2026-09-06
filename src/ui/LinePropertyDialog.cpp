@@ -1,4 +1,4 @@
-#include "ui/LinePropertyDialog.h"
+﻿#include "ui/LinePropertyDialog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -665,6 +665,10 @@ void LinePropertyDialog::keyPressEvent(QKeyEvent* event)
 
 void LinePropertyDialog::onAccepted()
 {
+    if (m_debounce && m_debounce->isActive()) {
+        m_debounce->stop();
+        onDebounceTimeout();
+    }
     applyToModel();
     refreshScene();
     m_session.commit(m_paramDoc, m_blockId, m_segmentId, m_isCreation);

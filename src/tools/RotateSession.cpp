@@ -146,6 +146,8 @@ void RotateSession::rebuildAnchorState(cad::param::ParamDocument* doc)
         m_base.rotationMode = att->rotationMode;
         m_base.baseArcLength = att->arcLength;
         m_base.baseArcFormula = att->arcLengthFormula;
+        m_base.baseChordLength = att->chordLength;
+        m_base.baseChordFormula = att->chordLengthFormula;
         m_anchorLocal = ap->resolvedPos;
 
         if (const auto* toBlk = doc->findBlock(att->toBlockId);
@@ -246,6 +248,12 @@ void RotateSession::applyAngleDeg(cad::param::ParamDocument* doc,
                 a->arcLength = cad::geo::degToArcMm(alpha, radius);
                 a->arcLengthFormula.clear();
                 a->rotationMode = cad::param::RotationMode::ArcLength;
+            } else if (m_base.rotationMode == cad::param::RotationMode::ChordLength) {
+                const double radius = segmentRadius(doc);
+                const double foldDeg = cad::geo::normalizeDeg180(deg);
+                a->chordLength = cad::geo::degToChordMm(foldDeg, radius);
+                a->chordLengthFormula.clear();
+                a->rotationMode = cad::param::RotationMode::ChordLength;
             } else {
                 a->followerAngle = alpha;
                 a->followerAngleFormula.clear();
@@ -301,6 +309,16 @@ void RotateSession::applyModeValue(cad::param::ParamDocument* doc,
         }
         if (doc) doc->resolveAll();
         if (scene) scene->refreshAllBlockItems();
+    } else if (m_base.rotationMode == cad::param::RotationMode::ChordLength && m_connected) {
+        if (auto* a = editableAttachment(doc)) {
+            double chordMm = cad::geo::Units::cmToMm(value);
+            const double radius = segmentRadius(doc);
+            if (radius > 1e-9) chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
+            a->chordLength = chordMm;
+            a->chordLengthFormula.clear();
+        }
+        if (doc) doc->resolveAll();
+        if (scene) scene->refreshAllBlockItems();
     } else {
         applyAngleDeg(doc, scene, value, copyGesture);
     }
@@ -325,13 +343,27 @@ double RotateSession::currentModeValue(const cad::param::ParamDocument* doc,
         double arcMm = a->arcLength;
         if (doc) {
             (void)cad::param::ConditionEngine::evaluateLengthMm(
-                a->arcLengthFormula, doc->parameters(), {}, arcMm);
+                a->arcLengthFormula, doc->parameters(), doc->conditions(), arcMm);
         }
         const double radius = segmentRadius(doc);
         const double alphaDeg = (radius > 1e-9)
             ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
         const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
         return cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius));
+    }
+    if (m_base.rotationMode == cad::param::RotationMode::ChordLength && m_connected) {
+        const auto* a = editableAttachment(doc);
+        if (!a) return 0.0;
+        double chordMm = a->chordLength;
+        if (doc) {
+            (void)cad::param::ConditionEngine::evaluateLengthMm(
+                a->chordLengthFormula, doc->parameters(), doc->conditions(), chordMm);
+        }
+        const double radius = segmentRadius(doc);
+        const double alphaDeg = (radius > 1e-9)
+            ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
+        const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
+        return cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius));
     }
     return currentAngleDeg(doc, copyGesture);
 }
@@ -350,15 +382,24 @@ double RotateSession::currentAngleDeg(const cad::param::ParamDocument* doc,
         if (a->rotationMode == cad::param::RotationMode::ArcLength) {
             double arcMm = a->arcLength;
             (void)cad::param::ConditionEngine::evaluateLengthMm(
-                a->arcLengthFormula, doc->parameters(), {}, arcMm);
+                a->arcLengthFormula, doc->parameters(), doc->conditions(), arcMm);
             const double radius = segmentRadius(doc);
             double deg = (radius > 1e-9)
                 ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
             return cad::geo::normalizeDeg180(deg);
         }
+        if (a->rotationMode == cad::param::RotationMode::ChordLength) {
+            double chordMm = a->chordLength;
+            (void)cad::param::ConditionEngine::evaluateLengthMm(
+                a->chordLengthFormula, doc->parameters(), doc->conditions(), chordMm);
+            const double radius = segmentRadius(doc);
+            double deg = (radius > 1e-9)
+                ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
+            return cad::geo::normalizeDeg180(deg);
+        }
         if (!a->followerAngleFormula.isEmpty()) {
             auto r = cad::param::ConditionEngine::evaluate(
-                a->followerAngleFormula, doc->parameters(), {});
+                a->followerAngleFormula, doc->parameters(), doc->conditions());
             if (r.ok) return cad::geo::normalizeDeg180(r.value);
         }
         return cad::geo::normalizeDeg180(a->followerAngle);
@@ -384,6 +425,8 @@ bool RotateSession::isAngleLocked(RotateCopyGesture* copyGesture) const
     if (!m_connected) return false;
     if (m_base.rotationMode == cad::param::RotationMode::ArcLength)
         return !m_base.baseArcFormula.isEmpty();
+    if (m_base.rotationMode == cad::param::RotationMode::ChordLength)
+        return !m_base.baseChordFormula.isEmpty();
     return !m_base.baseFormula.isEmpty();
 }
 
@@ -408,6 +451,8 @@ void RotateSession::restoreBase(cad::param::ParamDocument* doc, CanvasScene* sce
             a->rotationMode = m_base.rotationMode;
             a->arcLength = m_base.baseArcLength;
             a->arcLengthFormula = m_base.baseArcFormula;
+            a->chordLength = m_base.baseChordLength;
+            a->chordLengthFormula = m_base.baseChordFormula;
         }
     } else {
         if (auto* blk = doc->findBlock(m_blockId)) {
@@ -475,12 +520,16 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
         const auto curMode = att->rotationMode;
         const double curArc = att->arcLength;
         const QString curArcFormula = att->arcLengthFormula;
+        const double curChord = att->chordLength;
+        const QString curChordFormula = att->chordLengthFormula;
 
         const bool changed = std::abs(curAngle - m_base.baseAngle) > 1e-9
                           || curFormula != m_base.baseFormula
                           || curMode != m_base.rotationMode
                           || std::abs(curArc - m_base.baseArcLength) > 1e-6
-                          || curArcFormula != m_base.baseArcFormula;
+                          || curArcFormula != m_base.baseArcFormula
+                          || std::abs(curChord - m_base.baseChordLength) > 1e-6
+                          || curChordFormula != m_base.baseChordFormula;
         if (!changed) return false;
 
         att->followerAngle = m_base.baseAngle;
@@ -488,14 +537,19 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
         att->rotationMode = m_base.rotationMode;
         att->arcLength = m_base.baseArcLength;
         att->arcLengthFormula = m_base.baseArcFormula;
+        att->chordLength = m_base.baseChordLength;
+        att->chordLengthFormula = m_base.baseChordFormula;
         undoStack->push(new cad::cmd::SetFollowerAngleCommand(
                 doc, m_attId, curAngle, curFormula,
-                curMode, curArc, curArcFormula));
+                curMode, curArc, curArcFormula,
+                curChord, curChordFormula));
         m_base.baseAngle = curAngle;
         m_base.baseFormula = curFormula;
         m_base.rotationMode = curMode;
         m_base.baseArcLength = curArc;
         m_base.baseArcFormula = curArcFormula;
+        m_base.baseChordLength = curChord;
+        m_base.baseChordFormula = curChordFormula;
         return true;
     } else {
         cad::param::Block* blk = doc->findBlock(m_blockId);

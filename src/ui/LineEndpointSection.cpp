@@ -1,4 +1,4 @@
-#include "ui/LineEndpointSection.h"
+﻿#include "ui/LineEndpointSection.h"
 
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -24,6 +24,7 @@
 #include "ui/NoteButton.h"
 #include "ui/PointRefEdit.h"
 #include "document/commands/AttachmentCommands.h"
+#include "document/commands/EndpointCommands.h"
 #include "document/commands/ReverseSegmentCommand.h"
 #include "document/commands/SegmentPropertyCommands.h"
 
@@ -33,17 +34,6 @@ namespace {
 
 constexpr int kLabelW = 64;
 constexpr int kFieldH = 26;
-
-const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
-                                                    const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (!att.isPin && att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
 
 } // namespace
 
@@ -448,12 +438,7 @@ void LineEndpointSection::refreshEndpointConnRows()
         if (att && m_topIsStart && !att->angleOnly) {
             const auto* toBlk = m_paramDoc->findBlock(att->toBlockId);
             if (toBlk && toBlk->isShadow) {
-                const cad::param::Attachment* att1 = nullptr;
-                for (const auto& a : m_paramDoc->attachments()) {
-                    if (!a.isPin && a.fromBlockId == toBlk->id) {
-                        att1 = &a; break;
-                    }
-                }
+                const auto* att1 = m_paramDoc->findAtt1OfShadow(toBlk->id);
                 if (att1)
                     m_refStartConnect->setPoint(att1->toBlockId, att1->toPointId);
                 else
@@ -468,7 +453,15 @@ void LineEndpointSection::refreshEndpointConnRows()
         } else if (att && m_topIsStart) {
             m_refStartConnect->clearPoint();
             if (m_btnStartDetach) {
-                m_btnStartDetach->setEnabled(true);
+                bool canReconnect = true;
+                if (const auto* toBlk = m_paramDoc->findBlock(att->toBlockId); toBlk && toBlk->isShadow) {
+                    const QUuid hostId = toBlk->shadowLastHostBlockId.isNull()
+                        ? toBlk->shadowMasterBlockId : toBlk->shadowLastHostBlockId;
+                    canReconnect = (m_paramDoc->findBlock(hostId) != nullptr);
+                } else {
+                    canReconnect = (m_paramDoc->findBlock(att->toBlockId) != nullptr);
+                }
+                m_btnStartDetach->setEnabled(canReconnect);
                 m_btnStartDetach->setText(QString::fromUtf8("重连"));
             }
         } else {
@@ -633,107 +626,6 @@ void LineEndpointSection::onEndNoteEdited(const QString& text)
                 p->annotation = text;
         }
     }
-}
-
-void LineEndpointSection::onStartConnectResolved(const QUuid& blockId, const QUuid& pointId)
-{
-    if (!m_paramDoc) return;
-    auto* block = m_paramDoc->findBlock(m_blockId);
-    auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
-    if (!block || !seg) return;
-    if (!m_topIsStart) { refreshEndpointConnRows(); return; }
-
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
-    if (att) {
-        auto* mut = m_paramDoc->findAttachment(att->id);
-        if (!mut) return;
-        const auto* leader = m_paramDoc->findBlock(blockId);
-        if (!leader || !leader->findPoint(pointId)) { refreshEndpointConnRows(); return; }
-        bool shadowRouted = false;
-        if (const auto* curTo = m_paramDoc->findBlock(mut->toBlockId); curTo && curTo->isShadow) {
-            if (blockId == curTo->shadowMasterBlockId)
-                m_paramDoc->reattachShadowToMaster(mut->id, pointId);
-            else
-                m_paramDoc->mountShadowTo(curTo->id, blockId, pointId);
-            shadowRouted = true;
-        }
-        if (!shadowRouted) {
-            cad::param::preserveAngleRefOnReattach(m_paramDoc, *mut);
-            mut->angleOnly = false;
-            mut->isLocked = true;
-            mut->slideMode = cad::param::SlideMode::None;
-            mut->toBlockId = blockId;
-            mut->toPointId = pointId;
-            mut->toSegmentId = leader->exitSegmentAtPoint(pointId);
-            if (auto* s = block->findSegment(m_segmentId)) {
-                const double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, *mut);
-                const double localDir = block->directionAtPoint(s->startPointId);
-                mut->followerAngle = cad::param::backSolveFollowerAngle(
-                    block->transform.rotation, localDir, refWorld);
-            }
-            mut->followerAngleFormula.clear();
-            mut->rotationMode = cad::param::RotationMode::Angle;
-            mut->arcLength = 0.0;
-            mut->arcLengthFormula.clear();
-            m_paramDoc->resolveAll();
-        }
-    } else {
-        const auto* leader = m_paramDoc->findBlock(blockId);
-        if (!leader || !leader->findPoint(pointId)) { refreshEndpointConnRows(); return; }
-        cad::param::Attachment attNew;
-        attNew.fromBlockId = m_blockId;
-        attNew.fromPointId = seg->startPointId;
-        attNew.toBlockId = blockId;
-        attNew.toPointId = pointId;
-        attNew.toSegmentId = leader->exitSegmentAtPoint(pointId);
-        const double refWorld = leader->transform.rotation + leader->exitDirectionAtPoint(pointId, attNew.toSegmentId);
-        const double localDir = block->directionAtPoint(seg->startPointId);
-        attNew.followerAngle = cad::param::backSolveFollowerAngle(block->transform.rotation, localDir, refWorld);
-        m_paramDoc->addAttachment(attNew);
-    }
-    refreshEndpointConnRows();
-    emit connectionChanged();
-}
-
-void LineEndpointSection::onStartDetachClicked()
-{
-    if (!m_paramDoc) return;
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
-    if (!att || !m_topIsStart) { refreshEndpointConnRows(); return; }
-    if (auto* stack = m_paramDoc->undoStack())
-        stack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(m_paramDoc, att->id, !att->angleOnly));
-    else
-        m_paramDoc->setAttachmentAngleOnly(att->id, !att->angleOnly);
-    refreshEndpointConnRows();
-    emit connectionChanged();
-}
-
-void LineEndpointSection::onEndConnectResolved(const QUuid& blockId, const QUuid& pointId)
-{
-    if (!m_paramDoc) return;
-    auto* block = m_paramDoc->findBlock(m_blockId);
-    if (!block || m_topIsStart) { refreshEndpointConnRows(); return; }
-    const auto* targetBlock = m_paramDoc->findBlock(blockId);
-    if (!targetBlock || !targetBlock->findPoint(pointId)) { refreshEndpointConnRows(); return; }
-    if (blockId == m_blockId) { refreshEndpointConnRows(); return; }
-
-    block->endTargetBlockId = blockId;
-    block->endTargetPointId = pointId;
-    m_paramDoc->resolveAll();
-    refreshEndpointConnRows();
-    emit connectionChanged();
-}
-
-void LineEndpointSection::onEndDetachClicked()
-{
-    if (!m_paramDoc) return;
-    auto* block = m_paramDoc->findBlock(m_blockId);
-    if (!block) return;
-    block->endTargetBlockId = QUuid();
-    block->endTargetPointId = QUuid();
-    m_paramDoc->resolveAll();
-    refreshEndpointConnRows();
-    emit connectionChanged();
 }
 
 void LineEndpointSection::onDirectionArrowClickedInternal()

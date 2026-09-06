@@ -26,6 +26,8 @@ private slots:
     void freePointsResolve();
     void polarConstraintResolve();
     void polarWithFormula();
+    void orthoOffsetConstraintResolve();
+    void orthoOffsetWithFormula();
     void midpointResolve();
     void attachmentSnapsBlocks();
     void attachmentAtLeaderStartContinuesStraight();
@@ -162,6 +164,114 @@ void TestResolver::polarWithFormula()
     // 25 cm = 250 mm along angle 0 → x=250, y=0
     QVERIFY(std::abs(rpB->resolvedPos.x - 250.0) < 1e-9);
     QVERIFY(std::abs(rpB->resolvedPos.y - 0.0) < 1e-9);
+}
+
+void TestResolver::orthoOffsetConstraintResolve()
+{
+    Block block;
+    block.name = "OrthoBlock";
+
+    ParamPoint pA;
+    pA.name = "A";
+    pA.constraint = PointConstraint::Free;
+    pA.freePos = {0.0, 0.0};
+    QUuid idA = block.addPoint(pA);
+
+    // B: main axis 0 deg, main length 100mm, offset +50mm (left/+90 -> +Y)
+    ParamPoint pB;
+    pB.name = "B";
+    pB.constraint = PointConstraint::OrthoOffset;
+    pB.refPointId = idA;
+    pB.distance = 100.0;
+    pB.angle = 0.0;
+    pB.orthoOffsetDist = 50.0;
+    QUuid idB = block.addPoint(pB);
+
+    // C: main axis 0 deg, main length 100mm, offset -30mm (right/-90 -> -Y)
+    ParamPoint pC;
+    pC.name = "C";
+    pC.constraint = PointConstraint::OrthoOffset;
+    pC.refPointId = idA;
+    pC.distance = 100.0;
+    pC.angle = 0.0;
+    pC.orthoOffsetDist = -30.0;
+    QUuid idC = block.addPoint(pC);
+
+    // D: main axis 90 deg (+Y), main length 100mm, offset +40mm (left/+90 from +Y -> -X)
+    ParamPoint pD;
+    pD.name = "D";
+    pD.constraint = PointConstraint::OrthoOffset;
+    pD.refPointId = idA;
+    pD.distance = 100.0;
+    pD.angle = 90.0;
+    pD.orthoOffsetDist = 40.0;
+    QUuid idD = block.addPoint(pD);
+
+    std::vector<Block> blocks;
+    blocks.push_back(std::move(block));
+
+    std::vector<Attachment> attachments;
+    Resolver::resolveAll(blocks, attachments);
+
+    const Block& resolved = blocks[0];
+    const ParamPoint* rpB = resolved.findPoint(idB);
+    const ParamPoint* rpC = resolved.findPoint(idC);
+    const ParamPoint* rpD = resolved.findPoint(idD);
+
+    QVERIFY(rpB && rpB->resolved);
+    QVERIFY(rpC && rpC->resolved);
+    QVERIFY(rpD && rpD->resolved);
+
+    // 屏幕空间 (Y向下):
+    // B: 主轴 0° (向右), 偏置 +50mm (视线向左 -> Y- 屏幕上方) -> (100, -50)
+    // C: 主轴 0° (向右), 偏置 -30mm (视线向右 -> Y+ 屏幕下方) -> (100, +30)
+    // D: 主轴 90° (向下), 偏置 +40mm (视线向左 -> X+ 屏幕右侧) -> (40, 100)
+    QVERIFY(std::abs(rpB->resolvedPos.x - 100.0) < 1e-6);
+    QVERIFY(std::abs(rpB->resolvedPos.y - (-50.0)) < 1e-6);
+
+    QVERIFY(std::abs(rpC->resolvedPos.x - 100.0) < 1e-6);
+    QVERIFY(std::abs(rpC->resolvedPos.y - 30.0) < 1e-6);
+
+    QVERIFY(std::abs(rpD->resolvedPos.x - 40.0) < 1e-6);
+    QVERIFY(std::abs(rpD->resolvedPos.y - 100.0) < 1e-6);
+}
+
+void TestResolver::orthoOffsetWithFormula()
+{
+    Block block;
+    block.name = "OrthoFormulaBlock";
+
+    ParamPoint pA;
+    pA.name = "A";
+    pA.constraint = PointConstraint::Free;
+    pA.freePos = {10.0, 20.0};
+    QUuid idA = block.addPoint(pA);
+
+    // B: formula driven
+    ParamPoint pB;
+    pB.name = "B";
+    pB.constraint = PointConstraint::OrthoOffset;
+    pB.refPointId = idA;
+    pB.distanceFormula = "shoulder_w / 2"; // 40 / 2 = 20cm -> 200mm
+    pB.angle = 0.0;
+    pB.orthoOffsetDistFormula = "-drop";    // -4cm -> -40mm (right -> -Y)
+    QUuid idB = block.addPoint(pB);
+
+    QHash<QString, double> params;
+    params["shoulder_w"] = 40.0;
+    params["drop"] = 4.0;
+
+    std::vector<Block> blocks;
+    blocks.push_back(std::move(block));
+
+    std::vector<Attachment> attachments;
+    Resolver::resolveAll(blocks, attachments, params);
+
+    const ParamPoint* rpB = blocks[0].findPoint(idB);
+    QVERIFY(rpB && rpB->resolved);
+    // 屏幕空间 (Y向下): x = 10 + 200 = 210, 负偏置(右偏) -> 屏幕下方 Y+: y = 20 + 40 = 60
+    QVERIFY(std::abs(rpB->resolvedPos.x - 210.0) < 1e-6);
+    QVERIFY(std::abs(rpB->resolvedPos.y - 60.0) < 1e-6);
 }
 
 void TestResolver::midpointResolve()

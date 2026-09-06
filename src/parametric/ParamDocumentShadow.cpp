@@ -19,45 +19,37 @@ namespace cad::param {
 // 由"连接链"天然获得 (影子是普通块, Resolver 零新增)。生命周期状态机 ①–⑦
 // 见设计稿 §6; 级联善后 (⑤⑥⑦) 在 ParamDocumentBlocks::removeBlock。
 
-namespace {
-
-/// Att2 查找: 以影子为基准 (to-block) 的非 pin 连接 (每个影子至多一条)。
-Attachment* findAtt2OfShadow(std::vector<Attachment>& atts, const QUuid& shadowId)
+const Attachment* ParamDocument::findAtt2OfShadow(const QUuid& shadowId) const
 {
-    for (auto& a : atts)
+    for (const auto& a : m_attachments)
         if (!a.isPin && a.fromComponentId.isNull() && a.toBlockId == shadowId)
             return &a;
     return nullptr;
 }
 
-const Attachment* findAtt2OfShadow(const std::vector<Attachment>& atts,
-                                   const QUuid& shadowId)
+Attachment* ParamDocument::findAtt2OfShadow(const QUuid& shadowId)
 {
-    for (const auto& a : atts)
+    for (auto& a : m_attachments)
         if (!a.isPin && a.fromComponentId.isNull() && a.toBlockId == shadowId)
             return &a;
     return nullptr;
 }
 
-/// Att1 查找: 影子作为跟随线 (from-block) 的非 pin 连接 (森林不变式)。
-Attachment* findAtt1OfShadow(std::vector<Attachment>& atts, const QUuid& shadowId)
+const Attachment* ParamDocument::findAtt1OfShadow(const QUuid& shadowId) const
 {
-    for (auto& a : atts)
+    for (const auto& a : m_attachments)
         if (!a.isPin && a.fromBlockId == shadowId)
             return &a;
     return nullptr;
 }
 
-const Attachment* findAtt1OfShadow(const std::vector<Attachment>& atts,
-                                   const QUuid& shadowId)
+Attachment* ParamDocument::findAtt1OfShadow(const QUuid& shadowId)
 {
-    for (const auto& a : atts)
+    for (auto& a : m_attachments)
         if (!a.isPin && a.fromBlockId == shadowId)
             return &a;
     return nullptr;
 }
-
-} // namespace
 
 QUuid ParamDocument::detachWithShadow(const QUuid& attId)
 {
@@ -94,7 +86,7 @@ bool ParamDocument::mountShadowTo(const QUuid& shadowId, const QUuid& toBlockId,
     // 已挂载 (面板二次重定向 = 影子换宿主): 旧 Att1 参与校验时排除, 通过后
     // 原子替换 (删旧插新, Δ 按新宿主重新反算)。id 先行拷贝 —— erase 会使
     // 指向 m_attachments 的指针失效。
-    Attachment* existingAtt1 = findAtt1OfShadow(m_attachments, shadowId);
+    Attachment* existingAtt1 = findAtt1OfShadow(shadowId);
     const QUuid oldAtt1Id = existingAtt1 ? existingAtt1->id : QUuid();
     {
         std::vector<Attachment> others;
@@ -117,12 +109,18 @@ bool ParamDocument::mountShadowTo(const QUuid& shadowId, const QUuid& toBlockId,
             m_attachments.end());
     }
     // Att2 恢复位置钉点并重新焊接 (链条第二环; R3 由连接链传导)。
-    if (Attachment* a2 = findAtt2OfShadow(m_attachments, shadowId)) {
+    if (Attachment* a2 = findAtt2OfShadow(shadowId)) {
         a2->angleOnly = false;
         a2->isLocked = true;
         a2->slideMode = SlideMode::None;
     }
     att1.isLocked = true;  // 新建连接默认焊接 (与 addAttachment 同约定)
+    if (Block* s = findBlock(shadowId)) {
+        s->shadowLastHostBlockId = toBlockId;
+        s->shadowLastHostPointId = toPointId;
+        s->shadowLastHostSegmentId = toSegmentId.isNull()
+            ? toBlk->exitSegmentAtPoint(toPointId) : toSegmentId;
+    }
     m_attachments.push_back(std::move(att1));
     if (crossLayer)
         ++m_crossLayerCount;
@@ -139,6 +137,11 @@ bool ParamDocument::releaseShadowToDetached(const QUuid& shadowId)
     bool hadAtt1 = false;
     for (auto it = m_attachments.begin(); it != m_attachments.end(); ) {
         if (!it->isPin && it->fromBlockId == shadowId) {
+            if (Block* s = findBlock(shadowId)) {
+                s->shadowLastHostBlockId = it->toBlockId;
+                s->shadowLastHostPointId = it->toPointId;
+                s->shadowLastHostSegmentId = it->toSegmentId;
+            }
             it = m_attachments.erase(it);
             hadAtt1 = true;
         } else {
@@ -235,10 +238,19 @@ bool ParamDocument::buildShadowDetach(const QUuid& attId, Block& outShadow,
         seg = master->findSegment(master->exitSegmentAtPoint(att->toPointId));
     if (!seg || seg->isCurve()) return false;
 
+    // 辅助点挂载不走影子克隆 (辅助点非端点，且拆开语义为彻底释放连接)
+    const ParamPoint* tp = master->findPoint(att->toPointId);
+    if (!tp || tp->isAuxiliary) return false;
+
     QUuid anchorId, segId;
     Block shadow = Block::cloneShadowOf(*master, seg->id, att->toPointId,
                                         &anchorId, &segId);
     if (!shadow.isShadow) return false;  // 端点缺失/未解析
+
+    shadow.shadowMasterBlockId = master->id;
+    shadow.shadowLastHostBlockId = master->id;
+    shadow.shadowLastHostPointId = att->toPointId;
+    shadow.shadowLastHostSegmentId = seg->id;
 
     // Att2 原地换代 (verbatim 快照语义): 基准 → 影子, offset 原样保留 (R2)。
     outNewAtt = *att;
@@ -272,15 +284,19 @@ bool ParamDocument::buildShadowReconnect(const QUuid& attId, Attachment& outRest
         outRestored.toSegmentId = explicitToSegment.isNull()
             ? master->exitSegmentAtPoint(explicitToPoint) : explicitToSegment;
     } else {
-        // 面板重连: 复原拆开前锚点 —— 影子锚的角色 1:1 映射回本体段端点
-        // (拆开时本体必为单段, 见 buildShadowDetach 降级门; 锚是段起点则
-        // 复原到本体段起点, 出方向语义不变)。
-        const Segment* sseg = shadow->findSegment(att->toSegmentId);
-        if (master->segments.size() != 1 || !sseg) return false;
-        const bool anchorWasStart = (att->toPointId == sseg->startPointId);
-        outRestored.toPointId = anchorWasStart ? master->segments.front().startPointId
-                                               : master->segments.front().endPointId;
-        outRestored.toSegmentId = master->segments.front().id;
+        // 面板重连: 复原拆开前锚点 —— 优先恢复到拆开前快照记录的真实宿主点 (辅助点/端点)
+        if (!shadow->shadowLastHostPointId.isNull() && master->findPoint(shadow->shadowLastHostPointId)) {
+            outRestored.toPointId = shadow->shadowLastHostPointId;
+            outRestored.toSegmentId = !shadow->shadowLastHostSegmentId.isNull()
+                ? shadow->shadowLastHostSegmentId : master->segments.front().id;
+        } else {
+            const Segment* sseg = shadow->findSegment(att->toSegmentId);
+            if (master->segments.size() != 1 || !sseg) return false;
+            const bool anchorWasStart = (att->toPointId == sseg->startPointId);
+            outRestored.toPointId = anchorWasStart ? master->segments.front().startPointId
+                                                   : master->segments.front().endPointId;
+            outRestored.toSegmentId = master->segments.front().id;
+        }
     }
     outRestored.angleOnly = false;
     outRestored.isLocked = true;   // 挂回本体 = 活引用恢复 + 重新焊接 (⑤)
@@ -296,7 +312,7 @@ bool ParamDocument::buildShadowMount(const QUuid& shadowId, const QUuid& toBlock
     const Block* shadow = blockById(shadowId);
     const Block* toBlk = blockById(toBlockId);
     if (!shadow || !shadow->isShadow || !toBlk || toBlk->isShadow) return false;
-    const Attachment* att2 = findAtt2OfShadow(m_attachments, shadowId);
+    const Attachment* att2 = findAtt2OfShadow(shadowId);
     if (!att2) return false;
     // 注: 已挂载 (存在 Att1) 不在此拒绝 —— 面板二次重定向 = 影子换宿主,
     // 由 mountShadowTo 原子替换旧 Att1; 挂载手势路由只出现在拆开态 (无 Att1)。
@@ -313,6 +329,7 @@ bool ParamDocument::buildShadowMount(const QUuid& shadowId, const QUuid& toBlock
     outAtt1.toPointId = toPointId;
     outAtt1.toSegmentId = toSegmentId.isNull()
         ? toBlk->exitSegmentAtPoint(toPointId) : toSegmentId;
+    outAtt1.isLocked = true;  // 新建挂载默认焊接 (拖拽整体跟随不撕裂)
     // Δ 反算保向 (rotation = refWorld + π − angle − localDir 的逆): 挂载瞬间
     // 影子世界方向不变 → 跟随线 (offset 相对影子) 同样零跳变。
     const double refWorld = toBlk->transform.rotation

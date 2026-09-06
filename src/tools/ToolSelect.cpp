@@ -35,9 +35,11 @@
 #include "parametric/AttachmentGraph.h"
 #include "parametric/ConditionEngine.h"
 #include "parametric/DomainViews.h"
+#include "parametric/Serial.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
+#include "document/commands/AttachmentCommands.h"
 #include "geometry/CurveMath.h"
 #include "parametric/FollowerAngle.h"
 #include "ui/LinePropertyDialog.h"
@@ -348,10 +350,64 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         QMenu menu;
         QAction* actCancel = nullptr;
         QAction* actComponent = nullptr;
+        QAction* actDetachAux = nullptr;
         QMenu* layerMenu = nullptr;
         QList<std::pair<QAction*, QUuid>> layerActions;
         bool layerMoved = false;
         QMenu* overlapMenu = nullptr;
+
+        // 检查右键点击位置是否有挂载了连接的辅助点
+        QList<QUuid> auxAttIds;
+        QString auxMountDesc;
+        if (m_connectGesture && m_paramDoc) {
+            const auto ptCands = m_connectGesture->hitPointCandidates(pos);
+            for (const auto& c : ptCands) {
+                const auto* blk = m_paramDoc->findBlock(c.blockId);
+                if (!blk) continue;
+                const auto* pt = blk->findPoint(c.pointId);
+                if (!pt || !pt->isAuxiliary) continue;
+
+                for (const auto& att : m_paramDoc->attachments()) {
+                    if (att.isPin || att.angleOnly) continue;
+                    if (att.toBlockId == c.blockId && att.toPointId == c.pointId) {
+                        auxAttIds.append(att.id);
+                        if (const auto* fb = m_paramDoc->findBlock(att.fromBlockId)) {
+                            const QUuid fs = fb->exitSegmentAtPoint(att.fromPointId);
+                            if (const auto* fsg = fb->findSegment(fs)) {
+                                QString t = cad::param::Serial::tag(fsg->serial);
+                                if (!fsg->name.isEmpty()) t += QStringLiteral("·") + fsg->name;
+                                const QString desc = QString::fromUtf8("挂载 %1").arg(t);
+                                if (auxMountDesc.isEmpty())
+                                    auxMountDesc = desc;
+                                else
+                                    auxMountDesc += QStringLiteral(", ") + desc;
+                            }
+                        }
+                    } else if (att.fromBlockId == c.blockId && att.fromPointId == c.pointId) {
+                        auxAttIds.append(att.id);
+                        if (const auto* tb = m_paramDoc->findBlock(att.toBlockId)) {
+                            QUuid tsId = att.toSegmentId;
+                            if (tsId.isNull()) tsId = tb->exitSegmentAtPoint(att.toPointId);
+                            if (const auto* tsg = tb->findSegment(tsId)) {
+                                QString t = cad::param::Serial::tag(tsg->serial);
+                                if (!tsg->name.isEmpty()) t += QStringLiteral("·") + tsg->name;
+                                const QString desc = QString::fromUtf8("跟随 %1").arg(t);
+                                if (auxMountDesc.isEmpty())
+                                    auxMountDesc = desc;
+                                else
+                                    auxMountDesc += QStringLiteral(", ") + desc;
+                            }
+                        }
+                    }
+                }
+                if (!auxAttIds.isEmpty()) break;
+            }
+        }
+
+        if (!auxAttIds.isEmpty()) {
+            actDetachAux = menu.addAction(QString::fromUtf8("拆开连接 (%1)").arg(auxMountDesc));
+            menu.addSeparator();
+        }
 
         if (!m_selection.isEmpty()) {
             if (m_selection.size() >= 2)
@@ -412,12 +468,28 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
                 act->setProperty("overlapPick", i);
             }
         }
-        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr && layerMenu == nullptr) {
+        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr && layerMenu == nullptr && actDetachAux == nullptr) {
             if (m_selection.isEmpty() && hitBlock(pos).isNull())
                 requestToolSwitch(ToolType::SmartPen);
             return;
         }
         QAction* chosen = menu.exec(QCursor::pos());
+        if (chosen && chosen == actDetachAux) {
+            deactivateOverlapContext();
+            if (m_undoStack) {
+                m_undoStack->beginMacro(QStringLiteral("拆开辅助点连接"));
+                for (const QUuid& id : auxAttIds) {
+                    m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(m_paramDoc, id));
+                }
+                m_undoStack->endMacro();
+            } else {
+                for (const auto& id : auxAttIds)
+                    m_paramDoc->removeAttachment(id);
+            }
+            showToast(QStringLiteral("已彻底拆开辅助点上的连接"));
+            m_scene->refreshAllBlockItems();
+            return;
+        }
         if (chosen == actCancel) {
             deactivateOverlapContext();
             clearSelectionAndIdle();

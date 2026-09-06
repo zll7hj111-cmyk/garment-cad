@@ -28,6 +28,7 @@ SetEndTargetCommand::SetEndTargetCommand(cad::param::ParamDocument* doc,
                                          const QUuid& targetBlockId,
                                          const QUuid& targetPointId,
                                          double offsetDeg,
+                                         const QString& offsetFormula,
                                          QUndoCommand* parent)
     : QUndoCommand(parent)
     , m_doc(doc)
@@ -35,6 +36,7 @@ SetEndTargetCommand::SetEndTargetCommand(cad::param::ParamDocument* doc,
     , m_newBlock(targetBlockId)
     , m_newPoint(targetPointId)
     , m_newOffset(offsetDeg)
+    , m_newOffsetFormula(offsetFormula)
 {
     setText(QStringLiteral("设置终点连接"));
     if (const auto* b = doc->findBlock(blockId)) {

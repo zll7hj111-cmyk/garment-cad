@@ -238,6 +238,8 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
             copy.rotationMode = RotationMode::Angle;
             copy.arcLength = 0.0;
             copy.arcLengthFormula.clear();
+            copy.chordLength = 0.0;
+            copy.chordLengthFormula.clear();
             result.attachments.push_back(std::move(copy));
         }
     }

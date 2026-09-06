@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QObject>
 #include <QUuid>
@@ -64,7 +64,7 @@ public:
     void removeParameter(const QString& name);
     /// Replace all formula-derived parameters with the given map (values in cm).
     /// Stale names from the previous call are removed automatically.
-    void syncFormulaParameters(const QHash<QString, double>& cmValues);
+    void syncFormulaParameters(const QHash<QString, double>& cmValues, bool triggerResolve = true);
     /// Store the per-formula condition table (formulaName -> conditions) used for
     /// standalone-condition semantics. Store-only: the resolve happens via the
     /// accompanying syncFormulaParameters() call.
@@ -293,6 +293,11 @@ public:
     [[nodiscard]] bool buildShadowMount(const QUuid& shadowId, const QUuid& toBlockId,
                                         const QUuid& toPointId, const QUuid& toSegmentId,
                                         Attachment& outAtt1) const;
+    /// 影子拓扑查询: 影子挂载宿主连接 Att1 与跟随线连接 Att2
+    [[nodiscard]] const Attachment* findAtt1OfShadow(const QUuid& shadowId) const;
+    [[nodiscard]] Attachment* findAtt1OfShadow(const QUuid& shadowId);
+    [[nodiscard]] const Attachment* findAtt2OfShadow(const QUuid& shadowId) const;
+    [[nodiscard]] Attachment* findAtt2OfShadow(const QUuid& shadowId);
 
     /// 撤销全部 (dialog reject): drop every non-pin follower attachment of
     /// @p fromBlockId and restore @p followerAtt VERBATIM if set (keeps the
@@ -345,7 +350,7 @@ public:
 
     /// Re-evaluate all formulas against current variables, update cached values,
     /// and sync results into the parameter map + resolve.
-    void recomputeFormulas();
+    void recomputeFormulas(bool triggerResolve = true);
 
     // --- Formula groups (panel folders for formula variables) ---
     void addFormulaGroup(FormulaGroup group);

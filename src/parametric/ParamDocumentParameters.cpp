@@ -42,7 +42,8 @@ void ParamDocument::removeParameter(const QString& name)
         resolveAll();
 }
 
-void ParamDocument::syncFormulaParameters(const QHash<QString, double>& cmValues)
+void ParamDocument::syncFormulaParameters(const QHash<QString, double>& cmValues,
+                                           bool triggerResolve)
 {
     // Remove stale formula-derived parameters from the previous sync.
     for (const QString& old : std::as_const(m_formulaParamNames)) {
@@ -55,7 +56,8 @@ void ParamDocument::syncFormulaParameters(const QHash<QString, double>& cmValues
     for (auto it = cmValues.cbegin(); it != cmValues.cend(); ++it)
         m_parameters[it.key()] = it.value();
 
-    resolveAll();
+    if (triggerResolve)
+        resolveAll();
 }
 
 void ParamDocument::syncFormulaConditions(const QHash<QString, QList<Condition>>& conditioned)

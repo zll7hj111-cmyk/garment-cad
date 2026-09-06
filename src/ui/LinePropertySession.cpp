@@ -35,12 +35,16 @@ void LinePropertySession::takeSnapshot(cad::param::ParamDocument* doc,
     m_snapshot.lengthFormula = seg->lengthFormula;
     m_snapshot.color         = seg->color;
     m_snapshot.tension       = seg->tension;
+    m_snapshot.showOrthoAxis = seg->showOrthoAxis;
     if (const auto* ep = block->findPoint(seg->endPointId)) {
         m_snapshot.distance = ep->distance;
         m_snapshot.distanceFormula = ep->distanceFormula;
         m_snapshot.angle = ep->angle;
         m_snapshot.angleFormula = ep->angleFormula;
         m_snapshot.constraint = ep->constraint;
+        m_snapshot.refPointId = ep->refPointId;
+        m_snapshot.orthoOffsetDist = ep->orthoOffsetDist;
+        m_snapshot.orthoOffsetDistFormula = ep->orthoOffsetDistFormula;
         m_snapshot.endPoint.name = ep->name;
         m_snapshot.endPoint.annotation = ep->annotation;
         m_snapshot.endPoint.showName = ep->showName;
@@ -153,6 +157,7 @@ void LinePropertySession::rollback(cad::param::ParamDocument* doc,
             seg->weight = m_snapshot.weight;
             seg->color = m_snapshot.color;
             seg->tension = m_snapshot.tension;
+            seg->showOrthoAxis = m_snapshot.showOrthoAxis;
             block->lengthAuto = m_snapshot.lengthAuto;
 
             if (auto* ep = block->findPoint(seg->endPointId)) {
@@ -162,6 +167,8 @@ void LinePropertySession::rollback(cad::param::ParamDocument* doc,
                 ep->angleFormula = m_snapshot.angleFormula;
                 ep->constraint = m_snapshot.constraint;
                 ep->refPointId = m_snapshot.refPointId;
+                ep->orthoOffsetDist = m_snapshot.orthoOffsetDist;
+                ep->orthoOffsetDistFormula = m_snapshot.orthoOffsetDistFormula;
                 ep->name = m_snapshot.endPoint.name;
                 ep->showName = m_snapshot.endPoint.showName;
                 ep->annotation = m_snapshot.endPoint.annotation;

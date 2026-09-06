@@ -6,6 +6,7 @@
 #include <QColor>
 #include "parametric/ParamPoint.h"
 #include "parametric/Attachment.h"
+#include "parametric/Segment.h"
 
 namespace cad::param {
 class ParamDocument;
@@ -40,6 +41,9 @@ struct LinePropertySnapshot
     QString angleFormula;
     cad::param::PointConstraint constraint = cad::param::PointConstraint::Free;
     QUuid refPointId;
+    double orthoOffsetDist = 0.0;
+    QString orthoOffsetDistFormula;
+    bool showOrthoAxis = true;
     int lineStyle = 0;
     double weight = 1.0;
     bool lengthAuto = false;

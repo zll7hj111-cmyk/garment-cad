@@ -210,6 +210,18 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
                                 att.arcLength += st.refDeltaRad * radius;
                         }
                     }
+                } else if (att.rotationMode == cad::param::RotationMode::ChordLength) {
+                    if (att.chordLengthFormula.isEmpty()) {
+                        if (const auto* fb = doc.findBlock(att.fromBlockId)) {
+                            const double radius =
+                                fb->segmentLengthAtPoint(att.fromPointId);
+                            if (radius > 1e-9) {
+                                double deg = cad::geo::chordMmToDeg(att.chordLength, radius);
+                                deg = cad::geo::normalizeDeg180(deg + st.refDeltaRad * 180.0 / M_PI);
+                                att.chordLength = cad::geo::degToChordMm(deg, radius);
+                            }
+                        }
+                    }
                 } else if (att.followerAngleFormula.isEmpty()) {
                     double ang = att.followerAngle + st.refDeltaRad * 180.0 / M_PI;
                     ang = cad::geo::normalizeDeg360(ang);

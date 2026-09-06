@@ -402,12 +402,25 @@ bool ParamDocument::applyComponentTransform(Component& comp, const Attachment& a
     const double localDir = exposed->directionAtPoint(att.fromPointId);
     const double refWorld = toBlk.transform.rotation
         + toBlk.exitDirectionAtPoint(att.toPointId, att.toSegmentId);
-    double angleDeg = att.followerAngle;
-    if (!att.followerAngleFormula.isEmpty()) {
-        auto r = ConditionEngine::evaluate(att.followerAngleFormula, m_parameters, m_conditioned);
-        if (r.ok) angleDeg = r.value;  // 公式结果即角度 (度), 无单位换算
+    double angleRad = 0.0;
+    if (att.rotationMode == RotationMode::ArcLength) {
+        double arcMm = att.arcLength;
+        (void)ConditionEngine::evaluateLengthMm(att.arcLengthFormula, m_parameters, m_conditioned, arcMm);
+        const double radius = exposed->segmentLengthAtPoint(att.fromPointId);
+        angleRad = geo::degToRad(geo::arcMmToDeg(arcMm, radius));
+    } else if (att.rotationMode == RotationMode::ChordLength) {
+        double chordMm = att.chordLength;
+        (void)ConditionEngine::evaluateLengthMm(att.chordLengthFormula, m_parameters, m_conditioned, chordMm);
+        const double radius = exposed->segmentLengthAtPoint(att.fromPointId);
+        angleRad = geo::degToRad(geo::chordMmToDeg(chordMm, radius));
+    } else {
+        double angleDeg = att.followerAngle;
+        if (!att.followerAngleFormula.isEmpty()) {
+            auto r = ConditionEngine::evaluate(att.followerAngleFormula, m_parameters, m_conditioned);
+            if (r.ok) angleDeg = r.value;  // 公式结果即角度 (度), 无单位换算
+        }
+        angleRad = geo::degToRad(angleDeg);
     }
-    const double angleRad = geo::degToRad(angleDeg);
     const double targetRot = refWorld + M_PI - angleRad - localDir;
     const double delta = targetRot - exposed->transform.rotation;
     const geo::Vec2 toWorld = toBlk.worldPos(att.toPointId);

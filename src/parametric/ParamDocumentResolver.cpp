@@ -116,7 +116,8 @@ bool ParamDocument::wouldCreateMeasureValueCycle(const Attachment& candidate) co
         for (const auto& a : m_attachments)
             if (a.fromBlockId == blockId &&
                 (formulaRefs(a.followerAngleFormula, refName) ||
-                 formulaRefs(a.arcLengthFormula, refName)))
+                 formulaRefs(a.arcLengthFormula, refName) ||
+                 formulaRefs(a.chordLengthFormula, refName)))
                 return true;
         return false;
     };
@@ -313,6 +314,11 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
     // measured value can feed formulas in blocks OUTSIDE the subset.
     const QSet<QUuid>* effAffected = affectedOnly;
 
+    const auto updateFormulasQuiet = [&]() {
+        if (!m_variableStore->formulas().empty())
+            m_variableStore->recomputeFormulas(/*triggerResolve=*/false);
+    };
+
     // ── Phase 1: auxiliary calculation layer (only when dirty) ──
     // Aux geometry is a pure function of the variables; during working-layer
     // manipulation it stays frozen and its cached transforms remain valid.
@@ -323,6 +329,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         measureLinkedVars();   // feed aux formulas before resolving (old semantics)
         measureMeasureVars();
         measureAngleMeasureVars();
+        updateFormulasQuiet();
         Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                              &auxDiag, Resolver::Scope::AuxOnly, kAuxLayer,
                              effAffected,
@@ -337,6 +344,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                 auxSettled = true;
                 break;
             }
+            updateFormulasQuiet();
             if (effAffected) effAffected = nullptr;  // measurement changed → full
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &auxDiag,
@@ -365,6 +373,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
         measureLinkedVars(/*skipAuxSource=*/true);
         measureMeasureVars(/*skipAuxSource=*/true);
         measureAngleMeasureVars(/*skipAuxSource=*/true);
+        updateFormulasQuiet();
         Resolver::resolveAll(m_blocks, *passAttachments, m_parameters, m_conditioned,
                              &m_diagnostics, Resolver::Scope::WorkingOnly, kAuxLayer,
                              effAffected,
@@ -383,6 +392,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                 workSettled = true;
                 break;
             }
+            updateFormulasQuiet();
             if (effAffected) effAffected = nullptr;  // measurement changed → full
             Resolver::resolveAll(m_blocks, *passAttachments, m_parameters,
                                  m_conditioned, &m_diagnostics,

@@ -23,6 +23,7 @@ public:
                         const QUuid& targetBlockId,
                         const QUuid& targetPointId,
                         double offsetDeg,
+                        const QString& offsetFormula = QString(),
                         QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;

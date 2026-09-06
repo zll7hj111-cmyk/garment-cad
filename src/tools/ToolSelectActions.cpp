@@ -111,29 +111,74 @@ void ToolSelect::quickDetachSelection()
 {
     if (!m_paramDoc || m_selection.isEmpty()) return;
 
-    QList<QUuid> toDetach;
+    QList<QUuid> toDetachAngleOnly;
+    QList<QUuid> toRemoveAux;
+
+    // 1. Follower perspective: attachments where the selected block is the follower.
     for (const QUuid& blockId : m_selection) {
         for (const auto& att : m_paramDoc->attachments()) {
             if (att.fromBlockId != blockId || att.isPin) continue;
-            if (!att.angleOnly) toDetach.append(att.id);
+            if (att.angleOnly) continue;
+
+            const auto* toBlk = m_paramDoc->findBlock(att.toBlockId);
+            const auto* toPt = toBlk ? toBlk->findPoint(att.toPointId) : nullptr;
+            const auto* fromBlk = m_paramDoc->findBlock(att.fromBlockId);
+            const auto* fromPt = fromBlk ? fromBlk->findPoint(att.fromPointId) : nullptr;
+            if ((toPt && toPt->isAuxiliary) || (fromPt && fromPt->isAuxiliary)) {
+                if (!toRemoveAux.contains(att.id))
+                    toRemoveAux.append(att.id);
+            } else {
+                if (!toDetachAngleOnly.contains(att.id))
+                    toDetachAngleOnly.append(att.id);
+            }
             break;
         }
     }
 
-    if (toDetach.isEmpty()) {
+    // 2. Leader perspective: incoming attachments anchored at auxiliary points of the selected block.
+    for (const QUuid& blockId : m_selection) {
+        const auto* blk = m_paramDoc->findBlock(blockId);
+        if (!blk) continue;
+        for (const auto& pt : blk->points) {
+            if (!pt.isAuxiliary) continue;
+            for (const auto& att : m_paramDoc->attachments()) {
+                if (att.isPin) continue;
+                if (att.toBlockId == blockId && att.toPointId == pt.id) {
+                    if (!toRemoveAux.contains(att.id)) {
+                        toRemoveAux.append(att.id);
+                    }
+                }
+            }
+        }
+    }
+
+    const int totalCount = toDetachAngleOnly.size() + toRemoveAux.size();
+    if (totalCount == 0) {
         showToast(QString::fromUtf8("选中线没有可拆开的连接"));
         return;
     }
 
     if (m_undoStack) {
-        m_undoStack->beginMacro(QStringLiteral("拆开 %1 个连接").arg(toDetach.size()));
-        for (const QUuid& id : toDetach)
+        m_undoStack->beginMacro(QStringLiteral("拆开 %1 个连接").arg(totalCount));
+        for (const QUuid& id : toRemoveAux) {
+            m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(m_paramDoc, id));
+        }
+        for (const QUuid& id : toDetachAngleOnly) {
             m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
                 m_paramDoc, id, /*angleOnly=*/true));
+        }
         m_undoStack->endMacro();
     } else {
-        for (const QUuid& id : toDetach)
+        for (const QUuid& id : toRemoveAux)
+            m_paramDoc->removeAttachment(id);
+        for (const QUuid& id : toDetachAngleOnly)
             m_paramDoc->setAttachmentAngleOnly(id, true);
+    }
+
+    if (!toRemoveAux.isEmpty()) {
+        showToast(QStringLiteral("已彻底释放 %1 个辅助点挂载连接").arg(toRemoveAux.size()));
+    } else {
+        showToast(QStringLiteral("已拆开 %1 个连接（保留角度）").arg(toDetachAngleOnly.size()));
     }
 
     m_scene->refreshAllBlockItems();

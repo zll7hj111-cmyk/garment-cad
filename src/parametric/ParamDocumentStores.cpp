@@ -37,7 +37,7 @@ void ParamDocument::updateFormula(const FormulaVariable& formula) { m_variableSt
 const std::vector<FormulaVariable>& ParamDocument::formulas() const { return m_variableStore->formulas(); }
 FormulaVariable* ParamDocument::findFormula(const QUuid& id) { return m_variableStore->findFormula(id); }
 const FormulaVariable* ParamDocument::findFormula(const QUuid& id) const { return m_variableStore->findFormula(id); }
-void ParamDocument::recomputeFormulas() { m_variableStore->recomputeFormulas(); }
+void ParamDocument::recomputeFormulas(bool triggerResolve) { m_variableStore->recomputeFormulas(triggerResolve); }
 
 void ParamDocument::addFormulaGroup(FormulaGroup group) { m_variableStore->addFormulaGroup(std::move(group)); }
 void ParamDocument::removeFormulaGroup(const QUuid& groupId) { m_variableStore->removeFormulaGroup(groupId); }

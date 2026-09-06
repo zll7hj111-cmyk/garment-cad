@@ -38,15 +38,32 @@ void SegmentConnectionCard::refreshUnifiedState(const cad::param::Attachment* at
         const QSignalBlocker lb(m_refLeaderSeg);
         const QSignalBlocker cb(m_refConnPoint);
         m_refLeaderSeg->setExcludeBlock(m_blockId);
-        if (hasAtt && !att->angleOnly)
-            m_refLeaderSeg->setPoint(att->toBlockId, att->toPointId);
-        else
-            m_refLeaderSeg->clearPoint();
         m_refConnPoint->setExcludeBlock(m_blockId);
-        if (hasAtt && !att->angleOnly)
-            m_refConnPoint->setPoint(att->toBlockId, att->toPointId);
-        else
+
+        // 影子挂载感知: 影子为系统内部块, 挂载态向用户回显真实新宿主 (Att1.toBlockId), 拆开态清空
+        QUuid displayBlockId;
+        QUuid displayPointId;
+        if (hasAtt && !att->angleOnly) {
+            displayBlockId = att->toBlockId;
+            displayPointId = att->toPointId;
+            if (const auto* toBlk = m_doc->findBlock(displayBlockId); toBlk && toBlk->isShadow) {
+                if (const auto* att1 = m_doc->findAtt1OfShadow(toBlk->id)) {
+                    displayBlockId = att1->toBlockId;
+                    displayPointId = att1->toPointId;
+                } else {
+                    displayBlockId = QUuid();
+                    displayPointId = QUuid();
+                }
+            }
+        }
+
+        if (!displayBlockId.isNull() && !displayPointId.isNull()) {
+            m_refLeaderSeg->setPoint(displayBlockId, displayPointId);
+            m_refConnPoint->setPoint(displayBlockId, displayPointId);
+        } else {
+            m_refLeaderSeg->clearPoint();
             m_refConnPoint->clearPoint();
+        }
     }
     m_refConnPoint->setToolTip(hasAtt
         ? cad::ui::TooltipFormatter::action(QStringLiteral("连接点"), QStringLiteral("输入目标点 P 编号回车重定向到该点（角度反算无跳变）"))
@@ -55,10 +72,20 @@ void SegmentConnectionCard::refreshUnifiedState(const cad::param::Attachment* at
     // ── 拆开/重连 双面按钮 (位置维度, 2026-xx 用户拍板): 拆开 = 位置自由
     // (angleOnly, 角度仍跟随基准线); 重连 = 位置重新吸附回原宿主 + 重新焊接。
     // 与角度维度 (SegmentRefCard 基准点按钮) 独立 —— 双拆开 = 自由线。
+    bool canReconnect = hasAtt;
+    if (hasAtt && att->angleOnly) {
+        if (const auto* toBlk = m_doc->findBlock(att->toBlockId); toBlk && toBlk->isShadow) {
+            const QUuid hostId = toBlk->shadowLastHostBlockId.isNull()
+                ? toBlk->shadowMasterBlockId : toBlk->shadowLastHostBlockId;
+            canReconnect = (m_doc->findBlock(hostId) != nullptr);
+        } else {
+            canReconnect = (m_doc->findBlock(att->toBlockId) != nullptr);
+        }
+    }
     m_btnDetach->setVisible(true);
     m_btnDetach->setText(hasAtt && att->angleOnly
         ? QString::fromUtf8("重连") : QString::fromUtf8("拆开"));
-    m_btnDetach->setEnabled(hasAtt);
+    m_btnDetach->setEnabled(canReconnect);
     if (hasAtt && att->angleOnly) {
         m_btnDetach->setToolTip(cad::ui::TooltipFormatter::action(
             QStringLiteral("重新连接位置"),

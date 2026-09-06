@@ -1,4 +1,4 @@
-#include "ui/SegmentRefCard.h"
+﻿#include "ui/SegmentRefCard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +11,7 @@
 #include <QTimer>
 
 #include "ElaText.h"
+#include "ElaLineEdit.h"
 
 #include "ui/FormScaffold.h"
 #include "parametric/ParamDocument.h"
@@ -139,7 +140,7 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
         QStringLiteral("影子角度"),
         QStringLiteral("角度基准（影子线）相对宿主的方向角。拆开后旋转本体不再影响本线；改此值 = 转动影子基准，公式偏移不受影响。")));
     shadowRow->addWidget(m_lblShadowAngle);
-    m_shadowAngleEdit = new QLineEdit(this);
+    m_shadowAngleEdit = new ElaLineEdit(this);
     m_shadowAngleEdit->setObjectName(QStringLiteral("shadowAngleEdit"));
     m_shadowAngleEdit->setFixedWidth(kRefEditW);
     m_shadowAngleEdit->setPlaceholderText(QStringLiteral("±180°"));
@@ -182,6 +183,9 @@ void SegmentRefCard::setTarget(const QUuid& blockId, const QUuid& segmentId)
 {
     m_blockId = blockId;
     m_segmentId = segmentId;
+    if (m_alignPointEdit) m_alignPointEdit->clearPoint();
+    if (m_angleRefPoint)  m_angleRefPoint->clearPoint();
+    if (m_angleRefPoint2) m_angleRefPoint2->clearPoint();
     refresh();
 }
 

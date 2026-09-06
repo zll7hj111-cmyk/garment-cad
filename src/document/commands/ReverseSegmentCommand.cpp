@@ -391,7 +391,9 @@ void ReverseSegmentCommand::applyState(bool reversed)
         sp->distance        = driven.distance;
         sp->distanceFormula = driven.distanceFormula;
         sp->angle           = cad::geo::normalizeDeg360(driven.angle + 180.0);
-        sp->angleFormula.clear();
+        sp->angleFormula    = driven.angleFormula.isEmpty()
+            ? QString()
+            : QStringLiteral("(%1)+180").arg(driven.angleFormula);
         // 新起点 (旧终点) 落为自由锚点, 停在原求解位置。
         // (旧终点本就是锚点时 freePos 已正确, 不动; 旧终点是驱动点时
         //  求解位置 = 锚点 freePos + dist·dir(angle), 换算落位。)

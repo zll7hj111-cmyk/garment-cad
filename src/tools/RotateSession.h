@@ -62,6 +62,8 @@ struct RotateBaseSnapshot
     cad::param::RotationMode rotationMode = cad::param::RotationMode::Angle;
     double  baseArcLength = 0.0;
     QString baseArcFormula;
+    double  baseChordLength = 0.0;
+    QString baseChordFormula;
     cad::param::Transform2D baseTf;
     QUuid baseEndTargetBlock;
     QUuid baseEndTargetPoint;

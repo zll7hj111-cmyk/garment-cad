@@ -6,6 +6,7 @@
 #include <QWidget>
 
 class ElaText;
+class ElaLineEdit;
 class QLineEdit;
 
 namespace cad::param {
@@ -92,7 +93,7 @@ private:
     // 影子角度行 (拆开影子基准): 影子角度【QLineEdit】 [清除影子] —— 仅当
     // 连接基准是影子块时显示; 挂载态与拆开态写目标不同 (Δ vs rotation)。
     ElaText*     m_lblShadowAngle = nullptr;  ///< "影子角度" 标签.
-    QLineEdit* m_shadowAngleEdit = nullptr;   ///< 带符号折角输入 (objectName shadowAngleEdit).
+    ElaLineEdit* m_shadowAngleEdit = nullptr;   ///< 带符号折角输入 (objectName shadowAngleEdit).
     QPushButton* m_btnClearShadow = nullptr;  ///< [清除影子] (objectName clearShadowBtn).
 };
 

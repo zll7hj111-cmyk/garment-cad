@@ -219,6 +219,15 @@ void ParamDocument::setAttachmentAngleOnly(const QUuid& id, bool angleOnly)
             releaseShadowToDetached(toBlk->id);
             return;
         }
+        // 重连缓存机制: 只缓存上次连接的对象。
+        // 若上次挂载的是新宿主 (且存活) → 重新挂载到该宿主; 若为本体 (或无新宿主) → 挂回本体删影子。
+        const QUuid lastHost = toBlk->shadowLastHostBlockId.isNull()
+            ? toBlk->shadowMasterBlockId : toBlk->shadowLastHostBlockId;
+        if (lastHost != toBlk->shadowMasterBlockId && findBlock(lastHost)) {
+            if (mountShadowTo(toBlk->id, lastHost, toBlk->shadowLastHostPointId,
+                              toBlk->shadowLastHostSegmentId))
+                return;
+        }
         if (reattachShadowToMaster(id))  // ⑤ 挂回本体 (删影子 + 活引用恢复)
             return;
     } else if (angleOnly) {
@@ -292,6 +301,8 @@ void ParamDocument::setAttachmentAngleIndependent(const QUuid& id, bool angleInd
             it->rotationMode = RotationMode::Angle;
             it->arcLength = 0.0;
             it->arcLengthFormula.clear();
+            it->chordLength = 0.0;
+            it->chordLengthFormula.clear();
         }
         // 2026-xx: 退出独立角只恢复角度维度, 不碰 angleOnly (位置维度独立)。
         it->slideMode = SlideMode::None;
@@ -373,6 +384,8 @@ void ParamDocument::setAttachmentAngleRef(const QUuid& id,
         it->rotationMode = RotationMode::Angle;
         it->arcLength = 0.0;
         it->arcLengthFormula.clear();
+        it->chordLength = 0.0;
+        it->chordLengthFormula.clear();
     }
     resolveAll();
 }
@@ -588,6 +601,8 @@ void ParamDocument::releaseBridge(Block& b)
         a.rotationMode = RotationMode::Angle;
         a.arcLength = 0.0;
         a.arcLengthFormula.clear();
+        a.chordLength = 0.0;
+        a.chordLengthFormula.clear();
     }
 }
 

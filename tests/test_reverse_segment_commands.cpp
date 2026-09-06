@@ -90,6 +90,7 @@ private slots:
     void reverseSegment_namesSurviveUndoRoundTrip();
     void reverseSegment_editDrivenEndAfterReverse();
     void reverseSegment_rejectsV2RemainingCases();
+    void reverseSegment_preservesAngleFormula();
 };
 
 void TestReverseSegmentCommands::reverseSegment_keepsGeometryAndSwapsDrivenEnd()
@@ -791,6 +792,35 @@ void TestReverseSegmentCommands::reverseSegment_rejectsV2RemainingCases()
         QVERIFY(why.contains(QString::fromUtf8("弧长")));
         Q_UNUSED(lId); Q_UNUSED(lStart); Q_UNUSED(lEnd); Q_UNUSED(lSeg);
     }
+}
+
+void TestReverseSegmentCommands::reverseSegment_preservesAngleFormula()
+{
+    ParamDocument doc;
+    auto [bId, spId, epId, segId] = makeLine(doc, 100.0);
+    auto* b = doc.findBlock(bId);
+    auto* ep = b->findPoint(epId);
+    ep->angleFormula = QStringLiteral("1+1");
+    ep->angle = 2.0;
+    doc.resolveAll();
+
+    QUndoStack stack;
+    stack.push(new cad::cmd::ReverseSegmentCommand(&doc, bId, segId));
+
+    b = doc.findBlock(bId);
+    auto* seg = b->findSegment(segId);
+    auto* newEp = b->findPoint(seg->endPointId);
+    QVERIFY(newEp);
+    QCOMPARE(newEp->angleFormula, QStringLiteral("(1+1)+180"));
+    QVERIFY(std::abs(newEp->angle - 182.0) < 1e-6);
+
+    stack.undo();
+    b = doc.findBlock(bId);
+    seg = b->findSegment(segId);
+    auto* undoneEp = b->findPoint(seg->endPointId);
+    QVERIFY(undoneEp);
+    QCOMPARE(undoneEp->angleFormula, QStringLiteral("1+1"));
+    QVERIFY(std::abs(undoneEp->angle - 2.0) < 1e-6);
 }
 
 // P2-5: the document's undo stack must be bounded. Commands snapshot the whole

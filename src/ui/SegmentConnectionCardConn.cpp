@@ -53,15 +53,32 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     if (!att) return;
 
     // 影子基准拓扑 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4): 面板重定向
-    // 目标线带影子基准 —— 挂回本体 = ⑤ 删影子 + 活引用恢复 (门面影子感知
-    // 路由); 挂到其他线 = ③ 影子挂载链 (Att1 反算保向 + Att2 重新焊接)。
-    // 校验由门面内部把关 (拒绝 = refresh 还原显示, 与既有拒绝路径一致)。
+    // 目标线带影子基准 —— 挂回本体 = ⑤ 删影子 + 活引用恢复; 挂到其他线 =
+    // ③ 影子挂载链 (Att1 反算保向 + Att2 重新焊接)。有 undo 栈走命令 (纯
+    // 构建器预检, 拒绝 = 静默刷回), 无栈回退门面影子感知路由。
     if (const auto* curTo = m_doc->findBlock(att->toBlockId);
         curTo && curTo->isShadow) {
-        if (blockId == curTo->shadowMasterBlockId)
-            m_doc->reattachShadowToMaster(att->id);  // ⑤ 挂回本体 (不依赖 angleOnly 旗标)
-        else
+        if (auto* stack = m_doc->undoStack()) {
+            if (blockId == curTo->shadowMasterBlockId) {
+                // ⑤ 挂回本体 (不依赖 angleOnly 旗标): forceMaster 跳过重连
+                // 缓存改道 —— 用户显式选了本体落点。
+                cad::param::Attachment restored;
+                if (m_doc->buildShadowReconnect(att->id, restored))
+                    stack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                        m_doc, att->id, /*angleOnly=*/false, QUuid(), QUuid(),
+                        /*forceMaster=*/true));
+            } else {
+                // ③ 影子挂载: 预检同门面 buildShadowMount。
+                cad::param::Attachment att1;
+                if (m_doc->buildShadowMount(curTo->id, blockId, pointId, QUuid(), att1))
+                    stack->push(new cad::cmd::ShadowMountCommand(
+                        m_doc, curTo->id, blockId, pointId, QUuid()));
+            }
+        } else if (blockId == curTo->shadowMasterBlockId) {
+            m_doc->reattachShadowToMaster(att->id);  // ⑤ 挂回本体
+        } else {
             m_doc->mountShadowTo(curTo->id, blockId, pointId, QUuid());  // ③ 影子挂载
+        }
         refresh();
         emit changed();
         return;
@@ -83,6 +100,11 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     const auto* leader = m_doc->findBlock(blockId);
     auto* block = m_doc->findBlock(m_blockId);
     if (!leader || !block) { refreshCard(); return; }
+
+    // 重定向入栈基线 (会话回放范式): 动作前连接态 + 跟随线 transform。
+    const cad::param::Attachment oldAtt = *att;
+    const cad::geo::Vec2 oldOrigin = block->transform.origin;
+    const double oldRotation = block->transform.rotation;
 
     // 重连保持角度基准 (用户拍板 2026-09): 自动态下把旧所连线段固化为两点
     // 基准 (点1 = 旧目标点, 点2 = 旧线段另一端) —— 方向基准不随新宿主漂移
@@ -124,6 +146,16 @@ void SegmentConnectionCard::onTargetResolved(const QUuid& blockId, const QUuid& 
     if (att->slideMode != cad::param::SlideMode::None)
         m_doc->refreshSlideOffsets(att->id);
 
+    if (auto* stack = m_doc->undoStack()) {
+        if (auto* newAtt = m_doc->findAttachment(oldAtt.id)) {
+            // 重定向入栈: 恢复动作前连接态, 经命令 verbatim 重放新态 (单步 undo)。
+            const cad::param::Attachment newSnap = *newAtt;
+            m_doc->restoreFollowerAttachment(m_blockId, oldAtt);
+            stack->push(new cad::cmd::ReconnectAttachmentCommand(
+                m_doc, oldAtt.id, newSnap, oldAtt, oldOrigin, oldRotation));
+        }
+    }
+
     refresh();
     emit changed();
 }
@@ -154,11 +186,22 @@ void SegmentConnectionCard::onConnectToResolved(const QUuid& blockId, const QUui
 
     // May be rejected (cycle / conflicting follower).
     const bool added = m_doc->addAttachment(att);
-    if (added && m_scene) {
-        // Toast only for genuinely NEW cross-layer connections.
-        if (const QString toast = crossLayerToast(m_doc, *block, *leader);
-            !toast.isEmpty())
-            m_scene->showToast(toast);
+    if (added) {
+        // 建立连接入栈: 门面已做校验 + 默认焊接, 摘除刚插入的终态后经
+        // AddAttachmentCommand verbatim 重放 (单步 undo)。
+        if (auto* stack = m_doc->undoStack()) {
+            if (const auto* ins = m_doc->findAttachment(att.id)) {
+                const cad::param::Attachment inserted = *ins;
+                m_doc->removeAttachment(att.id);
+                stack->push(new cad::cmd::AddAttachmentCommand(m_doc, inserted));
+            }
+        }
+        if (m_scene) {
+            // Toast only for genuinely NEW cross-layer connections.
+            if (const QString toast = crossLayerToast(m_doc, *block, *leader);
+                !toast.isEmpty())
+                m_scene->showToast(toast);
+        }
     }
     // 引用预填自动落库已移至 SegmentRefCard::refresh (2026-12 面板重设计)。
 
@@ -303,11 +346,21 @@ void SegmentConnectionCard::onDetachClicked()
     if (!m_doc) return;
     const auto* att = findFollowerAttachment();
     if (!att) { refresh(); return; }
-    if (auto* stack = m_doc->undoStack())
-        stack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
-            m_doc, att->id, /*angleOnly=*/!att->angleOnly));
-    else
-        m_doc->setAttachmentAngleOnly(att->id, !att->angleOnly);
+    const auto* leaderBlk = m_doc->findBlock(att->toBlockId);
+    const auto* leaderPt = leaderBlk ? leaderBlk->findPoint(att->toPointId) : nullptr;
+    const bool isAuxMount = (leaderPt && leaderPt->isAuxiliary);
+    if (isAuxMount) {
+        if (auto* stack = m_doc->undoStack())
+            stack->push(new cad::cmd::RemoveAttachmentCommand(m_doc, att->id));
+        else
+            m_doc->removeAttachment(att->id);
+    } else {
+        if (auto* stack = m_doc->undoStack())
+            stack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                m_doc, att->id, /*angleOnly=*/!att->angleOnly));
+        else
+            m_doc->setAttachmentAngleOnly(att->id, !att->angleOnly);
+    }
     refresh();
     emit changed();
 }

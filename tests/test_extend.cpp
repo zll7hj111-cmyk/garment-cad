@@ -11,9 +11,11 @@
 #include "parametric/Attachment.h"
 #include "document/commands/BreakCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/VariableCommands.h"
 #include "document/DocumentSerializer.h"
 #include "document/DocumentFile.h"
 #include "geometry/Vec2.h"
+#include "geometry/Units.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/BlockItem.h"
 
@@ -922,6 +924,217 @@ private slots:
         QCOMPARE(s2->extendEndMm, -15.0);
         QCOMPARE(s2->extendStartFormula, QStringLiteral("-ext_a"));
         QCOMPARE(s2->extendEndFormula, QStringLiteral("-ext_b"));
+    }
+
+    // ── 真实用户路径回归 (用户 2026-11 报告): 变量面板改「后长补正」──
+    // 走 undoStack->push(SetVariableCommand) → updateVariable → recomputeFormulas
+    // → syncFormulaParameters → resolveAll → resolved → CanvasScene 同步 → 像素刷新。
+    // 与 setParameter 直调不同: 这验证变量存储的完整发布链 (mm→cm 域换算)。
+    void variablePanelCommandRefreshesCanvasPixels()
+    {
+        ParamDocument doc;
+        CanvasScene scene(&doc);
+        scene.setSceneRect(-60.0, -60.0, 320.0, 240.0);
+        QGraphicsView view(&scene);
+        view.resize(640, 480);
+
+        // 原始段: (0,0)→(100,0) 水平, 原点 (0,40) → 场景行 20 (避开十字轴)。
+        auto L = makeLine(doc, 100.0);
+        doc.findBlock(L.blockId)->transform.origin = Vec2(0.0, 40.0);
+        scene.addBlockItem(L.blockId);
+
+        // 变量「后长补正」: 初始 0 (无尾巴) —— 用户改动前的状态。
+        Variable v;
+        v.name = QStringLiteral("后长补正");
+        v.value = 0.0;   // mm
+        doc.addVariable(v);
+        auto* seg0 = doc.findBlock(L.blockId)->findSegment(L.segId);
+        seg0->extendStartFormula = QStringLiteral("后长补正");
+        doc.resolveAll();
+
+        auto render = [&]() {
+            QImage img(640, 480, QImage::Format_ARGB32);
+            img.fill(Qt::white);
+            QPainter p(&img);
+            scene.render(&p, QRectF(0.0, 0.0, 640.0, 480.0),
+                         QRectF(-60.0, -60.0, 320.0, 240.0));
+            p.end();
+            return img;
+        };
+        constexpr int kRow = 40;   // scene y = -40 (原点 y=40, y 翻转)。
+        auto leftmostLit = [](const QImage& img) {
+            for (int x = 0; x < img.width(); ++x)
+                if (img.pixelColor(x, kRow) != QColor(Qt::white))
+                    return x;
+            return -1;
+        };
+
+        const QImage base = render();
+        const auto baseLeft = leftmostLit(base);
+        QVERIFY2(baseLeft > 0, "baseline leader must be visible");
+
+        // 用户输入 0.5 → 变量面板 cm 域 → Variable::value 存 5mm。
+        // 走真实 undo 命令路径 SetVariableCommand (非 setParameter 直调)。
+        const auto* var = doc.findVariable(v.id);
+        QVERIFY(var);
+        Variable updated = *var;
+        updated.value = cad::geo::Units::cmToMm(0.5);   // 5mm
+        doc.undoStack()->push(
+            new cad::cmd::SetVariableCommand(&doc, updated));
+
+        // 数据: 公式引用变量, 求值 = 5mm, 有效起点外移 5mm。
+        const auto* b = doc.findBlock(L.blockId);
+        QVERIFY2(std::abs(b->segmentExtendStart(L.segId) - 5.0) < 1e-6,
+                 "后长补正=0.5cm 必须求值为 5mm 起点延长");
+        QVERIFY2(b->worldPos(L.startId).distanceTo(Vec2(-5.0, 40.0)) < 1e-6,
+                 "有效起点必须外移到 (-5,40)");
+
+        // 像素: 左端在 kRow 行必须左移 (5mm = 10px)。
+        const QImage after = render();
+        const auto afterLeft = leftmostLit(after);
+        QVERIFY2(afterLeft < baseLeft - 8,
+                 QStringLiteral(
+                     "变量面板改值后画布像素必须刷新 (left %1 → %2)")
+                     .arg(baseLeft).arg(afterLeft).toUtf8().constData());
+    }
+
+    void probeUser5Gcad()
+    {
+        const QString path = QStringLiteral("E:/5.gcad");  // fixture-allow: probe for user bug 5.gcad
+        if (!QFile::exists(path)) QSKIP("E:/5.gcad not found");
+        ParamDocument doc;
+        QString err;
+        QVERIFY2(cad::doc::DocumentFile::load(path, doc, &err), qPrintable(err));
+        CanvasScene scene(&doc);
+        for (const auto& blk : doc.blocks())
+            scene.addBlockItem(blk.id);
+        scene.syncBlockPositions();
+
+        QUuid l74BlockId, l74SegId;
+        for (const auto& blk : doc.blocks()) {
+            for (const auto& seg : blk.segments) {
+                if (seg.serial.contains("74")) {
+                    l74BlockId = blk.id;
+                    l74SegId = seg.id;
+                }
+            }
+        }
+        QVERIFY(!l74BlockId.isNull());
+        auto* item = scene.findBlockItem(l74BlockId);
+        QVERIFY(item);
+
+        // Find all block items for comparison
+        QList<QPair<QUuid, QString>> otherBlocks;
+        for (const auto& b : doc.blocks()) {
+            if (b.id != l74BlockId) {
+                QString name;
+                if (!b.segments.empty()) name = b.segments.front().name;
+                otherBlocks.append({b.id, name});
+            }
+        }
+
+        QFile outFile(QStringLiteral("E:/garment-cad/probe_output.txt")); // fixture-allow: probe file
+        outFile.open(QIODevice::WriteOnly | QIODevice::Text);
+        QTextStream out(&outFile);
+
+        auto dumpState = [&](const QString& label) {
+            const auto* blk = doc.findBlock(l74BlockId);
+            const auto* seg = blk->findSegment(l74SegId);
+            auto* itm = scene.findBlockItem(l74BlockId);
+            out << "=== " << label << " ===\n";
+            out << "L74 epoch: " << blk->geometryEpoch() << "\n";
+            out << "L74 lastEpoch(item): " << itm->property("lastEpoch").toULongLong() << "\n";
+            out << "L74 extStartEval: " << blk->segmentExtendStart(l74SegId) << "\n";
+            out << "L74 seg.extendStartMm: " << seg->extendStartMm
+                << " formula: " << seg->extendStartFormula << "\n";
+            // worldPos uses effectiveLocalPos
+            const auto startW = blk->worldPos(seg->startPointId);
+            const auto endW = blk->worldPos(seg->endPointId);
+            out << "L74 worldPos start: " << startW.x << "," << startW.y << "\n";
+            out << "L74 worldPos end: " << endW.x << "," << endW.y << "\n";
+            out << "L74 worldLen(mm): " << startW.distanceTo(endW) << "\n";
+            // Also show resolvedPos (the body position, without extend)
+            const auto* startPt = blk->findPoint(seg->startPointId);
+            const auto* endPt = blk->findPoint(seg->endPointId);
+            if (startPt)
+                out << "L74 resolvedPos start: " << startPt->resolvedPos.x << "," << startPt->resolvedPos.y << "\n";
+            if (endPt)
+                out << "L74 resolvedPos end: " << endPt->resolvedPos.x << "," << endPt->resolvedPos.y << "\n";
+            out << "L74 item bounds: " << itm->boundingRect().x() << ","
+                << itm->boundingRect().y() << " "
+                << itm->boundingRect().width() << "x"
+                << itm->boundingRect().height() << "\n";
+            out << "L74 item pos: " << itm->pos().x() << "," << itm->pos().y() << "\n";
+
+            for (const auto& [bid, bname] : otherBlocks) {
+                auto* other = scene.findBlockItem(bid);
+                const auto* ob = doc.findBlock(bid);
+                if (other && ob) {
+                    out << bname << " epoch: " << ob->geometryEpoch()
+                        << " pos: " << other->pos().x() << "," << other->pos().y()
+                        << " bounds: " << other->boundingRect().x() << ","
+                        << other->boundingRect().y() << " "
+                        << other->boundingRect().width() << "x"
+                        << other->boundingRect().height() << "\n";
+                }
+            }
+            out << "\n";
+        };
+
+        dumpState("0. INITIAL LOADED (var=5)");
+
+        // 像素级验证: 初始(5mm尾) vs 变量改为0.5mm 后, 渲染必须不同。
+        // 用户报告的真实场景: 改变量值后 follower 动了、本体像素未更新。
+        // 用固定大窗口渲染 (覆盖 L74 起点尾巴 + 本体 + follower), 2px/mm。
+        auto renderScene = [&](const QString& tag) -> QImage {
+            // L74 世界 bbox: x≈[-256,-252], y∈[-12, 74]; 外扩 20mm。
+            // 场景系: x∈[-276,-232], y∈[-94, 16] (Y 翻转)。
+            const QRectF sr(-276.0, -94.0, 44.0, 110.0);
+            const int scale = 4;   // 4px/mm 放大细节
+            QImage img(int(sr.width() * scale), int(sr.height() * scale),
+                       QImage::Format_ARGB32);
+            img.fill(Qt::white);
+            QPainter p(&img);
+            scene.render(&p, QRectF(0, 0, img.width(), img.height()), sr);
+            p.end();
+            return img;
+        };
+        const QImage imgBefore = renderScene("before");
+        imgBefore.save(QStringLiteral("E:/garment-cad/probe_before_0.png")); // fixture-allow: probe file
+
+        // Scenario: user changes 后长补正 from 5mm to 0.5mm (the reported bug)
+        Variable varCopy;
+        for (const auto& var : doc.variables()) {
+            if (var.name == QStringLiteral("后长补正")) {
+                varCopy = var;
+                out << "Found var: " << var.name << " value=" << var.value << "mm\n\n";
+                break;
+            }
+        }
+
+        varCopy.value = 0.5;
+        doc.updateVariable(varCopy);
+        dumpState("1. AFTER VAR SET TO 0.5");
+        const QImage imgAfter = renderScene("after");
+        imgAfter.save(QStringLiteral("E:/garment-cad/probe_after_0.png")); // fixture-allow: probe file
+        // 像素必须不同: 尾巴从 +5mm 缩到 +0.5mm, 起点世界坐标移动 4.5mm。
+        const bool pixelsDiffer = imgBefore != imgAfter;
+        out << "PIXEL DIFF (5mm→0.5mm): " << (pixelsDiffer ? "CHANGED" : "IDENTICAL!")
+            << "\n\n";
+
+        // Also test: set back to 5
+        varCopy.value = 5.0;
+        doc.updateVariable(varCopy);
+        dumpState("2. AFTER VAR SET BACK TO 5");
+
+        // Test: set to 0
+        varCopy.value = 0.0;
+        doc.updateVariable(varCopy);
+        dumpState("3. AFTER VAR SET TO 0");
+
+        outFile.close();
+        QVERIFY2(pixelsDiffer,
+                 "变量从 5mm 改为 0.5mm 后, 渲染像素必须变化 (L74 尾巴缩短)");
     }
 };
 
