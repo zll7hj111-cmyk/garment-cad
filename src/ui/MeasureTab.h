@@ -36,11 +36,13 @@ public:
     /// Also updates the empty-hint visibility.
     void sync();
 
+    /// Rebuild theme-token driven styles after a theme change (light/dark).
+    void applyTheme();
+
     /// Called by the panel when measure/angle/layer data changed: marks the
     /// metadata cache dirty so the next sync() performs a full metadata
     /// comparison instead of the value-only resolved fast path.
     void notifyMeasureDataChanged();
-
 signals:
     /// Flash the measured points precisely (MeasureCard source click/hover).
     void highlightMeasureRequested(const QUuid& measureId);

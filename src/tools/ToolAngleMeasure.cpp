@@ -1,4 +1,4 @@
-#include "ToolAngleMeasure.h"
+﻿#include "ToolAngleMeasure.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -83,8 +83,13 @@ void ToolAngleMeasure::mousePress(QGraphicsSceneMouseEvent* event)
         m_state = State::SelectB;
         updatePreview(clickPos);
     } else {
-        // Second line: must be a different segment, then commit.
-        if (m_snapA && snap->segmentId != m_snapA->segmentId) {
+        // Second line: must be a different segment on the same layer, then commit.
+        if (m_snapA && (snap->segmentId != m_snapA->segmentId || snap->blockId != m_snapA->blockId)) {
+            if (!isSameLayer(m_snapA->blockId, snap->blockId)) {
+                if (m_scene)
+                    m_scene->showToast(QStringLiteral("角度测量仅支持同一图层内的线段"));
+                return;
+            }
             m_hoverSnap = snap;
             commitAngleMeasure();
         }
@@ -122,6 +127,12 @@ void ToolAngleMeasure::keyPress(QKeyEvent* event)
 void ToolAngleMeasure::updateHover(const cad::geo::Vec2& pos, double zoom)
 {
     auto snap = m_snapEngine.findSegmentSnap(pos, m_paramDoc, zoom);
+    // In SelectB, segments from different layers are not eligible hover targets.
+    if (m_state == State::SelectB && m_snapA && snap) {
+        if (!isSameLayer(m_snapA->blockId, snap->blockId)) {
+            snap.reset();
+        }
+    }
     m_hoverSnap = snap;
     // 三期: 只读悬停上报 (扫过即看) — 线身吸附线段进上下文属性条。
     reportHoverTarget(snap ? snap->blockId : QUuid(),
@@ -159,7 +170,9 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
 
     // Highlight the hovered line B (blue) + live angle readout.
     const bool hasB = m_hoverSnap &&
-                      m_hoverSnap->segmentId != m_snapA->segmentId;
+                      (m_hoverSnap->segmentId != m_snapA->segmentId ||
+                       m_hoverSnap->blockId != m_snapA->blockId) &&
+                      isSameLayer(m_snapA->blockId, m_hoverSnap->blockId);
     if (!m_highlightB) {
         m_highlightB = new QGraphicsLineItem();
         QPen pen(cad::ui::Theme::tokens().accent, 2.4);  // accent blue
@@ -181,11 +194,15 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
         m_hud = ensureHud();
     }
     if (hasB) {
-        const double deg = angleBetween(*m_snapA, *m_hoverSnap);
-        m_hud->setText(QStringLiteral("%1\u00B0").arg(deg, 0, 'f', 1));
-        QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-        m_hud->moveToPoint(cursorPos, view, HudItem::kCursorOffset);
-        m_hud->setVisible(true);
+        const auto res = calculateRayAngle(*m_snapA, *m_hoverSnap);
+        if (res.valid) {
+            m_hud->setText(QStringLiteral("%1\u00B0").arg(res.angleDeg, 0, 'f', 1));
+            QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
+            m_hud->moveToPoint(cursorPos, view, HudItem::kCursorOffset);
+            m_hud->setVisible(true);
+        } else {
+            m_hud->setVisible(false);
+        }
     } else {
         m_hud->setVisible(false);
     }
@@ -208,6 +225,78 @@ void ToolAngleMeasure::resetToSelectA()
 // ---------------------------------------------------------------------------
 // Geometry helpers
 // ---------------------------------------------------------------------------
+
+bool ToolAngleMeasure::isSameLayer(const QUuid& blockA, const QUuid& blockB) const
+{
+    if (!m_paramDoc) return false;
+    const auto* blkA = m_paramDoc->findBlock(blockA);
+    const auto* blkB = m_paramDoc->findBlock(blockB);
+    return blkA && blkB && (blkA->layer == blkB->layer);
+}
+
+ToolAngleMeasure::RayAngleResult ToolAngleMeasure::calculateRayAngle(
+    const SegmentSnapResult& a,
+    const SegmentSnapResult& b) const
+{
+    RayAngleResult res;
+    cad::geo::Vec2 a0, a1, b0, b1;
+    if (!segmentWorldEndpoints(a.blockId, a.segmentId, a0, a1) ||
+        !segmentWorldEndpoints(b.blockId, b.segmentId, b0, b1))
+        return res;
+
+    const cad::geo::Vec2 da = a1 - a0;
+    const cad::geo::Vec2 db = b1 - b0;
+    const double lenSqA = da.lengthSquared();
+    const double lenSqB = db.lengthSquared();
+    if (lenSqA < 1e-12 || lenSqB < 1e-12)
+        return res;
+
+    // Line intersection: cross product of direction vectors
+    const double denom = da.x * db.y - da.y * db.x;
+    bool flipA = false;
+    bool flipB = false;
+
+    if (std::abs(denom) > 1e-9) {
+        // Intersecting lines: find intersection pivot V
+        // V = a0 + t * da
+        const double t = ((b0.x - a0.x) * db.y - (b0.y - a0.y) * db.x) / denom;
+        const cad::geo::Vec2 pivot = a0 + da * t;
+
+        // Vector from pivot towards pick point A
+        cad::geo::Vec2 va = a.worldPos - pivot;
+        if (va.lengthSquared() < 1e-8) {
+            // Picked exactly at pivot, fall back to segment midpoint
+            va = (a0 + a1) * 0.5 - pivot;
+        }
+        if (va.lengthSquared() >= 1e-8) {
+            flipA = (va.x * da.x + va.y * da.y < 0.0);
+        }
+
+        // Vector from pivot towards pick point B
+        cad::geo::Vec2 vb = b.worldPos - pivot;
+        if (vb.lengthSquared() < 1e-8) {
+            vb = (b0 + b1) * 0.5 - pivot;
+        }
+        if (vb.lengthSquared() >= 1e-8) {
+            flipB = (vb.x * db.x + vb.y * db.y < 0.0);
+        }
+    } else {
+        // Parallel or collinear lines: no intersection point.
+        // Keep natural chord directions.
+        flipA = false;
+        flipB = false;
+    }
+
+    const double dirA = std::atan2(da.y, da.x) + (flipA ? M_PI : 0.0);
+    const double dirB = std::atan2(db.y, db.x) + (flipB ? M_PI : 0.0);
+    const double angleDeg = cad::geo::normalizeDeg180(cad::geo::radToDeg(dirB - dirA));
+
+    res.valid = true;
+    res.flipA = flipA;
+    res.flipB = flipB;
+    res.angleDeg = angleDeg;
+    return res;
+}
 
 double ToolAngleMeasure::segmentWorldDir(const QUuid& blockId,
                                          const QUuid& segmentId) const
@@ -236,15 +325,6 @@ bool ToolAngleMeasure::segmentWorldEndpoints(const QUuid& blockId,
     return true;
 }
 
-double ToolAngleMeasure::angleBetween(const SegmentSnapResult& a,
-                                      const SegmentSnapResult& b) const
-{
-    const double dirA = segmentWorldDir(a.blockId, a.segmentId);
-    const double dirB = segmentWorldDir(b.blockId, b.segmentId);
-    // Directed angle A→B, same semantics as the follower angle (跟随角度).
-    return cad::geo::normalizeDeg180(cad::geo::radToDeg(dirB - dirA));
-}
-
 // ---------------------------------------------------------------------------
 // Commit
 // ---------------------------------------------------------------------------
@@ -252,14 +332,20 @@ double ToolAngleMeasure::angleBetween(const SegmentSnapResult& a,
 void ToolAngleMeasure::commitAngleMeasure()
 {
     if (!m_paramDoc || !m_snapA || !m_hoverSnap) return;
-    if (m_snapA->segmentId == m_hoverSnap->segmentId) return;
+    if (m_snapA->segmentId == m_hoverSnap->segmentId && m_snapA->blockId == m_hoverSnap->blockId) return;
+    if (!isSameLayer(m_snapA->blockId, m_hoverSnap->blockId)) return;
+
+    const auto res = calculateRayAngle(*m_snapA, *m_hoverSnap);
+    if (!res.valid) return;
 
     cad::param::AngleMeasureVariable am;
     am.blockA = m_snapA->blockId;
     am.segmentA = m_snapA->segmentId;
     am.blockB = m_hoverSnap->blockId;
     am.segmentB = m_hoverSnap->segmentId;
-    am.value = angleBetween(*m_snapA, *m_hoverSnap);
+    am.flipA = res.flipA;
+    am.flipB = res.flipB;
+    am.value = res.angleDeg;
     // Reference names are uppercase by convention (CopyChip force-uppercases
     // them for display/editing); generate uppercase so the stored refName
     // matches what the user sees and types back into formula fields.

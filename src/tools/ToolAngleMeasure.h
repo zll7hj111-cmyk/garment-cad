@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Tool.h"
 #include "ToolRegistry.h"
@@ -53,6 +53,21 @@ private:
     void clearPreview();
     void resetToSelectA();
 
+    struct RayAngleResult {
+        bool   valid = false;
+        bool   flipA = false;
+        bool   flipB = false;
+        double angleDeg = 0.0;
+    };
+
+    /// Check if two blocks reside on the same layer.
+    [[nodiscard]] bool isSameLayer(const QUuid& blockA, const QUuid& blockB) const;
+
+    /// Calculate the directed angle from segment A to segment B taking into account
+    /// the user's pick positions (determines the rays emanating from the intersection).
+    [[nodiscard]] RayAngleResult calculateRayAngle(const SegmentSnapResult& a,
+                                                   const SegmentSnapResult& b) const;
+
     /// World direction (radians, start→end) of a segment.
     [[nodiscard]] double segmentWorldDir(const QUuid& blockId,
                                          const QUuid& segmentId) const;
@@ -61,9 +76,6 @@ private:
                                              const QUuid& segmentId,
                                              cad::geo::Vec2& outA,
                                              cad::geo::Vec2& outB) const;
-    /// Directed angle (degrees, (-180, 180]) from segment A to segment B.
-    [[nodiscard]] double angleBetween(const SegmentSnapResult& a,
-                                      const SegmentSnapResult& b) const;
 
     /// Create the AngleMeasureVariable from the two snapped segments.
     void commitAngleMeasure();

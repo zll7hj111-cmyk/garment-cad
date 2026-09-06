@@ -44,7 +44,7 @@ public:
 
     /// Re-evaluate all formulas against current variables, update cached values,
     /// and push the results into the document's parameter map + resolve.
-    void recomputeFormulas();
+    void recomputeFormulas(bool triggerResolve = true);
 
     // --- Formula groups (panel folders for formula variables) ---
     void addFormulaGroup(FormulaGroup group);

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -26,6 +26,11 @@ struct AngleMeasureVariable {
     QUuid segmentA;     ///< Reference segment (its start→end is the base direction).
     QUuid blockB;       ///< Block containing segment B (target line).
     QUuid segmentB;     ///< Target segment.
+
+    // Ray direction flip flags (determined by user cursor / pick location).
+    // False = start->end direction; true = end->start (reversed).
+    bool    flipA = false;
+    bool    flipB = false;
 
     double  value = 0;  ///< Cached angle in degrees, (-180, 180] (refreshed each resolve).
     QString comment;    ///< Optional annotation.

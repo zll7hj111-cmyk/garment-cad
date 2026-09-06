@@ -317,7 +317,7 @@ void VariableStore::rebuildFormulaOrder() const
 // Formulas
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void VariableStore::recomputeFormulas()
+void VariableStore::recomputeFormulas(bool triggerResolve)
 {
     // Sync plain variable values into the parameter map (cm).
     QHash<QString, double> varCm;
@@ -338,6 +338,34 @@ void VariableStore::recomputeFormulas()
             baseMap.insert(v.name, cm);
         if (!v.refName.isEmpty())
             baseMap.insert(v.refName, cm);
+    }
+
+    // Measurements (linked / distance / angle) published into baseMap.
+    // Angles are in degrees; distances and segment lengths in cm.
+    if (m_doc) {
+        for (const auto& lv : m_doc->linkedVars()) {
+            if (!lv.dangling && !lv.refName.isEmpty()) {
+                const double cm = geo::Units::mmToCm(lv.value);
+                baseMap.insert(lv.refName, cm);
+                if (!lv.name.isEmpty())
+                    baseMap.insert(lv.name, cm);
+            }
+        }
+        for (const auto& mv : m_doc->measureVars()) {
+            if (!mv.refName.isEmpty()) {
+                const double cm = geo::Units::mmToCm(mv.value);
+                baseMap.insert(mv.refName, cm);
+                if (!mv.name.isEmpty())
+                    baseMap.insert(mv.name, cm);
+            }
+        }
+        for (const auto& am : m_doc->angleMeasures()) {
+            if (!am.dangling && !am.refName.isEmpty()) {
+                baseMap.insert(am.refName, am.value);
+                if (!am.name.isEmpty())
+                    baseMap.insert(am.name, am.value);
+            }
+        }
     }
 
     // Condition table: formulaName -> conditions (enabled & non-empty only).
@@ -458,7 +486,7 @@ void VariableStore::recomputeFormulas()
             baseCm.insert(f.name, geo::Units::mmToCm(f.baseValue));
     }
     m_doc->syncFormulaConditions(condByName);
-    m_doc->syncFormulaParameters(baseCm);  // triggers resolveAll()
+    m_doc->syncFormulaParameters(baseCm, triggerResolve);
 
     emit formulasChanged();
 }

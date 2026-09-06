@@ -128,6 +128,8 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
     : QWidget(parent)
     , m_doc(doc)
 {
+    setAttribute(Qt::WA_StyledBackground, true);
+    setStyleSheet(QStringLiteral("background: %1;").arg(cad::ui::Theme::tokens().surface.name()));
     m_scroll = new ElaScrollArea(this);
     m_scroll->setWidgetResizable(true);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -146,7 +148,7 @@ MeasureTab::MeasureTab(cad::param::ParamDocument* doc, QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_emptyHint = new ElaText(QStringLiteral("暂无测量变量\n使用智能笔连接两个点时自动创建\n（测量两点间距离）\n或使用「角度测量」工具测量两线夹角\n测量工具中按 W 可切换 距离/水平/垂直"), 13, m_container);
+    m_emptyHint = new ElaText(QStringLiteral("动态测量与角度基准\n使用智能笔连接两点时自动创建实测距离\n或使用「角度测量」工具测量两线夹角\n测量工具中按 W 键可循环切换 距离 / 水平 / 垂直"), 12, m_container);
     m_emptyHint->setAlignment(Qt::AlignCenter);
     m_emptyHint->setObjectName(QStringLiteral("dimText"));
     layout->addWidget(m_emptyHint);
@@ -331,6 +333,23 @@ void MeasureTab::onAngleMeasureEdited(const cad::param::AngleMeasureVariable& am
         m_undoStack->push(new cad::cmd::SetAngleMeasureCommand(m_doc, am));
     else
         m_doc->updateAngleMeasure(am);
+}
+
+void MeasureTab::applyTheme()
+{
+    setStyleSheet(QStringLiteral("background: %1;").arg(cad::ui::Theme::tokens().surface.name()));
+    const QString scrollQss = QStringLiteral(
+        "QScrollArea { background: %1; border: none; }")
+        .arg(cad::ui::Theme::tokens().canvasBg.name());
+    const QString containerQss = QStringLiteral(
+        "background: %1;").arg(cad::ui::Theme::tokens().canvasBg.name());
+    if (m_scroll)
+        m_scroll->setStyleSheet(scrollQss);
+    if (m_container)
+        m_container->setStyleSheet(containerQss);
+    if (m_host)
+        m_host->rebuildAll();
+    sync();
 }
 
 } // namespace cad::ui

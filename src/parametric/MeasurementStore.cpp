@@ -335,6 +335,10 @@ bool MeasurementStore::measureMeasureVars(bool skipAuxSource)
 
 void MeasurementStore::addAngleMeasure(AngleMeasureVariable am)
 {
+    const Block* blkA = m_doc->blockById(am.blockA);
+    const Block* blkB = m_doc->blockById(am.blockB);
+    if (!blkA || !blkB || blkA->layer != blkB->layer) return;
+
     m_angleMeasures.push_back(std::move(am));
     emit angleMeasureVarsChanged();
     m_doc->resolveAll();
@@ -412,6 +416,8 @@ bool MeasurementStore::measureAngleMeasureVars(bool skipAuxSource)
         const Block* blkA = m_doc->blockById(am.blockA);
         const Block* blkB = m_doc->blockById(am.blockB);
         if (!blkA || !blkB) { am.dangling = true; continue; }
+        // 角度测量仅支持同一图层内的线段 (方案 A, 图层隔离原则)
+        if (blkA->layer != blkB->layer) { am.dangling = true; continue; }
         // Layered cache: both segments on the (clean) aux layer → the value
         // cannot have changed — keep the cached measurement.
         if (skipAuxSource && m_doc->isAuxBlock(*blkA) && m_doc->isAuxBlock(*blkB)
@@ -439,8 +445,8 @@ bool MeasurementStore::measureAngleMeasureVars(bool skipAuxSource)
         const double dbx = wb1.x - wb0.x, dby = wb1.y - wb0.y;
         if (dax * dax + day * day < 1e-12 || dbx * dbx + dby * dby < 1e-12)
             continue;  // degenerate (zero-length) segment
-        const double dirA = std::atan2(day, dax);
-        const double dirB = std::atan2(dby, dbx);
+        const double dirA = std::atan2(day, dax) + (am.flipA ? M_PI : 0.0);
+        const double dirB = std::atan2(dby, dbx) + (am.flipB ? M_PI : 0.0);
 
         // Directed angle from A to B, same semantics as the construction
         // angle (跟随角度): normalized to (-180, 180].
