@@ -1,4 +1,4 @@
-﻿/// @file test_context_strip.cpp
+/// @file test_context_strip.cpp
 /// 上下文属性条 ContextStrip (CONTEXT_STRIP_DESIGN.md 一期): 取代原来的
 /// SegmentEditBar + SmartPenPreInputBar 两条互斥 bar。覆盖: 填充(ID/名称/
 /// 长度/角度)、名称/长度/角度编辑实时生效、跟随线角度编辑、多线块附件匹配、
@@ -7,6 +7,7 @@
 
 #include <QtTest>
 #include <QApplication>
+#include <QClipboard>
 #include <QLineEdit>
 #include <QLabel>
 #include <QKeyEvent>
@@ -119,6 +120,7 @@ private slots:
     void nameEditApplies();
     void lengthEditApplies();
     void angleEditApplies();
+    void angleFormulaEditApplies();
     void followerAngleEditApplies();
     void independentAngleEditApplies();
     void multiLineFollowerAttachedToOtherLine();
@@ -146,6 +148,8 @@ private slots:
     void connectionDimDetachButtons();
     // ── 锁定态 °/⌒ 单位切换 (用户报告"跟随角度切不到弧长") ──
     void pinnedUnitToggleFlipsFollowerMode();
+    // ── 长度与角度填入按钮 (剪贴板清空后粘贴并应用) ──
+    void pasteButtonsPopulateAndApply();
 };
 
 void TestContextStrip::fillPopulatesFields()
@@ -250,6 +254,36 @@ void TestContextStrip::angleEditApplies()
     QVERIFY(ep);
     // Free line: stored angle = world angle - block rotation (0 here).
     QVERIFY(std::abs(ep->angle - 90.0) < 1e-9);
+}
+
+void TestContextStrip::angleFormulaEditApplies()
+{
+    ParamDocument doc;
+    const LineRef l = makeLine(doc);
+
+    ContextStrip strip(&doc);
+    strip.setPinnedTarget(l.blockId, l.segId);
+
+    strip.angleEdit()->setText(QStringLiteral("30+15"));
+    emit strip.angleEdit()->editingFinished();
+
+    const QUuid blockId = l.blockId;
+    const QUuid endId   = l.endId;
+    QVERIFY2(cad::test::waitUntil([&] {
+                 auto* bb = doc.findBlock(blockId);
+                 auto* e  = bb ? bb->findPoint(endId) : nullptr;
+                 return e && std::abs(e->angle - 45.0) < 1e-9 && e->angleFormula == QStringLiteral("30+15");
+             }),
+             "timed out waiting for angle formula edit to reach the model");
+
+    auto* b = doc.findBlock(l.blockId);
+    const auto* ep = b->findPoint(l.endId);
+    QVERIFY(ep);
+    QCOMPARE(ep->angleFormula, QStringLiteral("30+15"));
+    QVERIFY(std::abs(ep->angle - 45.0) < 1e-9);
+
+    strip.setPinnedTarget(l.blockId, l.segId);
+    QCOMPARE(strip.angleEdit()->text(), QStringLiteral("30+15"));
 }
 
 void TestContextStrip::followerAngleEditApplies()
@@ -775,6 +809,10 @@ void TestContextStrip::connectSessionModeToggleEmitsSignal()
     strip.unitAngleButton()->click();
     QCOMPARE(modeCount, 2);
     QCOMPARE(lastMode, cad::param::RotationMode::Angle);
+
+    strip.unitChordButton()->click();
+    QCOMPARE(modeCount, 3);
+    QCOMPARE(lastMode, cad::param::RotationMode::ChordLength);
 }
 
 void TestContextStrip::connectSessionValidSetsProperty()
@@ -1065,6 +1103,80 @@ void TestContextStrip::pinnedUnitToggleFlipsFollowerMode()
              "公式必须原样保留, 不得乘换算系数/烘焙成数值");
     // 徽标应显示当前模式 (Ela 选中态不可见, 靠文字区分)。
     QVERIFY(strip.badgeText().contains(QString::fromUtf8("弧长")));
+
+    // ④ 弧长 → 开度 (弦长)
+    strip.unitChordButton()->click();
+    const Attachment* a4 = nullptr;
+    for (const auto& x : doc.attachments())
+        if (x.fromBlockId == follower.blockId) { a4 = &x; break; }
+    QVERIFY(a4);
+    QVERIFY2(a4->rotationMode == cad::param::RotationMode::ChordLength,
+             "弧长 → 开度 条带切换失败");
+    QVERIFY2(a4->chordLengthFormula == QStringLiteral("30+15"),
+             "公式必须原样保留");
+    QVERIFY(strip.badgeText().contains(QString::fromUtf8("开度")));
+}
+
+void TestContextStrip::pasteButtonsPopulateAndApply()
+{
+    ParamDocument doc;
+    const LineRef l = makeLine(doc, /*lenMm=*/100.0);
+
+    ContextStrip strip(&doc);
+    strip.setPinnedTarget(l.blockId, l.segId);
+
+    QVERIFY(strip.pasteLengthButton());
+    QVERIFY(strip.pasteAngleButton());
+    QVERIFY(strip.pasteLengthButton()->isEnabled());
+    QVERIFY(strip.pasteAngleButton()->isEnabled());
+
+    // 1) 填入长度: 剪贴板带有首尾空格及换行符，点击后清空原有内容并填入清洗后的内容
+    QApplication::clipboard()->setText(QStringLiteral("  25.5 \r\n "));
+    strip.pasteLengthButton()->click();
+
+    QCOMPARE(strip.lengthEdit()->text(), QStringLiteral("25.5"));
+    const QUuid blockId = l.blockId;
+    const QUuid endId   = l.endId;
+    QVERIFY2(cad::test::waitUntil([&] {
+                 auto* bb = doc.findBlock(blockId);
+                 auto* e  = bb ? bb->findPoint(endId) : nullptr;
+                 return e && std::abs(e->distance - cad::geo::Units::cmToMm(25.5)) < 1e-9;
+             }),
+             "timed out waiting for pasted length to reach model");
+
+    // 2) 填入角度: 点击后清空原有内容并填入清洗后的角度
+    QApplication::clipboard()->setText(QStringLiteral("\r\n 60 \n"));
+    strip.pasteAngleButton()->click();
+
+    QCOMPARE(strip.angleEdit()->text(), QStringLiteral("60"));
+    QVERIFY2(cad::test::waitUntil([&] {
+                 auto* bb = doc.findBlock(blockId);
+                 auto* e  = bb ? bb->findPoint(endId) : nullptr;
+                 return e && std::abs(e->angle - 60.0) < 1e-9;
+             }),
+             "timed out waiting for pasted angle to reach model");
+
+    // 3) 剪贴板为空时: 先清空输入框内容
+    QApplication::clipboard()->setText(QString());
+    strip.pasteLengthButton()->click();
+    QVERIFY(strip.lengthEdit()->text().isEmpty());
+
+    // 4) 只读悬停态: 两按钮禁用
+    strip.clearPinned();
+    strip.setHoverTarget(l.blockId, l.segId);
+    QVERIFY(cad::test::waitUntil([&] {
+        return !strip.pasteLengthButton()->isEnabled()
+            && !strip.pasteAngleButton()->isEnabled();
+    }));
+
+    // 5) 桥线只读: 长度和角度按钮禁用
+    const LineRef bridge = makeLine(doc);
+    auto* bridgeBlk = doc.findBlock(bridge.blockId);
+    bridgeBlk->isBridge = true;
+    doc.resolveAll();
+    strip.setPinnedTarget(bridge.blockId, bridge.segId);
+    QVERIFY(!strip.pasteLengthButton()->isEnabled());
+    QVERIFY(!strip.pasteAngleButton()->isEnabled());
 }
 
 QTEST_MAIN(TestContextStrip)

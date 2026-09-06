@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include <QApplication>
+#include <QClipboard>
 #include <QButtonGroup>
 #include <QHBoxLayout>
 #include <QSignalBlocker>
@@ -38,6 +39,14 @@ namespace {
 constexpr int kHoverThrottleMs = 80;
 /// 长度/角度输入的防抖窗口 (与属性对话框同节奏)。
 constexpr int kDebounceMs = 200;
+
+/// 渲染符合 Anthropic 规范的 <kbd> 键盘快捷键微徽标
+QString kbdBadge(const QString& key)
+{
+    const auto& tk = cad::ui::Theme::tokens();
+    return QStringLiteral("<span style=\"background:%1; border:1px solid %2; border-radius:2px; padding:1px 4px; font-family:'Consolas',monospace; font-size:10px; font-weight:600; color:%3;\">%4</span>")
+        .arg(tk.surface2.name(), tk.borderStrong.name(), tk.text2.name(), key);
+}
 
 } // namespace
 
@@ -84,13 +93,13 @@ void ContextStrip::buildUi()
     // 输入定宽收窄, 给「连接/基准」两个维度按钮腾位。
     constexpr int kFieldH = 30;
 
-    // 串号徽章: 等宽, 图纸编号感。objectName 用 strip 前缀 —— 2026-08 豁免
-    // 全局 QSS (QWidget 兜底字号/serialBadge 墨底规则会把条带放大变丑),
-    // 条带视觉按"全局规则不存在"精调, 见 Theme::buildStylesheet 头注释。
+    // 串号徽章: 等宽, 图纸编号感。
+    const auto& tk = cad::ui::Theme::tokens();
     m_idLabel = new ElaText(QString(), 11, this);
     m_idLabel->setObjectName(QStringLiteral("stripSerial"));
-    m_idLabel->setStyleSheet(QStringLiteral("%1 font-size: 10px;")
-                                 .arg(cad::ui::ThemeTokens::kMonospaceFamily));
+    m_idLabel->setStyleSheet(QStringLiteral(
+        "#stripSerial { %1 font-size: 10px; font-weight: 600; color: %2; background: %3; border: 1px solid %4; border-radius: 2px; padding: 2px 6px; }")
+        .arg(cad::ui::ThemeTokens::kMonospaceFamily, tk.text1.name(), tk.surface3.name(), tk.borderStrong.name()));
     lay->addWidget(m_idLabel);
 
     // 字段标签只用于排版, 不需要持有 (文本恒定)。
@@ -116,15 +125,38 @@ void ContextStrip::buildUi()
     addField(QString::fromUtf8("长度(cm):"), m_lenEdit, 80,
              QString::fromUtf8("数值或公式"));
     m_lenEdit->setObjectName(QStringLiteral("lenEdit"));
+
+    m_btnPasteLen = new ElaPushButton(QStringLiteral("填入"), this);
+    m_btnPasteLen->setObjectName(QStringLiteral("pasteLenBtn"));
+    m_btnPasteLen->setFixedSize(46, kFieldH);
+    m_btnPasteLen->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    m_btnPasteLen->setCursor(Qt::PointingHandCursor);
+    m_btnPasteLen->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("填入长度"),
+        QStringLiteral("清空输入框并粘贴剪切板内容")));
+    connect(m_btnPasteLen, &QAbstractButton::clicked, this, &ContextStrip::onPasteLength);
+    lay->addWidget(m_btnPasteLen);
+
     addField(QString::fromUtf8("角度:"), m_angleEdit, 70,
              QString::fromUtf8("数值或公式"));
     m_angleEdit->setObjectName(QStringLiteral("angleEdit"));
 
-    // 单位分段 (° | ⌒): 写 attachment.rotationMode。原生 QPushButton +
+    m_btnPasteAngle = new ElaPushButton(QStringLiteral("填入"), this);
+    m_btnPasteAngle->setObjectName(QStringLiteral("pasteAngleBtn"));
+    m_btnPasteAngle->setFixedSize(46, kFieldH);
+    m_btnPasteAngle->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    m_btnPasteAngle->setCursor(Qt::PointingHandCursor);
+    m_btnPasteAngle->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("填入角度"),
+        QStringLiteral("清空输入框并粘贴剪切板内容")));
+    connect(m_btnPasteAngle, &QAbstractButton::clicked, this, &ContextStrip::onPasteAngle);
+    lay->addWidget(m_btnPasteAngle);
+
+    // 单位分段 (° | ⌒ | ↔): 写 attachment.rotationMode。原生 QPushButton +
     // chipButtonStyle —— ElaPushButton 自绘不吃 QSS 且 paintEvent 没有
     // isChecked 分支 (选中态完全不渲染, 用户报告 2026-12「状态栏看不出
     // 处于什么模式」); chip 样式带 :checked 实底, 选中一眼可见。QButtonGroup
-    // 互斥防两钮同时选中。
+    // 互斥防多钮同时选中。
     auto* unitBox = new QWidget(this);
     auto* unitLay = new QHBoxLayout(unitBox);
     unitLay->setContentsMargins(0, 0, 0, 0);
@@ -132,9 +164,10 @@ void ContextStrip::buildUi()
     const QString unitChip = cad::ui::chipButtonStyle();
     m_btnUnitAngle = new QPushButton(QString::fromUtf8("°"), unitBox);
     m_btnUnitArc = new QPushButton(QString::fromUtf8("⌒"), unitBox);
+    m_btnUnitChord = new QPushButton(QString::fromUtf8("↔"), unitBox);
     m_unitGroup = new QButtonGroup(this);
     m_unitGroup->setExclusive(true);
-    for (auto* b : {m_btnUnitAngle, m_btnUnitArc}) {
+    for (auto* b : {m_btnUnitAngle, m_btnUnitArc, m_btnUnitChord}) {
         b->setObjectName(QStringLiteral("unitSegment"));
         b->setCheckable(true);
         b->setFixedSize(32, kFieldH);
@@ -149,10 +182,15 @@ void ContextStrip::buildUi()
     m_btnUnitArc->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
         QStringLiteral("弧长模式"), QStringLiteral("cm"),
         QStringLiteral("跟随线端点沿基准线以弧长距离定位约束")));
+    m_btnUnitChord->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
+        QStringLiteral("弦长开度模式"), QStringLiteral("cm"),
+        QStringLiteral("跟随线端点与基准线端点以直线跨度距离定位约束")));
     connect(m_btnUnitAngle, &QAbstractButton::clicked,
-            this, [this] { onUnitToggled(false); });
+            this, [this] { onUnitSelected(cad::param::RotationMode::Angle); });
     connect(m_btnUnitArc, &QAbstractButton::clicked,
-            this, [this] { onUnitToggled(true); });
+            this, [this] { onUnitSelected(cad::param::RotationMode::ArcLength); });
+    connect(m_btnUnitChord, &QAbstractButton::clicked,
+            this, [this] { onUnitSelected(cad::param::RotationMode::ChordLength); });
     lay->addWidget(unitBox);
 
     // ── 连接维度 拆开/重连 (2026-xx 用户拍板): 与属性对话框「连接」「基准」
@@ -435,7 +473,7 @@ void ContextStrip::showStrokePreview(double lenCm, double angleDeg)
     m_btnReverse->setEnabled(false);
     m_btnBasis->setText(QString::fromUtf8("起点 → 终点"));
     m_badge->setText(QString::fromUtf8("绘制中"));
-    m_hint->setText(QString::fromUtf8("Esc 取消 · 落点后自动锁定"));
+    m_hint->setText(QStringLiteral("%1 取消 · 落点后自动锁定").arg(kbdBadge(QStringLiteral("Esc"))));
     show();
 }
 
@@ -506,7 +544,9 @@ void ContextStrip::refreshFields()
             const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId);
             const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId);
             if (sp && ep && sp->resolved && ep->resolved) {
-                const double mm = sp->resolvedPos.distanceTo(ep->resolvedPos);
+                const double mm = (ep->constraint == cad::param::PointConstraint::OrthoOffset)
+                    ? ep->distance
+                    : sp->resolvedPos.distanceTo(ep->resolvedPos);
                 m_lenEdit->setText(cad::geo::Units::formatNumberTrimmed(
                     cad::geo::Units::mmToCm(mm)));
             } else {
@@ -525,6 +565,10 @@ void ContextStrip::refreshFields()
                 m_angleEdit->setText(att->arcLengthFormula.isEmpty()
                     ? foldedArcDisplay(att)
                     : att->arcLengthFormula);
+            } else if (att->rotationMode == cad::param::RotationMode::ChordLength) {
+                m_angleEdit->setText(att->chordLengthFormula.isEmpty()
+                    ? foldedChordDisplay(att)
+                    : att->chordLengthFormula);
             } else {
                 // 存储 α ∈ [0,360) → 显示带符号折角（2026-08 v3 定稿，
                 // 与旧旋转 HUD currentAngleDeg 同解）。自由线分支在 else 里
@@ -535,8 +579,11 @@ void ContextStrip::refreshFields()
                     : att->followerAngleFormula);
             }
         } else if (const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId)) {
-            if (!ep->angleFormula.isEmpty()) {
-                m_angleEdit->setText(ep->angleFormula);
+            const auto* sp = block->findPoint(seg->startPointId);
+            const auto* driven = (ep && !ep->angleFormula.isEmpty()) ? ep
+                : ((sp && !sp->angleFormula.isEmpty()) ? sp : ep);
+            if (driven && !driven->angleFormula.isEmpty()) {
+                m_angleEdit->setText(driven->angleFormula);
             } else {
                 const double rotDeg = block->transform.rotation * 180.0 / M_PI;
                 double worldDeg = cad::geo::normalizeDeg360(ep->angle + rotDeg);
@@ -569,6 +616,20 @@ QString ContextStrip::foldedArcDisplay(const cad::param::Attachment* att) const
         cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius)));
 }
 
+/// 弦长/开度模式的显示值 = 带符号折角弦长 (cm)
+QString ContextStrip::foldedChordDisplay(const cad::param::Attachment* att) const
+{
+    if (!att || !m_paramDoc || m_blockId.isNull()) return QStringLiteral("0");
+    const auto* blk = m_paramDoc->findBlock(m_blockId);
+    if (!blk) return QStringLiteral("0");
+    const double radius = blk->segmentLengthAtPoint(att->fromPointId);
+    const double alphaDeg = (radius > 1e-9)
+        ? cad::geo::chordMmToDeg(att->chordLength, radius) : 0.0;
+    const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
+    return cad::geo::Units::formatDegValue(
+        cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius)));
+}
+
 void ContextStrip::refreshChrome()
 {
     if (!m_paramDoc || m_blockId.isNull()) return;
@@ -594,16 +655,22 @@ void ContextStrip::refreshChrome()
         m_angleEdit->setReadOnly(isBridge);
     }
 
-    // 单位段: 弧长模式只有跟随连接才有意义; 自由线/桥线/独立角度线禁用
-    // (独立角 = 角度自管, Resolver 忽略 rotationMode, 切 ⌒ 无意义)。
-    const bool arc = att && !att->angleIndependent
+    // 单位段: 弧长/弦长模式只有跟随连接才有意义; 自由线/桥线/独立角度线禁用
+    // (独立角 = 角度自管, Resolver 忽略 rotationMode, 切 ⌒/↔ 无意义)。
+    const bool isArc = att && !att->angleIndependent
         && att->rotationMode == cad::param::RotationMode::ArcLength;
-    m_btnUnitAngle->setChecked(!arc);
-    m_btnUnitArc->setChecked(arc);
+    const bool isChord = att && !att->angleIndependent
+        && att->rotationMode == cad::param::RotationMode::ChordLength;
+    const bool isAngle = att && !att->angleIndependent
+        && att->rotationMode == cad::param::RotationMode::Angle;
+    m_btnUnitAngle->setChecked(isAngle || (!isArc && !isChord));
+    m_btnUnitArc->setChecked(isArc);
+    m_btnUnitChord->setChecked(isChord);
     const bool unitEnabled = (att != nullptr) && !att->angleIndependent
                              && m_focus == StripFocus::Pinned;
     m_btnUnitAngle->setEnabled(unitEnabled);
     m_btnUnitArc->setEnabled(unitEnabled);
+    m_btnUnitChord->setEnabled(unitEnabled);
 
     // ── 连接维度 拆开/重连 (2026-xx 用户拍板): 位置 (连接) 与角度 (基准)
     // 两个正交维度的双面开关, 与属性对话框同语义。Pinned + 有附件 + 非连接
@@ -678,9 +745,15 @@ void ContextStrip::refreshChrome()
     const bool shadowBasis = shadowBlk && shadowBlk->isShadow;
     const QString shadowMark = shadowBasis
         ? QString::fromUtf8(" · 影子基准") : QString();
-    const QString modeWord = (att && !att->angleIndependent
-                              && att->rotationMode == cad::param::RotationMode::ArcLength)
-        ? QString::fromUtf8(" · 弧长") : QString::fromUtf8(" · 角度");
+    QString modeWord;
+    if (att && !att->angleIndependent) {
+        if (att->rotationMode == cad::param::RotationMode::ArcLength)
+            modeWord = QString::fromUtf8(" · 弧长");
+        else if (att->rotationMode == cad::param::RotationMode::ChordLength)
+            modeWord = QString::fromUtf8(" · 开度");
+        else
+            modeWord = QString::fromUtf8(" · 角度");
+    }
     if (isBridge) {
         m_badge->setText(QString::fromUtf8("桥线"));
     } else if (seg->isCurve()) {
@@ -768,10 +841,33 @@ void ContextStrip::refreshChrome()
     style()->unpolish(this);
     style()->polish(this);
     m_hint->setText(m_connectSession
-        ? QString::fromUtf8("Enter 确认 · Esc 取消")
+        ? QStringLiteral("%1 确认 · %2 取消").arg(kbdBadge(QStringLiteral("Enter")), kbdBadge(QStringLiteral("Esc")))
         : m_focus == StripFocus::Pinned
-            ? QString::fromUtf8("Esc 解除锁定 · Enter 确认")
+            ? QStringLiteral("%1 解除锁定 · %2 确认").arg(kbdBadge(QStringLiteral("Esc")), kbdBadge(QStringLiteral("Enter")))
             : QString::fromUtf8("点击线段锁定后可编辑"));
+
+    if (m_btnPasteLen) m_btnPasteLen->setEnabled(!m_lenEdit->isReadOnly());
+    if (m_btnPasteAngle) m_btnPasteAngle->setEnabled(!m_angleEdit->isReadOnly());
+}
+
+void ContextStrip::applyTheme()
+{
+    const auto& tk = cad::ui::Theme::tokens();
+    if (m_idLabel) {
+        m_idLabel->setStyleSheet(QStringLiteral(
+            "#stripSerial { %1 font-size: 10px; font-weight: 600; color: %2; background: %3; border: 1px solid %4; border-radius: 2px; padding: 2px 6px; }")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily, tk.text1.name(), tk.surface3.name(), tk.borderStrong.name()));
+    }
+    const QString unitChip = cad::ui::chipButtonStyle();
+    if (m_btnUnitAngle)
+        m_btnUnitAngle->setStyleSheet(unitChip);
+    if (m_btnUnitArc)
+        m_btnUnitArc->setStyleSheet(unitChip);
+    if (m_btnUnitChord)
+        m_btnUnitChord->setStyleSheet(unitChip);
+
+    refreshChrome();
+    update();
 }
 
 void ContextStrip::setReadOnlyFields(bool readOnly)
@@ -779,6 +875,8 @@ void ContextStrip::setReadOnlyFields(bool readOnly)
     m_nameEdit->setReadOnly(readOnly);
     m_lenEdit->setReadOnly(readOnly);
     m_angleEdit->setReadOnly(readOnly);
+    if (m_btnPasteLen) m_btnPasteLen->setEnabled(!readOnly);
+    if (m_btnPasteAngle) m_btnPasteAngle->setEnabled(!readOnly);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -843,7 +941,7 @@ void ContextStrip::applyAngle()
     double targetDeg = parsed.value;
     if (!parsed.isNumber) {
         auto r = cad::param::ConditionEngine::evaluate(
-            parsed.formula, m_paramDoc->parameters(), {});
+            parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
         if (!r.ok) return;                        // 无效: 保留最后一次有效几何
         targetDeg = r.value;
     }
@@ -858,6 +956,14 @@ void ContextStrip::applyAngle()
         if (att->rotationMode == cad::param::RotationMode::ArcLength) {
             st.arcLength = cad::geo::Units::cmToMm(targetDeg);
             st.arcLengthFormula = parsed.isNumber ? QString() : parsed.formula;
+        } else if (att->rotationMode == cad::param::RotationMode::ChordLength) {
+            double chordMm = cad::geo::Units::cmToMm(targetDeg);
+            const double radius = block->segmentLengthAtPoint(att->fromPointId);
+            if (radius > 1e-9) {
+                chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
+            }
+            st.chordLength = chordMm;
+            st.chordLengthFormula = parsed.isNumber ? QString() : parsed.formula;
         } else {
             st.followerAngle = targetDeg;
             st.followerAngleFormula = parsed.isNumber ? QString() : parsed.formula;
@@ -865,7 +971,13 @@ void ContextStrip::applyAngle()
     } else {
         auto* ep = block->findPoint(seg->endPointId);
         if (!ep) return;
-        if (ep->constraint != cad::param::PointConstraint::Polar) {
+        if (ep->constraint == cad::param::PointConstraint::OrthoOffset) {
+            // 正交拐角偏置：保持 OrthoOffset 约束，直接更新主轴基准角，绝不退化为 Polar
+            st.endConstraint = static_cast<int>(cad::param::PointConstraint::OrthoOffset);
+            st.endRefPointId = seg->startPointId;
+            st.orthoOffsetDist = ep->orthoOffsetDist;
+            st.orthoOffsetDistFormula = ep->orthoOffsetDistFormula;
+        } else if (ep->constraint != cad::param::PointConstraint::Polar) {
             const auto* sp = block->findPoint(seg->startPointId);
             if (!sp || !sp->resolved || !ep->resolved) return;
             st.endConstraint = static_cast<int>(cad::param::PointConstraint::Polar);
@@ -878,21 +990,60 @@ void ContextStrip::applyAngle()
         const double rotDeg = block->transform.rotation * 180.0 / M_PI;
         const double anchorOffset = (m_rotateSession && m_rotateAnchorIsEnd) ? 180.0 : 0.0;
         st.endAngle = (targetDeg - anchorOffset) - rotDeg;
-        st.endAngleFormula.clear();
+        const double totalOffset = anchorOffset + rotDeg;
+        st.endAngleFormula = parsed.isNumber
+            ? QString()
+            : ((std::abs(totalOffset) > 1e-9)
+                   ? QStringLiteral("(%1)-%2").arg(parsed.formula).arg(totalOffset, 0, 'g', 12)
+                   : parsed.formula);
         if (att && att->angleIndependent) st.attId = QUuid();  // 不碰附件
     }
     commitState(std::move(st));
 }
 
+void ContextStrip::onPasteLength()
+{
+    if (m_lenEdit->isReadOnly()) return;
+    m_lenEdit->clear();
+    const auto* cb = QApplication::clipboard();
+    const QString clean = cb ? QString(cb->text()).remove(QLatin1Char('\r')).remove(QLatin1Char('\n')).trimmed() : QString();
+    if (!clean.isEmpty()) {
+        m_lenEdit->setText(clean);
+    }
+    m_debounce->stop();
+    applyLength();
+}
+
+void ContextStrip::onPasteAngle()
+{
+    if (m_angleEdit->isReadOnly()) return;
+    m_angleEdit->clear();
+    const auto* cb = QApplication::clipboard();
+    const QString clean = cb ? QString(cb->text()).remove(QLatin1Char('\r')).remove(QLatin1Char('\n')).trimmed() : QString();
+    if (!clean.isEmpty()) {
+        m_angleEdit->setText(clean);
+    }
+    if (m_connectSession) {
+        // connectAngleTextChanged(clean) 已经在 setText 触发 textChanged 时 emit
+    } else {
+        m_debounce->stop();
+        applyAngle();
+    }
+}
+
 void ContextStrip::onUnitToggled(bool wantArc)
+{
+    onUnitSelected(wantArc ? cad::param::RotationMode::ArcLength
+                           : cad::param::RotationMode::Angle);
+}
+
+void ContextStrip::onUnitSelected(cad::param::RotationMode target)
 {
     // 连接角度会话 (二期): 单位切换经信号回传手势 (几何保持换算、公式驱动
     // 拒绝切换都在手势侧); emit 后立即 refreshChrome 兜底 —— 被拒时按钮弹回
     // 原模式 (拒绝路径不触发 resolved, 否则按钮会停在错误的一侧)。
     if (m_connectSession) {
         if (m_connectAttId.isNull()) return;
-        const auto target = wantArc ? cad::param::RotationMode::ArcLength
-                                    : cad::param::RotationMode::Angle;
         emit connectAngleModeChanged(target);
         refreshChrome();
         return;
@@ -900,8 +1051,6 @@ void ContextStrip::onUnitToggled(bool wantArc)
     if (m_focus != StripFocus::Pinned || !m_paramDoc || m_blockId.isNull()) return;
     const cad::param::Attachment* att = findEditAttachment();
     if (!att) return;   // 自由线无 rotationMode 概念
-    const auto target = wantArc ? cad::param::RotationMode::ArcLength
-                                : cad::param::RotationMode::Angle;
     if (att->rotationMode == target) return;
 
     // 几何保持切换 (2026-12: 公式驱动不再拒绝 —— 走共享换算, 公式跨域换算
@@ -912,7 +1061,7 @@ void ContextStrip::onUnitToggled(bool wantArc)
                                     ->segmentLengthAtPoint(att->fromPointId)
                               : 0.0;
     const auto res = cad::param::followerModeSwitchValues(
-        *att, radius, target, m_paramDoc->parameters(), {});
+        *att, radius, target, m_paramDoc->parameters(), m_paramDoc->conditions());
 
     auto st = snapshotState();
     st.attId = att->id;
@@ -920,6 +1069,9 @@ void ContextStrip::onUnitToggled(bool wantArc)
     if (target == cad::param::RotationMode::ArcLength) {
         st.arcLength = res.arcMm;
         st.arcLengthFormula = res.arcFormula;
+    } else if (target == cad::param::RotationMode::ChordLength) {
+        st.chordLength = res.chordMm;
+        st.chordLengthFormula = res.chordFormula;
     } else {
         st.followerAngle = res.angle;
         st.followerAngleFormula = res.angleFormula;
@@ -1011,7 +1163,7 @@ const cad::param::Attachment* ContextStrip::findEditAttachment() const
     const auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
     if (!block || !seg) return nullptr;
 
-    // 本段的角度由挂在本段起点或终点的跟随连接驱动。块可能有多条线段而跟随
+    // 本段的角度由挂在本段起点、终点或辅助点的跟随连接驱动。块可能有多条线段而跟随
     // 挂在另一条的端点上 —— 块级首配会显示并编辑**错误的**角度 (同属性对话框
     // 与 SegmentEditBar 的匹配规则)。钉 (pin) 永不驱动角度。
     for (const auto& att : m_paramDoc->attachments()) {
@@ -1019,6 +1171,10 @@ const cad::param::Attachment* ContextStrip::findEditAttachment() const
         if (att.fromPointId == seg->startPointId
             || att.fromPointId == seg->endPointId)
             return &att;
+        for (const auto& aid : seg->auxPointIds) {
+            if (att.fromPointId == aid)
+                return &att;
+        }
     }
     return nullptr;
 }
@@ -1040,6 +1196,8 @@ cad::cmd::SegmentEditBarCommand::State ContextStrip::snapshotState() const
         st.endAngleFormula = ep->angleFormula;
         st.endConstraint = static_cast<int>(ep->constraint);
         st.endRefPointId = ep->refPointId;
+        st.orthoOffsetDist = ep->orthoOffsetDist;
+        st.orthoOffsetDistFormula = ep->orthoOffsetDistFormula;
     }
     if (const cad::param::Attachment* att = findEditAttachment()) {
         st.attId = att->id;
@@ -1047,6 +1205,8 @@ cad::cmd::SegmentEditBarCommand::State ContextStrip::snapshotState() const
         st.followerAngleFormula = att->followerAngleFormula;
         st.arcLength = att->arcLength;
         st.arcLengthFormula = att->arcLengthFormula;
+        st.chordLength = att->chordLength;
+        st.chordLengthFormula = att->chordLengthFormula;
         st.rotationMode = static_cast<int>(att->rotationMode);
     }
     return st;

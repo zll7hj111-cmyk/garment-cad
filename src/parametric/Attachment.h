@@ -7,10 +7,12 @@ namespace cad::param {
 
 /// How the follower's rotation is driven relative to the leader.
 enum class RotationMode {
-    Angle,      ///< Driven by follower angle (followerAngle, degrees).
-    ArcLength,  ///< Driven by arc length (arcLength, mm internal / cm formula).
-                ///< angleRad = arcLength / segmentLength; CCW positive,
-                ///< follows the same follower-angle direction convention as Angle.
+    Angle,        ///< Driven by follower angle (followerAngle, degrees).
+    ArcLength,    ///< Driven by arc length (arcLength, mm internal / cm formula).
+                  ///< angleRad = arcLength / segmentLength; CCW positive,
+                  ///< follows the same follower-angle direction convention as Angle.
+    ChordLength,  ///< Driven by chord length / opening distance (chordLength, mm internal / cm formula).
+                  ///< chord = 2 * r * sin(theta / 2); CCW positive.
 };
 
 /// 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): 连接姿态保持 —— 旋转照旧由
@@ -115,7 +117,7 @@ struct Attachment {
                                  ///< non-empty. Evaluates to degrees (no unit
                                  ///< conversion). Example: "shoulder_slope+5".
 
-    // --- Arc-length rotation mode ---
+    // --- Arc-length & Chord-length rotation mode ---
     RotationMode rotationMode = RotationMode::Angle;
 
     double arcLength = 0.0;      ///< Arc length in mm (internal). The endpoint
@@ -124,6 +126,12 @@ struct Attachment {
     QString arcLengthFormula;    ///< Optional formula overriding arcLength.
                                  ///< cm domain (auto-converted to mm).
                                  ///< Example: "sleeve_cap/2".
+
+    double chordLength = 0.0;    ///< 直线弦长 / 开度距离 in mm (internal).
+                                 ///< 端点与闭合基准端点之间的直线跨度距离。
+    QString chordLengthFormula;  ///< Optional formula overriding chordLength.
+                                 ///< cm domain (auto-converted to mm).
+                                 ///< Example: "D_dart" or "3.0".
 
     bool isPin = false;  ///< Pure position pin (no rotation drive). A bridge line
                          ///< (Block::isBridge) is the follower of exactly TWO pin

@@ -138,6 +138,10 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
         att->rotationMode = cad::param::RotationMode::Angle;
         att->followerAngle = m_initialAngle;
         att->followerAngleFormula.clear();
+        att->arcLength = 0.0;
+        att->arcLengthFormula.clear();
+        att->chordLength = 0.0;
+        att->chordLengthFormula.clear();
         m_angleMode = cad::param::RotationMode::Angle;
         m_angleValid = true;
     } else {
@@ -154,6 +158,17 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
                 att->rotationMode = cad::param::RotationMode::ArcLength;
                 att->arcLength = cad::geo::degToArcMm(alphaDeg, radius);
                 att->arcLengthFormula.clear();
+            } else if (m_angleMode == cad::param::RotationMode::ChordLength) {
+                // 输入 = 直线弦长 / 开度距离 (cm)
+                const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
+                const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
+                double chordMm = cad::geo::Units::cmToMm(numVal);
+                if (radius > 1e-9) {
+                    chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
+                }
+                att->rotationMode = cad::param::RotationMode::ChordLength;
+                att->chordLength = chordMm;
+                att->chordLengthFormula.clear();
             } else {
                 // 输入 = 带符号折角 → 存储 α（v3 定稿）。
                 att->rotationMode = cad::param::RotationMode::Angle;
@@ -163,12 +178,16 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
             m_angleValid = true;
         } else {
             auto r = cad::param::ConditionEngine::evaluate(
-                parsed.formula, m_paramDoc->parameters(), {});
+                parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
             if (r.ok) {
                 if (m_angleMode == cad::param::RotationMode::ArcLength) {
                     att->rotationMode = cad::param::RotationMode::ArcLength;
                     att->arcLength = geo::Units::cmToMm(r.value);
                     att->arcLengthFormula = parsed.formula;
+                } else if (m_angleMode == cad::param::RotationMode::ChordLength) {
+                    att->rotationMode = cad::param::RotationMode::ChordLength;
+                    att->chordLength = geo::Units::cmToMm(r.value);
+                    att->chordLengthFormula = parsed.formula;
                 } else {
                     att->rotationMode = cad::param::RotationMode::Angle;
                     att->followerAngle = r.value;
@@ -220,12 +239,16 @@ void ConnectGesture::onAngleModeChanged(cad::param::RotationMode mode)
     const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
     const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
     const auto res = cad::param::followerModeSwitchValues(
-        *att, radius, mode, m_paramDoc->parameters(), {});
+        *att, radius, mode, m_paramDoc->parameters(), m_paramDoc->conditions());
 
     if (mode == cad::param::RotationMode::ArcLength) {
         att->rotationMode = cad::param::RotationMode::ArcLength;
         att->arcLength = res.arcMm;
         att->arcLengthFormula = res.arcFormula;
+    } else if (mode == cad::param::RotationMode::ChordLength) {
+        att->rotationMode = cad::param::RotationMode::ChordLength;
+        att->chordLength = res.chordMm;
+        att->chordLengthFormula = res.chordFormula;
     } else {
         att->rotationMode = cad::param::RotationMode::Angle;
         att->followerAngle = res.angle;
@@ -257,6 +280,8 @@ void ConnectGesture::cancelAngle()
             a->followerAngleFormula.clear();
             a->arcLength = 0.0;
             a->arcLengthFormula.clear();
+            a->chordLength = 0.0;
+            a->chordLengthFormula.clear();
         }
         m_paramDoc->resolveAll();
     }

@@ -79,10 +79,12 @@ bool preserveAngleRefOnReattach(ParamDocument* doc, Attachment& att);
 ///         一致); 公式存在时 Resolver 按公式求值, 公式语义跟随当前模式。
 struct FollowerModeSwitchResult
 {
-    double angle = 0.0;    ///< followerAngle write-back (target Angle).
-    double arcMm = 0.0;    ///< arcLength write-back (target ArcLength, mm).
-    QString angleFormula;  ///< target Angle: 源公式原样搬移 (非空 = 公式驱动).
-    QString arcFormula;    ///< target ArcLength: 源公式原样搬移.
+    double angle = 0.0;      ///< followerAngle write-back (target Angle).
+    double arcMm = 0.0;      ///< arcLength write-back (target ArcLength, mm).
+    double chordMm = 0.0;    ///< chordLength write-back (target ChordLength, mm).
+    QString angleFormula;    ///< target Angle: 源公式原样搬移 (非空 = 公式驱动).
+    QString arcFormula;      ///< target ArcLength: 源公式原样搬移.
+    QString chordFormula;    ///< target ChordLength: 源公式原样搬移.
 };
 
 inline FollowerModeSwitchResult followerModeSwitchValues(
@@ -94,6 +96,7 @@ inline FollowerModeSwitchResult followerModeSwitchValues(
 
     // Effective angle (degrees) of the CURRENT mode, preserving geometry.
     double curDeg = att.followerAngle;
+    QString curFormula;
     if (att.rotationMode == RotationMode::ArcLength) {
         double arcMm = att.arcLength;
         // 求值失败保持 baseline 的 arcLength (out 参数语义), 用兜底值继续。
@@ -101,24 +104,33 @@ inline FollowerModeSwitchResult followerModeSwitchValues(
                                                 params, condByName, arcMm);
         curDeg = cad::geo::arcMmToDeg(arcMm, radiusMm);
         curDeg = cad::geo::normalizeDeg360(curDeg);
-    } else if (!att.followerAngleFormula.isEmpty()) {
-        auto r = ConditionEngine::evaluate(att.followerAngleFormula,
-                                           params, condByName);
-        if (r.ok) curDeg = r.value;
+        curFormula = att.arcLengthFormula;
+    } else if (att.rotationMode == RotationMode::ChordLength) {
+        double chordMm = att.chordLength;
+        (void)ConditionEngine::evaluateLengthMm(att.chordLengthFormula,
+                                                params, condByName, chordMm);
+        curDeg = cad::geo::chordMmToDeg(chordMm, radiusMm);
+        curDeg = cad::geo::normalizeDeg360(curDeg);
+        curFormula = att.chordLengthFormula;
+    } else {
+        if (!att.followerAngleFormula.isEmpty()) {
+            auto r = ConditionEngine::evaluate(att.followerAngleFormula,
+                                               params, condByName);
+            if (r.ok) curDeg = r.value;
+        }
+        curFormula = att.followerAngleFormula;
     }
 
     // Write the TARGET mode's storage field.
-    // NOTE: the arc write-back uses std::fmod (NOT normalizeDeg360) to match the
-    // historical mode-toggle exactly — the effective angle may come from a raw
-    // formula value outside [0, 360°), and fmod keeps the signed remainder
-    // (multi-turn/negative folds) that normalize would collapse.
     if (targetMode == RotationMode::ArcLength) {
         out.arcMm = cad::geo::degToArcMm(std::fmod(curDeg, 360.0), radiusMm);
-        // 公式原样搬移 (用户拍板 2026-12: 不乘换算系数, 语义跟随当前模式)。
-        out.arcFormula = att.followerAngleFormula;
+        out.arcFormula = curFormula;
+    } else if (targetMode == RotationMode::ChordLength) {
+        out.chordMm = cad::geo::degToChordMm(cad::geo::normalizeDeg180(curDeg), radiusMm);
+        out.chordFormula = curFormula;
     } else {
         out.angle = curDeg;
-        out.angleFormula = att.arcLengthFormula;
+        out.angleFormula = curFormula;
     }
     return out;
 }

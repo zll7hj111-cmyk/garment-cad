@@ -56,6 +56,9 @@ private:
 ///     行为逐位保持 (无影子, 活引用)。
 /// redo(angleOnly=false): 基准是影子 → 挂回本体 ⑤: 删影子 + Att2 还原到
 ///   本体 (活引用恢复, 重新焊接); 基准非影子 → 旧恢复语义。
+///   @p forceMaster (面板显式重定向到本体用): 跳过重连缓存自动选路
+///   (ReconnectMounted), 强制走 ReconnectMaster —— 用户明确选了本体落点,
+///   不允许被 lastHost 缓存改道到其他宿主。
 /// Undo 全部一步回到动作前状态 (影子块/连接 verbatim 快照)。
 class SetAttachmentAngleOnlyCommand : public QUndoCommand
 {
@@ -64,12 +67,13 @@ public:
                                   const QUuid& attId, bool angleOnly,
                                   const QUuid& explicitToPoint = QUuid(),
                                   const QUuid& explicitToSegment = QUuid(),
+                                  bool forceMaster = false,
                                   QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
 
 private:
-    enum class Mode { Legacy, FreshDetach, ReDetach, ReconnectMaster };
+    enum class Mode { Legacy, FreshDetach, ReDetach, ReconnectMaster, ReconnectMounted };
     Mode m_mode = Mode::Legacy;
 
     cad::param::ParamDocument* m_doc;
@@ -83,54 +87,19 @@ private:
     cad::param::Attachment m_newAtt;
     cad::param::Attachment m_oldAtt1;   ///< 挂载关系 Att1 (④删除/⑤删除, undo 还原)。
     bool m_hasAtt1 = false;
+    cad::param::Attachment m_newAtt1;   ///< ReconnectMounted 新挂载 Att1 (redo 添加/undo 删除)。
     cad::param::Block m_shadow;
     bool m_hasShadow = false;
     QUuid m_explicitToPoint;            ///< ⑤ 显式落点 (挂载路由拖回本体)。
     QUuid m_explicitToSegment;
-};
-
-/// 影子挂载 (拆开影子线段, DETACH_SHADOW_DESIGN.md §7.4 状态③): 跟随线
-/// (基准=影子) 拖到新宿主线上 → Att1 = 影子→宿主 (Δ 反算保向, 挂载瞬间影子/
-/// 跟随线世界方向不变) + Att2 恢复位置钉点并重新焊接 —— 形成 L3→影子→L2
-/// 双连接链 (R3: 宿主旋转链式带动跟随线)。undo 一步回到挂载前拆开态。
-class ShadowMountCommand : public QUndoCommand
-{
-public:
-    ShadowMountCommand(cad::param::ParamDocument* doc,
-                       const QUuid& shadowId,
-                       const QUuid& toBlockId,
-                       const QUuid& toPointId,
-                       const QUuid& toSegmentId,
-                       QUndoCommand* parent = nullptr);
-    void redo() override;
-    void undo() override;
-
-private:
-    cad::param::ParamDocument* m_doc;
-    QUuid m_att2Id;                     ///< 跟随线→影子 连接 id (翻旗)。
-    cad::param::Attachment m_att1;      ///< 新挂载连接 (verbatim 重放)。
-    cad::param::Attachment m_oldAtt2;   ///< 挂载前 Att2 (undo verbatim 还原)。
-    bool m_valid = false;
-};
-
-/// 清除影子 (面板「清除影子」入口, DETACH_SHADOW_DESIGN.md §7.3): 删除 Att2
-/// (跟随线失去角度基准转纯自由线) 与 Att1 (若挂载) 及影子块本身。undo 一步
-/// verbatim 还原影子块 + 全部连接。
-class RemoveShadowCommand : public QUndoCommand
-{
-public:
-    RemoveShadowCommand(cad::param::ParamDocument* doc,
-                        const QUuid& shadowId,
-                        QUndoCommand* parent = nullptr);
-    void redo() override;
-    void undo() override;
-
-private:
-    cad::param::ParamDocument* m_doc;
-    QUuid m_shadowId;
-    cad::param::Block m_shadow;                 ///< 影子块 verbatim (undo 还原)。
-    std::vector<cad::param::Attachment> m_atts; ///< Att1/Att2 verbatim。
-    bool m_valid = false;
+    bool m_forceMaster = false;         ///< ⑤ 跳过重连缓存, 强制挂回本体。
+    QUuid m_oldShadowLastHostBlockId;
+    QUuid m_oldShadowLastHostPointId;
+    QUuid m_oldShadowLastHostSegmentId;
 };
 
 } // namespace cad::cmd
+
+#include "document/commands/ShadowLifecycleCommands.h"
+
+

@@ -30,15 +30,7 @@ private:
     cad::param::ParamDocument* m_doc;
     QUuid m_attId;
     bool m_newIndependent;
-    bool m_oldIndependent;
-    bool m_oldAngleOnly = false;
-    cad::param::SlideMode m_oldSlideMode = cad::param::SlideMode::None;
-    bool m_oldLocked = false;
-    double m_oldFollowerAngle = 0.0;
-    QString m_oldFollowerFormula;
-    cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
-    double m_oldArcLength = 0.0;
-    QString m_oldArcFormula;
+    cad::param::Attachment m_oldAtt;
 };
 
 /// 位置锚点与角度基准分离 (用户需求 2026): sets a separate angle-reference
@@ -69,20 +61,7 @@ private:
     QUuid m_newRefPointId;
     QUuid m_newRef2BlockId;
     QUuid m_newRef2PointId;
-    QUuid m_oldRefBlockId;
-    QUuid m_oldRefSegmentId;
-    QUuid m_oldRefPointId;
-    QUuid m_oldRef2BlockId;
-    QUuid m_oldRef2PointId;
-    bool m_oldAngleIndependent = false;
-    bool m_oldAngleOnly = false;
-    cad::param::SlideMode m_oldSlideMode = cad::param::SlideMode::None;
-    bool m_oldLocked = false;
-    double m_oldFollowerAngle = 0.0;
-    QString m_oldFollowerFormula;
-    cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
-    double m_oldArcLength = 0.0;
-    QString m_oldArcFormula;
+    cad::param::Attachment m_oldAtt;
 };
 
 /// 重新挂接 (用户需求 2026): 解焊后把跟随线拖到新的位置宿主 A, 同时保留
@@ -131,12 +110,7 @@ private:
     cad::param::ParamDocument* m_doc;
     QUuid m_attId;
     QUuid m_newFromPointId;
-    QUuid m_oldFromPointId;
-    double m_oldFollowerAngle = 0.0;
-    QString m_oldFollowerFormula;
-    cad::param::RotationMode m_oldRotationMode = cad::param::RotationMode::Angle;
-    double m_oldArcLength = 0.0;
-    QString m_oldArcFormula;
+    cad::param::Attachment m_oldAtt;
 };
 
 /// 仅角度线拖端点重挂 (用户报告 2026-12: 使用了引用线段但无连接线段的线,
@@ -168,8 +142,8 @@ private:
     double m_oldRotation = 0.0;
 };
 
-/// Set the follower angle (followerAngle) and/or arc-length rotation state
-/// of an attachment. Supports both angle and arc-length modes.
+/// Set the follower angle (followerAngle) and/or arc-length / chord-length rotation state
+/// of an attachment. Supports angle, arc-length, and chord-length modes.
 class SetFollowerAngleCommand : public QUndoCommand
 {
 public:
@@ -179,6 +153,8 @@ public:
                           cad::param::RotationMode newMode = cad::param::RotationMode::Angle,
                           double newArcLength = 0.0,
                           const QString& newArcFormula = QString(),
+                          double newChordLength = 0.0,
+                          const QString& newChordFormula = QString(),
                           QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
@@ -200,6 +176,10 @@ private:
     double m_newArcLength;
     QString m_oldArcFormula;
     QString m_newArcFormula;
+    double m_oldChordLength = 0.0;
+    double m_newChordLength = 0.0;
+    QString m_oldChordFormula;
+    QString m_newChordFormula;
 };
 
 } // namespace cad::cmd

@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <numbers>
+#include <algorithm>
 
 namespace cad::geo {
 
@@ -68,6 +69,30 @@ inline double arcMmToDeg(double arcMm, double radiusMm)
 inline double degToArcMm(double deg, double radiusMm)
 {
     return deg * kPi / 180.0 * radiusMm;
+}
+
+// ─── Chord length ↔ angle conversion (直线弦长/开度模式) ──────────────────────
+
+/// Convert a chord length (mm) on a circle of the given radius (mm) to the
+/// subtended angle in degrees.
+/// chord = 2 * r * sin(theta / 2)  =>  theta = 2 * asin(chord / (2 * r))
+/// Returns 0 for degenerate radius (<= 1e-9).
+inline double chordMmToDeg(double chordMm, double radiusMm)
+{
+    if (radiusMm <= 1e-9) return 0.0;
+    const double ratio = std::clamp(std::abs(chordMm) / (2.0 * radiusMm), 0.0, 1.0);
+    const double deg = 2.0 * std::asin(ratio) * 180.0 / kPi;
+    return (chordMm < 0.0) ? -deg : deg;
+}
+
+/// Convert an angle in degrees to the chord length (mm) on a circle of the
+/// given radius (mm). Inverse of chordMmToDeg.
+inline double degToChordMm(double deg, double radiusMm)
+{
+    if (radiusMm <= 1e-9) return 0.0;
+    const double rad = std::abs(deg) * kPi / 180.0;
+    const double chord = 2.0 * radiusMm * std::sin(rad * 0.5);
+    return (deg < 0.0) ? -chord : chord;
 }
 
 } // namespace cad::geo

@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QUuid>
 #include <QUndoStack>
 #include <cmath>
@@ -16,6 +16,9 @@
 #include "geometry/Vec2.h"
 #include "geometry/CurveMath.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
+#include "parametric/FollowerAngle.h"
+#include "document/DocumentSerializer.h"
 
 using namespace cad::param;
 using cad::geo::Vec2;
@@ -84,6 +87,7 @@ private slots:
     void shadowDetach_mountChainFollowsHost();
     void shadowDetach_formulaOffsetPreserved();
     void shadowLifecycle_stateMachineTransitions();
+    void shadowReconnect_cachesLastConnectedObject();
     void shadowDetach_degradeAndClearShadow();
     void slideMode_alongAndPerpConstraints();
     void slideMode_dragOffsetsUndoRedo();
@@ -93,6 +97,8 @@ private slots:
     void dartLine_computesEndAndFollows();
     void dartLine_undoRedo();
     void dartLine_degradeOnHostDelete();
+    void auxPointAttachment_detachAndReconnect();
+    void chordLength_openingDistanceSolvingAndSwitching();
 };
 
 void TestAttachmentCommands::setAttachmentAngleOnly_keepsFollowAngle()
@@ -617,6 +623,95 @@ void TestAttachmentCommands::shadowLifecycle_stateMachineTransitions()
                  "⑦ Att2 回 angleOnly (拆开态)");
         QVERIFY2(!doc.findBlock(cId), "⑦ 宿主已删");
     }
+}
+
+void TestAttachmentCommands::shadowReconnect_cachesLastConnectedObject()
+{
+    ParamDocument doc;
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 50.0, Vec2{0, -80});
+    auto [cId, cStart, cEnd, cSeg] = makeLine(doc, 80.0, Vec2{300, -80});
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId; att.fromPointId = bStart;
+    att.toBlockId = aId;   att.toPointId = aEnd; att.toSegmentId = aSeg;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+
+    QUndoStack stack;
+
+    // 1. 初次拆开 (从 A 拆开): 建立影子 S, 缓存上次宿主为 A
+    stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, true));
+    const auto* attAfterDetach = doc.findAttachment(att.id);
+    QVERIFY(attAfterDetach && attAfterDetach->angleOnly);
+    const auto* shadow = doc.blockById(attAfterDetach->toBlockId);
+    QVERIFY(shadow && shadow->isShadow);
+    QCOMPARE(shadow->shadowMasterBlockId, aId);
+    QCOMPARE(shadow->shadowLastHostBlockId, aId);
+    QCOMPARE(shadow->shadowLastHostPointId, aEnd);
+
+    // 2. 挂载到新线 C (ShadowMountCommand): 验证焊接 isLocked 与拖动闭包
+    const QUuid shadowId = shadow->id;
+    stack.push(new cad::cmd::ShadowMountCommand(&doc, shadowId, cId, cStart, cSeg));
+    const auto* att1 = doc.findAtt1OfShadow(shadowId);
+    QVERIFY(att1 != nullptr);
+    QCOMPARE(att1->toBlockId, cId);
+    QCOMPARE(att1->toPointId, cStart);
+    QVERIFY2(att1->isLocked, "影子挂载 Att1 必须焊接锁定 (isLocked=true)");
+    const auto* shadowMounted = doc.blockById(shadowId);
+    QCOMPARE(shadowMounted->shadowLastHostBlockId, cId);
+
+    // 拖动闭包验证: 拖 B 时, lockedClosure 必须包含 B, 影子, C (整体跟随不撕裂)
+    const QSet<QUuid> closure = doc.lockedClosure(QSet<QUuid>{bId});
+    QVERIFY2(closure.contains(bId) && closure.contains(shadowId) && closure.contains(cId),
+             "焊接闭包包含 B、影子与 C (选择工具拖动不撕裂)");
+
+    // 3. 从新线 C 拆开 (ReDetach): 影子断开 C, 处于拆开态, 但记住上次宿主是 C
+    stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, true));
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    const auto* attDetachedFromC = doc.findAttachment(att.id);
+    QVERIFY(attDetachedFromC && attDetachedFromC->angleOnly);
+    const auto* shadowDetachedFromC = doc.blockById(shadowId);
+    QVERIFY(shadowDetachedFromC != nullptr);
+    QCOMPARE(shadowDetachedFromC->shadowLastHostBlockId, cId);
+    QCOMPARE(shadowDetachedFromC->shadowLastHostPointId, cStart);
+
+    // 4. 重连 (SetAttachmentAngleOnlyCommand, angleOnly=false):
+    // 核心断言: 必须重连到最近连接的 C, 而不是本体 A!
+    stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, false));
+    QCOMPARE(doc.attachments().size(), size_t(2));
+    const auto* att1Reconnected = doc.findAtt1OfShadow(shadowId);
+    QVERIFY2(att1Reconnected != nullptr, "重连后重新建立 Att1");
+    QCOMPARE(att1Reconnected->toBlockId, cId);
+    QCOMPARE(att1Reconnected->toPointId, cStart);
+    QVERIFY(att1Reconnected->isLocked);
+    const auto* att2Reconnected = doc.findAtt2OfShadow(shadowId);
+    QVERIFY(att2Reconnected != nullptr && !att2Reconnected->angleOnly && att2Reconnected->isLocked);
+
+    // 验证位置: B 的起点与 C 的起点对齐
+    const Vec2 bStartWorld = doc.findBlock(bId)->worldPos(bStart);
+    const Vec2 cStartWorld = doc.findBlock(cId)->worldPos(cStart);
+    QVERIFY2(bStartWorld.distanceTo(cStartWorld) < 1e-4, "B 重连回 C 的端点位置对齐");
+
+    // 5. 撤销重连 (undo): 回到从 C 拆开态
+    stack.undo();
+    QCOMPARE(doc.attachments().size(), size_t(1));
+    QVERIFY(doc.findAttachment(att.id)->angleOnly);
+    QVERIFY(doc.findAtt1OfShadow(shadowId) == nullptr);
+
+    // 重做 (redo): 再次恢复连到 C
+    stack.redo();
+    QCOMPARE(doc.attachments().size(), size_t(2));
+    QVERIFY(!doc.findAttachment(att.id)->angleOnly);
+    QVERIFY(doc.findAtt1OfShadow(shadowId) != nullptr);
+
+    // 6. 再次拆开后, 尝试连回本体 A (通过挂回本体路由)
+    stack.push(new cad::cmd::SetAttachmentAngleOnlyCommand(&doc, att.id, true));
+    QVERIFY(doc.reattachShadowToMaster(att.id));
+    QVERIFY2(doc.blockById(shadowId) == nullptr, "连回本体后影子销毁");
+    QCOMPARE(doc.findAttachment(att.id)->toBlockId, aId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1395,6 +1490,233 @@ void TestAttachmentCommands::dartLine_degradeOnHostDelete()
     QVERIFY(doc.findBlock(dartId)->dartStartBlockId.isNull());
 }
 
+void TestAttachmentCommands::auxPointAttachment_detachAndReconnect()
+{
+    ParamDocument doc;
+    // L1: 宿主线 (0,0) -> (100,0)
+    auto [l1Id, l1Start, l1End, l1Seg] = makeLine(doc, 100.0);
+
+    // 在 L1 上添加辅助点 (percent=0.5, 即 (50,0))
+    ParamPoint aux;
+    aux.constraint = PointConstraint::Interpolated;
+    aux.hostSegmentId = l1Seg;
+    aux.interpPercent = 0.5;
+    aux.isAuxiliary = true;
+    const QUuid auxId = aux.id;
+    doc.blockById(l1Id)->addPoint(std::move(aux));
+    doc.blockById(l1Id)->findSegment(l1Seg)->auxPointIds.push_back(auxId);
+    doc.resolveAll();
+
+    const Vec2 auxWorld = doc.findBlock(l1Id)->worldPos(auxId);
+    QVERIFY(std::abs(auxWorld.x - 50.0) < 1e-6);
+    QVERIFY(std::abs(auxWorld.y - 0.0) < 1e-6);
+
+    // L2: 跟随线，起点附着到 L1 的辅助点上
+    auto [l2Id, l2Start, l2End, l2Seg] = makeLine(doc, 50.0, Vec2{50.0, 0.0});
+    Attachment att;
+    att.fromBlockId = l2Id;
+    att.fromPointId = l2Start;
+    att.toBlockId = l1Id;
+    att.toPointId = auxId;
+    att.toSegmentId = l1Seg;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    // 验证跟随线起点吸附在辅助点上
+    QVERIFY((doc.findBlock(l2Id)->worldPos(l2Start) - auxWorld).length() < 1e-6);
+
+    // 辅助点挂载拆开：必须彻底释放连接 (RemoveAttachmentCommand)
+    QUndoStack stack;
+    stack.push(new cad::cmd::RemoveAttachmentCommand(&doc, att.id));
+    doc.resolveAll();
+
+    // 验证连接已在数据中彻底释放，无诊断报错
+    QVERIFY(doc.findAttachment(att.id) == nullptr);
+    QVERIFY(doc.diagnostics().empty());
+
+    // 拆开后：L2 为完全自由线，可以自由连接任何其他线段 (如 L3)
+    auto [l3Id, l3Start, l3End, l3Seg] = makeLine(doc, 80.0, Vec2{100.0, 100.0});
+    Attachment attNew;
+    attNew.fromBlockId = l2Id;
+    attNew.fromPointId = l2Start;
+    attNew.toBlockId = l3Id;
+    attNew.toPointId = l3Start;
+    attNew.toSegmentId = l3Seg;
+    attNew.followerAngle = 45.0;
+    QVERIFY2(doc.addAttachment(attNew), "拆开辅助点后，跟随线必须能成功连接到其他端点");
+    doc.resolveAll();
+    QVERIFY(doc.diagnostics().empty());
+
+    // 移除新连接，验证撤销与重做
+    doc.removeAttachment(attNew.id);
+    doc.resolveAll();
+
+    // 验证 undo: 原连接完整恢复回辅助点
+    stack.undo();
+    doc.resolveAll();
+    const auto* restoredAtt = doc.findAttachment(att.id);
+    QVERIFY(restoredAtt != nullptr);
+    QCOMPARE(restoredAtt->toPointId, auxId);
+    QVERIFY(doc.diagnostics().empty());
+    QVERIFY((doc.findBlock(l2Id)->worldPos(l2Start) - auxWorld).length() < 1e-6);
+
+    // 验证 redo: 再次彻底释放连接
+    stack.redo();
+    doc.resolveAll();
+    QVERIFY(doc.findAttachment(att.id) == nullptr);
+    QVERIFY(doc.diagnostics().empty());
+}
+
+void TestAttachmentCommands::chordLength_openingDistanceSolvingAndSwitching()
+{
+    ParamDocument doc;
+    // Leader A: (0,0) -> (100,0), length 100mm
+    auto [aId, aStart, aEnd, aSeg] = makeLine(doc, 100.0);
+    // Follower B: length 100mm
+    auto [bId, bStart, bEnd, bSeg] = makeLine(doc, 100.0);
+
+    for (const auto& b : doc.blocks())
+        if (auto* mb = doc.blockById(b.id)) mb->layer = layerIdAt(doc, 1);
+
+    Attachment att;
+    att.fromBlockId = bId;
+    att.fromPointId = bStart;
+    att.toBlockId = aId;
+    att.toPointId = aStart;
+    att.toSegmentId = aSeg;
+    att.rotationMode = RotationMode::ChordLength;
+    att.chordLength = 30.0; // 30 mm opening
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    // In closed state, B folds onto A: angle 0°, B's end is at (100, 0).
+    // With chord = 30.0mm on radius R = 100.0mm:
+    // theta = 2 * asin(30 / 200) = 2 * asin(0.15) ≈ 17.254°
+    const Vec2 bEndWorld = doc.findBlock(bId)->worldPos(bEnd);
+    const Vec2 closedEndWorld = doc.findBlock(aId)->worldPos(aEnd);
+    const double physicalChord = bEndWorld.distanceTo(closedEndWorld);
+    QVERIFY2(std::abs(physicalChord - 30.0) < 1e-4,
+             qPrintable(QString("端点直线开度应为 30mm, 实际=%1").arg(physicalChord)));
+
+    // Test formula overriding chordLength: formula in cm domain (e.g. "D_dart" = 3.0 cm -> 30 mm)
+    FormulaVariable fv;
+    fv.name = QStringLiteral("D_dart");
+    fv.expression = QStringLiteral("3.0");
+    fv.comment = QStringLiteral("测试省道开度");
+    doc.addFormula(fv);
+    auto* mutAtt = doc.findAttachment(att.id);
+    QVERIFY(mutAtt);
+    mutAtt->chordLengthFormula = QStringLiteral("D_dart");
+    doc.resolveAll();
+
+    const Vec2 bEndFormulaWorld = doc.findBlock(bId)->worldPos(bEnd);
+    const double formulaChord = bEndFormulaWorld.distanceTo(closedEndWorld);
+    QVERIFY2(std::abs(formulaChord - 30.0) < 1e-4, "公式求值开度应严格等于 30mm");
+
+    // Test extreme / degenerate cases:
+    // 1. C = 0: fully closed (0°)
+    mutAtt->chordLengthFormula.clear();
+    mutAtt->chordLength = 0.0;
+    doc.resolveAll();
+    const Vec2 closedPos = doc.findBlock(bId)->worldPos(bEnd);
+    QVERIFY2(closedPos.distanceTo(closedEndWorld) < 1e-4, "开度 0 应完全闭合折叠");
+
+    // 2. C > 2R (e.g. 250mm > 200mm): clamped safely to 180° straight continuation, no NaN
+    mutAtt->chordLength = 250.0;
+    doc.resolveAll();
+    const Vec2 straightPos = doc.findBlock(bId)->worldPos(bEnd);
+    // 180° continuation from (0,0) along opposite direction: (-100, 0)
+    QVERIFY2(straightPos.distanceTo(Vec2{-100.0, 0.0}) < 1e-4, "超出直径应平滑钳制为 180° 直行");
+    QVERIFY(std::isfinite(straightPos.x) && std::isfinite(straightPos.y));
+
+    // 3. Negative chordLength: reverse opening (opposite side)
+    mutAtt->chordLengthFormula.clear();
+    mutAtt->chordLength = -30.0;
+    doc.resolveAll();
+    const Vec2 negPos = doc.findBlock(bId)->worldPos(bEnd);
+    const double negChord = negPos.distanceTo(closedEndWorld);
+    QVERIFY2(std::abs(negChord - 30.0) < 1e-4, "负开度物理跨度应等于 30mm");
+    // bEndWorld 的 y 与 negPos 的 y 应互为相反数（对称反向展开）
+    QVERIFY2(std::abs(negPos.y - (-bEndWorld.y)) < 1e-4, "负开度应向相反侧（顺时针）对称反向展开");
+
+    // 4. Negative formula overriding chordLength (e.g. "-D_dart" -> -3.0 cm -> -30 mm)
+    mutAtt->chordLengthFormula = QStringLiteral("-D_dart");
+    doc.resolveAll();
+    const Vec2 negFormulaPos = doc.findBlock(bId)->worldPos(bEnd);
+    const double negFormulaChord = negFormulaPos.distanceTo(closedEndWorld);
+    QVERIFY2(std::abs(negFormulaChord - 30.0) < 1e-4, "负公式开度物理跨度应等于 30mm");
+    QVERIFY2(negFormulaPos.distanceTo(negPos) < 1e-4, "负公式与负数值几何位置严格一致");
+
+    // 5. Compound expression (e.g. "5.0 - 8.0" -> -3.0 cm -> -30 mm)
+    mutAtt->chordLengthFormula = QStringLiteral("5.0 - 8.0");
+    doc.resolveAll();
+    const Vec2 exprPos = doc.findBlock(bId)->worldPos(bEnd);
+    QVERIFY2(exprPos.distanceTo(negPos) < 1e-4, "复合表达式 5-8 求值应与负数开度严格一致");
+
+    // 6. Mode switch preserving negative direction
+    mutAtt->chordLengthFormula.clear();
+    mutAtt->chordLength = -30.0;
+    doc.resolveAll();
+    auto resNegAngle = followerModeSwitchValues(*mutAtt, 100.0, RotationMode::Angle, doc.parameters(), {});
+    mutAtt->rotationMode = RotationMode::Angle;
+    mutAtt->followerAngle = resNegAngle.angle;
+    doc.resolveAll();
+    const Vec2 switchedAnglePos = doc.findBlock(bId)->worldPos(bEnd);
+    QVERIFY2(switchedAnglePos.distanceTo(negPos) < 1e-4, "负开度切角度几何保持");
+
+    auto resNegChord = followerModeSwitchValues(*mutAtt, 100.0, RotationMode::ChordLength, doc.parameters(), {});
+    QVERIFY2(resNegChord.chordMm < -1.0, "切回开度应保持为负开度");
+    QVERIFY2(std::abs(resNegChord.chordMm - (-30.0)) < 1e-4, "切回开度数值严格保真");
+    mutAtt->rotationMode = RotationMode::ChordLength;
+    mutAtt->chordLength = resNegChord.chordMm;
+    doc.resolveAll();
+    const Vec2 switchedBackPos = doc.findBlock(bId)->worldPos(bEnd);
+    QVERIFY2(switchedBackPos.distanceTo(negPos) < 1e-4, "切回开度几何位置保持");
+
+    // Test 3-mode zero-jump geometry switch
+    mutAtt->chordLength = 30.0;
+    doc.resolveAll();
+    const Vec2 origPos = doc.findBlock(bId)->worldPos(bEnd);
+
+    // Switch to ArcLength
+    auto resArc = followerModeSwitchValues(*mutAtt, 100.0, RotationMode::ArcLength, doc.parameters(), {});
+    mutAtt->rotationMode = RotationMode::ArcLength;
+    mutAtt->arcLength = resArc.arcMm;
+    doc.resolveAll();
+    const Vec2 arcPos = doc.findBlock(bId)->worldPos(bEnd);
+    QVERIFY2(arcPos.distanceTo(origPos) < 1e-4, "ChordLength -> ArcLength 几何位置保持");
+
+    // Switch to Angle
+    auto resAngle = followerModeSwitchValues(*mutAtt, 100.0, RotationMode::Angle, doc.parameters(), {});
+    mutAtt->rotationMode = RotationMode::Angle;
+    mutAtt->followerAngle = resAngle.angle;
+    doc.resolveAll();
+    const Vec2 anglePos = doc.findBlock(bId)->worldPos(bEnd);
+    QVERIFY2(anglePos.distanceTo(origPos) < 1e-4, "ArcLength -> Angle 几何位置保持");
+
+    // Switch back to ChordLength
+    auto resChord = followerModeSwitchValues(*mutAtt, 100.0, RotationMode::ChordLength, doc.parameters(), {});
+    mutAtt->rotationMode = RotationMode::ChordLength;
+    mutAtt->chordLength = resChord.chordMm;
+    doc.resolveAll();
+    const Vec2 backPos = doc.findBlock(bId)->worldPos(bEnd);
+    QVERIFY2(backPos.distanceTo(origPos) < 1e-4, "Angle -> ChordLength 几何位置保持");
+    QVERIFY2(std::abs(mutAtt->chordLength - 30.0) < 1e-4, "回切弦长数值保真");
+
+    // Test serialization round-trip
+    mutAtt->chordLengthFormula = QStringLiteral("D_dart * 1.5");
+    const QJsonObject json = DocumentSerializer::serialize(doc);
+    ParamDocument doc2;
+    DocumentSerializer::deserialize(doc2, json);
+    const auto* roundAtt = doc2.findAttachment(att.id);
+    QVERIFY(roundAtt);
+    QCOMPARE(roundAtt->rotationMode, RotationMode::ChordLength);
+    QVERIFY2(std::abs(roundAtt->chordLength - 30.0) < 1e-6, "序列化往返 chordLength 保真");
+    QCOMPARE(roundAtt->chordLengthFormula, QStringLiteral("D_dart * 1.5"));
+}
+
+
 // ---------------------------------------------------------------------------
 // ReverseSegmentCommand (线段换向): 几何保形 + 驱动端互换。
 // 换向后两端世界位置零跳变; 修改长度驱动另一端 (旧起点成为 Polar 驱动端);
@@ -1403,3 +1725,4 @@ void TestAttachmentCommands::dartLine_degradeOnHostDelete()
 
 QTEST_MAIN(TestAttachmentCommands)
 #include "test_attachment_commands.moc"
+

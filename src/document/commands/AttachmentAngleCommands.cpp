@@ -6,6 +6,35 @@
 
 namespace cad::cmd {
 
+namespace {
+
+void restoreAngleState(cad::param::Attachment& dst, const cad::param::Attachment& src)
+{
+    dst.angleIndependent = src.angleIndependent;
+    dst.angleOnly = src.angleOnly;
+    dst.slideMode = src.slideMode;
+    dst.isLocked = src.isLocked;
+    dst.followerAngle = src.followerAngle;
+    dst.followerAngleFormula = src.followerAngleFormula;
+    dst.rotationMode = src.rotationMode;
+    dst.arcLength = src.arcLength;
+    dst.arcLengthFormula = src.arcLengthFormula;
+    dst.chordLength = src.chordLength;
+    dst.chordLengthFormula = src.chordLengthFormula;
+}
+
+void resetAngleToDefault(cad::param::Attachment& a)
+{
+    a.followerAngleFormula.clear();
+    a.rotationMode = cad::param::RotationMode::Angle;
+    a.arcLength = 0.0;
+    a.arcLengthFormula.clear();
+    a.chordLength = 0.0;
+    a.chordLengthFormula.clear();
+}
+
+} // namespace
+
 // ─── SetAttachmentAngleIndependentCommand ───
 
 SetAttachmentAngleIndependentCommand::SetAttachmentAngleIndependentCommand(
@@ -15,23 +44,10 @@ SetAttachmentAngleIndependentCommand::SetAttachmentAngleIndependentCommand(
     , m_doc(doc)
     , m_attId(attId)
     , m_newIndependent(angleIndependent)
-    , m_oldIndependent(false)
 {
     setText(QStringLiteral("角度独立"));
-
-    for (const auto& a : doc->attachments()) {
-        if (a.id == attId) {
-            m_oldIndependent = a.angleIndependent;
-            m_oldAngleOnly = a.angleOnly;
-            m_oldSlideMode = a.slideMode;
-            m_oldLocked = a.isLocked;
-            m_oldFollowerAngle = a.followerAngle;
-            m_oldFollowerFormula = a.followerAngleFormula;
-            m_oldRotationMode = a.rotationMode;
-            m_oldArcLength = a.arcLength;
-            m_oldArcFormula = a.arcLengthFormula;
-            break;
-        }
+    if (const auto* a = doc->findAttachment(attId)) {
+        m_oldAtt = *a;
     }
 }
 
@@ -51,10 +67,7 @@ void SetAttachmentAngleIndependentCommand::redo()
             const double localDir = from->directionAtPoint(a->fromPointId);
             a->followerAngle = cad::param::backSolveFollowerAngle(
                 from->transform.rotation, localDir, refWorld);
-            a->followerAngleFormula.clear();
-            a->rotationMode = cad::param::RotationMode::Angle;
-            a->arcLength = 0.0;
-            a->arcLengthFormula.clear();
+            resetAngleToDefault(*a);
         }
         a->slideMode = cad::param::SlideMode::None;
     }
@@ -65,15 +78,7 @@ void SetAttachmentAngleIndependentCommand::undo()
 {
     auto* a = m_doc->findAttachment(m_attId);
     if (!a) return;
-    a->angleIndependent = m_oldIndependent;
-    a->angleOnly = m_oldAngleOnly;
-    a->slideMode = m_oldSlideMode;
-    a->isLocked = m_oldLocked;
-    a->followerAngle = m_oldFollowerAngle;
-    a->followerAngleFormula = m_oldFollowerFormula;
-    a->rotationMode = m_oldRotationMode;
-    a->arcLength = m_oldArcLength;
-    a->arcLengthFormula = m_oldArcFormula;
+    restoreAngleState(*a, m_oldAtt);
     m_doc->resolveAll();
 }
 
@@ -95,25 +100,8 @@ SetAttachmentAngleRefCommand::SetAttachmentAngleRefCommand(
     , m_newRef2PointId(newRef2PointId)
 {
     setText(QStringLiteral("修改角度基准"));
-
-    for (const auto& a : doc->attachments()) {
-        if (a.id == attId) {
-            m_oldRefBlockId = a.angleRefBlockId;
-            m_oldRefSegmentId = a.angleRefSegmentId;
-            m_oldRefPointId = a.angleRefPointId;
-            m_oldRef2BlockId = a.angleRef2BlockId;
-            m_oldRef2PointId = a.angleRef2PointId;
-            m_oldAngleIndependent = a.angleIndependent;
-            m_oldAngleOnly = a.angleOnly;
-            m_oldSlideMode = a.slideMode;
-            m_oldLocked = a.isLocked;
-            m_oldFollowerAngle = a.followerAngle;
-            m_oldFollowerFormula = a.followerAngleFormula;
-            m_oldRotationMode = a.rotationMode;
-            m_oldArcLength = a.arcLength;
-            m_oldArcFormula = a.arcLengthFormula;
-            break;
-        }
+    if (const auto* a = doc->findAttachment(attId)) {
+        m_oldAtt = *a;
     }
 }
 
@@ -137,10 +125,7 @@ void SetAttachmentAngleRefCommand::redo()
         a->followerAngle = cad::param::backSolveFollowerAngle(
             from->transform.rotation, localDir, refWorld);
     }
-    a->followerAngleFormula.clear();
-    a->rotationMode = cad::param::RotationMode::Angle;
-    a->arcLength = 0.0;
-    a->arcLengthFormula.clear();
+    resetAngleToDefault(*a);
     m_doc->resolveAll();
 }
 
@@ -148,20 +133,12 @@ void SetAttachmentAngleRefCommand::undo()
 {
     auto* a = m_doc->findAttachment(m_attId);
     if (!a) return;
-    a->angleRefBlockId = m_oldRefBlockId;
-    a->angleRefSegmentId = m_oldRefSegmentId;
-    a->angleRefPointId = m_oldRefPointId;
-    a->angleRef2BlockId = m_oldRef2BlockId;
-    a->angleRef2PointId = m_oldRef2PointId;
-    a->angleIndependent = m_oldAngleIndependent;
-    a->angleOnly = m_oldAngleOnly;
-    a->slideMode = m_oldSlideMode;
-    a->isLocked = m_oldLocked;
-    a->followerAngle = m_oldFollowerAngle;
-    a->followerAngleFormula = m_oldFollowerFormula;
-    a->rotationMode = m_oldRotationMode;
-    a->arcLength = m_oldArcLength;
-    a->arcLengthFormula = m_oldArcFormula;
+    a->angleRefBlockId = m_oldAtt.angleRefBlockId;
+    a->angleRefSegmentId = m_oldAtt.angleRefSegmentId;
+    a->angleRefPointId = m_oldAtt.angleRefPointId;
+    a->angleRef2BlockId = m_oldAtt.angleRef2BlockId;
+    a->angleRef2PointId = m_oldAtt.angleRef2PointId;
+    restoreAngleState(*a, m_oldAtt);
     m_doc->resolveAll();
 }
 
@@ -215,10 +192,7 @@ void ReattachAttachmentCommand::redo()
         newAtt.followerAngle = cad::param::backSolveFollowerAngle(
             from->transform.rotation, localDir, refWorld);
     }
-    newAtt.followerAngleFormula.clear();
-    newAtt.rotationMode = cad::param::RotationMode::Angle;
-    newAtt.arcLength = 0.0;
-    newAtt.arcLengthFormula.clear();
+    resetAngleToDefault(newAtt);
 
     m_doc->removeAttachment(m_attId);
     cad::param::RawModelAccess::addAttachmentRaw(*m_doc, newAtt);
@@ -249,16 +223,8 @@ SetAlignPointCommand::SetAlignPointCommand(
     , m_newFromPointId(newFromPointId)
 {
     setText(QStringLiteral("设置对齐点"));
-    for (const auto& a : doc->attachments()) {
-        if (a.id == attId) {
-            m_oldFromPointId = a.fromPointId;
-            m_oldFollowerAngle = a.followerAngle;
-            m_oldFollowerFormula = a.followerAngleFormula;
-            m_oldRotationMode = a.rotationMode;
-            m_oldArcLength = a.arcLength;
-            m_oldArcFormula = a.arcLengthFormula;
-            break;
-        }
+    if (const auto* a = doc->findAttachment(attId)) {
+        m_oldAtt = *a;
     }
 }
 
@@ -274,12 +240,8 @@ void SetAlignPointCommand::undo()
 {
     auto* a = m_doc->findAttachment(m_attId);
     if (!a) return;
-    a->fromPointId = m_oldFromPointId;
-    a->followerAngle = m_oldFollowerAngle;
-    a->followerAngleFormula = m_oldFollowerFormula;
-    a->rotationMode = m_oldRotationMode;
-    a->arcLength = m_oldArcLength;
-    a->arcLengthFormula = m_oldArcFormula;
+    a->fromPointId = m_oldAtt.fromPointId;
+    restoreAngleState(*a, m_oldAtt);
     m_doc->resolveAll();
 }
 
@@ -327,6 +289,8 @@ SetFollowerAngleCommand::SetFollowerAngleCommand(cad::param::ParamDocument* doc,
                                              cad::param::RotationMode newMode,
                                              double newArcLength,
                                              const QString& newArcFormula,
+                                             double newChordLength,
+                                             const QString& newChordFormula,
                                              QUndoCommand* parent)
     : QUndoCommand(parent)
     , m_doc(doc)
@@ -339,6 +303,9 @@ SetFollowerAngleCommand::SetFollowerAngleCommand(cad::param::ParamDocument* doc,
     , m_newArcLength(newArcLength)
     , m_oldArcLength(0.0)
     , m_newArcFormula(newArcFormula)
+    , m_oldChordLength(0.0)
+    , m_newChordLength(newChordLength)
+    , m_newChordFormula(newChordFormula)
 {
     setText(QStringLiteral("\xe4\xbf\xae\xe6\x94\xb9\xe8\xb7\x9f\xe9\x9a\x8f\xe8\xa7\x92\xe5\xba\xa6"));  // 修改跟随角度
 
@@ -349,6 +316,8 @@ SetFollowerAngleCommand::SetFollowerAngleCommand(cad::param::ParamDocument* doc,
             m_oldMode = a.rotationMode;
             m_oldArcLength = a.arcLength;
             m_oldArcFormula = a.arcLengthFormula;
+            m_oldChordLength = a.chordLength;
+            m_oldChordFormula = a.chordLengthFormula;
             break;
         }
     }
@@ -362,6 +331,8 @@ void SetFollowerAngleCommand::redo()
         a->rotationMode = m_newMode;
         a->arcLength = m_newArcLength;
         a->arcLengthFormula = m_newArcFormula;
+        a->chordLength = m_newChordLength;
+        a->chordLengthFormula = m_newChordFormula;
     }
     m_doc->resolveAll();
 }
@@ -374,6 +345,8 @@ void SetFollowerAngleCommand::undo()
         a->rotationMode = m_oldMode;
         a->arcLength = m_oldArcLength;
         a->arcLengthFormula = m_oldArcFormula;
+        a->chordLength = m_oldChordLength;
+        a->chordLengthFormula = m_oldChordFormula;
     }
     m_doc->resolveAll();
 }
@@ -386,9 +359,11 @@ bool SetFollowerAngleCommand::mergeWith(const QUndoCommand* other)
     if (cmd->m_attId != m_attId) return false;
     if (!m_newFormula.isEmpty() || !cmd->m_newFormula.isEmpty()) return false;
     if (!m_newArcFormula.isEmpty() || !cmd->m_newArcFormula.isEmpty()) return false;
+    if (!m_newChordFormula.isEmpty() || !cmd->m_newChordFormula.isEmpty()) return false;
     m_newAngle = cmd->m_newAngle;
     m_newMode = cmd->m_newMode;
     m_newArcLength = cmd->m_newArcLength;
+    m_newChordLength = cmd->m_newChordLength;
     return true;
 }
 

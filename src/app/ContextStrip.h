@@ -88,6 +88,8 @@ public:
     /// 画线过程中的只读读数 (0,0 = 收起)。显示的是"正在画的那条线"。
     void showStrokePreview(double lenCm, double angleDeg);
     void hideBar();
+    /// Re-apply theme-token driven styles after a theme change (light/dark).
+    void applyTheme();
     /// 创建后 Esc 的收口: 回退 undo 栈到创建点 —— 连同创建命令与之后的
     /// 条带编辑一起撤销(线消失), 然后隐藏条带。由宿主接 cancelRequested
     /// 后调用 (撤销栈归宿主所有)。
@@ -102,10 +104,13 @@ public:
     // ── 控件访问 (测试与宿主) ──
     [[nodiscard]] ElaLineEdit* nameEdit() const { return m_nameEdit; }
     [[nodiscard]] ElaLineEdit* lengthEdit() const { return m_lenEdit; }
+    [[nodiscard]] ElaPushButton* pasteLengthButton() const { return m_btnPasteLen; }
     [[nodiscard]] ElaLineEdit* angleEdit() const { return m_angleEdit; }
+    [[nodiscard]] ElaPushButton* pasteAngleButton() const { return m_btnPasteAngle; }
     [[nodiscard]] ElaPushButton* reverseButton() const { return m_btnReverse; }
     [[nodiscard]] QPushButton* unitAngleButton() const { return m_btnUnitAngle; }
     [[nodiscard]] QPushButton* unitArcButton() const { return m_btnUnitArc; }
+    [[nodiscard]] QPushButton* unitChordButton() const { return m_btnUnitChord; }
     /// 连接维度 拆开/重连 双面按钮 (位置维度; 与属性对话框「连接」同语义)。
     [[nodiscard]] ElaPushButton* posDetachButton() const { return m_btnPosDetach; }
     /// 连接维度 拆开/重连 双面按钮 (角度维度; 与属性对话框「基准」同语义)。
@@ -154,15 +159,20 @@ private:
     /// 弧长模式的显示值 = 带符号折角弧长 (cm): 多圈弧长先落到 ±180° 侧再
     /// 换算 (2026-08 v3 定稿, 同旧旋转 HUD currentModeValue)。
     [[nodiscard]] QString foldedArcDisplay(const cad::param::Attachment* att) const;
+    /// 弦长/开度模式的显示值 = 带符号折角弦长 (cm)
+    [[nodiscard]] QString foldedChordDisplay(const cad::param::Attachment* att) const;
     /// 节流到期: 真正应用待定的悬停候选。
     void flushHover();
     [[nodiscard]] bool inputHasFocus() const;
     void onUnitToggled(bool wantArc);
+    void onUnitSelected(cad::param::RotationMode mode);
     void onReverseClicked();
     /// 连接维度 拆开/重连 (位置维度): 拆开 = angleOnly、重连 = 位置回宿主+焊接。
     void onPosDetachClicked();
     /// 连接维度 拆开/重连 (角度维度): 拆开 = angleIndependent、重连 = 恢复跟随。
     void onAngleDetachClicked();
+    void onPasteLength();
+    void onPasteAngle();
     void returnFocusToCanvas();
 
     cad::param::ParamDocument* m_paramDoc = nullptr;
@@ -190,10 +200,13 @@ private:
     ElaText*       m_idLabel = nullptr;
     ElaLineEdit*   m_nameEdit = nullptr;
     ElaLineEdit*   m_lenEdit = nullptr;
+    ElaPushButton* m_btnPasteLen = nullptr;
     ElaLineEdit*   m_angleEdit = nullptr;
+    ElaPushButton* m_btnPasteAngle = nullptr;
     QPushButton*   m_btnUnitAngle = nullptr;   ///< ° (原生 QPushButton: Ela 无 checked 渲染).
     QPushButton*   m_btnUnitArc = nullptr;     ///< ⌒
-    QButtonGroup*  m_unitGroup = nullptr;      ///< °/⌒ 互斥 (防双选).
+    QPushButton*   m_btnUnitChord = nullptr;   ///< ↔
+    QButtonGroup*  m_unitGroup = nullptr;      ///< °/⌒/↔ 互斥 (防多选).
     ElaPushButton* m_btnReverse = nullptr;
     ElaPushButton* m_btnBasis = nullptr;
     ElaPushButton* m_btnPosDetach = nullptr;    ///< 连接·拆开/重连 (位置维度).

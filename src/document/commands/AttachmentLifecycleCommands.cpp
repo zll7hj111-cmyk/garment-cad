@@ -91,7 +91,7 @@ void RemoveAttachmentCommand::undo()
 SetAttachmentAngleOnlyCommand::SetAttachmentAngleOnlyCommand(
     cad::param::ParamDocument* doc, const QUuid& attId, bool angleOnly,
     const QUuid& explicitToPoint, const QUuid& explicitToSegment,
-    QUndoCommand* parent)
+    bool forceMaster, QUndoCommand* parent)
     : QUndoCommand(parent)
     , m_doc(doc)
     , m_attId(attId)
@@ -101,6 +101,7 @@ SetAttachmentAngleOnlyCommand::SetAttachmentAngleOnlyCommand(
     , m_oldSlideMode(cad::param::SlideMode::None)
     , m_explicitToPoint(explicitToPoint)
     , m_explicitToSegment(explicitToSegment)
+    , m_forceMaster(forceMaster)
 {
     setText(QStringLiteral("\xe6\x8b\x86\xe5\xbc\x80\xe4\xbf\x9d\xe7\x95\x99\xe8\xa7\x92\xe5\xba\xa6"));  // 拆开保留角度
 
@@ -122,6 +123,11 @@ SetAttachmentAngleOnlyCommand::SetAttachmentAngleOnlyCommand(
 
     if (angleOnly && toIsShadow) {
         m_mode = Mode::ReDetach;
+        if (const auto* s = doc->findBlock(att->toBlockId)) {
+            m_oldShadowLastHostBlockId = s->shadowLastHostBlockId;
+            m_oldShadowLastHostPointId = s->shadowLastHostPointId;
+            m_oldShadowLastHostSegmentId = s->shadowLastHostSegmentId;
+        }
         for (const auto& a : doc->attachments()) {
             if (!a.isPin && a.fromBlockId == att->toBlockId) {
                 m_oldAtt1 = a;
@@ -143,12 +149,33 @@ SetAttachmentAngleOnlyCommand::SetAttachmentAngleOnlyCommand(
         return;
     }
     if (toIsShadow) {
+        // 重连缓存机制: 只缓存上次连接的对象。
+        // 若上次挂载的是新宿主 (且存活) → ReconnectMounted; 若为本体 → ReconnectMaster。
+        const auto* shadowBlk = doc->findBlock(m_oldAtt.toBlockId);
+        const QUuid lastHost = (shadowBlk && !shadowBlk->shadowLastHostBlockId.isNull())
+            ? shadowBlk->shadowLastHostBlockId
+            : (shadowBlk ? shadowBlk->shadowMasterBlockId : QUuid());
+
+        if (!m_forceMaster && shadowBlk
+            && lastHost != shadowBlk->shadowMasterBlockId && doc->findBlock(lastHost)) {
+            cad::param::Attachment mountAtt1;
+            if (doc->buildShadowMount(shadowBlk->id, lastHost,
+                                      shadowBlk->shadowLastHostPointId,
+                                      shadowBlk->shadowLastHostSegmentId,
+                                      mountAtt1)) {
+                mountAtt1.isLocked = true;
+                m_mode = Mode::ReconnectMounted;
+                m_newAtt1 = mountAtt1;
+                return;
+            }
+        }
+
         cad::param::Attachment restored;
         if (doc->buildShadowReconnect(attId, restored,
                                       m_explicitToPoint, m_explicitToSegment)) {
             m_mode = Mode::ReconnectMaster;
             m_newAtt = std::move(restored);
-            if (const auto* shadowBlk = doc->findBlock(m_oldAtt.toBlockId)) {
+            if (shadowBlk) {
                 m_shadow = *shadowBlk;
                 m_hasShadow = true;
             }
@@ -177,14 +204,33 @@ void SetAttachmentAngleOnlyCommand::redo()
         return;
     }
     case Mode::ReDetach: {
-        if (m_hasAtt1 && m_doc->findAttachment(m_oldAtt1.id))
-            m_doc->removeAttachment(m_oldAtt1.id);
+        if (m_hasAtt1) {
+            if (auto* s = m_doc->findBlock(m_oldAtt.toBlockId)) {
+                s->shadowLastHostBlockId = m_oldAtt1.toBlockId;
+                s->shadowLastHostPointId = m_oldAtt1.toPointId;
+                s->shadowLastHostSegmentId = m_oldAtt1.toSegmentId;
+            }
+            if (m_doc->findAttachment(m_oldAtt1.id))
+                m_doc->removeAttachment(m_oldAtt1.id);
+        }
         if (auto* a = m_doc->findAttachment(m_attId)) {
             a->angleOnly = true;
             a->isLocked = false;
             a->slideMode = cad::param::SlideMode::None;
         }
         m_doc->resolveAll();
+        return;
+    }
+    case Mode::ReconnectMounted: {
+        if (!m_doc->findAttachment(m_newAtt1.id))
+            cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_newAtt1);
+        if (auto* a = m_doc->findAttachment(m_attId)) {
+            a->angleOnly = false;
+            a->isLocked = true;
+            a->slideMode = cad::param::SlideMode::None;
+        }
+        m_doc->resolveAll();
+        emit m_doc->structureChanged();
         return;
     }
     case Mode::ReconnectMaster: {
@@ -225,8 +271,22 @@ void SetAttachmentAngleOnlyCommand::undo()
     case Mode::ReDetach: {
         if (auto* a = m_doc->findAttachment(m_attId))
             *a = m_oldAtt;
+        if (auto* s = m_doc->findBlock(m_oldAtt.toBlockId)) {
+            s->shadowLastHostBlockId = m_oldShadowLastHostBlockId;
+            s->shadowLastHostPointId = m_oldShadowLastHostPointId;
+            s->shadowLastHostSegmentId = m_oldShadowLastHostSegmentId;
+        }
         if (m_hasAtt1)
             cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_oldAtt1);
+        m_doc->resolveAll();
+        emit m_doc->structureChanged();
+        return;
+    }
+    case Mode::ReconnectMounted: {
+        if (m_doc->findAttachment(m_newAtt1.id))
+            m_doc->removeAttachment(m_newAtt1.id);
+        if (auto* a = m_doc->findAttachment(m_attId))
+            *a = m_oldAtt;
         m_doc->resolveAll();
         emit m_doc->structureChanged();
         return;
@@ -254,98 +314,5 @@ void SetAttachmentAngleOnlyCommand::undo()
     m_doc->resolveAll();
 }
 
-// ─── ShadowMountCommand ───
-
-ShadowMountCommand::ShadowMountCommand(cad::param::ParamDocument* doc,
-                                       const QUuid& shadowId,
-                                       const QUuid& toBlockId,
-                                       const QUuid& toPointId,
-                                       const QUuid& toSegmentId,
-                                       QUndoCommand* parent)
-    : QUndoCommand(parent)
-    , m_doc(doc)
-{
-    setText(QStringLiteral("\xe5\xbd\xb1\xe5\xad\x90\xe6\x8c\x82\xe8\xbd\xbd"));
-
-    cad::param::Attachment att1;
-    if (!doc->buildShadowMount(shadowId, toBlockId, toPointId, toSegmentId, att1))
-        return;
-    m_valid = true;
-    m_att1 = att1;
-    for (const auto& a : doc->attachments()) {
-        if (!a.isPin && a.fromComponentId.isNull() && a.toBlockId == shadowId) {
-            m_att2Id = a.id;
-            m_oldAtt2 = a;
-            break;
-        }
-    }
-}
-
-void ShadowMountCommand::redo()
-{
-    if (!m_valid) return;
-    if (!m_doc->findAttachment(m_att1.id))
-        cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_att1);
-    if (auto* a = m_doc->findAttachment(m_att2Id)) {
-        a->angleOnly = false;
-        a->isLocked = true;
-        a->slideMode = cad::param::SlideMode::None;
-    }
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
-}
-
-void ShadowMountCommand::undo()
-{
-    if (!m_valid) return;
-    if (m_doc->findAttachment(m_att1.id))
-        m_doc->removeAttachment(m_att1.id);
-    if (auto* a = m_doc->findAttachment(m_att2Id))
-        *a = m_oldAtt2;
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
-}
-
-// ─── RemoveShadowCommand ───
-
-RemoveShadowCommand::RemoveShadowCommand(cad::param::ParamDocument* doc,
-                                         const QUuid& shadowId,
-                                         QUndoCommand* parent)
-    : QUndoCommand(parent)
-    , m_doc(doc)
-    , m_shadowId(shadowId)
-{
-    setText(QStringLiteral("\xe6\xb8\x85\xe9\x99\xa4\xe5\xbd\xb1\xe5\xad\x90"));
-
-    const auto* shadowBlk = doc->findBlock(shadowId);
-    if (!shadowBlk || !shadowBlk->isShadow) return;
-    m_valid = true;
-    m_shadow = *shadowBlk;
-    for (const auto& a : doc->attachments()) {
-        if (a.isPin) continue;
-        if (a.toBlockId == shadowId || a.fromBlockId == shadowId)
-            m_atts.push_back(a);
-    }
-}
-
-void RemoveShadowCommand::redo()
-{
-    if (!m_valid) return;
-    m_doc->removeBlock(m_shadowId);
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
-}
-
-void RemoveShadowCommand::undo()
-{
-    if (!m_valid) return;
-    if (!m_doc->findBlock(m_shadowId))
-        cad::param::RawModelAccess::addBlockRaw(*m_doc, m_shadow);
-    for (const auto& att : m_atts)
-        if (!m_doc->findAttachment(att.id))
-            cad::param::RawModelAccess::addAttachmentRaw(*m_doc, att);
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
-}
-
 } // namespace cad::cmd
+
