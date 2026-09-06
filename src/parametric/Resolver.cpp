@@ -810,6 +810,14 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         ConditionEngine::evaluateLengthMm(att.arcLengthFormula, params, conditioned, arcMm, ctx);
         const double radius = from.segmentLengthAtPoint(att.fromPointId);
         angleRad = cad::geo::degToRad(cad::geo::arcMmToDeg(arcMm, radius));
+    } else if (att.rotationMode == RotationMode::ChordLength) {
+        // Chord-length / opening distance mode (直线弦长/开度模式).
+        // Opening distance C = 2 * r * sin(theta / 2).
+        // Closed at C = 0 (0° = 两线折叠重叠), opening outwards.
+        double chordMm = att.chordLength;
+        ConditionEngine::evaluateLengthMm(att.chordLengthFormula, params, conditioned, chordMm, ctx);
+        const double radius = from.segmentLengthAtPoint(att.fromPointId);
+        angleRad = cad::geo::degToRad(cad::geo::chordMmToDeg(chordMm, radius));
     } else {
         // Angle mode (default).
         double angleDeg = att.followerAngle;

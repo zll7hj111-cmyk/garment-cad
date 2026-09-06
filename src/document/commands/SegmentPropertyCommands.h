@@ -150,12 +150,16 @@ public:
         QString endAngleFormula;
         int endConstraint = 0;
         QUuid endRefPointId;
+        double orthoOffsetDist = 0.0;
+        QString orthoOffsetDistFormula;
         // Follower attachment (null id = free line).
         QUuid attId;
         double followerAngle = 0.0;
         QString followerAngleFormula;
         double arcLength = 0.0;
         QString arcLengthFormula;
+        double chordLength = 0.0;
+        QString chordLengthFormula;
         int rotationMode = 0;
     };
 

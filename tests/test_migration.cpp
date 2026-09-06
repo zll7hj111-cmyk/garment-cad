@@ -144,6 +144,8 @@ private slots:
     // 旧档零迁移负载; 已删除影子偏转功能的残留键 (shadowAnchorRotDeg /
     // noFollowRotate) 清理不回归; 链 1→2→3 无缺口。
     void v2ShadowLegacyKeysDroppedAndChainComplete();
+    // v3 → v4 (2026-09 批量可选字段): 纯直通, 逐字节不变; 链 0→…→4 无缺口。
+    void v3OptionalFieldsPassThrough();
 };
 
 void TestMigration::v0InsertsAuxLayerAndShiftsIndices()
@@ -559,7 +561,7 @@ void TestMigration::v2ShadowLegacyKeysDroppedAndChainComplete()
         if (s.from == 2 && QLatin1String(s.name) == QLatin1String("shadow-line"))
             hasShadowLineStep = true;
     QVERIFY2(hasShadowLineStep, "注册表应含 {2, shadow-line} 步骤");
-    QCOMPARE(cad::doc::kFormatVersion, 3);
+    QCOMPARE(cad::doc::kFormatVersion, 4);
 
     QStringList warnings;
     QString error;
@@ -575,6 +577,33 @@ void TestMigration::v2ShadowLegacyKeysDroppedAndChainComplete()
     // 直通: 块字段 (无 isShadow 键的旧档) 原样透传, 不添不减。
     QCOMPARE(outDoc["blocks"].toArray().size(), 2);
     QVERIFY(!outDoc["blocks"].toArray()[0].toObject().contains(QStringLiteral("isShadow")));
+}
+
+void TestMigration::v3OptionalFieldsPassThrough()
+{
+    // v3 → v4 "optional-fields": 2026-09 批量可选字段 (点 OrthoOffset /
+    // 线段 showOrthoAxis / 连接 ChordLength / 角度测量 flipA/flipB / 影子
+    // 重连缓存 shadowLastHost*) 全部 Optional —— 旧档缺键 = 安全默认值,
+    // 本步纯直通 (逐字节不变), 注册它只为让版本账目闭合: 新档 version=4,
+    // 旧构建硬拒而非带着默认值静默丢字段。
+    bool hasStep = false;
+    for (const auto& s : cad::doc::FormatMigration::steps())
+        if (s.from == 3 && QLatin1String(s.name) == QLatin1String("optional-fields"))
+            hasStep = true;
+    QVERIFY2(hasStep, "注册表应含 {3, optional-fields} 步骤");
+
+    QJsonObject root;
+    QJsonObject docObj;
+    docObj["pointSeq"] = 1;
+    docObj["lineSeq"]  = 1;
+    root["document"] = docObj;
+    root["variables"] = QJsonObject();
+
+    QString error;
+    const QByteArray before = QJsonDocument(root).toJson();
+    QVERIFY2(cad::doc::FormatMigration::migrate(3, root, nullptr, &error),
+             qPrintable(error));
+    QCOMPARE(QJsonDocument(root).toJson(), before);   // 纯直通, 一字节不动
 }
 
 QTEST_GUILESS_MAIN(TestMigration)

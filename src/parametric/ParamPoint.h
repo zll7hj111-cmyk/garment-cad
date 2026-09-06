@@ -21,6 +21,7 @@ enum class PointConstraint {
                   ///< start→end direction). The point follows the chord when the
                   ///< segment endpoints move (parametric). Referenced by the host
                   ///< segment's passPointIds to shape the curve.
+    OrthoOffset,  ///< Orthogonal offset: refPoint + main axis distance + perpendicular offset distance.
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -99,6 +100,10 @@ struct ParamPoint {
     /// interAngle/interAngleFormula are kept as the fallback when the aim
     /// point is deleted (degradeOrphanedIntersections clears this reference).
     QUuid   interAimPointId;           ///< Point the ray points at (any block).
+
+    // --- OrthoOffset mode (正交拐角偏置: 沿主轴走 distance, 垂直走 orthoOffsetDist) ---
+    double  orthoOffsetDist = 0.0;     ///< Offset distance (mm internal, positive = left +90°, negative = right -90°).
+    QString orthoOffsetDistFormula;   ///< Formula for offset distance (cm domain, auto-converted to mm).
 
     // --- Interpolated mode (auxiliary point on a host segment) ---
     QUuid  hostSegmentId;              ///< The segment this auxiliary point belongs to.

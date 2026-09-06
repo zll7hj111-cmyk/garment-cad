@@ -18,6 +18,7 @@ std::vector<MigrationStep>& registry()
         {0, "layer-refs", &FormatMigration::migrateV0ToV1},
         {1, "shadow-anchor", &FormatMigration::migrateV1ToV2},
         {2, "shadow-line", &FormatMigration::migrateV2ToV3},
+        {3, "optional-fields", &FormatMigration::migrateV3ToV4},
     };
     return steps;
 }
@@ -248,6 +249,18 @@ QJsonObject FormatMigration::migrateV2ToV3(QJsonObject root, QStringList* warnin
                            "丢弃 %1 处连接的 shadowAnchorRotDeg/noFollowRotate")
                 .arg(removed));
     }
+    return root;
+}
+
+QJsonObject FormatMigration::migrateV3ToV4(QJsonObject root, QStringList* warnings)
+{
+    // ── 2026-09 批量可选字段直通 ──────────────────────────────────────────
+    // OrthoOffset / chordLength / showOrthoAxis / flipA/flipB /
+    // shadowLastHost* 全部为 Optional 字段: 读写端缺键 = 安全默认值, 旧档
+    // (v3 及更早) 无需改写任何字节。本步不清理任何键 —— 存在意义是版本
+    // 账目: 新档写 version=4, 旧构建读到 4 > kFormatVersion 时硬拒, 而不是
+    // 带着默认值静默丢字段。
+    Q_UNUSED(warnings);
     return root;
 }
 

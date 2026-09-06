@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QGraphicsObject>
 #include <QPainterPath>
@@ -116,6 +116,9 @@ private:
         QString lengthText;  ///< Pre-formatted length label (cm).
         bool visible;        ///< False = hidden: kept for hit-testing/hover but
                              ///< not painted unless transiently revealed (hover).
+        bool isOrtho = false;  ///< 正交拐角偏置线
+        bool showAxis = false; ///< 是否显示中心基准轴虚线
+        QPointF pCenter;       ///< 中心主轴拐点本地坐标
     };
     struct PointCache { QUuid id; QPointF pos; bool isAuxiliary; QString label; bool showLabel;
                         bool isAttachmentNode; bool isCurveAnchor; bool isLockedNode; };

@@ -1,4 +1,5 @@
 #include "ui/LineGeometrySection.h"
+#include "ui/LineOrthoOffsetCard.h"
 
 #include <cmath>
 #include <QHBoxLayout>
@@ -27,6 +28,7 @@
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/VariableCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "geometry/Angle.h"
 
 namespace cad::ui {
 
@@ -93,6 +95,7 @@ LineGeometrySection::LineGeometrySection(cad::param::ParamDocument* paramDoc,
         row->addWidget(m_lblFx);
 
         m_editLength = makeCompactEdit(this, 150);
+        m_editLength->setObjectName(QStringLiteral("editLength"));
         m_editLength->setPlaceholderText(cad::ui::kPlaceholderCmOrFormula);
         connect(m_editLength, &QLineEdit::textChanged, this, &LineGeometrySection::onLengthDirty);
         connect(m_editLength, &QLineEdit::editingFinished, this, &LineGeometrySection::onLengthApply);
@@ -163,6 +166,15 @@ LineGeometrySection::LineGeometrySection(cad::param::ParamDocument* paramDoc,
         row->addStretch();
         col->addLayout(row);
     }
+
+    m_orthoCard = new LineOrthoOffsetCard(this);
+    col->addWidget(m_orthoCard);
+    connect(m_orthoCard, &LineOrthoOffsetCard::orthoChanged, this, [this]() {
+        onLengthDirty();
+        onLengthApply();
+    });
+    connect(m_orthoCard, &LineOrthoOffsetCard::liveUpdated, this, &LineGeometrySection::liveUpdated);
+    connect(m_orthoCard, &LineOrthoOffsetCard::sceneRefreshRequested, this, &LineGeometrySection::sceneRefreshRequested);
 
     // ── 滑轨行 ──
     m_slideRow = new QWidget(this);
@@ -277,6 +289,9 @@ void LineGeometrySection::setTarget(const QUuid& blockId, const QUuid& segmentId
 {
     m_blockId = blockId;
     m_segmentId = segmentId;
+    if (m_orthoCard) {
+        m_orthoCard->setContext(m_paramDoc, m_blockId, m_segmentId);
+    }
 }
 
 void LineGeometrySection::populateFromModel(const cad::param::Block& block,
@@ -293,7 +308,10 @@ void LineGeometrySection::populateFromModel(const cad::param::Block& block,
         const cad::param::ParamPoint* sp = block.findPoint(seg.startPointId);
         const cad::param::ParamPoint* ep = block.findPoint(seg.endPointId);
         if (sp && ep && sp->resolved && ep->resolved) {
-            double lenMm = sp->resolvedPos.distanceTo(ep->resolvedPos);
+            // 正交拐角偏置：长度输入框对应中心主轴基准长（局部X），斜长由专属标签展示，绝不污染基准长
+            double lenMm = (ep->constraint == cad::param::PointConstraint::OrthoOffset)
+                ? ep->distance
+                : sp->resolvedPos.distanceTo(ep->resolvedPos);
             double lenCm = cad::geo::Units::mmToCm(lenMm);
             m_editLength->setText(cad::geo::Units::formatNumberTrimmed(lenCm));
         }
@@ -301,7 +319,12 @@ void LineGeometrySection::populateFromModel(const cad::param::Block& block,
 
     refreshActualLengthLabel();
 
+    // ── 拐角偏置回填 ──
     const bool isCurve = seg.isCurve();
+    if (m_orthoCard) {
+        m_orthoCard->populate(block, seg, isCurve);
+    }
+
     m_arcRow->setVisible(isCurve);
     m_tensionRow->setVisible(isCurve);
     if (isCurve) {
@@ -340,6 +363,10 @@ void LineGeometrySection::applyToModel(cad::param::Block* block,
         if (auto* ep = block->findPoint(seg->endPointId)) {
             ep->distanceFormula = parsedLen.formula;
         }
+    }
+
+    if (m_orthoCard) {
+        m_orthoCard->apply(block, seg);
     }
 
     if (m_editTension && m_tensionRow->isVisible()) {
@@ -499,7 +526,12 @@ void LineGeometrySection::onSlideModeChanged(int index)
         refreshSlideRow();
         return;
     }
-    m_paramDoc->setAttachmentSlideMode(att->id, mode);
+    // 滑轨模式切换入栈 (SetAttachmentSlideModeCommand: redo 走门面同语义,
+    // undo 快照恢复 mode/锁轴偏移/焊接旗标) —— 此前直写模型不进历史。
+    if (auto* stack = m_paramDoc->undoStack())
+        stack->push(new cad::cmd::SetAttachmentSlideModeCommand(m_paramDoc, att->id, mode));
+    else
+        m_paramDoc->setAttachmentSlideMode(att->id, mode);
     refreshSlideRow();
     emit sceneRefreshRequested();
 }
@@ -618,4 +650,30 @@ const cad::param::MeasureVariable* LineGeometrySection::findBridgeMeasure() cons
     return nullptr;
 }
 
+void LineGeometrySection::refreshOrthoHypotLabel()
+{
+    if (!m_paramDoc || !m_orthoCard) return;
+    if (const auto* b = m_paramDoc->findBlock(m_blockId)) {
+        if (const auto* s = b->findSegment(m_segmentId)) {
+            m_orthoCard->refreshHypotLabel(*b, *s);
+        }
+    }
+}
+
+void LineGeometrySection::onOrthoDistEdited()
+{
+    if (m_orthoCard) m_orthoCard->onOrthoDistEdited();
+}
+
+void LineGeometrySection::onOrthoDirChanged(int id)
+{
+    if (m_orthoCard) m_orthoCard->onOrthoDirChanged(id);
+}
+
+void LineGeometrySection::onToggleCenterAxis()
+{
+    if (m_orthoCard) m_orthoCard->onToggleCenterAxis();
+}
+
 } // namespace cad::ui
+

@@ -35,7 +35,7 @@
 namespace cad::doc {
 
 /// The version DocumentFile writes, and the newest one it can read.
-constexpr int kFormatVersion = 3;
+constexpr int kFormatVersion = 4;
 
 /// One link in the chain: rewrites a vN document in place into a vN+1 one.
 /// @p warnings collects human-readable degradation notes (same contract as
@@ -90,6 +90,15 @@ public:
     /// 影子偏转功能残留键 (shadowAnchorRotDeg / noFollowRotate) —— 防旧档
     /// 垃圾键在 v3 读取端"回潮" (读端天然忽略未知键, 清理只为文件卫生)。
     static QJsonObject migrateV2ToV3(QJsonObject root, QStringList* warnings);
+
+    /// v3 → v4, "optional-fields": 2026-09 批量可选字段上格式 —— 点
+    /// OrthoOffset (orthoOffsetDist/公式)、线段 showOrthoAxis、连接
+    /// ChordLength (chordLength/公式)、角度测量射线翻转 (flipA/flipB)、
+    /// 影子重连缓存 (shadowLastHost{Block,Point,Segment}Id)。全部
+    /// Optional: 读写端缺键 = 安全默认值, 旧档零迁移负载。本步纯直通
+    /// (无残留键需清理), 存在意义 = 让版本号真实反映磁盘形态, 旧构建
+    /// 拒读新档而非静默丢字段。
+    static QJsonObject migrateV3ToV4(QJsonObject root, QStringList* warnings);
 };
 
 } // namespace cad::doc

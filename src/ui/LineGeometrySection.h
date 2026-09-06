@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -10,6 +10,7 @@ class QPushButton;
 class QButtonGroup;
 class QComboBox;
 class QTimer;
+class QVBoxLayout;
 
 namespace cad::param {
 class ParamDocument;
@@ -21,6 +22,8 @@ struct MeasureVariable;
 class CanvasScene;
 
 namespace cad::ui {
+
+class LineOrthoOffsetCard;
 
 /// Geometry section for LinePropertyDialog:
 /// - Length mode (Auto / Specified)
@@ -46,6 +49,7 @@ public:
     void refreshActualLengthLabel();
     void refreshLengthMode();
     void refreshSlideRow();
+    void refreshOrthoHypotLabel();
     void applyBridgeReadOnly();
 
     [[nodiscard]] const cad::param::MeasureVariable* findBridgeMeasure() const;
@@ -54,6 +58,7 @@ public:
     [[nodiscard]] QPushButton* btnLengthAuto() const { return m_btnLenAuto; }
     [[nodiscard]] QPushButton* btnLengthSpec() const { return m_btnLenSpec; }
     [[nodiscard]] ElaText* lblActualLength() const { return m_lblActualLength; }
+    [[nodiscard]] LineOrthoOffsetCard* orthoCard() const { return m_orthoCard; }
 
 signals:
     void liveUpdated();
@@ -70,6 +75,11 @@ private slots:
     void onConvertToLine();
     void onDebounceTimeout();
 
+    // OrthoOffset compatibility slots
+    void onOrthoDistEdited();
+    void onOrthoDirChanged(int id);
+    void onToggleCenterAxis();
+
 private:
     cad::param::ParamDocument* m_paramDoc = nullptr;
     CanvasScene* m_scene = nullptr;
@@ -83,6 +93,9 @@ private:
     QButtonGroup*  m_lenGroup        = nullptr;
     ElaText*       m_lblActualLength = nullptr;
     QPushButton*   m_btnPublishLen   = nullptr;
+
+    // OrthoOffset (拐角偏置) 组合部件
+    LineOrthoOffsetCard* m_orthoCard = nullptr;
 
     // Slide row
     QWidget*       m_slideRow        = nullptr;

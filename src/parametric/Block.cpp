@@ -223,6 +223,12 @@ void Block::resolveUnresolved(const QHash<QString, double>& params,
                 break;
             }
 
+            case PointConstraint::OrthoOffset: {
+                if (resolveOrthoOffsetPoint(pt, params, conditioned, ctx))
+                    progress = true;
+                break;
+            }
+
             case PointConstraint::Midpoint: {
                 const ParamPoint* a = findPoint(pt.refPointA);
                 const ParamPoint* b = findPoint(pt.refPointB);
@@ -305,6 +311,48 @@ bool Block::resolvePolarPoint(ParamPoint& pt,
         dist * std::cos(angleRad),
         dist * std::sin(angleRad)
     };
+    pt.resolved = true;
+    return true;
+}
+
+bool Block::resolveOrthoOffsetPoint(ParamPoint& pt,
+                                    const QHash<QString, double>& params,
+                                    const QHash<QString, QList<Condition>>& conditioned,
+                                    EvalContext* ctx)
+{
+    const ParamPoint* ref = findPoint(pt.refPointId);
+    if (!ref || !ref->resolved) return false;
+
+    double dist = pt.distance;
+    ConditionEngine::evaluateLengthMm(pt.distanceFormula, params, conditioned, dist, ctx);
+
+    double offsetDist = pt.orthoOffsetDist;
+    ConditionEngine::evaluateLengthMm(pt.orthoOffsetDistFormula, params, conditioned, offsetDist, ctx);
+
+    double ang = pt.angle;
+    if (!pt.angleFormula.isEmpty()) {
+        auto r = ConditionEngine::evaluate(pt.angleFormula, params, conditioned, ctx);
+        if (r.ok) ang = r.value;
+    }
+
+    double baseAngle = 0.0;
+    if (!pt.refSegmentId.isNull()) {
+        const Segment* seg = findSegment(pt.refSegmentId);
+        if (seg) {
+            const ParamPoint* sp = findPoint(seg->startPointId);
+            const ParamPoint* ep = findPoint(seg->endPointId);
+            if (sp && ep && sp->resolved && ep->resolved) {
+                geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;
+                baseAngle = std::atan2(dir.y, dir.x);
+            }
+        }
+    }
+
+    double axisRad = baseAngle + ang * M_PI / 180.0;
+    geo::Vec2 axisDir{std::cos(axisRad), std::sin(axisRad)};
+    geo::Vec2 perpDir{axisDir.y, -axisDir.x}; // positive offset = left (+90° in screen space, Y-down)
+
+    pt.resolvedPos = ref->resolvedPos + axisDir * dist + perpDir * offsetDist;
     pt.resolved = true;
     return true;
 }
@@ -1013,11 +1061,17 @@ QUuid Block::exitSegmentAtPoint(const QUuid& pointId) const
 double Block::segmentLengthAtPoint(const QUuid& pointId) const
 {
     for (const auto& seg : segments) {
-        if (seg.startPointId != pointId && seg.endPointId != pointId) continue;
-        return segmentEffectiveLength(seg.id);
+        if (seg.startPointId == pointId || seg.endPointId == pointId)
+            return segmentEffectiveLength(seg.id);
     }
+
+    const ParamPoint* pt = findPoint(pointId);
+    if (pt && !pt->hostSegmentId.isNull())
+        return segmentEffectiveLength(pt->hostSegmentId);
+
     return 0.0;
 }
+
 
 geo::Vec2 Block::effectiveLocalPos(const QUuid& pointId) const
 {

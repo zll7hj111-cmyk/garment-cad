@@ -34,6 +34,7 @@ private slots:
     void layersLegacyDocument();
     void measureKindRoundTrip();
     void measureKindLegacyDefaultsToDistance();
+    void angleMeasuresRoundTrip();
     void removeLayerMovesBlocks();
     void blocksRoundTrip();
     void attachmentsRoundTrip();
@@ -585,6 +586,60 @@ void TestSerializer::measureKindLegacyDefaultsToDistance()
     QCOMPARE(ms.front().kind, MeasureKind::Distance);
 }
 
+void TestSerializer::angleMeasuresRoundTrip()
+{
+    // AngleMeasureVariable 全字段 (含射线翻转 flipA/flipB, Optional since v4)
+    // 必须原样往返 —— flip 丢失会让测量值在重载后跳变 180°, 进而改变发布的
+    // M_xxx 参数 (MeasurementStore::measureAngleMeasureVars 按翻转发向计算)。
+    ParamDocument src;
+    Block a = makeLineBlock(src.layers().back().id);
+    const QUuid blockAId = a.id, segAId = a.segments.front().id;
+    src.addBlock(std::move(a));
+    Block b = makeLineBlock(src.layers().back().id);
+    const QUuid blockBId = b.id, segBId = b.segments.front().id;
+    src.addBlock(std::move(b));
+
+    AngleMeasureVariable am;
+    am.refName = QStringLiteral("MA_T1");
+    am.blockA = blockAId; am.segmentA = segAId;
+    am.blockB = blockBId; am.segmentB = segBId;
+    am.comment = QStringLiteral("往返一致");
+    am.flipA = true;
+    am.flipB = true;
+    src.addAngleMeasure(am);
+
+    QJsonObject json = DocumentSerializer::serialize(src);
+    ParamDocument dst;
+    DocumentSerializer::deserialize(dst, json);
+    const auto& ams = dst.angleMeasures();
+    QCOMPARE(ams.size(), size_t(1));
+    QCOMPARE(ams.front().refName, QStringLiteral("MA_T1"));
+    QCOMPARE(ams.front().blockA, blockAId);
+    QCOMPARE(ams.front().segmentA, segAId);
+    QCOMPARE(ams.front().blockB, blockBId);
+    QCOMPARE(ams.front().segmentB, segBId);
+    QCOMPARE(ams.front().comment, QStringLiteral("往返一致"));
+    QVERIFY2(ams.front().flipA, "flipA 往返一致");
+    QVERIFY2(ams.front().flipB, "flipB 往返一致");
+
+    // 旧档 (缺 flip 键) 缺省 = false (start→end 方向), 不翻向。
+    QJsonObject varObj = json["variables"].toObject();
+    QJsonArray arr = varObj["angleMeasures"].toArray();
+    QVERIFY(!arr.isEmpty());
+    for (QJsonValueRef item : arr) {
+        QJsonObject o = item.toObject();
+        o.remove(QStringLiteral("flipA"));
+        o.remove(QStringLiteral("flipB"));
+        item = o;
+    }
+    varObj["angleMeasures"] = arr;
+    json["variables"] = varObj;
+    ParamDocument legacy;
+    DocumentSerializer::deserialize(legacy, json);
+    QVERIFY2(!legacy.angleMeasures().front().flipA, "旧档缺 flipA 键 = false");
+    QVERIFY2(!legacy.angleMeasures().front().flipB, "旧档缺 flipB 键 = false");
+}
+
 void TestSerializer::removeLayerMovesBlocks()
 {
     // Removing a layer drops its blocks to the layer below (never into the
@@ -918,6 +973,10 @@ void TestSerializer::shadowRoundTripAndDowngrade()
     QVERIFY(rs != nullptr);
     QVERIFY2(rs->isShadow, "isShadow 往返一致");
     QVERIFY2(rs->shadowMasterBlockId == masterId, "shadowMasterBlockId 往返一致");
+    // 影子重连缓存 (Optional since v4): buildShadowDetach 初次拆开时初始化为本体。
+    QVERIFY2(rs->shadowLastHostBlockId == masterId, "shadowLastHostBlockId 往返一致");
+    QVERIFY2(rs->shadowLastHostPointId == mbId, "shadowLastHostPointId 往返一致");
+    QVERIFY2(rs->shadowLastHostSegmentId == msegId, "shadowLastHostSegmentId 往返一致");
     QCOMPARE((int)rs->points.size(), 2);
     QCOMPARE((int)rs->segments.size(), 1);
     QCOMPARE((int)dst.attachments().size(), 1);

@@ -67,7 +67,7 @@ E enumFromStr(const std::array<std::pair<E, const char*>, N>& table,
     return defaultVal;
 }
 
-constexpr std::array<std::pair<PointConstraint, const char*>, 7>
+constexpr std::array<std::pair<PointConstraint, const char*>, 8>
     kPointConstraintMap = {{
         {PointConstraint::Free,         "Free"},
         {PointConstraint::Polar,        "Polar"},
@@ -76,6 +76,7 @@ constexpr std::array<std::pair<PointConstraint, const char*>, 7>
         {PointConstraint::Intersection, "Intersection"},
         {PointConstraint::Interpolated, "Interpolated"},
         {PointConstraint::CurveAnchor,  "CurveAnchor"},
+        {PointConstraint::OrthoOffset,  "OrthoOffset"},
     }};
 QString pointConstraintStr(PointConstraint c) {
     return enumToStr(kPointConstraintMap, c, "Free");
@@ -204,6 +205,8 @@ QJsonObject pointJson(const ParamPoint& p) {
     o["interpOffsetDist"] = p.interpOffsetDist;
     o["interpOffsetDistFormula"] = p.interpOffsetDistFormula;
     o["interpFromEnd"] = p.interpFromEnd;
+    o["orthoOffsetDist"] = p.orthoOffsetDist;
+    o["orthoOffsetDistFormula"] = p.orthoOffsetDistFormula;
     // Curve anchor tangent handles
     o["tangentInX"] = p.tangentIn.x;
     o["tangentInY"] = p.tangentIn.y;
@@ -256,6 +259,8 @@ ParamPoint pointFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     p.interpOffsetDist = o["interpOffsetDist"].toDouble();
     p.interpOffsetDistFormula = o["interpOffsetDistFormula"].toString();
     p.interpFromEnd = o["interpFromEnd"].toBool();
+    p.orthoOffsetDist = o["orthoOffsetDist"].toDouble();
+    p.orthoOffsetDistFormula = o["orthoOffsetDistFormula"].toString();
     // Curve anchor tangent handles
     p.tangentIn = {o["tangentInX"].toDouble(), o["tangentInY"].toDouble()};
     p.tangentOut = {o["tangentOutX"].toDouble(), o["tangentOutY"].toDouble()};
@@ -303,6 +308,7 @@ QJsonObject segmentJson(const Segment& s) {
         {"showLength", s.showLength},
         {"auxPointIds", auxIds},
         {"passPointIds", passIds},
+        {"showOrthoAxis", s.showOrthoAxis},
     };
 }
 Segment segmentFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
@@ -334,6 +340,7 @@ Segment segmentFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     s.visible = o["visible"].toBool(true);
     s.showName = o["showName"].toBool();
     s.showLength = o["showLength"].toBool();
+    s.showOrthoAxis = o["showOrthoAxis"].toBool(o["dartShowAxis"].toBool(true));
     for (const auto& v : o["auxPointIds"].toArray())
         s.auxPointIds.push_back(uuidFrom(v.toString()));
     if (warnings) {
@@ -366,6 +373,9 @@ QJsonObject blockJson(const Block& b) {
         {"lengthAuto", b.lengthAuto},
         {"isShadow", b.isShadow},  // 影子基准 (Optional since v3, DETACH_SHADOW_DESIGN.md §8.2)
         {"shadowMasterBlockId", uuidStr(b.shadowMasterBlockId)},
+        {"shadowLastHostBlockId", uuidStr(b.shadowLastHostBlockId)},
+        {"shadowLastHostPointId", uuidStr(b.shadowLastHostPointId)},
+        {"shadowLastHostSegmentId", uuidStr(b.shadowLastHostSegmentId)},
         {"layer", uuidStr(b.layer)},
         {"endTargetBlockId", uuidStr(b.endTargetBlockId)},
         {"endTargetPointId", uuidStr(b.endTargetPointId)},
@@ -395,6 +405,11 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     b.lengthAuto = o["lengthAuto"].toBool();  // Optional since v12 — defaults to false.
     b.isShadow = o["isShadow"].toBool();  // 影子基准 (Optional since v3 — defaults to false).
     b.shadowMasterBlockId = uuidFrom(o["shadowMasterBlockId"].toString());
+    // 影子重连缓存 (Optional since v4): 上次挂载宿主, 旧档缺键 = null
+    // (重连时由 AttachmentLifecycleCommands 回退到本体, 悬空 id 同样安全)。
+    b.shadowLastHostBlockId = uuidFrom(o["shadowLastHostBlockId"].toString());
+    b.shadowLastHostPointId = uuidFrom(o["shadowLastHostPointId"].toString());
+    b.shadowLastHostSegmentId = uuidFrom(o["shadowLastHostSegmentId"].toString());
     // Layer reference: always a stable Layer::id string. Integer indices are
     // a v0 (pre-id) shape and are rewritten by FormatMigration::migrateV0ToV1
     // before this function ever runs — anything non-string here is corruption
@@ -441,6 +456,8 @@ QJsonObject attachmentJson(const Attachment& a) {
         {"rotationMode", static_cast<int>(a.rotationMode)},
         {"arcLength", a.arcLength},
         {"arcLengthFormula", a.arcLengthFormula},
+        {"chordLength", a.chordLength},
+        {"chordLengthFormula", a.chordLengthFormula},
         {"isPin", a.isPin},
         {"isLocked", a.isLocked},
         {"angleOnly", a.angleOnly},
@@ -475,10 +492,12 @@ Attachment attachmentFrom(const QJsonObject& o) {
     // serialized as a raw int; unknown values degrade to the Angle default.
     const int mode = o["rotationMode"].toInt(0);
     a.rotationMode = (mode >= static_cast<int>(RotationMode::Angle)
-                      && mode <= static_cast<int>(RotationMode::ArcLength))
+                      && mode <= static_cast<int>(RotationMode::ChordLength))
         ? static_cast<RotationMode>(mode) : RotationMode::Angle;
     a.arcLength = o["arcLength"].toDouble();
     a.arcLengthFormula = o["arcLengthFormula"].toString();
+    a.chordLength = o["chordLength"].toDouble();
+    a.chordLengthFormula = o["chordLengthFormula"].toString();
     a.isPin = o["isPin"].toBool();  // Optional since v3 — defaults to false.
     a.isLocked = o["isLocked"].toBool();  // Optional since v4 — defaults to false.
     a.angleOnly = o["angleOnly"].toBool();  // Optional since v5 — defaults to false.
@@ -712,6 +731,8 @@ QJsonObject angleMeasureJson(const AngleMeasureVariable& am) {
         {"segmentA", uuidStr(am.segmentA)},
         {"blockB", uuidStr(am.blockB)},
         {"segmentB", uuidStr(am.segmentB)},
+        {"flipA", am.flipA},
+        {"flipB", am.flipB},
         {"comment", am.comment},
     };
 }
@@ -724,6 +745,10 @@ AngleMeasureVariable angleMeasureFrom(const QJsonObject& o) {
     am.segmentA = uuidFrom(o["segmentA"].toString());
     am.blockB = uuidFrom(o["blockB"].toString());
     am.segmentB = uuidFrom(o["segmentB"].toString());
+    // 射线方向翻转 (Optional since v4): 旧档缺键 = false (start→end 方向)。
+    // 不持久化会让测量值在重载后跳变 180°, 进而改变发布的 M_xxx 参数。
+    am.flipA = o["flipA"].toBool(false);
+    am.flipB = o["flipB"].toBool(false);
     am.comment = o["comment"].toString();
     return am;
 }

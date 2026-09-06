@@ -181,6 +181,10 @@ void applyEditStripState(cad::param::ParamDocument& doc,
         ep->angleFormula = s.endAngleFormula;
         ep->constraint = static_cast<cad::param::PointConstraint>(s.endConstraint);
         ep->refPointId = s.endRefPointId;
+        if (ep->constraint == cad::param::PointConstraint::OrthoOffset) {
+            ep->orthoOffsetDist = s.orthoOffsetDist;
+            ep->orthoOffsetDistFormula = s.orthoOffsetDistFormula;
+        }
     }
     if (!s.attId.isNull()) {
         if (auto* a = doc.findAttachment(s.attId)) {
@@ -188,6 +192,8 @@ void applyEditStripState(cad::param::ParamDocument& doc,
             a->followerAngleFormula = s.followerAngleFormula;
             a->arcLength = s.arcLength;
             a->arcLengthFormula = s.arcLengthFormula;
+            a->chordLength = s.chordLength;
+            a->chordLengthFormula = s.chordLengthFormula;
             a->rotationMode = static_cast<cad::param::RotationMode>(s.rotationMode);
         }
     }
@@ -219,6 +225,8 @@ SegmentEditBarCommand::SegmentEditBarCommand(cad::param::ParamDocument* doc,
                 m_oldState.endAngleFormula = ep->angleFormula;
                 m_oldState.endConstraint = static_cast<int>(ep->constraint);
                 m_oldState.endRefPointId = ep->refPointId;
+                m_oldState.orthoOffsetDist = ep->orthoOffsetDist;
+                m_oldState.orthoOffsetDistFormula = ep->orthoOffsetDistFormula;
             }
             // Follower attachment snapshot: the attachment anchored at THIS
             // segment's start/end point (a block may own one attachment while
@@ -234,6 +242,8 @@ SegmentEditBarCommand::SegmentEditBarCommand(cad::param::ParamDocument* doc,
                 m_oldState.followerAngleFormula = att.followerAngleFormula;
                 m_oldState.arcLength = att.arcLength;
                 m_oldState.arcLengthFormula = att.arcLengthFormula;
+                m_oldState.chordLength = att.chordLength;
+                m_oldState.chordLengthFormula = att.chordLengthFormula;
                 m_oldState.rotationMode = static_cast<int>(att.rotationMode);
                 break;
             }

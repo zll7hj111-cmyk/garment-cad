@@ -171,6 +171,11 @@ public:
     /// 影子本体 (拆开前的基准线块 id)。本体被删或跟随线挂回本体时影子随之
     /// 删除 (状态机 ⑤⑥)；空 = 非影子。
     QUuid shadowMasterBlockId;
+    /// 影子最近一次挂载的宿主 (重连缓存: 只缓存上次连接的对象)。
+    /// 拆开瞬间快照自上次挂载连接 (若初次从本体拆开则为 master)。
+    QUuid shadowLastHostBlockId;
+    QUuid shadowLastHostPointId;
+    QUuid shadowLastHostSegmentId;
 
     /// Resolve all internal point positions based on constraint chain.
     /// @param params       Variable name→value map (cm) for formula evaluation.
@@ -455,6 +460,10 @@ private:
                            const QHash<QString, double>& params,
                            const QHash<QString, QList<Condition>>& conditioned,
                            EvalContext* ctx);
+    bool resolveOrthoOffsetPoint(ParamPoint& pt,
+                                 const QHash<QString, double>& params,
+                                 const QHash<QString, QList<Condition>>& conditioned,
+                                 EvalContext* ctx);
     bool resolveIntersectionPoint(ParamPoint& pt,
                                   const QHash<QString, double>& params,
                                   const QHash<QString, QList<Condition>>& conditioned,

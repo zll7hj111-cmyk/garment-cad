@@ -23,6 +23,7 @@
 #include "geometry/CurveMath.h"
 
 #include <cmath>
+#include <numbers>
 #include <limits>
 
 namespace {
@@ -160,9 +161,9 @@ void BlockItem::paint(QPainter* painter,
 
     // Non-active visible layer: render as a gray, semi-transparent reference.
     const bool grayed = (m_layerMode == LayerMode::Grayed);
-    const QColor kGray(0x9E, 0x9E, 0x9E);
+    const QColor kGray = (style && style->dark) ? QColor(176, 171, 160) : QColor(0x9E, 0x9E, 0x9E);
     if (grayed)
-        painter->setOpacity(0.4);
+        painter->setOpacity((style && style->dark) ? 0.55 : 0.4);
 
     // Draw segments — the hovered one is drawn LAST so its highlight sits on
     // top of sibling segments instead of being buried under them.
@@ -183,7 +184,8 @@ void BlockItem::paint(QPainter* painter,
             // Fallback: resolve state directly without animation.
             pp.lineColor  = paintColor;
             pp.lineWidth  = lc.weight;
-            pp.labelColor = QColor(100, 100, 100);
+            pp.labelColor = style ? style->labelColor(EntityState::Normal, false)
+                                  : QColor(100, 100, 100);
         }
 
         QPen linePen(pp.lineColor, pp.lineWidth);
@@ -205,6 +207,20 @@ void BlockItem::paint(QPainter* painter,
         }
         painter->setPen(linePen);
         painter->drawLine(lc.p1, lc.p2);
+
+        // 正交拐角偏置中心基准轴虚线 (起点至中心基准拐点)
+        if (!grayed && lc.isOrtho && lc.showAxis) {
+            QPen axisPen(pp.labelColor, 1.0);
+            axisPen.setCosmetic(true);
+            axisPen.setStyle(Qt::DashLine);
+            if (ghost) {
+                QColor c = axisPen.color();
+                c.setAlpha(kGhostAlpha);
+                axisPen.setColor(c);
+            }
+            painter->setPen(axisPen);
+            painter->drawLine(lc.p1, lc.pCenter);
+        }
 
         // 方向指示 (2026-12): 起点 → 终点 小箭头, 换向 (ReverseSegmentCommand)
         // 后 start/end 互换 → 缓存重算 → 箭头自动翻转 —— 换向几何零跳变,
@@ -284,9 +300,11 @@ void BlockItem::paint(QPainter* painter,
             pp = animator->pointParams(this, pc.id,
                                        pc.isAuxiliary);
         } else {
-            pp.pointFill   = pc.isAuxiliary ? QColor(67, 160, 71) : QColor(30, 30, 30);
+            pp.pointFill   = pc.isAuxiliary
+                ? (style ? style->pointColor(EntityState::Normal, true) : QColor(67, 160, 71))
+                : (style ? style->pointColor(EntityState::Normal, false) : QColor(30, 30, 30));
             pp.pointRadius = 0.8;   // unified marker size (all point kinds)
-            pp.labelColor  = QColor(80, 80, 80);
+            pp.labelColor  = style ? style->labelColor(EntityState::Normal, false) : QColor(80, 80, 80);
         }
 
         // Curve anchors (曲线点) render as a small ETCAD-style pink disc —
@@ -853,11 +871,45 @@ void BlockItem::rebuildCache()
             lenText = cad::geo::Units::formatLength(lenMm);
         }
 
+        bool isOrtho = false;
+        bool showAxis = seg.showOrthoAxis;
+        QPointF pCenter;
+        if (const auto* ep = block->findPoint(seg.endPointId)) {
+            if (ep->constraint == cad::param::PointConstraint::OrthoOffset &&
+                std::abs(ep->orthoOffsetDist) > 1e-6) {
+                isOrtho = true;
+                if (const auto* ref = block->findPoint(ep->refPointId)) {
+                    if (ref->resolved) {
+                        double ang = ep->angle;
+                        double baseAngle = 0.0;
+                        if (!ep->refSegmentId.isNull()) {
+                            if (const auto* rseg = block->findSegment(ep->refSegmentId)) {
+                                const auto* rsp = block->findPoint(rseg->startPointId);
+                                const auto* rep = block->findPoint(rseg->endPointId);
+                                if (rsp && rep && rsp->resolved && rep->resolved) {
+                                    cad::geo::Vec2 dir = rep->resolvedPos - rsp->resolvedPos;
+                                    baseAngle = std::atan2(dir.y, dir.x);
+                                }
+                            }
+                        }
+                        const double axisRad = baseAngle + ang * std::numbers::pi / 180.0;
+                        const cad::geo::Vec2 axisDir{std::cos(axisRad), std::sin(axisRad)};
+                        const cad::geo::Vec2 centerPos = ref->resolvedPos + axisDir * ep->distance;
+                        const cad::geo::Vec2 wCenter = block->transform.toWorld(centerPos);
+                        pCenter = cad::geo::Coord::toScene(wCenter.x - origin.x, wCenter.y - origin.y);
+                    }
+                }
+            }
+        }
+
         m_lines.push_back({seg.id, p1, p2, seg.color, seg.role, seg.weight, ps,
                            seg.name, seg.showName, seg.showLength, lenText,
-                           seg.visible});
+                           seg.visible, isOrtho, showAxis, pCenter});
 
         QRectF lineBounds = QRectF(p1, p2).normalized();
+        if (isOrtho && showAxis && !pCenter.isNull()) {
+            lineBounds |= QRectF(p1, pCenter).normalized();
+        }
         QPointF mid((p1.x() + p2.x()) / 2.0, (p1.y() + p2.y()) / 2.0);
         // 方向指示箭头预算入 bounds (中点半偏移臂长+离线距), 防出界裁剪。
         lineBounds |= QRectF(mid.x() - 10, mid.y() - 10, 20, 20);

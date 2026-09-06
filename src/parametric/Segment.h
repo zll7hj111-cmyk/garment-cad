@@ -20,6 +20,7 @@ enum class SegmentRole {
 /// Visual line style.
 enum class LineStyle { Solid, Dashed, Dotted };
 
+
 /// A segment connecting two parametric points within a Block.
 struct Segment {
     QUuid id = QUuid::createUuid();
@@ -85,6 +86,9 @@ struct Segment {
 
     // --- Auxiliary (interpolation) points owned by this segment ---
     std::vector<QUuid> auxPointIds;  ///< ParamPoint IDs (isAuxiliary=true, constraint=Interpolated).
+
+    // --- 正交拐角偏置 (OrthoOffset) ---
+    bool showOrthoAxis = true; ///< 画布是否显示正交拐角偏置的中心基准轴虚线.
 };
 
 } // namespace cad::param
