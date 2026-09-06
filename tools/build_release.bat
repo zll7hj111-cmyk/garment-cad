@@ -4,7 +4,7 @@ rem Usage: tools\build_release.bat [target]
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit /b 1
 
-set "SRCDEPS=E:\garment-cad\build\out\_deps"
+set "SRCDEPS=E:\garment-cad\build\out-reldeb\_deps"
 
 cmake --preset release ^
   -DFETCHCONTENT_SOURCE_DIR_MINIZ=%SRCDEPS%\miniz-src ^

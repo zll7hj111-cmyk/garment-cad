@@ -1,8 +1,13 @@
-﻿# AGENTS.md
+# AGENTS.md
 
 ## 经验库使用规则
 
 - **文档定位先看索引**：`DOCS_INDEX.md` 是文档主索引。**主加载文档 = 本文件**；其余全部按需查阅——先看索引定位，再打开对应文件。
+- **智能体构建与测试纪律（铁律·极速迭代）**：
+  - **日常编码/修复严禁无脑全量构建与全量测试**！全量构建会触发 35 个测试程序的重新链接风暴（包含 13 个全量重链），全量 ctest 会耗时 1~2 分钟，极度浪费时间。
+  - **日常构建必须精准指定目标**：验证主程序编通执行 `tools\build.bat WildWindPattern`（~0.3s）；验证单测执行 `tools\build.bat <test_name>`。
+  - **日常测试必须按影响面跑单测**：`ctest -C RelWithDebInfo -R <test_name>`。
+  - **全量构建与全量 ctest 的唯一准入时机**：仅在整个任务彻底完工、收尾交付前的最后一轮全局回归验证时允许执行 1 次。
 - **修 bug 前**：先 grep `TROUBLESHOOTING.md` 相关关键词，避免重踩已知坑。改快捷键前必查第 0 组登记表。
 - **修完清单外的新 bug**：根因 + 修复验证后追加到 `TROUBLESHOOTING.md` 对应主题分组。
 - **任务收尾防过时**：本任务若触碰了 AGENTS.md/TROUBLESHOOTING.md/DECISIONS.md/CONVENTIONS.md 中声明的事实（常量/命令/路径/文件/用例数），收尾时必须核对源码并更新对应条目；事实性条目应带源码引用（file:line）。
@@ -37,25 +42,38 @@ WildWind Pattern（野风帖）——参数化服装 CAD 系统，C++23 / Qt6。
 ## 构建命令
 
 ```bash
-tools\build.bat               # 一键：vcvars64 + configure + build（Ninja Debug，binaryDir=build/out）
-tools\build.bat release       # Release（binaryDir=build/out-rel）
+tools\build.bat WildWindPattern      # 【日常首选·极速】增量构建主程序（~0.3s，跳过35个测试的链接风暴）
+tools\build.bat <test_name>          # 【单测首选·极速】增量构建单个测试 target（如 tools\build.bat test_select_wkey）
+tools\build.bat reconfig             # 强制重跑 CMake Configure（日常增删修改代码无需运行，Ninja 自动感知）
+tools\build.bat reldeb               # 【收尾验收专用】构建全量所有目标（主程序 + 35 个测试全部重新链接）
+tools\build.bat release              # 纯 Release（无调试符号）
+tools\build.bat debug                # 纯 Debug（未优化慢速，常规开发跑测禁止使用）
 ```
 
-- **Ninja 生成器需要 MSVC 环境**：必须走 `tools\build.bat`（内部先 call vcvars64.bat）或 Developer PowerShell。
+- **【智能体构建铁律：日常迭代禁止无脑全量构建】**：
+  - 日常修改业务代码（.cpp）后，若只需验证是否编译通过或运行主程序，**必须执行 `tools\build.bat WildWindPattern`**（或 `ninja -C build/out-reldeb WildWindPattern`）。
+  - 若正在调试某特定单测，**必须精准指定该测试目标**（如 `tools\build.bat test_select_wkey`）。
+  - **严禁在日常修改后无参数执行 `tools\build.bat`**：全量构建会并发触发 35 个测试程序的重新链接（包含 13 个全量胖重链），引发 CPU/磁盘 I/O 拥塞达 30~60 秒！
+- **【重要】全局统一使用 `build/out-reldeb` 构建**：智能体执行任何构建、编译和运行，一律默认走 `tools\build.bat`（产物目录为 `build/out-reldeb`）。历史的 `build/out` 与 `build/out-rel` 已彻底移除。RelWithDebInfo 模式开启 `/O2` 优化同时保留完整 PDB，彻底杜绝 Debug 模式的拖拽解算卡顿。
+- **Ninja 生成器需要 MSVC 环境**：必须走 `tools\build.bat`（内部按需检测并配置 vcvars64）或 Developer PowerShell。
 - **构建/跑测的宿主限制**：Bash 工具禁止调用 cmd.exe；构建/ctest 一律走 PowerShell 工具的 `& .\tools\build.bat` / `ctest`；PowerShell 不回显 stdout，日志必须 `*>` 落盘（Out-File 默认 UTF-16）再用 `iconv -f UTF-16LE -t UTF-8 x.log` 转码读取。
 - **模块静态库**：源文件按模块目录归入 7 个静态库，分层单向依赖 `gcad_geometry` → `gcad_parametric` → `gcad_canvas`/`gcad_document` → `gcad_ui` → `gcad_tools` → `gcad_app`；主程序与全部测试通过链接库获得源码。
-- **PDB 治理**：11 个全链测试在 CMakeLists 末尾强制 `/INCREMENTAL:NO`——**勿删这些标志**（详情见 CONVENTIONS.md）。
-- compile_commands.json 由 Ninja 自动导出到 `build/out`，clangd 直接使用；增删源文件后只需重跑构建脚本。
+- **PDB 治理**：13 个全链测试在 CMakeLists 末尾强制 `/INCREMENTAL:NO`——**勿删这些标志**（详情见 CONVENTIONS.md）。
+- compile_commands.json 由 Ninja 自动导出到 `build/out-reldeb`，clangd 直接使用；增删源文件后只需重跑构建脚本。
 
 ## 验证命令
 
 ```bash
-cd build/out
-ctest
+ctest -C RelWithDebInfo -R <test名>   # 【日常首选·秒级】只跑受影响的特定单测（如 ctest -C RelWithDebInfo -R test_select_wkey）
+ctest -C RelWithDebInfo               # 【收尾验收专用】跑全量 42 个用例（耗时 1~2 分钟，仅在交付收尾时执行）
 ```
 
-- **按影响面选测试（2026-12 拍板）**：纯 geometry → test_curve + test_expression；parametric 引擎 → test_resolver + test_block_commands + test_attachment_commands + test_variable_layer_commands + test_reverse_segment_commands + test_serializer + test_migration；序列化 → test_serializer + test_migration；工具/UI → 对应 test_select_wkey / test_rotate_copy / test_context_strip / test_dialog_tabs 等；跨模块大改/收尾 → 全量 ctest。单测：`ctest -R <名>`。
-- **回归基线（判"是不是我引入的红"先看这里）**：既有基线红 = 0（2026-09-02 修复两条：test_serializer::bridgeAuxPointSnappableAndAttachable + test_component::dragComponentLeaderCurveFollowStable，根因见 TROUBLESHOOTING 第 5 组）；环境漂移红 = test_intersection_update 全部 + test_extend::savedDocFormulaStartExtendRenders（依赖活档 E:/3.gcad，非代码回归）；**test_hold_show 已根治（2026-09-04：空输出是 Qt 6.11.1 debug 全局现象，真失败 = renderNonWhitePixels 隔行/隔列采样在 100% DPI 把长度标签测小，改全像素扫描 → 9 用例全绿 + 全量 41/41 通过，详戳 TROUBLESHOOTING 第 5 组）**；GUI 时序抖动 = test_dialog_tabs::switchBackAfterTyping / test_aux_layer / test_rotate_copy / test_select_wkey / test_component::junctionComponentConnectGesture + componentConnectOverlapSwitchTarget（整批偶发失败，单跑即过）。用例清单与详情见 CONVENTIONS.md。
+- **【智能体测试铁律：日常迭代禁止无脑全量 ctest】**：
+  - 日常单步修改、单点 bug 修复、局部功能实现，**严禁无过滤直接跑 `ctest`**！全量 ctest 包含 42 个测试用例（含真实 GUI 事件循环模拟和全像素渲染扫描），整套耗时 1~2 分钟，且反向倒逼构建系统必须链接全量 35 个测试程序。
+  - **日常研发必须按影响面跑单测**：使用 `ctest -C RelWithDebInfo -R <名>`。
+  - **全量 ctest 准入时机**：**仅在整个任务彻底完工、收尾交付前的最后一轮全局回归验证时允许执行 1 次**！
+- **按影响面选测试（2026-12 拍板）**：纯 geometry → test_curve + test_expression；parametric 引擎 → test_resolver + test_block_commands + test_attachment_commands + test_variable_layer_commands + test_reverse_segment_commands + test_serializer + test_migration + test_ortho_offset；序列化 → test_serializer + test_migration；工具/UI → 对应 test_select_wkey / test_rotate_copy / test_context_strip / test_dialog_tabs 等；跨模块大改/收尾 → 全量 ctest。单测：`ctest -R <名>`。
+- **回归基线（判"是不是我引入的红"先看这里）**：既有基线红 = 0（2026-09-02 修复两条：test_serializer::bridgeAuxPointSnappableAndAttachable + test_component::dragComponentLeaderCurveFollowStable，根因见 TROUBLESHOOTING 第 5 组）；环境漂移红 = test_intersection_update 全部 + test_extend::savedDocFormulaStartExtendRenders（依赖活档 E:/3.gcad，非代码回归）；**test_hold_show 已根治（2026-09-04：改全像素扫描 → 9 用例全绿 + 全量 42/42 通过，详戳 TROUBLESHOOTING 第 5 组）**；GUI 时序抖动 = test_dialog_tabs::switchBackAfterTyping / test_aux_layer / test_rotate_copy / test_select_wkey / test_component::junctionComponentConnectGesture + componentConnectOverlapSwitchTarget（整批偶发失败，单跑即过）。用例清单与详情见 CONVENTIONS.md。
 - 不进 ctest 需手动跑：test_realdoc_perf、test_realdoc_full（env `GCAD_DOC`）、test_nav_smoke。
 - **守卫脚本已进 ctest（2026-09）**：七守卫（`check_layering` 分层 / `check_hardcoded_colors` 颜色 / `check_test_fixtures` 夹具 / `check_file_size` 行数 / `check_header_classification` 头文件 / `check_bool_flags` 状态机 / `check_test_split` 测试体量）——全量 ctest 即覆盖，无需再手动单独跑；单跑：`ctest -R check_`。CI（GitHub Actions）已接入，push/PR 自动全量 ctest。代码拆分执行《文件拆分实操规则 v2.0》（`E:/e/file_split_rules_v2_final.md`），存量超标申报于 `redline_exceptions.json`，基线只许缩短不许扩增。
 - **GUI 测试等待**：禁止固定 `QTest::qWait(N)` 占位；用 TestHelpers.h 三件套 waitUntil/grabStable/settle（断言"值变了"→waitUntil；"没变"→settle）。
@@ -97,18 +115,24 @@ Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指�
 - **卡片基类 CardBase**：五张虚拟列表卡片继承 CardBase；改卡片骨架先改 CardBase 再改派生；indexLabel 固定 objectName（varIndex/cardIndex/linkedIndex/measureIndex/angleIndex）是测试契约勿改。
 - **角度工具收口**：存储域归一化 `normalizeDeg360`/`normalizeDeg180`、显示格式化 `formatDegValue`/`formatDegTrimmed`、弧长↔角度换算 `arcMmToDeg`/`degToArcMm`、双模切换 `followerModeSwitchValues`——统一在 `src/geometry/Angle.h`/`Units.h`/`FollowerAngle.h`，改角度约定只改这几处。
 - **跨层连接反馈**：`crossLayerToast`/`crossLayerBadge` 统一在 `src/ui/LayerFeedback.h`（cad::ui），改文案只改这一个头文件。
-- **表单骨架 + 圆角纪律**：共享骨架在 `src/ui/FormScaffold.h`（makeFormGroupHeader/applyFormGrid/makeFormButtonBar/makeFormTitleBar）；新增 chrome 圆角勿超 4px（RadiusBadge 恒 4px）。
+- **表单骨架 + 圆角纪律**：共享骨架在 `src/ui/FormScaffold.h`（makeFormGroupHeader/applyFormGrid/makeFormButtonBar/makeFormTitleBar）；新增 chrome 圆角勿超 4px（RadiusBadge 恒 4px）；输入框与数值微调框统一为无底边横杠纯胶囊输入框（ElaWidgetTools 补丁收口，全包围高亮边框）。
 - **卡片竖线色/字号**：卡片左竖线 = 类型色（变量 piece1/公式 piece2/测量 piece3/关联 piece4），由 `CardBase::setAccentRole` 驱动；字号阶梯 FontXs 10/FontSm 11/FontMd 12/FontBase 13/FontLg 15/FontXl 18。
 - **Qt 性能**：每帧同步槽里禁止 setStyleSheet；setText 同值短路；批量操作禁用布局避免 O(N²)。
 - **性能断言抗噪声**：Debug 性能波动 30%+，断言用宽松边界（≤2.0x），勿用严格排序。
-- **测量工作流**：测量发布 MeasureVariable（refName M_xxx，cm 域）；W 键循环 距离/水平/垂直；水平/垂直轴重合时第二击拒绝；"烘焙到操作层"=复制非移动；跨层附着单向。
+- **测量工作流**：测量发布 MeasureVariable（refName M_xxx，cm 域）；W 键循环 距离/水平/垂直；水平/垂直轴重合时第二击拒绝；"烘焙到操作层"=复制非移动；跨层附着单向；角度测量严格禁止跨图层（方案 A），基于交点与光标点选位置推导射线方向（flipA/flipB 持久化稳定）。
 - **公式引擎符号集**：`+ - * / ^`、一元 ±、括号归一化、小写函数与任意名字变量（含中文）；单参 `cos/sin/tan/sqrt/abs/atan/asin/acos/floor/ceil/round`（可裸参）、双参 `atan2(y,x)/pow/min/max`（必须括号+逗号）；三角函数参数与结果均为度制；`^` 右结合优先于一元负号；无 `√` 用 `sqrt(...)`；域错误返回错误而非 NaN。
 ## 领域建模决策（用户拍板，勿翻案）
 
 > **全文在 `DECISIONS.md`（第四轮迁出，2026-09-01）——按需 grep 查阅，不注入会话。**
 > 改动了本档案声明的行为时，同步修订 `DECISIONS.md` 对应条目（决策属用户拍板，翻案前先确认）。
 >
-> **拆开影子基准（2026-xx 拍板，翻案「拆开保留角度=活引用」）**：拆开 = 复制隐藏影子块（`Block::isShadow`）作为角度基准——本体旋转不再影响跟随线（R1）、offset 含公式原样保留（R2）、影子挂新宿主链式随动（R3，L3→影子→L2 双连接链，零新增 Resolver 逻辑）；挂回本体 = 删影子 + 活引用。权威设计 `DETACH_SHADOW_DESIGN.md`，摘要见 `DECISIONS.md`「拆开影子基准（2026-xx）」条目。
+> **拆开影子基准（2026-xx 拍板，翻案「拆开保留角度=活引用」）**：拆开 = 复制隐藏影子块（`Block::isShadow`）作为角度基准——本体旋转不再影响跟随线（R1）、offset 含公式原样保留（R2）、影子挂新宿主链式随动（R3，L3→影子→L2 双连接链，零新增 Resolver 逻辑）；挂回本体 = 删影子 + 活引用。权威设计 `DETACH_SHADOW_DESIGN.md`，摘要见 `DECISIONS.md`「拆开影子基准（2026-xx）」条目。（2026-09 用户拍板：新建挂载默认焊接锁定跟随；重连缓存机制只缓存上次连接的对象，从新宿主拆开后点击重连回到新宿主而非旧本体；辅助点挂载拆开语义为彻底释放连接 RemoveAttachmentCommand，使线段彻底转为自由线段可随时重新吸附/连接其他端点，右键菜单全图元穿透提供就地拆开选项，D键快拆与面板辅助点Tab均彻底释放数据）。
+>
+> **线段正交拐角偏置（OrthoOffset，2026-09 用户拍板）**：OrthoOffset 沿主轴前进基准长折 90° 左右偏置直连端点（本质为 YX 局部直角坐标系模型，FMA 纯浮点乘加 $O(1)$ 求解保 1200 FPS；更正屏幕系向左法向 $(\sin\theta, -\cos\theta)$ 纠偏左右按钮；首次开启锁死当前几何基准角与基准长，主长度框与 ContextStrip 回填基准长，斜长独立标签解耦防膨胀；ContextStrip 保持 OrthoOffset 约束禁退化；输入数值自动切方向，左右切换基准角恒定）；画布中心参考虚线（showOrthoAxis）与「👁 基准轴」开关；在 LineGeometrySection（LineGeometrySectionOrtho.cpp）面板无缝集成；经用户拍板取消镜像线段与复杂开度逻辑，保持单线轻量稳健。详见 `DECISIONS.md`。
+>
+> **端点连接跟随角度直线弦长/开度模式（ChordLength，2026-09 用户拍板）**：端点跟随体系（Attachment）新增「直线弦长 / 开度模式」（`RotationMode::ChordLength`，界面图标 `[↔]`），专用于服装制图省道展开、褶裥开度等场景。支持直接输入开度物理直线距离（如 `3.0 cm` 或公式 `D_dart`），以 $O(1)$ 几何反算展开角 $\theta = 2\arcsin\left(\frac{C}{2R}\right)$（超限平滑钳制 $180^\circ$ 直行绝不 NaN）；三模零跳变几何换算（角度 $\leftrightarrow$ 弧长 $\leftrightarrow$ 弦长/开度）；ContextStrip 扩充为 `[°] [⌒] [↔]` 三键互斥胶囊组，SegmentAngleCard 支持循环切换；持久化向前向下完全兼容。详见 `DECISIONS.md`。
+
+
 
 ## 关键约束
 

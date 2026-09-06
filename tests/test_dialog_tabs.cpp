@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QFrame>
@@ -60,6 +60,8 @@ private slots:
     void reattachPreservesAngleRef();  ///< 重连保持方向基准: 自动态固化为两点基准, 自定义原样保留 (用户 2026-09 拍板)
     void linkCurrentLineButtonClearsRef();  ///< [链接当前线] 清空自定义基准回自动态 (用户 2026-09 拍板)
     void independentAngleKeepsRefEditsEnabled();  ///< 独立角: 点1/点2 清空但不禁用 (用户 2026-09 拍板)
+    void angleFormulaPreservedInDialog();         ///< 角度表达式优先，绝不自动转数值覆盖 (用户 2026-09 拍板)
+    void auxPointOutgoingFollowerMountAndDetach();///< 辅助点作为跟随端显示跟随宿主并可拆开
 };
 
 namespace {
@@ -797,7 +799,8 @@ void TestDialogTabs::followerAngleModeToggleToArc()
     auto modeButton = [&]() -> QPushButton* {
         for (auto* b : card->findChildren<QPushButton*>())
             if (b->text() == QStringLiteral("∠")
-                || b->text() == QStringLiteral("⌒"))
+                || b->text() == QStringLiteral("⌒")
+                || b->text() == QStringLiteral("↔"))
                 return b;
         return nullptr;
     };
@@ -806,7 +809,7 @@ void TestDialogTabs::followerAngleModeToggleToArc()
     // (45°·(60mm 半径) = π/4·60 ≈ 47.12mm)。
     {
         QPushButton* btn = modeButton();
-        QVERIFY2(btn, "mode button (∠/⌒) not found");
+        QVERIFY2(btn, "mode button (∠/⌒/↔) not found");
         QVERIFY2(btn->isEnabled(), "mode button disabled in 跟随角 state");
         QCOMPARE(btn->text(), QStringLiteral("∠"));
         btn->click();
@@ -818,21 +821,26 @@ void TestDialogTabs::followerAngleModeToggleToArc()
                  "弧长换算错误");
     }
 
-    // ② 弧长 → 角度: 反向切换必须同样工作, 反算回 45°。
+    // ② 弧长 → 开度 (弦长) → 角度: 循环三态切换
     {
         QPushButton* btn = modeButton();
         QVERIFY2(btn, "mode button lost after ①");
         QCOMPARE(btn->text(), QStringLiteral("⌒"));
         btn->click();
         const auto* a = &doc.attachments().front();
-        QVERIFY2(a->rotationMode == cad::param::RotationMode::Angle,
-                 "弧长→角度切换失败");
-        // 反算回 45°: 容差 0.1° —— 输入框回显是 2 位小数的 cm 值 ("4.71"),
-        // 经显示截断往返会损失 ~0.02° (45°→4.71cm→44.98°), 属既有显示精度。
-        QVERIFY2(std::abs(a->followerAngle - 45.0) < 0.1, "角度反算错误");
+        QVERIFY2(a->rotationMode == cad::param::RotationMode::ChordLength,
+                 "弧长→开度(弦长)切换失败");
+        const double expectedChord = 2.0 * 60.0 * std::sin(22.5 * M_PI / 180.0);
+        QVERIFY2(std::abs(a->chordLength - expectedChord) < 0.1, "弦长换算错误");
+
+        btn->click();
+        const auto* a2 = &doc.attachments().front();
+        QVERIFY2(a2->rotationMode == cad::param::RotationMode::Angle,
+                 "开度(弦长)→角度切换失败");
+        QVERIFY2(std::abs(a2->followerAngle - 45.0) < 0.1, "角度反算错误");
     }
 
-    // ③ 公式跟随角 → 弧长 (2026-12 用户拍板: 公式驱动可切换, 且公式
+    // ③ 公式跟随角 → 弧长 → 开度 (2026-12 用户拍板: 公式驱动可切换, 且公式
     // **原样搬移不乘换算系数** —— "一个公式只会在一种模式下表达, 用户
     // 选择哪个模式, 公式就按哪个模式求值")。
     {
@@ -852,9 +860,128 @@ void TestDialogTabs::followerAngleModeToggleToArc()
         QVERIFY2(a2->arcLengthFormula == QStringLiteral("30+15"),
                  "公式必须原样保留, 不得乘换算系数/烘焙成数值");
         QCOMPARE(btn->text(), QStringLiteral("⌒"));
+
+        btn->click();
+        const auto* a3 = &doc.attachments().front();
+        QVERIFY2(a3->rotationMode == cad::param::RotationMode::ChordLength,
+                 "公式驱动弧长→开度切换失败");
+        QVERIFY2(a3->chordLengthFormula == QStringLiteral("30+15"),
+                 "公式必须原样保留");
+        QCOMPARE(btn->text(), QStringLiteral("↔"));
     }
 
     delete dlg;
+}
+
+void TestDialogTabs::angleFormulaPreservedInDialog()
+{
+    // ① 自由线使用表达式角度 (如 1+1):
+    // 打开面板必须显示 "1+1" 原文, 副标签显示 "= 2°", 绝不自动把表达式清空并直接显示 2.
+    {
+        ParamDocument doc;
+        CanvasScene scene(&doc);
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        const LineSetup line = makeLine(doc, 100.0);
+        auto* b = doc.findBlock(line.blockId);
+        auto* ep = b->findPoint(line.endId);
+        ep->angleFormula = QStringLiteral("1+1");
+        ep->angle = 2.0;
+        doc.resolveAll();
+
+        CanvasView view(&scene);
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+        auto* dlg = new cad::ui::LinePropertyDialog(
+            line.blockId, line.segId, &doc, &scene, &view);
+        dlg->show();
+        QVERIFY2(cad::test::waitUntil([&] {
+                     return dlg->findChild<cad::ui::SegmentAngleCard*>() != nullptr;
+                 }),
+                 "timed out waiting for SegmentAngleCard");
+        auto* card = dlg->findChild<cad::ui::SegmentAngleCard*>();
+        QVERIFY(card);
+        auto* edit = card->findChild<ElaLineEdit*>();
+        QVERIFY(edit);
+
+        // 主输入框保留表达式原文
+        QCOMPARE(edit->text(), QStringLiteral("1+1"));
+
+        // 副标签显示求值结果 = 2°
+        auto* followLbl = card->findChild<ElaText*>(QStringLiteral("followValueLabel"));
+        QVERIFY(followLbl);
+        QVERIFY(followLbl->isVisible());
+        QCOMPARE(followLbl->text(), QString::fromUtf8("= 2°"));
+
+        // 等待 debounce (200ms) 触发，确保不会自动将 1+1 覆盖回填为数值 2
+        cad::test::settle(300);
+        QCOMPARE(edit->text(), QStringLiteral("1+1"));
+
+        // 模型里的公式依然完好
+        b = doc.findBlock(line.blockId);
+        ep = b->findPoint(line.endId);
+        QCOMPARE(ep->angleFormula, QStringLiteral("1+1"));
+
+        dlg->accept();
+        delete dlg;
+
+        // 对话框关闭后，模型里的公式依然完好
+        b = doc.findBlock(line.blockId);
+        ep = b->findPoint(line.endId);
+        QCOMPARE(ep->angleFormula, QStringLiteral("1+1"));
+    }
+
+    // ② 跟随线使用表达式角度:
+    {
+        ParamDocument doc;
+        CanvasScene scene(&doc);
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        const LineSetup leader = makeLine(doc, 100.0, Vec2(200.0, 0.0));
+        const LineSetup follower = makeLine(doc, 60.0);
+        Attachment att;
+        att.fromBlockId = follower.blockId;
+        att.fromPointId = follower.startId;
+        att.toBlockId   = leader.blockId;
+        att.toPointId   = leader.endId;
+        att.followerAngle = 2.0;
+        att.followerAngleFormula = QStringLiteral("1+1");
+        QVERIFY(doc.addAttachment(att));
+        doc.resolveAll();
+
+        CanvasView view(&scene);
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+        auto* dlg = new cad::ui::LinePropertyDialog(
+            follower.blockId, follower.segId, &doc, &scene, &view);
+        dlg->show();
+        QVERIFY2(cad::test::waitUntil([&] {
+                     return dlg->findChild<cad::ui::SegmentAngleCard*>() != nullptr;
+                 }),
+                 "timed out waiting for SegmentAngleCard");
+        auto* card = dlg->findChild<cad::ui::SegmentAngleCard*>();
+        QVERIFY(card);
+        auto* edit = card->findChild<ElaLineEdit*>();
+        QVERIFY(edit);
+
+        QCOMPARE(edit->text(), QStringLiteral("1+1"));
+
+        auto* followLbl = card->findChild<ElaText*>(QStringLiteral("followValueLabel"));
+        QVERIFY(followLbl);
+        QVERIFY(followLbl->isVisible());
+        QCOMPARE(followLbl->text(), QString::fromUtf8("= 2°"));
+
+        cad::test::settle(300);
+        QCOMPARE(edit->text(), QStringLiteral("1+1"));
+
+        dlg->accept();
+        delete dlg;
+
+        const auto* a = &doc.attachments().front();
+        QCOMPARE(a->followerAngleFormula, QStringLiteral("1+1"));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1371,6 +1498,83 @@ void TestDialogTabs::independentAngleKeepsRefEditsEnabled()
              }),
              "退出独立角后: 点1/点2 灰显回显当前所连线段两点");
     QVERIFY2(!linkBtn->isEnabled(), "自动态: [链接当前线] 禁用 (基准本就是当前线段)");
+
+    delete dlg;
+}
+
+void TestDialogTabs::auxPointOutgoingFollowerMountAndDetach()
+{
+    ParamDocument doc;
+    CanvasScene scene(&doc);
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    LineSetup leaderLine = makeLine(doc, 100.0, Vec2(0.0, 0.0));
+    LineSetup followerLine = makeLine(doc, 60.0, Vec2(50.0, 50.0));
+    const QUuid auxId = addAuxPoint(doc, followerLine.blockId, followerLine.segId);
+
+    // Follower line connects to leaderLine via follower's auxPoint
+    Attachment att;
+    att.fromBlockId = followerLine.blockId;
+    att.fromPointId = auxId;
+    att.toBlockId = leaderLine.blockId;
+    att.toPointId = leaderLine.startId;
+    att.toSegmentId = leaderLine.segId;
+    att.followerAngle = 90.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto* dlg = new cad::ui::LinePropertyDialog(
+        followerLine.blockId, followerLine.segId, &doc, &scene, &view);
+    dlg->show();
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
+             "timed out waiting for QTabWidget*");
+    auto* tabs = dlg->findChild<QTabWidget*>();
+    QVERIFY(tabs);
+
+    // Switch to 辅助点 tab (index 2)
+    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
+                      tabs->tabBar()->tabRect(2).center());
+    QCOMPARE(tabs->currentIndex(), 2);
+
+    // Click aux list item
+    QListWidget* list = nullptr;
+    for (auto* w : dlg->findChildren<QListWidget*>()) {
+        if (tabs->widget(2) && tabs->widget(2)->isAncestorOf(w)) { list = w; break; }
+    }
+    QVERIFY(list);
+    QCOMPARE(list->count(), 1);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      list->visualItemRect(list->item(0)).center());
+
+    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<cad::ui::AuxPointForm*>() != nullptr; }),
+             "timed out waiting for AuxPointForm");
+    auto* form = dlg->findChild<cad::ui::AuxPointForm*>();
+    QVERIFY(form && form->isVisible());
+
+    auto* lblMount = form->findChild<ElaText*>(QStringLiteral("auxMountInfo"));
+    auto* btnDetach = form->findChild<QPushButton*>(QStringLiteral("auxDetachBtn"));
+    QVERIFY(lblMount && btnDetach);
+
+    const auto* ldrSeg = doc.findBlock(leaderLine.blockId)->findSegment(leaderLine.segId);
+    const QString ldrTag = cad::param::Serial::tag(ldrSeg->serial);
+
+    // Verify label contains "跟随" and the leader tag
+    QVERIFY2(lblMount->text().contains(QString::fromUtf8("跟随")) &&
+             lblMount->text().contains(ldrTag),
+             "辅助点挂载信息必须显示跟随的宿主线段");
+    QVERIFY2(btnDetach->isEnabled(), "拆开按钮应处于可用状态");
+
+    // Click detach button
+    btnDetach->click();
+    QVERIFY2(cad::test::waitUntil([&] { return doc.attachments().empty(); }),
+             "点击拆开后 attachment 必须被彻底移除");
+    QVERIFY2(lblMount->text() == QString::fromUtf8("无挂载"),
+             "拆开后辅助点状态必须变为无挂载");
+    QVERIFY2(!btnDetach->isEnabled(), "拆开后按钮必须禁用");
 
     delete dlg;
 }

@@ -183,6 +183,21 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
     2. `src/app/ContextStrip.cpp:336`：`flushHover()` 增加 `if (QApplication::mouseButtons() != Qt::NoButton) return;` 守卫，按键按下期间禁止弹出悬停条带；`clearHover()` 补齐 `m_hoverTimer->stop();`。
     3. `src/canvas/CanvasView.cpp:142/200/215`：`mousePressEvent`、`mouseReleaseEvent`、`mouseDoubleClickEvent` 在工具分发后显式 `event->accept(); return;`，阻断基类重复竞争。
 
+- **变量标签单击复制失效（2026-09 修复，用户报告"点击复制、双击修改"不生效）**：根因 = 2026-09-04 提交 `e38f54f`（变量卡片引入 CompoundChip 双格复合标签）重构时名称格单击只 `emit nameClicked(m_name)`（`src/ui/CompoundChip.cpp`），**该信号全仓库无任何 connect 接收方**，剪贴板不再写入——而旧实现（CopyChip::Variant::Name）单击走 `copyText()` 写剪贴板。代码格（ref）单击复制路径在重构中保留（`copyRefText()`），所以"点代码复制"仍正常、点名称复制失效。修复 = `CompoundChip::copyNameText()`（对偶 `copyRefText()`：写剪贴板 + 短暂 ✓ 反馈 + `emit nameClicked`），名称格单击非空 → 复制、单击空 → 直接进编辑（对偶代码格）、双击 → 行内编辑；`m_showingCopyFeedback` 保护两格文本不被 `setName/setRefName` 同步路径（每帧调用）覆盖 ✓ 反馈；名称格 tooltip 恢复"单击复制 · 双击编辑"。**坑**：`setName` 原早退条件 `if (m_name == n) return;` 会覆盖反馈文本，须同步加 `&& !m_showingCopyFeedback` 守卫；copy 反馈定时器恢复文本时须同时恢复 ref/name 两格（共享一个 `m_copyFeedbackTimer`）。回归：`test_formula_groups::compoundChipClickCopyAndDblClickEdit`（单击名称→剪贴板=名称、单击代码→剪贴板=代码、双击→出现编辑框、Return 提交收起、空名单击→进编辑不复制）。排查教训：UI 控件找子件用 `findChild<QWidget*>` 拿不到派生文本 API，须按真实类型（ElaText/QLineEdit）findChild。
+- **辅助点作为跟随端（出向连接）挂载信息显示为空且无法拆开（2026-09 修复，用户报告"L136辅助点连接在L146上但挂载信息为空"）**：
+  - **根因**：
+    1. `SegmentAuxTab::populateFields()`（src/ui/SegmentAuxTab.cpp:226）原实现思维定势认为“辅助点只能作为宿主（toPointId）被外部线段端点挂载”，仅扫描了入向连接（`toBlockId == m_blockId && toPointId == auxId`），漏掉了当前辅助点作为从动基点（`fromPointId == auxId`）跟随外部线段的出向连接，判定 `!hasConnection` 后错误回写“无挂载”并禁用拆开按钮。
+    2. 配套拆开槽 `onDetachMountClicked()`（src/ui/SegmentAuxTab.cpp:420）同样只收集 `toPointId == m_currentAuxId`，无法拆除出向连接。
+    3. `ContextStrip::findEditAttachment()`（src/app/ContextStrip.cpp:1086）硬编码仅比对 `startPointId` 和 `endPointId`，漏掉了 `seg->auxPointIds`，导致线段由辅助点跟随外部线时底部属性条误判为自由线。
+    4. `Block::segmentLengthAtPoint` 对辅助点未回退到 `pt->hostSegmentId`，返回 0.0。
+  - **修复**：
+    1. `SegmentAuxTab::populateFields` 改为双向扫描：入向连接标 `挂载 Lxxx`，出向连接标 `跟随 Lxxx`，存在任一连接即激活展示并点亮拆开按钮；
+    2. `SegmentAuxTab::onDetachMountClicked` 统一收集以当前辅助点为 `toPointId` 或 `fromPointId` 的 Attachment 并通过 `RemoveAttachmentCommand` 彻底释放；
+    3. `ContextStrip::findEditAttachment` 补充遍历 `seg->auxPointIds`；
+    4. `Block::segmentLengthAtPoint` 遇到辅助点回退查询 `pt->hostSegmentId` 的有效长度；
+    5. 选择工具快捷键 D（`ToolSelectActions::quickDetachSelection`）与辅助点右键菜单（`ToolSelect.cpp`）同步支持以辅助点为 `fromPoint` 的跟随连接拆除。
+    - 回归：`tests/test_dialog_tabs.cpp` 新增 `auxPointOutgoingFollowerMountAndDetach` 用例。
+
 ## 4. 数据 / 引擎
 
 - **addAttachment 拒绝跨层**（isAuxBlock 不一致）：测试构造桥 pin 前必须先设工作层。
@@ -252,6 +267,11 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
   - **根因分析**：在 `Block::applyEffectivePositions`（Block.cpp:1167）中，用于检测可视几何变动并触发重绘的逻辑写成了 `if (!m_effectiveLocal.isEmpty()) { ... if (moved) touchGeometry(); }`。当一条线段初始无延长量（`m_effectiveLocal` 为空，如初建线段、新读档或延长公式变量由 0 改为非 0）时，该分支直接为假，漏掉了 `touchGeometry()` 调用！导致被延长的线段所在 Block 的 `geometryEpoch` 未自增，画布 `BlockItem::syncFromBlock` 判定“几何未改变”而跳过了 `updateFromBlock()`（旧渲染缓存未重建，形状没变）；而挂在该端点上的跟随线（Follower）因为在求解时通过 `worldPos` 读到了新的有效端点坐标，导致跟随线所在图元在画布上正确发生了位移，视觉呈现为“连线走了，本体形状没变”。
   - **修复**：完善 `applyEffectivePositions` 的几何变化检测：当 `m_effectiveLocal.isEmpty()` 时，只要本帧 `eff` 中存在任意端点偏离本体 `resolvedPos`（有有效延长外移），即判定 `moved = true` 并显式调用 `touchGeometry()`；与非空时的增量逐点比对互为完整闭环。
   - 回归测试：`tests/test_extend.cpp` 新增 `variableChangeFromZeroToExtendRefreshesCanvas`（测试变量驱动延长量从 0 到 50mm 时 `geometryEpoch` 自增且画布 `BlockItem` 包围盒增宽 ~50mm，100% 通过）。
+- **再次复核（2026-09-04，用户带 E:/5.gcad 报告「后长补正=0.5 画布不更新、follower 动了本体没动」）——结论：当前源码已正确，无代码缺陷**：
+  - **排查过程（全链路证据）**：①数据层——L74 `extendStartFormula="后长补正"`，变量改 5mm→0.5mm 后 `segmentExtendStart` 求值 5→0.5、`worldPos` 有效起点从 (−253.98, 73.34) → (−253.98, 68.84)、`worldLen` 85→80.5，正确；②epoch——`applyEffectivePositions` 的空/非空缓存两个分支（Block.cpp:1263-1285）均正确 `touchGeometry()`，epoch 2→3 自增；③画布缓存——`BlockItem::syncFromBlock` 检测 epoch 变化重建缓存，`boundingRect` 104×181→104×176.5 正确变窄；④**像素级**（本次新加，之前三个回归只查 boundingRect 未查像素）——用固定窗口（覆盖 L74 起点尾巴）4px/mm 渲染，变量 5mm→0.5mm 后 L74 起点圆点行 73→91（移动 18px=4.5mm，**本体尾巴像素真实重绘**），对齐预期 4.5mm 缩短。**旧的三处回归测试只断言 boundingRect/epoch，不渲染像素，无法区分"缓存刷新了但视口没重绘"——本次补 2 个像素级用例**。
+  - **回归测试（新增，均为像素级）**：`tests/test_extend.cpp` `variablePanelCommandRefreshesCanvasPixels`（真实 undoStack→SetVariableCommand→recomputeFormulas 链路，变量面板改 0.5cm→5mm 延长，kRow 行 leftmostLit 左移 ≥8px）+ `probeUser5Gcad`（加载用户活档 E:/5.gcad，像素 diff 断言 5mm→0.5mm 渲染必须变化）。test_extend 22/22 全绿。
+  - **为何用户仍见旧行为**：最常见 = 运行的是修复前构建的 exe（本次验证的 build/out/WildWindPattern.exe 为 13:27 构建、已含 09-01 修复；若用户启动的是旧安装目录/更早构建则会复现旧 bug——修复在 2026-09 的 `applyEffectivePositions` 空缓存分支已经落地，见上一条）。**用户侧动作：用最新 `tools\build.bat` 重构建后重启应用；若仍复现，须确认交互入口（端点卡延长量输入框 vs 变量面板改值）并在 playbook 记录**。
+  - **排查陷阱（记录备查）**：①渲染窗口必须覆盖延长尾巴端——否则尾巴像素被裁剪在窗口外，before/after 顶部圆点行"不变"是裁剪假象（本次初版窗口 sr.y 上界 −42 未盖住 L74 起点 scene y=−73.34 导致误判"本体没动"，第二次窗口 sr.y∈[−94,16] 后才看到真实移动）；②`scene.render()` 直接渲染 QImage 会**绕过 QGraphicsView 的视口缓存机制**（总是取当前 scene 状态），所以它验证的是"缓存是否重建正确"，**不能**验证"真实 GUI 视口是否重绘"；真机视口重绘由 `QGraphicsItem::update()/prepareGeometryChange()` 触发 scene.changed → QGraphicsView 视口更新，此链路在 `syncFromBlock → updateFromBlock` 内（BlockItem.cpp:350-355），已被 22 用例覆盖。
 - **滑轨面板流三坑（2026-12 用户反馈"滑轨功能好像是坏的，没有生效的痕迹"）**：①**只填一轴被静默拒绝**——`SegmentConnectionCard::onSlideOffsetEdited` 原要求两轴都能解析（`if (!okA || !okP) { refreshCard(); return; }`），只填「水平」留空「垂直」（tooltip 承诺"留空/0 表示不偏移"）时直接 return + refreshCard 清空输入 → 输入被悄悄丢弃、无任何生效痕迹；修复 = 空串按 0 解析（SegmentConnectionCardConn.cpp:474-481；留空/0 + 另一轴非 0 自动选 AlongLeader/PerpLeader，双轴 0 或空 = 退回全连接）。②**任意 ElaLineEdit 按回车会悄悄关闭整个属性对话框**——ElaLineEdit 未覆盖 keyPressEvent，回车事件沿父链传播到 QDialog 的 default-button/accept 路径 → 对话框瞬间关闭（输入内容看似被丢弃）；修复 = `LinePropertyDialog::keyPressEvent` 吞掉 Return/Enter（提交语义由 editingFinished 承担；Esc 照旧走 reject()/撤销全部，LinePropertyDialog.cpp）。③**滑轨输入回车后关闭对话框触发 Qt 6.11 析构断言**——`emit changed(SlideModeChanged)` 的信号发放本身（空槽也复现，几经二分定位）令对话框析构期 `QtPrivate::assertObjectType` 断言（"class destructor may have already run"，qobjectdefs_impl.h:107，QTest qFatal）；修复 = 滑轨路径不再 emit changed（画布刷新经 `m_doc->resolveAll()` → `ParamDocument::resolved` → CanvasScene 观察者链自动完成；onConnCardChanged 对 SlideModeChanged 本就 default no-op）。验证：test_dialog_tabs 9/9 + test_rotate_copy::propertyDialogShowsFollowValue + test_select_wkey::connectionCardNewSemantics + test_commands::slideMode_alongAndPerpConstraints/slideMode_dragOffsetsUndoRedo 全绿；probeSlideFlow 临时探针（面板滑轨流 = 只填水平 2 → AlongLeader/along=20mm/字段保留/对话框不关/析构无断言）用后已移除。提示：滑轨"沿线"方向 = 基准线在吸附点的出口方向（起点锚点 = end→start、终点锚点 = start→end，与折叠角参考系一致）。
 - **独立角度（angleIndependent）三处编辑失效（2026-12 用户报告「勾选独立角度后，角度就无法输入调整了，选择工具拖动改变角度也无效。输入角度会不断跳动」）**：独立角 = 位置仍焊在宿主、角度自管（Resolver.cpp applyAttachment 对 angleIndependent 保留 from.transform.rotation、**忽略 followerAngle**），因此**所有角度编辑路径都不得把它当普通跟随线写 followerAngle**。三处修复：
   ①**条带（ContextStrip）**——applyAngle/refreshFields 原按 findEditAttachment() 命中即写/读 followerAngle（静默无效 / 显示陈旧值）。修复 = att && !att->angleIndependent 才走跟随线分支，独立角落入自由线分支（写端点 Polar 角 ep->angle = targetDeg − rotDeg、读世界角 ep->angle + rotDeg），并 st.attId = QUuid() 不碰附件；refreshChrome 的 °/⌒ 单位切换与「跟随」徽标对独立角禁用/改写（弧长模式对独立角无意义）。
@@ -344,7 +364,64 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
 
 - **重连覆盖方向基准（2026-09 用户拍板：「连接拆开的时候角度基准保持不变。再次连接的时候也应该不变。当前重新连接任意点，会覆盖掉方向基准。而且只覆盖方向点1，点2没有内容」）**：自动态（`angleRefBlockId` 空）下重连，各路径只把旧目标点固化为点1、点2 留空 → 两点连线方向退化为单点出口方向；面板「连接到」重定向后基准跟随新宿主（方向基准被覆盖）。修复 = 新增共享 helper `cad::param::preserveAngleRefOnReattach`（FollowerAngle.h 声明 / ParamDocumentAttachments.cpp 实现）：自动态下把旧所连线段固化为**两点基准**（点1 = 旧目标点、点2 = 旧线段另一端），已自定义的基准原样保留，独立角时 ref 字段是还原缓存不动；**必须在改写 toBlockId/toPointId 之前调用**（旧宿主信息仍在 att 上）。接入 4 条重连路径：`ConnectGesture::reattachAngleOnly` / `SegmentConnectionCard::onTargetResolved` / `ReattachAttachmentCommand::redo` / `LinePropertyDialog::onStartConnectResolved`。配套：①反算 followerAngle 改用 `effectiveAngleRefWorld`（与 Resolver 同构，含两点基准与影子偏转）——此前恒用新宿主方向反算，固化基准后 Resolver 按旧基准驱动 → 重连瞬间跳线；②方向行新增 **[链接当前线]** 按钮（`SegmentRefCard::onLinkCurrentLineClicked`，objectName `linkCurrentLineBtn`）：清空自定义基准回自动态（走 `SetAttachmentAngleRefCommand`，undo 可撤），**必须先清空点1/点2 编辑框再 refresh()**——refresh 的"预填自动落库"分支（angleRefBlockId 为空时）会把编辑框残留的旧自定义值当用户预填重新提交，刚清空的基准会被写回；③独立角时点1/点2 清空但**不禁用**（用户拍板：可直接填点 = 退出独立角并建立自定义基准）；**独立角也不锁「链接当前线」按钮**（2026-09 修正：独立只是清空，不锁按钮——独立角 + 自定义基准时点击 = 清空基准 + 退出独立角回自动态，`SetAttachmentAngleRefCommand::redo` 会清 `angleIndependent`）。回归：test_dialog_tabs 新增 `reattachPreservesAngleRef`（自动态重连 → 点1=旧目标点/点2=旧线段另一端；自定义基准再重连 → 原样保留）/ `linkCurrentLineButtonClearsRef`（点击 → angleRef 全清 + 自动态回显当前线段两点 + 按钮禁用）/ `independentAngleKeepsRefEditsEnabled`（独立角 → 点1/点2 空且可编辑；独立角 + 自定义基准 → 按钮可用，点击 → 清基准 + 退出独立角）。
 
-- **影子偏转锚点推导已删除（2026-09 用户拍板删除；本条为原「影子偏转累计角度偏差 → 锚点推导重设计」历史档案的收尾）**：shadowAnchorRotDeg 锚点推导（2026-09）与其前身 baselineOffsetDeg 累计账本均已随功能移除 —— 有效基准 = 真基准方向，不再叠加影子；`migrateV1ToV2` 从「锚点换算」改为「纯清理 baselineOffsetDeg 残留键」；test_migration 用例 `v1ShadowOffsetMigratesToAnchor` 改写为 `v1ShadowOffsetKeyIsDropped`（断言旧键丢弃且不写锚点键）。
+- **角度测量跨图层与测量方向不跟光标缺陷（2026-09 用户报告：「跨图层测量角度会出现结果有误；一个 T 形状的线条，先选中 I 再选中 ——，测量方向是默认的，和用户光标所在的位置无关，导致量不到想要的结果」）**：
+  - **根因分析**：
+    1. **跨图层测量问题**：用户拍板方案 A（严格禁止跨图层测量角度）。不同图层有各自独立的变换与语义，跨图层测量角度在图层发生平移/旋转或隐藏时容易引起混淆与无效测量。原实现未做同图层拦截，导致跨图层时被允许创建并在重算时产生不可预期结果。
+    2. **方向与光标无关问题**：原实现角度计算恒定取线段的几何起点到终点方向（$P_{start} \to P_{end}$）。对于 T 型线或相交十字线，线段自身只有一个固定的弦向向量，用户点击交点左侧或右侧、上侧或下侧时，计算出的角度恒为默认象限的夹角，无法测量相邻角或所见即所得的目标角。
+  - **修复收口**：
+    1. **图层隔离（方案 A）**：在 `ToolAngleMeasure` 中点选第二条线时判断 `isSameLayer(blockA, blockB)`，若跨图层则弹出 Toast 提示（`"角度测量仅支持同一图层内的线段"`）并拒绝吸附，保持在选择第二条线状态；在底层 `MeasurementStore::addAngleMeasure` 与 `measureAngleMeasureVars` 中增加防御性层一致性校验。
+    2. **光标感知与射线方向持久化**：
+       - `AngleMeasureVariable` 新增 `bool flipA = false; bool flipB = false;` 标志位并在 `DocumentSerializer` 中读写（向下兼容旧存档）。
+       - 智能射线算法：在 `ToolAngleMeasure::calculateRayAngle` 中，若两线相交于交点 $V$，计算点选位置（或线段中点）相对于 $V$ 的偏移向量 $\vec{v}_A, \vec{v}_B$，若与线段弦向点积为负则翻转射线方向（记录为 `flipA` / `flipB`）。
+       - 实时预览与重算闭环：鼠标移动和提交时均基于光标所在射线实时计算并显示夹角；提交时持久化 `flipA`/`flipB` 到变量；`MeasurementStore::measureAngleMeasureVars` 按照持久化的翻转标志计算角度，文档重解（`resolveAll`）时角度稳定不跳变；画布闪烁弧线同步传入 `flipA`/`flipB`。
+  - **验证**：`tests/test_measure.cpp` 新增 3 个测试用例：`angleMeasureEnforcesSameLayer`（跨图层拒绝与同图层提交）、`angleMeasureTCrossCursorDirection`（T 型相交线点击左右两侧分别测量到 -90° 与 +90°）、`angleMeasureResolveKeepsFlips`（持久化与求解后保持）。全量通过。
+
+- **拆开影子基准后重连到旧线段与选择工具拖拽撕裂（2026-09 用户报告：「线段端点在拆开后，进入影子角度状态，然后这个时候再连接新线。可以被选择工具挪开线段。并且两个线段呈现视觉断开，但是面板的连接关系还在。且点击拆开后，重连连接的是旧线段（影子线段）。1. 这个重连的缓存机制应该为只缓存上次的连接的对象。2. 连接后保持跟随，拆开了就等于不连接，和视觉效果一致」）**：
+  - **根因分析**：
+    1. **拖拽撕裂**：挂载到新线 L3 时，`buildShadowMount` 返回的 `outAtt1` 默认 `isLocked = false`。当用选择工具拖拽跟随线 L2 时，`SelectDragController` 计算 `lockedClosure` 闭包因 `isLocked == false` 漏掉了宿主 L3，拖动结束时的断开判定把 `Att1` 识别为被拆散连接并在拖动结束时断开，而 `Att2`（跟随线→影子）保留，造成“两线视觉断开但面板仍显示连接”。
+    2. **重连回到旧线段（影子原本体 L1）**：原先 `Mode::ReDetach` 删除了 `Att1`，未将新宿主记录在影子块中；而 `SetAttachmentAngleOnlyCommand(false)` 只有 `Mode::ReconnectMaster`，硬编码连回 `shadowMasterBlockId`。
+    3. **面板回显不一致**：影子挂载到新宿主后，面板「连接到」控件未穿透到 `Att1` 宿主，而是回显了内部影子块 ID 或留空；拆开后按钮也未能正确指示能否重连新宿主。
+  - **修复收口**：
+    1. **默认焊接锁定**：在 `buildShadowMount` 中显式置位 `outAtt1.isLocked = true;`，挂载后拖拽跟随线时 `lockedClosure` 自动将宿主线纳入整体拖拽闭包，拖拽绝不撕裂。
+    2. **影子记住上次宿主**：在 `Block` 中增加 `shadowLastHostBlockId/shadowLastHostPointId/shadowLastHostSegmentId`；在初次拆开 `buildShadowDetach` 时初始化为本体 master；挂载 `mountShadowTo` 及再拆开 `releaseShadowToDetached`（`Mode::ReDetach`）时记录新宿主；序列化层（`DocumentSerializer.cpp`）可选读写支持；重连时（`SetAttachmentAngleOnlyCommand` 与 `ParamDocument::setAttachmentAngleOnly`）若上次宿主存活且不是本体，走 `Mode::ReconnectMounted` 恢复挂载到上次宿主并焊接，若为本体才走 `Mode::ReconnectMaster`。
+    3. **面板回显穿透**：`SegmentConnectionCardRefresh.cpp` 与 `LineEndpointSection.cpp` 中，若基准为影子，挂载态通过 `findAtt1OfShadow` 穿透回显新宿主点，拆开态回显空，并根据 `shadowLastHost` 存活状态使能「重连」按钮。
+    4. **命令分拆**：`ShadowMountCommand` 与 `RemoveShadowCommand` 抽离至 `ShadowLifecycleCommands.h/.cpp`，满足 400 行红线守卫（`check_file_size`）。
+  - **验证**：`tests/test_attachment_commands.cpp` 新增 `shadowReconnect_cachesLastConnectedObject()` 覆盖初次拆开记录 master -> 挂载新线 C 验证焊接锁定与闭包跟随 -> 从 C 拆开记录 C -> 点击重连成功回到 C（而非 A）-> 验证端点位置对齐 -> 验证 `undo()`/`redo()` 对称性 -> 挂回本体 A 销毁影子全流程。全量通过。
+
+- **线条角度表达式在属性面板/上下文条被清空并换算为结果（2026-09 用户报告：「线条的角度在使用角度+变量来计算的情况下，有时候在打开线条属性面板时，会直接换算为结果，把表达式清空。这就破坏参数化了。帮我修复这个情况，并且保证在角度使用表达式的时候，不自动把表达式转换为结果。如：1+1=2不允许清空掉1+1直接显示2」）**：
+  - **根因分析**：
+    1. **属性面板自激回写清空公式**：打开 `LinePropertyDialog` 时，`populateAngleField` 填充文本触发 `m_editAngle` 的 `textChanged` $\to$ 启动 200ms debounce 定时器 $\to$ 触发 `applyAngle()`。而旧版 `populateAngleField` 在设置文本时未加 `QSignalBlocker`；且 `driven` 端点（自由线跟随起点的非锚点端）未被识别为公式端点，导致输入框直接填入数值文本；定时器超时后将纯数值写回模型，彻底抹去原始公式。
+    2. **属性面板卡片隐藏 fx 标签且未重显**：`SegmentAngleCard::refresh()` 开头无条件调用 `m_lblFxAngle->setVisible(false);` 且后续在存在公式时未恢复其可见性，导致 fx 变量徽标消失；同时副标签未回显 `= 2°` 计算结果。
+    3. **上下文条 applyAngle 强制清空公式**：`ContextStrip::applyAngle()` 在解析角度后无条件执行 `st.endAngleFormula.clear()`，即使用户输入的是公式 `30+15`，也会被强制写死为数值并清空公式；且 `syncFromModel()` 未从 `driven` 端点读取公式回显。
+    4. **换向命令 ReverseSegmentCommand 丢失公式**：`ReverseSegmentCommand::applyState` 换向反转起点与终点极角属性时，直接将终点公式置空，未转移并补偿 `(formula)+180`。
+    5. **SegmentRefCard 残留预填触发误提交**：换线时未清空 `m_alignPointEdit`、`m_angleRefPoint` 等编辑框，残留输入触发 `SetAttachmentAngleRefCommand`。
+  - **修复收口**：
+    1. **阻断回填信号与支持 driven 端点**：`SegmentAngleCard::populateAngleField` 增加 `const QSignalBlocker sb(m_editAngle);`，彻底消除回显触发 debounce 覆盖模型的隐患；对自由线（`!att`）的 `driven` 端点优先回显其 `angleFormula`。
+    2. **公式指示与副标签高亮**：`SegmentAngleCard::refresh` 修正为根据公式存在状态精准控制 `m_lblFxAngle->setVisible(!formula.isEmpty())`，并更新副标签 `m_lblFollowValue` 展示 `= X°`。
+    3. **上下文条保留公式**：`ContextStrip::applyAngle` 改为公式输入时保留 `endAngleFormula`，纯数字时才清空；`syncFromModel` 补全 `driven` 端点公式回显。
+    4. **换向保留公式**：`ReverseSegmentCommand::applyState` 在换向时将新端点角度公式设为 `driven.angleFormula.isEmpty() ? QString() : QStringLiteral("(%1)+180").arg(driven.angleFormula);`。
+    5. **对话框提交冲刷**：`LinePropertyDialog::onAccepted` 在提交前检查并停止/冲刷 debounce 计时器。
+  - **验证**：
+    - `tests/test_context_strip.cpp` 新增 `angleFormulaEditApplies`。
+    - `tests/test_reverse_segment_commands.cpp` 新增 `reverseSegment_preservesAngleFormula`。
+    - `tests/test_dialog_tabs.cpp` 新增 `angleFormulaPreservedInDialog`。
+    - 7 大代码守卫脚本 100% 通过（`ctest -R check_`），全部相关测试通过。
+
+- **对话框/面板七处操作不入 undo 历史（2026-09-06 用户报告"有一些操作不进入操作历史"）**：逐点排查全部 `undoStack()->push` 入栈点与门面修改 API 调用点后，确认七处用户操作直写模型却从未 push 命令（Ctrl+Z 撤不掉）：
+  - **漏洞清单与修法**：
+    1. `LineEndpointSection::onStartConnectResolved`（属性对话框起点「连接到」建立/重定向，含影子③⑤路由）→ 建立走「门面 addAttachment 校验+默认焊接 → 摘除 → AddAttachmentCommand verbatim 重放」舞步；重定向走「live 改 → restoreFollowerAttachment 恢复旧态 → ReconnectAttachmentCommand 重放新态」会话回放范式；影子③ `ShadowMountCommand`、⑤ `SetAttachmentAngleOnlyCommand(false, pt, QUuid(), forceMaster=true)`（纯构建器预检，拒绝不推空命令），无栈回退门面路由。
+    2. `LineEndpointSection::onEndConnectResolved` / `onEndDetachClicked`（终点连接/拆开）→ `SetEndTargetCommand`（**offset/公式原样保留**——旧直写不清它们，拆开→重连隐式还原 offset 的行为不能变；为此给命令补了带默认值的 `offsetFormula` 参数）。
+    3. `SegmentConnectionCard::onTargetResolved` / `onConnectToResolved`（隐藏辅助卡，测试/逻辑兼容）→ 同 1 同款修法。
+    4. `SegmentAngleCard::applyAngle`（角度输入提交：跟随线三模 + 自由线终点 Polar/Ortho）→ 跟随线走 `SetFollowerAngleCommand`（非当前模字段填原值 verbatim 重放；数值连续编辑经 mergeWith 合并），自由线走 `SegmentEditBarCommand`（「模型现态+角度覆盖」构造 State，非角度字段原样重放无副作用；自由→Polar 转换一并入栈）。
+    5. `SegmentAngleCard::onModeToggle`（°/⌒/↔ 三模切换）→ `SetFollowerAngleCommand`（目标模字段 = followerModeSwitchValues 换算结果）。
+    6. `LineGeometrySection::onSlideModeChanged`（滑轨模式切换）→ 接线**死代码** `SetAttachmentSlideModeCommand`（命令早已写好从未被用）。
+    7. `LayerPanel` 图层眼睛开关 → 接线**死代码** `SetLayerVisibleCommand`（与行级线段眼睛 undoable 同规）。
+  - **命令侧小改**：`SetAttachmentAngleOnlyCommand` 新增 `forceMaster` 参数（默认 false 零影响）——面板显式重定向到本体时跳过重连缓存自动选路（ReconnectMounted），强制 ReconnectMaster；手势/D 键的「拆开重连回上次宿主」语义不受影响。`SetEndTargetCommand` 新增默认空 `offsetFormula` 参数。
+  - **文件拆分连带**：`LineEndpointSection.cpp` 因上述入栈代码触顶 800 行红线（839 行，check_file_size 红）→ 连接行四 handler + `findFollowerAttachment` 助手拆至新文件 `src/ui/LineEndpointSectionConn.cpp`（声明上移头文件，CMakeLists gcad_ui 源列表已加）。
+  - **范式备忘**：面板/对话框离散语义操作一律"各自入栈"（本文件既有约定）；带校验的建立类操作（门面 addAttachment 拒绝跨层/桥接/环）必须经**门面先行校验 → 摘除 → 命令重放**，禁止绕过校验直接 push（AddAttachmentCommand redo 走 addAttachmentRaw 不校验）；无 undo 栈回退（测试直改路径）逐处保留。
+  - **验证**：`ctest --test-dir build\out-reldeb -R 'test_dialog_tabs|test_select_wkey|test_aux_layer|test_context_strip|test_component|test_reverse_segment_commands|test_rotate_copy'` 7/7 全绿。
+
+- **持久化两缺口 + 37 文件 BOM 批量丢失（2026-09-06 持久化审计发现并修复）**：①**角度测量射线翻转 flipA/flipB 不落盘**——字段与消费方（MeasurementStore/CanvasScene/MainWindow/ToolAngleMeasure）已落地，但 `DocumentSerializer` 的 `angleMeasureJson/angleMeasureFrom` 漏了这两个键（上方「光标感知与射线方向持久化」条目里"并在 DocumentSerializer 中读写"的记载当时并未兑现）；保存再载入后翻向丢失 → 测量值跳变 180° → 发布的 M_xxx 参数改变 → 引用公式联动变形。修复 = json/from 各加两键（Optional 缺省 false）。②**影子重连缓存 shadowLastHost{Block,Point,Segment}Id 不落盘**——`Block.h` 三字段被 AttachmentLifecycleCommands 重连选路消费，但 `blockJson/blockFrom` 没写；保存再载入后「重连回上次宿主」退化为「回本体」，跨会话违背重连缓存拍板语义。修复 = 三键 verbatim 读写（悬空 id 安全：重连处 `doc->findBlock(lastHost)` 校验 + buildShadowMount 失败回退本体）。③**格式账目**：按 CONVENTIONS「改格式 = bump + 迁移步」规则 `kFormatVersion` 3→4 + `migrateV3ToV4` 纯直通步——本批 2026-09 可选字段（OrthoOffset/chordLength/showOrthoAxis/flipA/flipB/shadowLastHost*）统一记入 v4，旧档缺键 = 安全默认零迁移；test_migration 补 `v3OptionalFieldsPassThrough`，其 `QCOMPARE(kFormatVersion, 3)` 同步改 4。④**BOM 批量丢失**：某次自动化改写把 37 个源文件 UTF-8 BOM 剥掉（系统 cp936 且项目无全局 /utf-8，BOM 是中文串正确编译的兜底；实测 MSVC 14.44 能自动识别无 BOM UTF-8 故未爆雷，但属逐字符串对齐运气，工具链一变即静默乱码/编译错）——已全部恢复「HEAD 有 BOM ⇒ 工作区有 BOM」。回归：test_serializer 新增 `angleMeasuresRoundTrip`（flip 往返 + 旧档缺键默认 false）+ `shadowRoundTripAndDowngrade` 扩展 lastHost 三断言；test_migration 12 例全绿。
 
 ## 5. 测试 / 基线（判"是不是我引入的红"先看这里）
 
@@ -407,3 +484,85 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
   与第 1 组"陈旧 AUTOMOC 段错误"的区分：**本条是用例全绿后退出期崩；那条连 `-functions` 都出不来文本。**
 - **角度归一化函数 while 循环死循环隐患（2026-09 修复，P1 改进）**：`src/geometry/Angle.h` 中的 `normalizeDeg180` 与 `normalizeRad` 原使用 `while (deg > 180.0) deg -= 360.0;`。当外部输入极端多周期大数（`1e12`）或由于未初始化/除零产生 `Inf`、`NaN` 时，`while` 循环空转乃至无限死循环导致主线程卡死。**修复**：改用 `std::fmod` + `std::isfinite`（非有限数秒级安全返回 0.0，保持左开右闭 `(-180, 180]` 和 `(-π, π]` 区间契约，O(1) 复杂度）。验证：`tests/test_curve.cpp` 新增 `angleNormalizationRobustness` 覆盖常规角、开闭边界、多周期大数与非有限数，测试全绿。
 - **MSVC 全局 `/utf-8` 与 Qt6 预编译库 ABI 冲突引发 SegFault（2026-09 关键排错经验）**：切勿在根目录 `CMakeLists.txt` 对 MSVC 盲目施加全局 `add_compile_options(/utf-8)`。MSVC 的 `/utf-8` 会同时开启 `/source-charset:utf-8` 和 `/execution-charset:utf-8`，导致全仓窄字符串字面量均按 UTF-8 编码编译进二进制；而 Windows 下 Qt 6 官方预编译二进制的局部 API/内部私有模块按系统 ANSI（CP936）代码页预期解码，导致 `test_resolver` 与 `test_reverse_segment_commands` 在启动或内部符号解析时报 `0xC0000005 (STATUS_ACCESS_VIOLATION)` 崩溃。**架构定则**：严格遵守 AGENTS.md 既有规范「含中文源文件必须 UTF-8 with BOM」，让 MSVC 自动识别源码 UTF-8 而不干扰全局执行字符集；`/utf-8` 仅针对纯独立自编译第三方库（`ElaWidgetTools`）保持局部 `target_compile_options`。
+- **输入框与微调框底部横杠与胶囊样式不统一（2026-09 用户反馈「为什么有些输入框底部有一条横杠，有些没有？想把输入框全部统一为无横杠的纯胶囊输入框」）**：
+  - **根因**：视觉分流源于底层控件管线不同。①有横杠的输入框（ContextStrip、LinePropertyDialog、表单对话框等）使用的是 `ElaWidgetTools` 控件（`ElaLineEdit` / `ElaDoubleSpinBox` / `ElaSpinBox`），遵循 Windows 11 Fluent 规范：非聚焦态下由 `ElaLineEditStyle::drawPrimitive` 内部自绘 `BasicHemline` 静态底边横线；聚焦态下由 `paintEvent` 触发 `pExpandMarkWidth` 动画在底部展开 2.5px 的高亮横杠。②没有横杠的输入框是由于使用了原生 `QLineEdit`（如 `PointRefEdit`）仅受 QSS `border` 控制而绕开了 ElaStyle；或者如 `CopyChip`/`CompoundChip` 常态下展示的是静态 `ChipLabel`（`ElaText`），仅自绘了圆角矩形描边。
+  - **修复收口**：①底座治理：在 `third_party/elawidgettools_qt69_patch.cmake` 增加 Part 6 补丁，彻底剥离 `ElaLineEditStyle` 与 `ElaSpinBoxStyle` 中的 `BasicHemline` 底边线绘制代码，并在 `ElaLineEdit`/`ElaDoubleSpinBox`/`ElaSpinBox` 的 `paintEvent` 中剔除底部展开横条；将边框与背景改为自适应高度的纯胶囊几何（`radius = height / 2`），聚焦态统一改为全包围高亮边框（`PrimaryNormal` 1.5px），从而让全库现存及未来新增的 `ElaLineEdit` 无需改动业务层即自动呈现无横杠纯胶囊。②项目层对齐：`PointRefEdit` 的 QSS `border-radius` 从 3px 升级为 15px（高度 30px 半圆胶囊）且左右 padding 调为 10px；`CopyChip` 和 `CompoundChip` 标签的自绘圆角由固定的 3px 改为 `r = (height() - 1.0) / 2.0`；`ComponentTab` 和 `SegmentRefCard` 中的散落 `new QLineEdit` 替换为 `ElaLineEdit`。③规范固化：`Theme.h` 补充 `RadiusCapsule = 999` 常量，`CONVENTIONS.md` 和 `AGENTS.md` 正式登记输入框与微调框无横杠纯胶囊设计纪律。
+  - **验证**：`test_context_strip`、`test_select_wkey`、`test_dialog_tabs` 3 套 UI 测试全部通过（100%）；7 组自动化守卫（`check_layering` / `check_test_fixtures` / `check_hardcoded_colors` / `check_file_size` / `check_header_classification` / `check_bool_flags` / `check_test_split`）全部通过（100%）。
+- **辅助点挂载拆开后重连被篡改为端点 Bug（2026-09 修复，第 5 组/拆开影子基准）**：
+  - **根因**：`ParamDocument::buildShadowDetach` 拆开挂载在辅助点上的连接时，虽然正确记录了 `shadow.shadowLastHostPointId = att->toPointId;`，但在 `buildShadowReconnect` 恢复旧连接属性时，旧实现存在硬编码假设：
+    ```cpp
+    const bool anchorWasStart = (att->toPointId == sseg->startPointId);
+    outRestored.toPointId = anchorWasStart ? start : end;
+    ```
+    当连接挂载在辅助点（`att->toPointId` 为 auxPoint.id）时，`anchorWasStart` 为 false，代码直接将其误设置为宿主线段的 `endPointId`！导致辅助点连接在拆开重连后，原本应该吸附在辅助点上的端点被强行重定向到了宿主线终点。
+  - **修复**：在 `buildShadowReconnect`（`ParamDocumentShadow.cpp:115`）中优先使用 `shadow.shadowLastHostPointId`。若 `shadow.shadowLastHostPointId` 为宿主线段中的有效点（辅助点或端点），则重连直接恢复该点 ID，保证挂载在辅助点上的外部连接在重连时准确回到原来的辅助点。
+  - **验证**：`tests/test_attachment_commands.cpp` 新增 `auxPointAttachment_detachAndReconnect` 覆盖辅助点拆开、自由平移、保持跟随角、重连回原辅助点及 undo/redo；`tests/test_select_wkey.cpp` 新增 `quickDetachAuxPointMountWithDKey` 验证宿主线选中 D 键快拆与撤销重做；全量 ctest 41/41 通过。
+- **辅助点挂载拆开数据残留、报错「引用不存在的端点」且无法再连接其他端点（2026-09 修复，第 5 组/连接架构与就地交互）**：
+  - **现象**：
+    1. 画布右键点击线段或辅助点，右键菜单中没有拆开选项；当本线挂载在别的线上且别的线在更上层时，右键完全无法感知挂载关系；
+    2. 属性面板辅助点 Tab 无挂载信息（默认隐藏或显示无挂载）；
+    3. 按 D 键拆开辅助点挂载后，线段无法再连接任何其他端点，并伴随警告诊断报错「该点引用了不存在的端点」；
+    4. 视觉上拆开了，但底层数据上依然处于连接状态。
+  - **根因**：
+    1. **右键未接入**：画布线段右键由 `CanvasView::contextMenuEvent` 截获并抛出 `segmentContextMenuRequested` 信号，在 `MainWindow::onSegmentContextMenu` 中弹窗。此前代码将辅助点拆开加在 `ToolSelect::mousePress`，而 `MainWindow::onSegmentContextMenu` 根本没有拆开逻辑；且此前重叠测试只看最上层 `bestBlockId`，导致下层或挂载方的连接被忽略；
+    2. **面板回显缺失**：`SegmentAuxTab::refreshList()` 没有默认 `setCurrentRow(0)` 导致表单默认隐藏；此前误用影子拆开后 `att.toBlockId` 被篡改为影子块 ID，导致按宿主 `m_blockId` 找不到入向连接；
+    3. **错误将辅助点挂载走影子角度模式**：`Block::cloneShadowOf` 只克隆线段两端点，根本不包含辅助点。若将辅助点挂载强行转为影子基准（`SetAttachmentAngleOnlyCommand`），跟随线依然在数据中持有 `att` 指向影子端点，触犯 `AttachmentGraph` 的 `DuplicateFollower` 单连接限制，导致该线无法再建立任何新连接；同时 Resolver 解析缺失辅助点触发 `ResolveDiagnostic::Kind::DanglingPoint`。
+  - **修复**：
+    1. **语义矫正**：辅助点挂载拆开的本质是**彻底释放连接（`RemoveAttachmentCommand`）**，而非影子保留角度。在 `buildShadowDetach` 中增加辅助点拦截防错（`tp->isAuxiliary` 直接拒绝）；在 `quickDetachSelection`（D键）、`SegmentAuxTab::onDetachMountClicked`、`SegmentConnectionCard::onDetachClicked` 与 `LineEndpointSection::onStartDetachClicked` 中，若连接锚定在辅助点上一律推入 `RemoveAttachmentCommand` 彻底释放数据，恢复为纯自由线段，支持随时吸附/连接其他线段，彻底消除假拆开与悬空端点报错；
+    2. **全图元穿透右键拆开**：在 `MainWindow::onSegmentContextMenu` 中，以光标坐标 `hit.scenePos` 扫描一定容差内的所有 Block，搜集所有出向/入向连接并在菜单顶部生成 `⚡ 拆开挂载连接: L#·名 (挂于 P#·名)` 与 `⚡ 拆开端点连接: L#·名 ↔ L#·名`，彻底解决层级遮挡无法命中问题；
+    3. **面板自动选中与释放**：`SegmentAuxTab::refreshList()` 确保列表非空时自动选中第一项，表单正确展示 `挂载线段: L#·名` 与 `[拆开]` 按钮，点击即推入 `RemoveAttachmentCommand`。
+- **正交拐角偏置与省道镜像细节缺陷排障（2026-09 修复，第 5 组/省道建模与参数化）**：
+  - **现象**：
+    1. 镜像对边创建后没有取消/解绑途径；
+    2. 偏置输入数值后，方向单选选项仍停留在“无”；
+    3. 点击“左”/“右”切换偏置时，主轴基准角度被挤出漂移（如 45° 漂移为 36°）；
+    4. 镜像线段在母线面板缺少直观的信息展示；
+    5. 画布删除镜像块后，母线双击无法打开属性面板（控制台报错或失效）；
+    6. 省道开度导致两腰不等长，单位混乱（mm/cm）；
+    7. 拐角偏置缺少中心参考虚线及开关控制。
+  - **根因**：
+    1. 缺少逆向 `CancelDartMirrorCommand`；
+    2. `LineGeometrySectionDart` 在输入数值时未自动更新单选按钮勾选状态；
+    3. `SegmentAngleCard::populateAngleField` 以前将两端点斜边倾角 `atan2(dy, dx)` 当做线段角填入，且 `applyAngle` 强行覆盖为 Polar 约束写入斜边角，导致左右切换时斜边角被反向写回中心基准角；
+    4. 镜像信息未在面板提取回显；
+    5. `removeBlock` 未级联清理母线的 `mirrorBlockId`/`mirrorSegmentId`，残留野 UUID；且 `LinePropertySession` 在 `takeSnapshot` 与 `rollback` 时未快照 `OrthoOffset` 约束与 `DartProperties`，导致对话框取消时属性被误回滚为普通 Polar；
+    6. 旧开度公式直接将两端点 offset 相减且未反算主轴距离，破坏了直角三角形斜长守恒；
+    7. 画布未绘制中心基准轴虚线。
+  - **修复**：
+    1. 实现 `CancelDartMirrorCommand` 及其 UI 按钮「✕ 取消镜像」，支持全量撤销/重做；
+    2. 偏置编辑完成时若选项为“无”，自动根据正负值切到“左”或“右”；
+    3. 在 `SegmentAngleCard` 中针对 `OrthoOffset` 建立专用读/写/显通道，恒定操作 `ep->angle`（中心基准角），绝不使用斜边倾角；
+    4. 在省道卡片展示 `m_lblMirrorInfo`，回显对边块名、线名及起终点；
+    5. `ParamDocumentBlocks.cpp::removeBlock` 级联清理母线镜像引用；`LinePropertySession` 补充保存 `orthoOffsetDist`/公式及 `DartProperties`；
+    6. 开度输入全面统一使用 **cm** 单位，数学上以母线斜长 $H$ 维持两腰严格等长（自适应主轴距离），并提供「↺ 重置」按钮还原对称；
+    7. 画布 `BlockItem` 增加中心虚线绘制，面板提供「👁 基准轴」显隐切换开关，支持无损序列化。
+  - **验证**：`tests/test_ortho_offset.cpp` 测试全部通过；七大 guard 自动化测试全部通过；全量 ctest 42/42 通过。
+- **正交拐角偏置左右按钮反向与基准角度二次污染排障（2026-09 修复，第 5 组/省道建模与参数化）**：
+  - **现象**：
+    1. 画布上正交偏置线段点击“左”按钮反而往右拐，点击“右”按钮反而往左拐；
+    2. 部分操作（如在底部 ContextStrip 回车或改角度、在属性面板改偏置或切换左右）会导致主轴基准角度发生微调或被直接重置为 0°，甚至约束退化为普通直线；
+    3. 每次在面板中编辑后，线段长度发生非预期膨胀（例如 10cm 变成 10.44cm 再变成 10.86cm）。
+  - **根因**：
+    1. **屏幕坐标系法向量符号相反**：Qt 画布坐标系 Y 轴向下，沿前进视线 $(\cos\theta, \sin\theta)$ 真正的向左 90° 单位法向量是 $(\sin\theta, -\cos\theta)$；此前底层误写为 $(-\sin\theta, \cos\theta)$（即向右法向量），导致“向右偏”被当成了正向“左”；
+    2. **面板回填斜长污染主轴基准长**：`LineGeometrySection.cpp` 原本将两端点间物理距离（斜长 $\sqrt{L^2+D^2}$）回填进“长度”输入框，用户点确定或改偏置时，斜长被当作主轴距离写回 `ep->distance`，导致长度不断膨胀并引起几何变形；
+    3. **首次开启偏置漏赋当前角度**：若原本是 Free 约束，切换为 OrthoOffset 时未从当前物理几何反算角度，直接赋为默认值 0°（被直接拉平为水平线）；
+    4. **ContextStrip 回车强行破坏约束**：底部属性条 `applyAngle()` 存在旧逻辑 `if (ep->constraint != Polar) ep->constraint = Polar;`，直接抹掉 OrthoOffset；且 `SegmentEditBarCommand::State` 未保存 `orthoOffsetDist`。
+  - **修复**：
+    1. **修正屏幕向左法向**：`Block.cpp::resolveOrthoOffsetPoint` 将法向更正为 `{axisDir.y, -axisDir.x}`，`dirId==1`（左）对应正偏置，`dirId==2`（右）对应负偏置；
+    2. **主轴长度与斜长解耦**：`LineGeometrySection::populateFromModel` 与 `ContextStrip::refreshFields` 当约束为 `OrthoOffset` 且无公式时，主“长度”框严格回填**主轴基准长**（`ep->distance`），斜长由专属标签（`m_lblOrthoHypot`）展示，彻底杜绝长度膨胀；
+    3. **首次开启基准锁死**：`LineGeometrySectionOrtho.cpp::applyOrtho` 切换为 OrthoOffset 时，自动从当前物理坐标中提取真实方向角与长度并锁定给 `ep->angle` 和 `ep->distance`；
+    4. **ContextStrip 全保真**：`ContextStrip::applyAngle` 对 `OrthoOffset` 维持约束，仅更新基准角度；`SegmentPropertyCommands` 的 `State` 结构与快照完整记录并恢复 `orthoOffsetDist` 和公式。
+  - **验证**：`tests/test_ortho_offset.cpp` 扩充 `orthoOffsetSwitchLeftRightPreservesAngleAndLength`（验证左右切换角度恒定且两端点完美关于主轴端点对称）与 `orthoOffsetLengthDecoupledFromHypot`（多次 apply 长度不膨胀）；全量 42/42 ctest 100% 绿灯。
+- **取消省道镜像线段设计、保留纯净正交偏置（2026-09 用户拍板架构减负，第 5 组/省道建模与参数化）**：
+  - **原因**：双线配对、镜像端点生命周期、开度换算、影子转省带来了过高的系统耦合与测试负担，用户拍板取消对边镜像设计。
+  - **清理内容**：
+    1. 删除 `DartMirrorCommands.h/cpp` 与 `DartSplitCommands.cpp`；
+    2. 从 `Segment` 移除 `DartProperties`，仅保留 `bool showOrthoAxis = true;` 控制中心基准虚线；
+    3. 清理 `DocumentSerializer.cpp`、`ParamDocumentBlocks.cpp`、`Duplicate.cpp` 中的镜像处理分支；
+    4. 将 `LineGeometrySectionDart.cpp`（719行）瘦身为 `LineGeometrySectionOrtho.cpp`（250行），面板保留纯净的拐角偏置行（无/左/右、数值公式、基准轴显隐、斜长解耦标签）；
+    5. 测试集迁移为 `tests/test_ortho_offset.cpp`，专注保障偏置几何与交互。
+  - **验证**：全量 42/42 ctest（含七大 guard）100% 绿灯通过。
+
+
+
+

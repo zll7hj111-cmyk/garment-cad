@@ -5,7 +5,7 @@
 ## 一键启动
 
 ```bat
-tools\build.bat          :: 一键：vcvars64 + configure + build（Ninja Debug，binaryDir=build/out）
+tools\build.bat          :: 默认一键：vcvars64 + configure + build（RelWithDebInfo，binaryDir=build/out-reldeb，1200 FPS极速+保留PDB符号表）
 tools\build.bat release  :: Release（binaryDir=build/out-rel）
 ```
 
@@ -22,7 +22,7 @@ tools\build.bat release  :: Release（binaryDir=build/out-rel）
 ## 如何运行测试
 
 ```bat
-cd build\out
+cd build\out-reldeb
 ctest
 ```
 

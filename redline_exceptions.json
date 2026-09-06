@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "version": "2.0",
   "created_at": "2026-09-04",
@@ -66,14 +66,7 @@
       "scheduled_phase": "Phase 3"
     }
   },
-  "test_size_exceptions": {
-    "tests/test_select_wkey.cpp": {
-      "lines": 3081,
-      "threshold": 2500,
-      "reason": "Giant select-wkey test suite; scheduled for Phase 3 split.",
-      "scheduled_phase": "Phase 3"
-    }
-  },
+  "test_size_exceptions": {},
   "bool_flag_exceptions": {
     "ParamPoint": {
       "file": "src/parametric/ParamPoint.h",

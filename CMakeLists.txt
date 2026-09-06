@@ -233,6 +233,8 @@ add_library(gcad_document STATIC
     src/document/commands/AttachmentCommands.cpp
     src/document/commands/AttachmentLifecycleCommands.h
     src/document/commands/AttachmentLifecycleCommands.cpp
+    src/document/commands/ShadowLifecycleCommands.h
+    src/document/commands/ShadowLifecycleCommands.cpp
     src/document/commands/AttachmentAngleCommands.h
     src/document/commands/AttachmentAngleCommands.cpp
     src/document/commands/AttachmentSlideCommands.h
@@ -325,10 +327,13 @@ add_library(gcad_ui STATIC
     src/ui/LinePropertySession.cpp
     src/ui/LineEndpointSection.h
     src/ui/LineEndpointSection.cpp
+    src/ui/LineEndpointSectionConn.cpp
     src/ui/LineAppearanceSection.h
     src/ui/LineAppearanceSection.cpp
     src/ui/LineGeometrySection.h
     src/ui/LineGeometrySection.cpp
+    src/ui/LineOrthoOffsetCard.h
+    src/ui/LineOrthoOffsetCard.cpp
     src/ui/SegmentAnchorTab.h
     src/ui/SegmentAnchorTab.cpp
     src/ui/SegmentAuxTab.h
@@ -508,6 +513,12 @@ target_include_directories(test_resolver PRIVATE ${GCAD_SRC})
 target_link_libraries(test_resolver PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_resolver COMMAND test_resolver)
 
+# ── Test: OrthoOffset (拐角偏置) ──
+add_executable(test_ortho_offset tests/test_ortho_offset.cpp)
+target_include_directories(test_ortho_offset PRIVATE ${GCAD_SRC})
+target_link_libraries(test_ortho_offset PRIVATE gcad_ui gcad_canvas gcad_document gcad_parametric gcad_geometry gcad_tools Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_ortho_offset COMMAND test_ortho_offset)
+
 # ── Test: DocumentSerializer round-trip ──
 add_executable(test_serializer tests/test_serializer.cpp)
 target_include_directories(test_serializer PRIVATE ${GCAD_SRC})
@@ -676,6 +687,8 @@ add_test(NAME test_tool_intersection COMMAND test_tool_intersection)
 # ── Test: select tool W-key mode toggle through the full event chain ──
 add_executable(test_select_wkey
     tests/test_select_wkey.cpp
+    tests/test_select_wkey_gestures.cpp
+    tests/test_select_wkey_cards.cpp
     resources/icons.qrc
 )
 target_include_directories(test_select_wkey PRIVATE ${GCAD_SRC})
@@ -779,6 +792,6 @@ foreach(_t IN ITEMS
         test_realdoc_full test_nav_smoke test_aux_layer test_smartpen_aux
         test_measure test_context_strip test_tool_intersection
         test_select_wkey test_curve_edit test_rotate_copy test_dialog_tabs
-        test_component)
+        test_component test_ortho_offset)
     target_link_options(${_t} PRIVATE /INCREMENTAL:NO)
 endforeach()
