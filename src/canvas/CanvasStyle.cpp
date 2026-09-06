@@ -12,28 +12,28 @@
 CanvasStyle::RoleDefaults CanvasStyle::roleDefaults(cad::param::SegmentRole role) const
 {
     using cad::param::SegmentRole;
-    // Dark theme: light-on-dark family (near-white outlines, light-gray
-    // internals, mid-gray dashes) so lines read clearly on the black canvas.
+    // Dark theme: light-on-dark family (pure white outlines, crisp light-gray
+    // internals, warm light-gray dashes) so lines read clearly on the black canvas.
     if (dark) {
         switch (role) {
         case SegmentRole::Outline:
-            return { QColor(244, 246, 248), 1.2, Qt::SolidLine };
+            return { QColor(255, 255, 255), 1.2, Qt::SolidLine };  // pure white #FFFFFF
         case SegmentRole::Internal:
-            return { QColor(198, 205, 213), 1.0, Qt::SolidLine };
+            return { QColor(213, 208, 197), 1.0, Qt::SolidLine };  // borderStrong #D5D0C5
         case SegmentRole::Auxiliary:
-            return { QColor(96, 104, 114), 0.8, Qt::DashLine };
+            return { QColor(163, 158, 147), 0.8, Qt::DashLine };   // text2 #A39E93
         }
-        return { QColor(244, 246, 248), 1.2, Qt::SolidLine };
+        return { QColor(255, 255, 255), 1.2, Qt::SolidLine };
     }
     switch (role) {
     case SegmentRole::Outline:
-        return { QColor(30, 30, 30), 1.2, Qt::SolidLine };
+        return { QColor(20, 20, 19), 1.2, Qt::SolidLine };        // text1 #141413 near black ink
     case SegmentRole::Internal:
-        return { QColor(60, 60, 60), 1.0, Qt::SolidLine };
+        return { QColor(92, 88, 80), 1.0, Qt::SolidLine };        // text2 #5C5850 warm slate ink
     case SegmentRole::Auxiliary:
-        return { QColor(150, 150, 150), 0.8, Qt::DashLine };
+        return { QColor(140, 135, 125), 0.8, Qt::DashLine };     // text3 #8C877D warm muted gray
     }
-    return { QColor(30, 30, 30), 1.2, Qt::SolidLine };
+    return { QColor(20, 20, 19), 1.2, Qt::SolidLine };
 }
 
 QColor CanvasStyle::displayColor(cad::param::SegmentRole role,
@@ -49,7 +49,7 @@ QColor CanvasStyle::displayColor(cad::param::SegmentRole role,
     const double luma = 0.2126 * dataColor.redF()
                       + 0.7152 * dataColor.greenF()
                       + 0.0722 * dataColor.blueF();
-    if (luma >= 0.5) return dataColor;
+    if (luma >= 0.55) return dataColor;
 
     const RoleDefaults rd = roleDefaults(role);
     return rd.color;
@@ -166,27 +166,29 @@ CanvasStyle CanvasStyle::darkTheme()
 {
     CanvasStyle s;
     s.dark = true;                       // white-ish role lines
-    s.canvasBackground    = QColor(20, 24, 30);     // #14181E night paper
-    s.crosshairColor      = QColor(38, 43, 49);
-    s.previewLineColor    = QColor(76, 141, 255);     // dark accent
-    s.snapIndicatorColor  = QColor(240, 101, 90);
-    s.snapPointColor      = QColor(52, 199, 123);
-    s.auxMarkerColor      = QColor(52, 199, 123);
-    s.hudBackground       = QColor(36, 34, 26, 240);   // 暖灰暗纸面 (#24221A)
-    s.hudText             = QColor(255, 248, 219);     // 暖白文字 (#FFF8DB)
+    s.canvasBackground    = QColor(20, 20, 19);     // #141413 carbon slate night paper
+    s.crosshairColor      = QColor(56, 53, 49);     // border #383531
+    s.gridDotColor        = QColor(77, 73, 67, 160);
+    s.gridMajorColor      = QColor(56, 53, 49, 140);
+    s.previewLineColor    = QColor(217, 119, 87);   // dark accent #D97757
+    s.snapIndicatorColor  = QColor(82, 171, 127);   // success #52AB7F
+    s.snapPointColor      = QColor(82, 171, 127);   // success #52AB7F
+    s.auxMarkerColor      = QColor(82, 171, 127);
+    s.hudBackground       = QColor(31, 30, 29, 240); // #1F1E1D
+    s.hudText             = QColor(236, 233, 226);  // #ECE9E2
 
-    s.m_selectColor       = QColor(76, 141, 255);     // accent family
-    s.m_hoverTint         = QColor(76, 141, 255);
-    s.m_surfaceColor      = QColor(29, 33, 38);       // dark surface
-    s.m_accentWash        = QColor(30, 43, 66);       // dark accentTint
-    s.m_borderSoft        = QColor(51, 58, 66);       // dark border
-    s.attachmentNodeColor = QColor(43, 179, 163);
-    s.lockedAttachmentColor = QColor(240, 169, 75);
-    s.m_pointColor        = QColor(236, 238, 241);
-    s.m_auxPointColor     = QColor(52, 199, 123);
-    s.m_nameLabelColor    = QColor(174, 181, 191);
-    s.m_lengthLabelColor  = QColor(52, 199, 123);
-    s.m_pointLabelColor   = QColor(154, 163, 173);
+    s.m_selectColor       = QColor(217, 119, 87);   // accent #D97757
+    s.m_hoverTint         = QColor(217, 119, 87);
+    s.m_surfaceColor      = QColor(31, 30, 29);     // #1F1E1D
+    s.m_accentWash        = QColor(56, 39, 33);     // #382721 pre-blended wash
+    s.m_borderSoft        = QColor(56, 53, 49);     // #383531
+    s.attachmentNodeColor = QColor(59, 160, 176);   // #3BA0B0
+    s.lockedAttachmentColor = QColor(226, 160, 74); // #E2A04A
+    s.m_pointColor        = QColor(255, 255, 255);  // #FFFFFF pure white
+    s.m_auxPointColor     = QColor(82, 171, 127);
+    s.m_nameLabelColor    = QColor(163, 158, 147);  // #A39E93
+    s.m_lengthLabelColor  = QColor(82, 171, 127);
+    s.m_pointLabelColor   = QColor(163, 158, 147);
     return s;
 }
 

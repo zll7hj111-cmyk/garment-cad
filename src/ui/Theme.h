@@ -13,35 +13,33 @@ enum class ThemeMode { Light, Dark };
 /// tokens live in CanvasStyle and are kept in sync with these by hand
 /// (same accent / semantic families).
 ///
-/// Design language ("Endfield 2.0" — ui-redesign-2026-08 board): 蓝图灰纸面
-/// (industrial concrete) + 碳黑墨字 + 信号黄 #FFDE00 唯一受控强调色。
-/// 信号黄只作「图形信号」(选中/激活条/焦点/一个主动作), 绝不作正文或
-/// 大面积填充 (黄字白底不可读)。颜色三分层: 强调色(黄, 全屏唯一实心实例)
-/// → 类型色(piece 家族, 标识数据类别) → 语义色(绿/琥珀/红/青, 标识状态),
-/// 三层不混用。几何 = 默认直角, 功能圆角 2–4px, 1px 细线。
-/// 深度 = complex (系统级重建), 克制在「工具仍快、密、可用」边界内。
-/// 其余纪律 (cyclorama/variable-font/cassette-j-card/alphabet-storm) 不变。
+/// Design language: Anthropic / Claude "Warm Editorial Minimalism" (数字手艺人工作台):
+/// 温润象牙制版图纸面 (#FAF9F5 / #141413) + 炭墨深字 (#141413 / #ECE9E2) +
+/// 陶土珊瑚色 (#CC785C / #D97757) 唯一受控主强调色。
+/// 强调色用于选中、激活工具、焦点边框与主确认操作；文字在纯色强调色上统一为纯白 (#FFFFFF)。
+/// 颜色三分层: 强调色(陶土珊瑚) → 类型色(piece 家族, 标识数据类别) → 语义色(莫斯绿/琥珀/砖红/青, 标识状态)。
+/// 几何 = 1px 发丝线，功能圆角 2–4px，胶囊形数值输入。
 struct ThemeTokens
 {
     // ── Surfaces ──
-    QColor canvasBg;      ///< Behind the graphics view (paper white / night paper).
+    QColor canvasBg;      ///< Behind the graphics view (warm ivory paper / night slate paper).
     QColor surface;       ///< Panels, dialogs, toolbar, menus.
     QColor surface2;      ///< Recessed areas (card list background, hover).
     QColor surface3;      ///< Alternate card stripe (must differ from surface2).
-    QColor border;        ///< Hairline borders / dividers.
-    QColor borderStrong;  ///< Input borders, stronger separators.
+    QColor border;        ///< Hairline borders / dividers (1px #E5E2DA).
+    QColor borderStrong;  ///< Input borders, stronger separators (#D5D0C5).
     QColor chipBorder;    ///< 中灰微徽标/胶囊描边 (CopyChip, CompoundChip).
 
     // ── Text ──
-    QColor text1;  ///< Primary text.
-    QColor text2;  ///< Secondary text (labels).
+    QColor text1;  ///< Primary text (near black ink #141413 / soft white #ECE9E2).
+    QColor text2;  ///< Secondary text (warm gray #5C5850 / warm light gray #A39E93).
     QColor text3;  ///< Tertiary / placeholder / disabled (WCAG AA ≥ 4.5:1).
 
     // ── Accent (the ONLY decorative hue) ──
-    QColor accent;        ///< 信号黄 #FFDE00: selection, focus, active tool (图形信号, 非文字色).
-    QColor accentStrong;  ///< Pressed / darker step.
-    QColor accentTint;    ///< Light wash background for active states.
-    QColor onAccent;      ///< Text on accent fills (碳黑 #0D1117 on yellow, 两模式同值).
+    QColor accent;        ///< 陶土珊瑚色 #CC785C / #D97757: selection, focus, active tool.
+    QColor accentStrong;  ///< Pressed / darker step (#B8674D / #C46849).
+    QColor accentTint;    ///< Light wash background for active states (12% / 18% alpha).
+    QColor onAccent;      ///< Text on accent fills (纯白 #FFFFFF).
 
     // ── Piece palette (entity identity ONLY, never status) ──
     // ui-redesign-2026-08 §2.5 方案 A（用户拍板）: 卡片左竖线 = 卡片类型色
@@ -71,14 +69,15 @@ struct ThemeTokens
     static constexpr int FontLg   = 15;  ///< 卡片数值读数 (15px Semibold+Mono, 卡片第一视觉焦点)
     static constexpr int FontXl   = 18;  ///< 对话框标题、空状态主文案 (Semibold)
 
-    // ── Radius scale (Endfield: 默认 0, 功能圆角 2–4px, 禁胶囊) ──
-    static constexpr int RadiusXs    = 0;  ///< chips, inline marks (squared)
-    static constexpr int RadiusSm    = 2;  ///< inputs, tags, scrollbars
-    static constexpr int RadiusMd    = 2;  ///< buttons, menu items, rows
-    static constexpr int RadiusLg    = 4;  ///< cards, group boxes (功能圆角上限)
-    static constexpr int RadiusBadge = 4;  ///< dock, badges (原 RadiusPill 更名,
-                                           ///< ui-redesign §07: 值恒 4px,「胶囊」
-                                           ///< 命名与禁胶囊纪律自相矛盾)
+    // ── Radius scale (Endfield: 默认 0, 功能圆角 2–4px; 输入框统一纯胶囊) ──
+    static constexpr int RadiusXs      = 0;    ///< chips, inline marks (squared)
+    static constexpr int RadiusSm      = 2;    ///< tags, scrollbars
+    static constexpr int RadiusMd      = 2;    ///< buttons, menu items, rows
+    static constexpr int RadiusLg      = 4;    ///< cards, group boxes (功能圆角上限)
+    static constexpr int RadiusBadge   = 4;    ///< dock, badges (原 RadiusPill 更名,
+                                               ///< ui-redesign §07: 值恒 4px,「胶囊」
+                                               ///< 命名与禁胶囊纪律自相矛盾)
+    static constexpr int RadiusCapsule = 999;  ///< capsule inputs/chips (height/2 pill)
 
     // ── Spacing scale ──
     static constexpr int SpaceXs  = 2;   ///< icon gaps

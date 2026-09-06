@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -15,9 +15,10 @@ class QVBoxLayout;
 
 namespace cad::ui { class CopyChip; }
 
-/// Streamlined two-tier card for one formula variable (~48px height).
-/// Tier 1 (Main): [cardIndex (drag handle)] [Name] [=] [expression edit] [result badge] [✕]
-/// Tier 2 (Meta): [actual override] [conditions check & edit] [comment edit]
+/// Industrial Parameter Spec Card (~64px height, Scheme C).
+/// Tier 1 (Header): [cardIndex] [NameChip] [FORMULA tag] [stretch] [statusBadge] [✕]
+/// Tier 2 (Code Box): [f =] [expression edit (inset code container)]
+/// Tier 3 (Readout & Tools): [VALUE: valueLabel] [unitLabel] [stretch] [actualEdit] [condRow] [comment edit]
 class FormulaCard : public CardBase
 {
     Q_OBJECT
@@ -71,10 +72,10 @@ private:
     QVBoxLayout*     m_mainLayout = nullptr;
     ElaLineEdit*     m_exprEdit = nullptr;
     ElaLineEdit*     m_actualEdit = nullptr;
+    ElaText*         m_statusBadge = nullptr;
     QWidget*         m_condRow = nullptr;
     ElaCheckBox*     m_condCheck = nullptr;
-    ElaText*         m_condInfo = nullptr;
-    ElaToolButton*   m_condEditBtn = nullptr;
+    ElaToolButton*   m_condBtn = nullptr;
     bool             m_condGuard = false;
 
     QList<cad::param::Condition> m_conditions;

@@ -73,6 +73,8 @@ protected:
     /// Keep Tab as a tool key (leader-candidate cycling) instead of letting
     /// the focus system consume it before keyPressEvent is reached.
     bool focusNextPrevChild(bool next) override;
+    /// Architectural DotGrid & hairline grid drawn directly onto the paper ground.
+    void drawBackground(QPainter* painter, const QRectF& rect) override;
 
 private:
     void emitZoomChanged();

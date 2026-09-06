@@ -2,6 +2,7 @@
 
 #include "ElaCheckBox.h"
 #include "ElaComboBox.h"
+#include "ElaText.h"
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include "ElaLineEdit.h"
@@ -102,6 +103,18 @@ AuxPointForm::AuxPointForm(QWidget* parent)
     offsetRow->addWidget(m_editOffsetDist, 1);
     offsetRow->addWidget(makePasteBtn(m_editOffsetDist));
     layout->addRow(QString::fromUtf8("\u504f\u79fb\u8ddd\u79bb(cm):"), offsetRow);  // 偏移距离(cm):
+
+    m_lblMountInfo = new ElaText(QString::fromUtf8("无挂载"), 12, this);
+    m_lblMountInfo->setObjectName(QStringLiteral("auxMountInfo"));
+    m_btnDetachMount = new ElaPushButton(QString::fromUtf8("拆开"), this);
+    m_btnDetachMount->setObjectName(QStringLiteral("auxDetachBtn"));
+    m_btnDetachMount->setEnabled(false);
+    connect(m_btnDetachMount, &QPushButton::clicked, this, &AuxPointForm::detachRequested);
+
+    auto* mountRow = new QHBoxLayout();
+    mountRow->addWidget(m_lblMountInfo, 1);
+    mountRow->addWidget(m_btnDetachMount);
+    layout->addRow(QString::fromUtf8("挂载线段:"), mountRow);
 
     m_chkShowName = new ElaCheckBox(QString::fromUtf8("\u663e\u793a\u540d\u79f0"), this);  // 显示名称
     layout->addRow(QString(), m_chkShowName);
@@ -274,4 +287,25 @@ void AuxPointForm::setPercentText(const QString& text)
     m_editPercent->setText(text);
 }
 
+void AuxPointForm::setMountInfo(const QString& info, bool hasIncoming, bool /*isDetached*/)
+{
+    if (!m_lblMountInfo || !m_btnDetachMount) return;
+    if (!hasIncoming) {
+        m_lblMountInfo->setText(QString::fromUtf8("无挂载"));
+        m_btnDetachMount->setEnabled(false);
+        m_btnDetachMount->setToolTip(cad::ui::TooltipFormatter::status(
+            QStringLiteral("连接状态"),
+            QStringLiteral("当前辅助点没有连接关系（未被挂载也未跟随外部线）"), false));
+        return;
+    }
+
+    m_lblMountInfo->setText(info);
+    m_btnDetachMount->setEnabled(true);
+    m_btnDetachMount->setText(QString::fromUtf8("拆开"));
+    m_btnDetachMount->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("拆开连接"),
+        QStringLiteral("彻底释放当前辅助点的连接关系，恢复为自由线段")));
+}
+
 } // namespace cad::ui
+

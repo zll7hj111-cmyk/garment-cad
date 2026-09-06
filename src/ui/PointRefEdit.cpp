@@ -57,9 +57,9 @@ PointRefEdit::PointRefEdit(cad::param::ParamDocument* doc, QWidget* parent)
     const auto& tk = cad::ui::Theme::tokens();
     // [autoEcho="true"] = 自动态灰显回显 (§6.4): 值来自模型自动跟随而非手填。
     setStyleSheet(QStringLiteral(
-        "QLineEdit { color: %1; border: 1px solid %2; border-radius: 3px;"
-        "  padding: 2px 5px; background: %3; font-size: 11px; }"
-        "QLineEdit:focus { border-color: %1; background: %4; }"
+        "QLineEdit { color: %1; border: 1px solid %2; border-radius: 15px;"
+        "  padding: 2px 10px; background: %3; font-size: 11px; }"
+        "QLineEdit:focus { border: 1.5px solid %1; background: %4; }"
         "QLineEdit[autoEcho=\"true\"] { color: %5; }")
         .arg(tk.text1.name(), tk.borderStrong.name(), tk.surface2.name(),
              tk.surface.name(), tk.text3.name()));
@@ -273,8 +273,8 @@ void PointRefEdit::flashError()
     const QString saved = styleSheet();
     const auto& tk = cad::ui::Theme::tokens();
     setStyleSheet(QStringLiteral(
-        "QLineEdit { color: %1; border: 1px solid %1; border-radius: 3px;"
-        "  padding: 2px 5px; background: rgba(220,38,38,32); }")
+        "QLineEdit { color: %1; border: 1.5px solid %1; border-radius: 15px;"
+        "  padding: 2px 10px; background: rgba(220,38,38,32); }")
         .arg(tk.danger.name()));
     setToolTip(cad::ui::TooltipFormatter::status(
         QStringLiteral("定位失败"),

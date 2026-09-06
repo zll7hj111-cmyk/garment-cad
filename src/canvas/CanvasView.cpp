@@ -71,7 +71,7 @@ CanvasView::CanvasView(CanvasScene* scene, QWidget* parent)
     if (auto* cs = qobject_cast<CanvasScene*>(this->scene()))
         applyCanvasBackground(cs->style()->canvasBackground);
     else
-        setBackgroundBrush(QColor(246, 243, 236));
+        setBackgroundBrush(QColor(250, 249, 245));
 
     // Mouse tracking for coordinate display
     setMouseTracking(true);
@@ -88,6 +88,70 @@ CanvasView::~CanvasView() = default;
 void CanvasView::applyCanvasBackground(const QColor& c)
 {
     setBackgroundBrush(c);
+    setStyleSheet(QStringLiteral("QGraphicsView { background: %1; border: none; }").arg(c.name()));
+    if (viewport()) {
+        viewport()->setStyleSheet(QStringLiteral("background: %1; border: none;").arg(c.name()));
+        viewport()->update();
+    }
+}
+
+void CanvasView::drawBackground(QPainter* painter, const QRectF& rect)
+{
+    const CanvasStyle* style = m_scene ? m_scene->style() : nullptr;
+    const QColor bg = style ? style->canvasBackground : QColor(250, 249, 245);
+    painter->fillRect(rect, bg);
+
+    if (!style) return;
+
+    const double zoom = zoomFactor();
+
+    // Major step: 10cm (100mm) or 5cm (50mm) depending on zoom
+    const double majorStep = (zoom < 0.5) ? 20.0 : (zoom < 1.5 ? 10.0 : 5.0);
+    const double majorPx = majorStep * zoom;
+
+    if (majorPx >= 20.0) {
+        QPen majorPen(style->gridMajorColor, 1.0);
+        majorPen.setCosmetic(true);
+        painter->setPen(majorPen);
+
+        const double startX = std::floor(rect.left() / majorStep) * majorStep;
+        const double endX   = std::ceil(rect.right() / majorStep) * majorStep;
+        const double startY = std::floor(rect.top() / majorStep) * majorStep;
+        const double endY   = std::ceil(rect.bottom() / majorStep) * majorStep;
+
+        for (double x = startX; x <= endX; x += majorStep) {
+            if (std::abs(x) > 1e-4)
+                painter->drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
+        }
+        for (double y = startY; y <= endY; y += majorStep) {
+            if (std::abs(y) > 1e-4)
+                painter->drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
+        }
+
+        // Sub dot-grid: 1cm (10mm) dots when pixel spacing >= 12px
+        const double dotStep = 1.0;
+        const double dotPx = dotStep * zoom;
+        if (dotPx >= 12.0) {
+            QPen dotPen(style->gridDotColor, 1.0);
+            dotPen.setCosmetic(true);
+            painter->setPen(dotPen);
+
+            const double dotStartX = std::floor(rect.left() / dotStep) * dotStep;
+            const double dotEndX   = std::ceil(rect.right() / dotStep) * dotStep;
+            const double dotStartY = std::floor(rect.top() / dotStep) * dotStep;
+            const double dotEndY   = std::ceil(rect.bottom() / dotStep) * dotStep;
+
+            for (double x = dotStartX; x <= dotEndX; x += dotStep) {
+                const bool onMajorX = std::abs(std::fmod(std::abs(x) + 1e-4, majorStep)) < 1e-3;
+                for (double y = dotStartY; y <= dotEndY; y += dotStep) {
+                    const bool onMajorY = std::abs(std::fmod(std::abs(y) + 1e-4, majorStep)) < 1e-3;
+                    if (!onMajorX || !onMajorY) {
+                        painter->drawPoint(QPointF(x, y));
+                    }
+                }
+            }
+        }
+    }
 }
 
 double CanvasView::zoomFactor() const

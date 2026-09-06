@@ -82,6 +82,7 @@ LayerPanel::LayerPanel(cad::param::ParamDocument* doc, QWidget* parent)
 
 void LayerPanel::setupUi()
 {
+    setAttribute(Qt::WA_StyledBackground, true);
     const auto& tk = cad::ui::Theme::tokens();
     setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
 
@@ -91,6 +92,7 @@ void LayerPanel::setupUi()
 
     // ===== Header: total layer count badge + new layer button =====
     auto* header = new QWidget(this);
+    header->setAttribute(Qt::WA_StyledBackground, true);
     m_header = header;
     header->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
     auto* headerLayout = new QHBoxLayout(header);
@@ -164,23 +166,26 @@ void LayerPanel::setupUi()
     emptyLay->setAlignment(Qt::AlignCenter);
 
     auto* emptyIcon = new QLabel(m_emptyHint);
+    emptyIcon->setObjectName(QStringLiteral("emptyIcon"));
     emptyIcon->setPixmap(cad::ui::IconHelper::iconByName(
         QStringLiteral("layers"), tk.text3).pixmap(36, 36));
     emptyIcon->setAlignment(Qt::AlignCenter);
     emptyLay->addWidget(emptyIcon);
 
-    auto* emptyTitle = new ElaText(QString::fromUtf8("暂无图层构件"), 15, m_emptyHint);
+    auto* emptyTitle = new ElaText(QString::fromUtf8("从绘制第一道轮廓开始"), 15, m_emptyHint);
+    emptyTitle->setObjectName(QStringLiteral("emptyTitle"));
     emptyTitle->setAlignment(Qt::AlignCenter);
     emptyTitle->setStyleSheet(QStringLiteral(
         "font-size: 14px; font-weight: 600; color: %1; background: transparent;")
-        .arg(tk.text2.name()));
+        .arg(tk.text1.name()));
     emptyLay->addWidget(emptyTitle);
 
-    auto* emptySub = new ElaText(QString::fromUtf8("使用智能笔绘制线条后\n将在此按图层归类展示构件"), 12, m_emptyHint);
+    auto* emptySub = new ElaText(QString::fromUtf8("使用智能笔在画布绘制衣片线条\n将在此按图层与构件组织结构关系"), 12, m_emptyHint);
+    emptySub->setObjectName(QStringLiteral("emptySub"));
     emptySub->setAlignment(Qt::AlignCenter);
     emptySub->setStyleSheet(QStringLiteral(
         "font-size: 11px; color: %1; background: transparent;")
-        .arg(tk.text3.name()));
+        .arg(tk.text2.name()));
     emptyLay->addWidget(emptySub);
 
     m_emptyHint->setVisible(false);
@@ -223,6 +228,23 @@ void LayerPanel::applyTheme()
     }
     if (m_container)
         m_container->setStyleSheet(QStringLiteral("background: %1;").arg(tk.canvasBg.name()));
+
+    if (m_emptyHint) {
+        if (auto* icon = m_emptyHint->findChild<QLabel*>(QStringLiteral("emptyIcon"))) {
+            icon->setPixmap(cad::ui::IconHelper::iconByName(
+                QStringLiteral("layers"), tk.text3).pixmap(36, 36));
+        }
+        if (auto* title = m_emptyHint->findChild<ElaText*>(QStringLiteral("emptyTitle"))) {
+            title->setStyleSheet(QStringLiteral(
+                "font-size: 14px; font-weight: 600; color: %1; background: transparent;")
+                .arg(tk.text1.name()));
+        }
+        if (auto* sub = m_emptyHint->findChild<ElaText*>(QStringLiteral("emptySub"))) {
+            sub->setStyleSheet(QStringLiteral(
+                "font-size: 11px; color: %1; background: transparent;")
+                .arg(tk.text2.name()));
+        }
+    }
 
     // Rebuild cards to bake new theme tokens.
     refresh();
@@ -299,7 +321,12 @@ void LayerPanel::refresh()
 
         // Header interactions
         connect(card->eye(), &EyeToggle::toggled, this, [this, id = layer.id](bool on) {
-            m_doc->setLayerVisible(id, on);
+            // 图层显隐入栈 (与行级线段眼睛同规: SetLayerVisibleCommand 单步
+            // 撤销) —— 此前直写门面不进历史。
+            if (auto* stack = m_doc->undoStack())
+                stack->push(new cad::cmd::SetLayerVisibleCommand(m_doc, id, on));
+            else
+                m_doc->setLayerVisible(id, on);
         });
         card->setCollapsed(m_collapsed.contains(layer.id));
         connect(card->collapseBtn(), &QToolButton::clicked, this, [this, card, id = layer.id] {

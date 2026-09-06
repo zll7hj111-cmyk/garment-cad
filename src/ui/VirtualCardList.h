@@ -48,6 +48,10 @@ public:
     /// Rebind every materialized row (data changed, structure did not).
     void rebindAll();
 
+    /// Rebuild all rows from scratch (e.g. after theme toggle): drops all
+    /// materialized and pooled widgets and re-materializes with current tokens.
+    void rebuildAll();
+
     /// 值级刷新所有已物化行 (结构未变 + value binder 已装): 只跑轻量值更新,
     /// 不重排/不整卡 rebind。无 value binder 时回退 rebindAll()。
     void refreshValues();

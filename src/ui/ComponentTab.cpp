@@ -37,6 +37,7 @@ ComponentTab::ComponentTab(cad::param::ParamDocument* doc, QWidget* parent)
     : QWidget(parent)
     , m_doc(doc)
 {
+    setAttribute(Qt::WA_StyledBackground, true);
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
@@ -84,6 +85,7 @@ void ComponentTab::setUndoStack(QUndoStack* stack)
 void ComponentTab::applyTheme()
 {
     const auto& tok = cad::ui::Theme::tokens();
+    setStyleSheet(QStringLiteral("background: %1;").arg(tok.surface.name()));
     const QString scrollQss = QStringLiteral(
         "QScrollArea { background: %1; border: none; }")
         .arg(tok.canvasBg.name());
@@ -108,6 +110,8 @@ void ComponentTab::applyTheme()
              tok.surface3.name(), tok.text3.name());
     for (QWidget* w : findChildren<QWidget*>(QStringLiteral("componentCard")))
         w->setStyleSheet(cardQss);
+
+    rebuild();
 }
 
 void ComponentTab::sync()
@@ -164,10 +168,10 @@ void ComponentTab::rebuild()
         // 行1: 序号 + 名称(可编辑) + 成员数.
         auto* r1 = new QHBoxLayout();
         r1->setSpacing(6);
-        auto* idx = new QLabel(
-            QStringLiteral("组件 %1").arg(index + 1), body);
+        auto* idx = new QLabel(QStringLiteral("组件 %1").arg(index + 1), body);
         idx->setObjectName(QStringLiteral("componentIndex"));
-        auto* name = new QLineEdit(c.name, body);
+        auto* name = new ElaLineEdit(body);
+        name->setText(c.name);
         name->setObjectName(QStringLiteral("componentNameEdit"));
         auto* count = new QLabel(
             QStringLiteral("%1 条").arg(static_cast<int>(c.memberBlockIds.size())), body);

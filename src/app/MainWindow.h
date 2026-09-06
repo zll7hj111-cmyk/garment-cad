@@ -171,6 +171,7 @@ private:
     ElaToolButton* m_layerChip = nullptr;
     ElaMenu*       m_layerChipMenu = nullptr;
     QFrame*        m_layerChipSeparator = nullptr;
+    QWidget*       m_toolPill = nullptr;
     /// 工具 action 表 (TOOL_SYSTEM_AUDIT P3): 由 ToolRegistry 遍历生成,
     /// type → 菜单/工具坞共用的 QAction, 替代 8 个手写成员。
     QHash<cad::tools::ToolType, QAction*> m_toolActions;

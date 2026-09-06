@@ -150,9 +150,9 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
     }
 
     const bool ghost = !m_data.visible;  // hovered hidden curve → ghost style
-    const QColor kGray(0x9E, 0x9E, 0x9E);
+    const QColor kGray = (style && style->dark) ? QColor(176, 171, 160) : QColor(0x9E, 0x9E, 0x9E);
     if (m_grayed)
-        painter->setOpacity(0.4);
+        painter->setOpacity((style && style->dark) ? 0.55 : 0.4);
 
     // Dark-mode adaptation: lift the data color to the role's light-on-dark
     // family so ink curves stay legible on night paper.
@@ -164,7 +164,8 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
     } else {
         pp.lineColor  = paintColor;
         pp.lineWidth  = m_data.weight;
-        pp.labelColor = QColor(100, 100, 100);
+        pp.labelColor = style ? style->labelColor(EntityState::Normal, false)
+                              : QColor(100, 100, 100);
     }
 
     QPen curvePen(pp.lineColor, pp.lineWidth);

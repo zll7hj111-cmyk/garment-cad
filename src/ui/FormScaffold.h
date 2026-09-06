@@ -58,18 +58,19 @@ inline QString chipButtonStyle()
 /// 注意: 助手只是「装配」不改变语义 —— 调用方保留原有字段/信号/objectName
 /// 测试契约, 仅重排布局与样式。
 
-/// 代号标题栏 (§4.5): 反转面底色取 tooltip 反转对 (tooltipBg/tooltipFg),
-/// 英文代号亮色模式用 accent 黄、暗色模式用 onAccent 墨 (对比度保证)。
+/// 代号标题栏 (§4.5): 暖砂微凹底 (surface2) + 底部发丝分隔线 (border),
+/// 英文代号用陶土珊瑚色胶囊微标, 标题用炭黑墨字 (text1), 典雅手艺人工作台排版。
 inline QWidget* makeFormTitleBar(const QString& code, const QString& title,
                                  QWidget* parent)
 {
     const auto& tk = Theme::tokens();
-    const bool dark = Theme::mode() == ThemeMode::Dark;
 
     auto* bar = new QWidget(parent);
     bar->setAttribute(Qt::WA_StyledBackground, true);
-    bar->setStyleSheet(
-        QStringLiteral("background-color: %1;").arg(tk.tooltipBg.name()));
+    // Warm sand background (#F5F3EB in light / #262422 in dark) with hairline bottom divider
+    bar->setStyleSheet(QStringLiteral(
+        "background-color: %1; border-bottom: 1px solid %2;")
+        .arg(tk.surface2.name(), tk.border.name()));
 
     auto* lay = new QHBoxLayout(bar);
     lay->setContentsMargins(14, 9, 14, 9);
@@ -77,15 +78,16 @@ inline QWidget* makeFormTitleBar(const QString& code, const QString& title,
 
     auto* codeLbl = new QLabel(code, bar);
     codeLbl->setStyleSheet(QStringLiteral(
-        "QLabel { color: %1; font-family: 'Consolas','Courier New',monospace;"
-        " font-size: 10px; letter-spacing: 1.5px; background: transparent; }")
-        .arg(dark ? tk.onAccent.name() : tk.accent.name()));
+        "QLabel { color: %1; background: %2; border: 1px solid %3; border-radius: 2px;"
+        " padding: 1px 6px; font-family: 'Consolas','Courier New',monospace;"
+        " font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }")
+        .arg(tk.accent.name(), tk.accentTint.name(), tk.borderStrong.name()));
     lay->addWidget(codeLbl);
 
     auto* titleLbl = new QLabel(title, bar);
     titleLbl->setStyleSheet(QStringLiteral(
         "QLabel { color: %1; font-size: 13px; font-weight: 600;"
-        " background: transparent; }").arg(tk.tooltipFg.name()));
+        " background: transparent; }").arg(tk.text1.name()));
     lay->addWidget(titleLbl);
     lay->addStretch(1);
     return bar;

@@ -137,6 +137,29 @@ void VirtualCardList::rebindAll()
     }
 }
 
+void VirtualCardList::rebuildAll()
+{
+    // Snapshot active widgets to delete them
+    const auto active = m_widgets;
+    m_widgets.clear();
+    for (auto it = active.cbegin(); it != active.cend(); ++it) {
+        QWidget* w = it.value();
+        w->removeEventFilter(this);
+        w->deleteLater();
+    }
+    // Drop parked cache
+    const auto cache = m_cache;
+    m_cache.clear();
+    for (auto it = cache.cbegin(); it != cache.cend(); ++it) {
+        QWidget* w = it.value();
+        w->deleteLater();
+    }
+    m_heights.clear();
+    relayoutHeights();
+    repositionRows();
+    refreshWindow();
+}
+
 void VirtualCardList::refreshValues()
 {
     if (!m_valueBinder) {

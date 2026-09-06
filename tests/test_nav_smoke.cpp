@@ -338,11 +338,8 @@ int main(int argc, char* argv[])
                 return img.pixelColor(static_cast<int>(x * dpr),
                                       static_cast<int>(y * dpr)).name();
             };
-            // 描边专用色 (与 CopyChip::paintEvent 同源逻辑: 亮 #9AA4B2 / 暗 #4E5866).
-            const bool darkMode =
-                cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark;
-            const QColor chipBorder = darkMode ? QColor(0x4E, 0x58, 0x66)
-                                               : QColor(0x9A, 0xA4, 0xB2);
+            // 描边专用色 (与 CopyChip::paintEvent 同源逻辑: chipBorder token).
+            const QColor chipBorder = cad::ui::Theme::tokens().chipBorder;
             const QString border = chipBorder.name();
             const QString surface = cad::ui::Theme::tokens().surface.name();
             const QString gotB = pxAt(0, 10);   // x=0 完全落在 1px 描边内
@@ -367,8 +364,7 @@ int main(int argc, char* argv[])
                     ? nameChip->findChild<QLineEdit*>() : nullptr;
                 auto scanBox = [&](const char* tag) {
                     const QImage cimg = card->grab().toImage();
-                    const QColor bc = darkMode ? QColor(0x4E, 0x58, 0x66)
-                                               : QColor(0x9A, 0xA4, 0xB2);
+                    const QColor bc = cad::ui::Theme::tokens().chipBorder;
                     int px = 0;
                     for (int y = 0; y < cimg.height(); ++y)
                         for (int x = 0; x < cimg.width(); ++x) {
@@ -411,8 +407,7 @@ int main(int argc, char* argv[])
                 // 分析卡片图像: 统计描边专用色像素与行分布,
                 // 确认名称/引用名两个输入框的描边真实渲染。
                 const QImage cimg = card->grab().toImage();
-                const QColor bc = darkMode ? QColor(0x4E, 0x58, 0x66)
-                                           : QColor(0x9A, 0xA4, 0xB2);
+                const QColor bc = cad::ui::Theme::tokens().chipBorder;
                 int borderPx = 0;
                 int minRow = INT_MAX, maxRow = -1;
                 for (int y = 0; y < cimg.height(); ++y) {
@@ -500,9 +495,9 @@ int main(int argc, char* argv[])
             const QImage img = varWin->grab().toImage();
             const QColor bc(expectHex);
             const QColor otherBorder =
-                (expectHex == QStringLiteral("#4E5866"))
-                    ? QColor(0x9A, 0xA4, 0xB2)   // 反向色: 亮色描边
-                    : QColor(0x4E, 0x58, 0x66);  // 反向色: 暗色描边
+                (expectHex == cad::ui::ThemeTokens::dark().chipBorder.name())
+                    ? cad::ui::ThemeTokens::light().chipBorder
+                    : cad::ui::ThemeTokens::dark().chipBorder;
             int borderPx = 0, otherBorderPx = 0;
             for (int y = 0; y < img.height(); ++y)
                 for (int x = 0; x < img.width(); ++x) {
@@ -560,7 +555,7 @@ int main(int argc, char* argv[])
                           << std::endl;
             }
         };
-        realPanelScan(QStringLiteral("#4E5866"), "dark");
+        realPanelScan(cad::ui::ThemeTokens::dark().chipBorder.name(), "dark");
         std::cout << "theme probe: toggle LIGHT" << std::endl;
         window.toggleTheme(false);
         QWidget* pg = pageStack->widget(1);
@@ -602,8 +597,7 @@ int main(int argc, char* argv[])
             for (int i = 0; i < 10; ++i)
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             const QImage cimg = card->grab().toImage();
-            // 亮色主题: 描边专用色 #9AA4B2.
-            const QColor bc(0x9A, 0xA4, 0xB2);
+            const QColor bc = cad::ui::ThemeTokens::light().chipBorder;
             int borderPx = 0;
             for (int y = 0; y < cimg.height(); ++y)
                 for (int x = 0; x < cimg.width(); ++x) {
@@ -619,7 +613,7 @@ int main(int argc, char* argv[])
             win->close();
             delete win;
         }
-        realPanelScan(QStringLiteral("#9AA4B2"), "light");
+        realPanelScan(cad::ui::ThemeTokens::light().chipBorder.name(), "light");
         // 关闭面板窗, 恢复初始状态。
         if (auto* varWin = window.findChild<QWidget*>(
                 QStringLiteral("panelFloatingWindow")))

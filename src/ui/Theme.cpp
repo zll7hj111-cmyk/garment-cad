@@ -63,82 +63,77 @@ ThemeMode   Theme::s_mode   = ThemeMode::Light;
 ThemeTokens ThemeTokens::light()
 {
     ThemeTokens t;
-    t.canvasBg     = QColor("#ECEFF2");   // Endfield blueprint / industrial light concrete
-    t.surface      = QColor("#FFFFFF");
-    t.surface2     = QColor("#E2E6EC");   // Recessed terminal surfaces
-    t.surface3     = QColor("#EAEDF2");
-    t.border       = QColor("#CBD2DC");   // Clean technical hairline
-    t.borderStrong = QColor("#1A202C");   // High-contrast carbon border
-    t.chipBorder   = QColor("#9AA4B2");   // Medium gray chip outline (visible on paper)
+    t.canvasBg     = QColor("#FAF9F5");   // Warm ivory drafting paper
+    t.surface      = QColor("#FFFFFF");   // Pure paper
+    t.surface2     = QColor("#F5F3EB");   // Warm sand (recessed terminal / card background)
+    t.surface3     = QColor("#EFECE1");   // Deep sand
+    t.border       = QColor("#E5E2DA");   // 1px hairline border
+    t.borderStrong = QColor("#D5D0C5");   // Input & active borders
+    t.chipBorder   = QColor("#C2BCB0");   // Medium warm gray chip outline
 
-    t.text1 = QColor("#0D1117");   // Deep carbon black
-    t.text2 = QColor("#4A5568");   // Industrial slate secondary
-    t.text3 = QColor("#718096");   // Technical metadata
+    t.text1 = QColor("#141413");   // Near black ink
+    t.text2 = QColor("#5C5850");   // Warm gray secondary
+    t.text3 = QColor("#8C877D");   // Muted tertiary / disabled
 
-    t.accent       = QColor("#FFDE00");   // Endfield Action Lemon Yellow
-    t.accentStrong = QColor("#E6C600");
-    t.accentTint   = QColor("#FFFAD1");
-    t.onAccent     = QColor("#0D1117");   // Solid black text on yellow
+    t.accent       = QColor("#CC785C");   // Terracotta Coral
+    t.accentStrong = QColor("#B8674D");   // Pressed terracotta step
+    t.accentTint   = QColor("#F9EFEB");   // Pre-blended 12% terracotta wash on warm ivory paper
+    t.onAccent     = QColor("#FFFFFF");   // Pure white text on solid terracotta
 
     // Piece palette — fabric-block hues for entity identity only.
-    t.piece1 = QColor("#1E293B");   // deep carbon slate
-    t.piece2 = QColor("#0F766E");   // deep cyan / teal
-    t.piece3 = QColor("#C85A3E");   // terracotta / orange
-    t.piece4 = QColor("#2563EB");   // cobalt / linked
+    t.piece1 = QColor("#383530");   // Charcoal slate (variable-type values)
+    t.piece2 = QColor("#2E6B65");   // Muted pine / sage teal (formula-type values)
+    t.piece3 = QColor("#C46849");   // Terracotta clay (measure-type values)
+    t.piece4 = QColor("#3D5A80");   // Muted indigo (linked-type values)
 
-    // Semantic hues deepened so they pass WCAG AA as foreground on white.
-    t.success = QColor("#15803D");  // 4.95:1 on white (was 3.3:1)
-    t.warning = QColor("#B45309");  // 5.8:1  on white (was 3.2:1)
-    t.danger  = QColor("#DC2626");  // 4.83:1 on white
-    t.teal    = QColor("#0284C7");  // cyan connection
+    // Semantic hues
+    t.success = QColor("#3E8966");  // Craftsman moss green
+    t.warning = QColor("#D48B38");  // Amber ochre
+    t.danger  = QColor("#C94A4A");  // Brick red
+    t.teal    = QColor("#2A7B88");  // Cyan connection / attachment rings
 
-    // Row alternation bars removed (ui-redesign-2026-08 §2.5 方案 A):
-    // card accent bars now carry the piece type color — see CardBase.
-
-    // Tooltips (纸黄色工程图纸面规范，高对比度深碳黑文字与暖琥珀细边框)
-    t.tooltipBg     = QColor("#FFFAD1");
-    t.tooltipFg     = QColor("#1A202C");
-    t.tooltipBorder = QColor("#D8CC80");
+    // Tooltips (温润象牙图纸面规范，高对比度炭黑墨字与淡暖发丝边框)
+    t.tooltipBg     = QColor("#FAF9F5");
+    t.tooltipFg     = QColor("#141413");
+    t.tooltipBorder = QColor("#D5D0C5");
     return t;
 }
 
 ThemeTokens ThemeTokens::dark()
 {
     ThemeTokens t;
-    t.canvasBg     = QColor("#14181E");   // night paper, not dead black
-    t.surface      = QColor("#1D2126");
-    t.surface2     = QColor("#23282E");
-    t.surface3     = QColor("#272D34");
-    t.border       = QColor("#333A42");
-    t.borderStrong = QColor("#444D57");
-    t.chipBorder   = QColor("#4E5866");   // Medium gray chip outline (one step brighter than dark surface)
+    t.canvasBg     = QColor("#141413");   // Carbon slate night paper
+    t.surface      = QColor("#1F1E1D");   // Deep charcoal
+    t.surface2     = QColor("#262422");   // Muted ink
+    t.surface3     = QColor("#2E2B28");   // Charcoal layer
+    t.border       = QColor("#383531");   // 1px subdued
+    t.borderStrong = QColor("#4D4943");   // Stronger separator
+    t.chipBorder   = QColor("#5A554E");
 
-    t.text1 = QColor("#E8EAED");
-    t.text2 = QColor("#9AA3AD");
-    t.text3 = QColor("#8A94A0");   // WCAG AA on surface2 (4.7:1), was 2.9-3.9:1
+    t.text1 = QColor("#ECE9E2");   // Soft white
+    t.text2 = QColor("#A39E93");   // Warm light gray
+    t.text3 = QColor("#706C63");   // Muted
 
-    t.accent       = QColor("#FFE600");   // Endfield Action Lemon Yellow in dark
-    t.accentStrong = QColor("#FFF04D");
-    t.accentTint   = QColor("#2D2B10");
-    t.onAccent     = QColor("#0D1117");   // deep ink on bright yellow
+    t.accent       = QColor("#D97757");   // Terracotta Coral in dark
+    t.accentStrong = QColor("#C46849");
+    t.accentTint   = QColor("#382721");   // Pre-blended 18% terracotta wash on carbon slate night paper
+    t.onAccent     = QColor("#FFFFFF");
 
-    // Piece palette — same hue as light(), only raised lightness (§2.3/§2.6):
-    // 深青 #0F766E → #2DD4BF, 钴蓝 #2563EB → #60A5FA, 碳灰 #1E293B → #94A3B8,
-    // 陶土保持同相 #E08F73。「公式 = 青」跨模式记忆一致, 不再换组色相。
-    t.piece1 = QColor("#94A3B8");
-    t.piece2 = QColor("#2DD4BF");
-    t.piece3 = QColor("#E08F73");
-    t.piece4 = QColor("#60A5FA");
+    // Piece palette in dark
+    t.piece1 = QColor("#A8A29E");
+    t.piece2 = QColor("#4D9088");
+    t.piece3 = QColor("#E08466");
+    t.piece4 = QColor("#6E88A8");
 
-    t.success = QColor("#34C77B");
-    t.warning = QColor("#F0A94B");
-    t.danger  = QColor("#F0655A");
-    t.teal    = QColor("#2BB3A3");
+    t.success = QColor("#52AB7F");
+    t.warning = QColor("#E2A04A");
+    t.danger  = QColor("#E06060");
+    t.teal    = QColor("#3BA0B0");
 
-    // Tooltips (暗色主题下的暖调纸面)
-    t.tooltipBg     = QColor("#28251C");
-    t.tooltipFg     = QColor("#FFF8DB");
-    t.tooltipBorder = QColor("#6B5E38");
+    // Tooltips (暗色主题下的炭黑墨面)
+    t.tooltipBg     = QColor("#1F1E1D");
+    t.tooltipFg     = QColor("#ECE9E2");
+    t.tooltipBorder = QColor("#4D4943");
     return t;
 }
 
@@ -318,15 +313,18 @@ QString Theme::badgeStyle(const QColor& fg)
 {
     QColor wash = fg;
     wash.setAlphaF(0.12f);
+    QColor border = fg;
+    border.setAlphaF(0.28f);
     // background-color (not the shorthand) so the same string also works as
     // inline CSS inside QTextDocument rich text (SegmentAuxTab HTML badges).
     return QStringLiteral(
-               "color:%1; background-color:rgba(%2,%3,%4,%5); border-radius:3px;"
-               "padding:0 4px; font-size:11px;")
+               "color:%1; background-color:rgba(%2,%3,%4,%5); border:1px solid rgba(%2,%3,%4,%6);"
+               " border-radius:2px; padding:1px 5px; font-size:10px; font-weight:600;")
         .arg(fg.name(),
              QString::number(wash.red()), QString::number(wash.green()),
              QString::number(wash.blue()),
-             QString::number(wash.alpha()));
+             QString::number(wash.alpha()),
+             QString::number(border.alpha()));
 }
 
 QString Theme::badgeStyle(const QColor& fg, const char* selector)
@@ -342,8 +340,8 @@ QString Theme::tealBadgeStyle()
 
 QString Theme::purpleBadgeStyle()
 {
-    // Cross-layer badge hue — piece-family purple, fixed across themes.
-    return badgeStyle(QColor(QStringLiteral("#8e44ad")));
+    // Cross-layer badge hue — muted slate violet, aligned with warm editorial palette.
+    return badgeStyle(QColor(QStringLiteral("#6B5B88")));
 }
 
 QString Theme::dimValueStyle()
@@ -370,13 +368,12 @@ void Theme::apply(ThemeMode mode)
     // Fusion gives a consistent cross-platform base that QSS can fully restyle.
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
 
-    // Base font: Endfield technical Latin + CJK fallback (safe stack).
+    // Base font: Editorial clean sans + CJK fallback (safe stack).
     QFont f = QApplication::font();
-    f.setFamilies({QStringLiteral("IBM Plex Sans"),
-                   QStringLiteral("Space Grotesk"),
-                   QStringLiteral("Noto Sans SC"),
-                   QStringLiteral("Segoe UI Variable Text"),
+    f.setFamilies({QStringLiteral("Segoe UI Variable Text"),
                    QStringLiteral("Segoe UI"),
+                   QStringLiteral("Inter"),
+                   QStringLiteral("Noto Sans SC"),
                    QStringLiteral("Microsoft YaHei UI")});
     f.setPointSizeF(9.5);
     QApplication::setFont(f);
@@ -393,8 +390,8 @@ void Theme::apply(ThemeMode mode)
     pal.setColor(QPalette::ButtonText,      t.text1);
     pal.setColor(QPalette::BrightText,      t.surface);
     pal.setColor(QPalette::Highlight,       t.accent);
-    pal.setColor(QPalette::HighlightedText, t.onAccent);  // 黄底配碳黑字（信号黄不作文字底色）
-    pal.setColor(QPalette::Link,            t.text1);  // 黄链接白底不可读 → 墨字
+    pal.setColor(QPalette::HighlightedText, t.onAccent);  // 陶土珊瑚配纯白字
+    pal.setColor(QPalette::Link,            t.accent);    // 陶土珊瑚链接色
     pal.setColor(QPalette::PlaceholderText, t.text3);
     pal.setColor(QPalette::ToolTipBase,     t.tooltipBg);
     pal.setColor(QPalette::ToolTipText,     t.tooltipFg);

@@ -1,0 +1,1506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WildWind Pattern (野风帖) · Anthropic Warm Editorial CAD Design Showcase</title>
+  <style>
+    /* ── Anthropic / Claude Design System Tokens ── */
+    :root {
+      --canvas-bg: #FAF9F5;
+      --surface: #FFFFFF;
+      --surface-2: #F5F3EB;
+      --surface-3: #EFECE1;
+      --border: #E5E2DA;
+      --border-strong: #D5D0C5;
+      --text-1: #141413;
+      --text-2: #5C5850;
+      --text-3: #8C877D;
+      --accent: #CC785C;
+      --accent-strong: #B8674D;
+      --accent-tint: #F9EFEB;
+      --on-accent: #FFFFFF;
+
+      --piece-1: #383530; /* Variables: Charcoal Slate */
+      --piece-2: #2E6B65; /* Formulas: Muted Pine / Sage Teal */
+      --piece-3: #C46849; /* Measures: Terracotta Clay */
+      --piece-4: #3D5A80; /* Linked: Muted Indigo */
+
+      --success: #3E8966; /* Craftsman Moss Green */
+      --warning: #D48B38; /* Amber Ochre */
+      --danger: #C94A4A;  /* Brick Red */
+      --teal: #2A7B88;    /* Attachment Rings */
+
+      --radius-xs: 0px;
+      --radius-sm: 2px;
+      --radius-md: 2px;
+      --radius-lg: 4px;
+      --radius-capsule: 999px;
+
+      --font-serif: "Newsreader", "Lora", "Charter", "Georgia", "Noto Serif SC", serif;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      --font-mono: "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
+
+      --shadow-ambient: 0 3px 12px rgba(20, 20, 19, 0.06);
+      --shadow-dialog: 0 16px 36px rgba(20, 20, 19, 0.12);
+      --grid-major: rgba(229, 226, 218, 0.55);
+      --grid-dot: #D5D0C5;
+    }
+
+    [data-theme="dark"] {
+      --canvas-bg: #141413;
+      --surface: #1F1E1D;
+      --surface-2: #262422;
+      --surface-3: #2E2B28;
+      --border: #383531;
+      --border-strong: #4D4943;
+      --text-1: #ECE9E2;
+      --text-2: #A39E93;
+      --text-3: #706C63;
+      --accent: #D97757;
+      --accent-strong: #C46849;
+      --accent-tint: #382721;
+      --on-accent: #FFFFFF;
+
+      --piece-1: #A8A29E;
+      --piece-2: #4D9088;
+      --piece-3: #E08466;
+      --piece-4: #6E88A8;
+
+      --success: #52AB7F;
+      --warning: #E2A04A;
+      --danger: #E06060;
+      --teal: #3BA0B0;
+
+      --shadow-ambient: 0 3px 12px rgba(0, 0, 0, 0.35);
+      --shadow-dialog: 0 16px 40px rgba(0, 0, 0, 0.55);
+      --grid-major: rgba(56, 53, 49, 0.65);
+      --grid-dot: #4D4943;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--canvas-bg);
+      color: var(--text-1);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+      transition: background-color 0.25s ease, color 0.25s ease;
+    }
+
+    /* ── Global Header (Atelier Workbench Chrome) ── */
+    header.app-chrome {
+      height: 44px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      z-index: 50;
+      flex-shrink: 0;
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .app-logo {
+      width: 22px;
+      height: 22px;
+      color: var(--accent);
+    }
+
+    .brand-title {
+      font-family: var(--font-serif);
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      color: var(--text-1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-tint);
+      border: 1px solid var(--accent);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+      letter-spacing: 0.5px;
+    }
+
+    .menu-bar {
+      display: flex;
+      gap: 4px;
+    }
+
+    .menu-item {
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--text-2);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .menu-item:hover {
+      background: var(--surface-2);
+      color: var(--text-1);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .theme-toggle-btn, .action-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-2);
+      padding: 4px 10px;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.15s;
+    }
+    .theme-toggle-btn:hover, .action-btn:hover {
+      background: var(--surface-2);
+      border-color: var(--border-strong);
+      color: var(--text-1);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border: 1px solid var(--accent-strong);
+      color: var(--on-accent);
+      font-weight: 500;
+    }
+    .btn-primary:hover {
+      background: var(--accent-strong);
+      color: var(--on-accent);
+    }
+
+    /* ── Workbench Layout ── */
+    .workbench {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* ── Left Tool Dock ── */
+    .tool-dock {
+      width: 46px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px 0;
+      gap: 4px;
+      z-index: 30;
+      flex-shrink: 0;
+    }
+
+    .tool-btn {
+      width: 34px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-md);
+      color: var(--text-2);
+      border: 1px solid transparent;
+      background: transparent;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.15s;
+    }
+    .tool-btn:hover {
+      background: var(--surface-2);
+      color: var(--text-1);
+    }
+    .tool-btn.active {
+      background: var(--accent-tint);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .tool-btn.active::before {
+      content: "";
+      position: absolute;
+      left: -6px;
+      top: 9px;
+      bottom: 9px;
+      width: 3px;
+      background: var(--accent);
+      border-radius: 0 2px 2px 0;
+    }
+    .dock-divider {
+      width: 24px;
+      height: 1px;
+      background: var(--border);
+      margin: 6px 0;
+    }
+
+    /* ── Central CAD Canvas ── */
+    .canvas-viewport {
+      flex: 1;
+      position: relative;
+      background: var(--canvas-bg);
+      overflow: hidden;
+      cursor: crosshair;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Architectural DotGrid background */
+    .canvas-surface {
+      position: absolute;
+      inset: 0;
+      background-image: 
+        radial-gradient(circle, var(--grid-dot) 1px, transparent 1px),
+        linear-gradient(to right, var(--grid-major) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--grid-major) 1px, transparent 1px);
+      background-size: 20px 20px, 100px 100px, 100px 100px;
+      background-position: center center;
+    }
+
+    /* Canvas SVG vector graphics */
+    .cad-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ── Origin Indicator & HUD ── */
+    .hud-follower {
+      position: absolute;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      box-shadow: var(--shadow-ambient);
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-1);
+      pointer-events: none;
+      transform: translate(16px, 16px);
+      z-index: 25;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .hud-follower .hud-tag {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* ── Floating Context Strip (Bottom Capsule) ── */
+    .strip-wrapper {
+      position: absolute;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 40;
+    }
+
+    .context-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-capsule);
+      padding: 5px 14px;
+      box-shadow: var(--shadow-ambient);
+      backdrop-filter: blur(8px);
+    }
+
+    .strip-serial {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-1);
+      background: var(--surface-3);
+      border: 1px solid var(--border-strong);
+      padding: 2px 7px;
+      border-radius: var(--radius-sm);
+      letter-spacing: 0.5px;
+    }
+
+    .strip-field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .strip-field label {
+      font-size: 11px;
+      color: var(--text-2);
+      font-weight: 500;
+    }
+    .strip-input {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 4px 8px;
+      height: 26px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-capsule);
+      background: var(--surface);
+      color: var(--text-1);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .strip-input:focus {
+      border-color: var(--accent);
+    }
+
+    .strip-btn-group {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .chip-btn {
+      padding: 3px 8px;
+      font-size: 11px;
+      background: transparent;
+      border: none;
+      color: var(--text-2);
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .chip-btn:hover {
+      background: var(--surface-2);
+      color: var(--text-1);
+    }
+    .chip-btn.active {
+      background: var(--accent-tint);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .kbd-shortcut {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-2);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-2);
+      padding: 1px 4px;
+      min-width: 16px;
+      height: 16px;
+      line-height: 1;
+      margin-left: 3px;
+    }
+
+    .strip-toggle-btn {
+      font-size: 11px;
+      padding: 3px 8px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .strip-toggle-btn:hover {
+      background: var(--surface-2);
+      color: var(--text-1);
+    }
+
+    /* ── Right Panel (Variables, Formulas, Measures Atelier) ── */
+    .side-panel {
+      width: 360px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      z-index: 30;
+      flex-shrink: 0;
+    }
+
+    .panel-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      padding: 0 8px;
+    }
+
+    .panel-tab {
+      flex: 1;
+      padding: 10px 4px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-2);
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .panel-tab:hover {
+      color: var(--text-1);
+    }
+    .panel-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 600;
+    }
+
+    .panel-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+
+    .panel-count {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-3);
+    }
+
+    .card-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--canvas-bg);
+    }
+
+    /* ── Virtual Card Items (Editorial Atelier Card) ── */
+    .cad-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 9px 12px 9px 14px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+    .cad-card:hover {
+      background: var(--surface-2);
+      border-color: var(--border-strong);
+    }
+    .cad-card.selected {
+      background: var(--accent-tint);
+      border-color: var(--accent);
+    }
+
+    /* 4px Left Accent Stripe */
+    .cad-card::before {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 6px;
+      bottom: 6px;
+      width: 3px;
+      border-radius: 1.5px;
+    }
+    .cad-card[data-role="variable"]::before { background: var(--piece-1); }
+    .cad-card[data-role="formula"]::before  { background: var(--piece-2); }
+    .cad-card[data-role="measure"]::before  { background: var(--piece-3); }
+    .cad-card[data-role="linked"]::before   { background: var(--piece-4); }
+
+    .card-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-title-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-index {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-3);
+    }
+
+    .card-name-chip {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-1);
+    }
+
+    .card-value-group {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+
+    .card-numeric-val {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-1);
+    }
+
+    .card-unit {
+      font-size: 10px;
+      color: var(--text-3);
+    }
+
+    .card-detail-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 4px;
+      border-top: 1px dashed var(--border);
+    }
+
+    .card-ref-code {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-2);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      border-radius: var(--radius-sm);
+    }
+
+    .card-formula-expr {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--piece-2);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 180px;
+    }
+
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .cad-card:hover .card-actions {
+      opacity: 1;
+    }
+
+    .card-icon-btn {
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      background: transparent;
+      color: var(--text-3);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+    }
+    .card-icon-btn:hover {
+      color: var(--danger);
+      background: var(--surface-3);
+    }
+
+    /* ── Humanist Empty State (Editorial atelier styling) ── */
+    .editorial-empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 48px 24px;
+      margin: auto 0;
+    }
+
+    .empty-icon-wrap {
+      width: 48px;
+      height: 48px;
+      border-radius: var(--radius-capsule);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-3);
+      margin-bottom: 16px;
+    }
+
+    .empty-title {
+      font-family: var(--font-serif);
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-1);
+      margin-bottom: 6px;
+    }
+
+    .empty-description {
+      font-size: 11px;
+      color: var(--text-2);
+      line-height: 1.6;
+      max-width: 240px;
+      margin-bottom: 18px;
+    }
+
+    .empty-ghost-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: 1px dashed var(--border-strong);
+      color: var(--accent);
+      padding: 6px 14px;
+      font-size: 11px;
+      font-weight: 500;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .empty-ghost-btn:hover {
+      background: var(--accent-tint);
+      border-color: var(--accent);
+      border-style: solid;
+    }
+
+    /* ── Status Bar ── */
+    footer.status-bar {
+      height: 24px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 11px;
+      color: var(--text-2);
+      z-index: 45;
+      flex-shrink: 0;
+    }
+
+    .status-left, .status-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-family: var(--font-mono);
+    }
+
+    /* ── Modal Dialog Overlay (FormScaffold Spec) ── */
+    .dialog-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(20, 20, 19, 0.4);
+      backdrop-filter: blur(2px);
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .dialog-backdrop.open {
+      display: flex;
+    }
+
+    .form-scaffold-dialog {
+      width: 440px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-dialog);
+      overflow: hidden;
+      animation: dialogPop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes dialogPop {
+      from { transform: scale(0.96) translateY(6px); opacity: 0; }
+      to   { transform: scale(1) translateY(0); opacity: 1; }
+    }
+
+    .form-title-bar {
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-1);
+    }
+
+    .dialog-title-text {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-serif);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .dialog-code-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      background: var(--accent-tint);
+      color: var(--accent);
+      border: 1px solid var(--border-strong);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+      letter-spacing: 0.5px;
+    }
+
+    .dialog-close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-3);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: var(--radius-sm);
+    }
+    .dialog-close-btn:hover {
+      color: var(--text-1);
+      background: var(--surface-3);
+    }
+
+    .dialog-body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .form-group-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+    }
+    .group-code {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+    }
+    .group-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-1);
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 88px 1fr;
+      row-gap: 10px;
+      column-gap: 12px;
+      align-items: center;
+    }
+    .form-grid label {
+      text-align: right;
+      font-size: 12px;
+      color: var(--text-2);
+    }
+    .form-grid input, .form-grid select {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-capsule);
+      background: var(--surface);
+      color: var(--text-1);
+      outline: none;
+    }
+    .form-grid input:focus, .form-grid select:focus {
+      border-color: var(--accent);
+    }
+
+    .form-button-bar {
+      background: var(--surface-3);
+      border-top: 1px solid var(--border);
+      padding: 10px 16px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body data-theme="light">
+
+  <!-- ── Global Application Header ── -->
+  <header class="app-chrome">
+    <div class="brand-section">
+      <svg class="app-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M4 4l8 8-8 8" />
+        <path d="M12 4l8 8-8 8" />
+      </svg>
+      <div class="brand-title">
+        WildWind Pattern · 野风帖
+        <span class="brand-badge">ATELIER CRAFTSMAN</span>
+      </div>
+      <nav class="menu-bar">
+        <div class="menu-item">文件 (F)</div>
+        <div class="menu-item">编辑 (E)</div>
+        <div class="menu-item">制图 (D)</div>
+        <div class="menu-item">视图 (V)</div>
+        <div class="menu-item">工具 (T)</div>
+        <div class="menu-item">帮助 (H)</div>
+      </nav>
+    </div>
+
+    <div class="header-actions">
+      <button class="action-btn" onclick="toggleDialog(true)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        线段属性对话框 (SEGM-01)
+      </button>
+
+      <button class="theme-toggle-btn" id="themeToggleBtn" onclick="toggleTheme()">
+        <span id="themeIcon">☀️</span>
+        <span id="themeLabel">温润纸白 (Ivory)</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Main Workbench ── -->
+  <main class="workbench">
+    <!-- ── Left Tool Dock (Phosphor Regular 1.5px Icons) ── -->
+    <aside class="tool-dock">
+      <!-- Select -->
+      <button class="tool-btn" title="选择 [V]" onclick="setActiveTool(this, '选择')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 4l7 17 3-7 7-3L4 4z"/>
+        </svg>
+      </button>
+      <!-- SmartPen (Active) -->
+      <button class="tool-btn active" title="智能笔 [L]" onclick="setActiveTool(this, '智能笔')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 19l7-7 3 3-7 7-3-3z"/>
+          <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
+          <path d="M2 2l7.586 7.586"/>
+        </svg>
+      </button>
+      <!-- CurveEdit -->
+      <button class="tool-btn" title="曲线编辑 [C]" onclick="setActiveTool(this, '曲线编辑')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 18c4 0 4-12 8-12s4 12 8 12"/>
+          <circle cx="4" cy="18" r="2"/>
+          <circle cx="20" cy="18" r="2"/>
+          <circle cx="12" cy="6" r="2"/>
+        </svg>
+      </button>
+      <!-- Rotate -->
+      <button class="tool-btn" title="旋转 [R]" onclick="setActiveTool(this, '旋转')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21.5 2v6h-6"/>
+          <path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+        </svg>
+      </button>
+
+      <div class="dock-divider"></div>
+
+      <!-- Break -->
+      <button class="tool-btn" title="打断 [B]" onclick="setActiveTool(this, '打断')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="6" cy="6" r="3"/>
+          <circle cx="6" cy="18" r="3"/>
+          <line x1="20" y1="4" x2="8.12" y2="15.88"/>
+          <line x1="14.47" y1="14.48" x2="20" y2="20"/>
+          <line x1="8.12" y1="8.12" x2="12" y2="12"/>
+        </svg>
+      </button>
+      <!-- Intersection -->
+      <button class="tool-btn" title="求交点 [I]" onclick="setActiveTool(this, '求交点')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="9"/>
+          <line x1="12" y1="3" x2="12" y2="21"/>
+          <line x1="3" y1="12" x2="21" y2="12"/>
+        </svg>
+      </button>
+      <!-- Measure -->
+      <button class="tool-btn" title="距离测量 [M]" onclick="setActiveTool(this, '距离测量')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M2 12h20M2 12l5-5M2 12l5 5M22 12l-5-5M22 12l5 5"/>
+        </svg>
+      </button>
+      <!-- AngleMeasure -->
+      <button class="tool-btn" title="角度测量 [A]" onclick="setActiveTool(this, '角度测量')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M3 21h18"/>
+          <path d="M3 21L15 4"/>
+          <path d="M9 21a6 6 0 0 1 3-5.2"/>
+        </svg>
+      </button>
+    </aside>
+
+    <!-- ── Center CAD Drafting Paper Viewport ── -->
+    <section class="canvas-viewport" id="viewport">
+      <div class="canvas-surface"></div>
+
+      <!-- Live Vector CAD Drawing -->
+      <svg class="cad-svg" viewBox="0 0 1000 650">
+        <!-- Origin Crosshair -->
+        <g opacity="0.4">
+          <line x1="150" y1="0" x2="150" y2="650" stroke="var(--text-3)" stroke-width="0.8" stroke-dasharray="3,3" />
+          <line x1="0" y1="450" x2="1000" y2="450" stroke="var(--text-3)" stroke-width="0.8" stroke-dasharray="3,3" />
+          <circle cx="150" cy="450" r="3" fill="none" stroke="var(--text-3)" stroke-width="1" />
+          <text x="156" y="464" fill="var(--text-3)" font-family="var(--font-mono)" font-size="10">O(0,0)</text>
+        </g>
+
+        <!-- Garment Pattern Piece: Women's Front Bodice Sample -->
+        <g id="pattern-piece">
+          <!-- Auxiliary Construction Lines -->
+          <g stroke="var(--text-3)" stroke-width="0.8" stroke-dasharray="4,4" opacity="0.6">
+            <line x1="280" y1="180" x2="520" y2="180" />
+            <line x1="280" y1="180" x2="280" y2="420" />
+            <line x1="520" y1="180" x2="520" y2="420" />
+            <line x1="280" y1="420" x2="520" y2="420" />
+            <line x1="400" y1="420" x2="400" y2="300" />
+          </g>
+
+          <!-- Seam Allowance Contour (0.7cm) -->
+          <path d="M 273 173 
+                   C 333 193, 353 143, 403 143 
+                   L 483 143 
+                   L 527 253 
+                   C 487 293, 507 333, 527 353 
+                   L 527 427 
+                   L 410 427 L 400 300 L 390 427 
+                   L 273 427 Z" 
+                fill="none" 
+                stroke="var(--text-3)" 
+                stroke-width="1" 
+                stroke-dasharray="5,4" 
+                opacity="0.5" />
+
+          <!-- Main Pattern Cutlines (Solid Ink) -->
+          <!-- Neckline (Selected / Focused in Terracotta Coral) -->
+          <path id="active-curve" 
+                d="M 280 180 C 340 200, 360 150, 410 150" 
+                fill="none" 
+                stroke="var(--accent)" 
+                stroke-width="2.2" />
+
+          <!-- Shoulder line -->
+          <line x1="410" y1="150" x2="490" y2="150" stroke="var(--text-1)" stroke-width="1.5" />
+
+          <!-- Armhole Curve (Bezier) -->
+          <path d="M 490 150 C 470 200, 500 240, 520 260" fill="none" stroke="var(--text-1)" stroke-width="1.5" />
+
+          <!-- Side Seam -->
+          <line x1="520" y1="260" x2="520" y2="420" stroke="var(--text-1)" stroke-width="1.5" />
+
+          <!-- Waist Dart & Hem -->
+          <path d="M 520 420 L 408 420 L 400 310 L 392 420 L 280 420 Z" fill="none" stroke="var(--text-1)" stroke-width="1.5" />
+
+          <!-- Center Front line -->
+          <line x1="280" y1="420" x2="280" y2="180" stroke="var(--text-1)" stroke-width="1.5" />
+
+          <!-- Dimension & Tangent Handles for Active Neckline -->
+          <line x1="280" y1="180" x2="340" y2="200" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2,2" />
+          <circle cx="340" cy="200" r="3" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5" />
+
+          <line x1="410" y1="150" x2="360" y2="150" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2,2" />
+          <circle cx="360" cy="150" r="3" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5" />
+
+          <!-- Point Markers -->
+          <circle cx="280" cy="180" r="3.5" fill="var(--surface)" stroke="var(--accent)" stroke-width="2" />
+          <circle cx="410" cy="150" r="3.5" fill="var(--surface)" stroke="var(--text-1)" stroke-width="1.5" />
+          <circle cx="490" cy="150" r="3.5" fill="var(--surface)" stroke="var(--text-1)" stroke-width="1.5" />
+          <circle cx="520" cy="260" r="3.5" fill="var(--surface)" stroke="var(--text-1)" stroke-width="1.5" />
+          <circle cx="520" cy="420" r="3.5" fill="var(--surface)" stroke="var(--text-1)" stroke-width="1.5" />
+          <circle cx="280" cy="420" r="3.5" fill="var(--surface)" stroke="var(--text-1)" stroke-width="1.5" />
+
+          <!-- Auxiliary Point Marker (Moss Green disc) -->
+          <circle cx="400" cy="310" r="3" fill="var(--success)" stroke="none" />
+          <text x="408" y="313" fill="var(--success)" font-family="var(--font-mono)" font-size="10" font-weight="600">Aux_Dart</text>
+
+          <!-- Precision Snap Diamond Indicator (Moss Green) -->
+          <polygon points="490,144 496,150 490,156 484,150" fill="none" stroke="var(--success)" stroke-width="1.8" />
+
+          <!-- Length Annotations in Monospace -->
+          <text x="345" y="172" fill="var(--accent)" font-family="var(--font-mono)" font-size="11" font-weight="600">18.42 cm</text>
+          <text x="440" y="142" fill="var(--text-2)" font-family="var(--font-mono)" font-size="10">8.00 cm</text>
+          <text x="250" y="300" fill="var(--text-2)" font-family="var(--font-mono)" font-size="10">36.00 cm (前中线)</text>
+          <text x="528" y="340" fill="var(--text-2)" font-family="var(--font-mono)" font-size="10">16.00 cm</text>
+        </g>
+      </svg>
+
+      <!-- Active Point HUD Tooltip Follower -->
+      <div class="hud-follower" style="left: 360px; top: 130px;">
+        <span class="hud-tag">P14</span>
+        <span>L: 18.42 cm</span>
+        <span>∠: 45.0°</span>
+      </div>
+
+      <!-- ── Floating Context Strip Capsule (HUD Strip) ── -->
+      <div class="strip-wrapper">
+        <div class="context-strip">
+          <div class="strip-serial">P14-L02</div>
+
+          <div class="strip-field">
+            <label>名称:</label>
+            <input class="strip-input" style="width: 100px;" value="前领窝弧线" />
+          </div>
+
+          <div class="strip-field">
+            <label>长度(cm):</label>
+            <input class="strip-input" style="width: 75px;" value="18.42" />
+          </div>
+
+          <div class="strip-field">
+            <label>角度:</label>
+            <input class="strip-input" style="width: 65px;" value="45.0°" />
+          </div>
+
+          <!-- Unit Toggle Button Group -->
+          <div class="strip-btn-group">
+            <button class="chip-btn active" title="度制 (角度)">°</button>
+            <button class="chip-btn" title="弧长制 (mm)">⌒</button>
+          </div>
+
+          <!-- Pos & Angle Detach / Reconnect Toggles -->
+          <button class="strip-toggle-btn" title="位置连接状态">
+            连接: <span style="color:var(--text-1); font-weight:600;">拆开</span>
+          </button>
+          <button class="strip-toggle-btn" title="角度基准状态">
+            基准: <span style="color:var(--accent); font-weight:600;">跟随</span>
+          </button>
+
+          <!-- Shortcuts Hint Keycaps -->
+          <div style="display: flex; align-items: center; gap: 4px; margin-left: 6px; border-left: 1px solid var(--border); padding-left: 10px;">
+            <span style="font-size: 10px; color: var(--text-3);">模式</span>
+            <span class="kbd-shortcut">W</span>
+            <span style="font-size: 10px; color: var(--text-3); margin-left: 4px;">应用</span>
+            <span class="kbd-shortcut">↵</span>
+            <span style="font-size: 10px; color: var(--text-3); margin-left: 4px;">取消</span>
+            <span class="kbd-shortcut">Esc</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Right Side Panel (Variables, Formulas, Measures Atelier) ── -->
+    <aside class="side-panel">
+      <div class="panel-tabs">
+        <div class="panel-tab active" onclick="switchTab(this, 'variables')">变量 (3)</div>
+        <div class="panel-tab" onclick="switchTab(this, 'formulas')">公式 (4)</div>
+        <div class="panel-tab" onclick="switchTab(this, 'measures')">测量 (2)</div>
+        <div class="panel-tab" onclick="switchTab(this, 'empty-demo')">空态引导</div>
+      </div>
+
+      <div class="panel-toolbar">
+        <span class="panel-count" id="panelCountText">已定义 3 项基础人体规格</span>
+        <button class="action-btn btn-primary" style="padding: 2px 8px; font-size: 11px;">
+          ＋ 添加
+        </button>
+      </div>
+
+      <!-- Variable Tab Content -->
+      <div class="card-list" id="cardListContainer">
+        <!-- Card 1: Bust -->
+        <div class="cad-card selected" data-role="variable">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="card-index">#01</span>
+              <span class="card-name-chip">胸围 (B_bust)</span>
+            </div>
+            <div class="card-value-group">
+              <span class="card-numeric-val">84.00</span>
+              <span class="card-unit">cm</span>
+            </div>
+          </div>
+          <div class="card-detail-row">
+            <span class="card-ref-code">REF: B</span>
+            <span style="font-size:10px; color:var(--text-3);">主围度规格 / 女标160/84A</span>
+            <div class="card-actions">
+              <button class="card-icon-btn" title="删除">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: Waist -->
+        <div class="cad-card" data-role="variable">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="card-index">#02</span>
+              <span class="card-name-chip">腰围 (W_waist)</span>
+            </div>
+            <div class="card-value-group">
+              <span class="card-numeric-val">68.00</span>
+              <span class="card-unit">cm</span>
+            </div>
+          </div>
+          <div class="card-detail-row">
+            <span class="card-ref-code">REF: W</span>
+            <span style="font-size:10px; color:var(--text-3);">高腰基准位置</span>
+            <div class="card-actions">
+              <button class="card-icon-btn" title="删除">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 3: Back Length -->
+        <div class="cad-card" data-role="variable">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="card-index">#03</span>
+              <span class="card-name-chip">后背长 (L_back)</span>
+            </div>
+            <div class="card-value-group">
+              <span class="card-numeric-val">38.50</span>
+              <span class="card-unit">cm</span>
+            </div>
+          </div>
+          <div class="card-detail-row">
+            <span class="card-ref-code">REF: BL</span>
+            <span style="font-size:10px; color:var(--text-3);">第七颈椎点至腰线</span>
+            <div class="card-actions">
+              <button class="card-icon-btn" title="删除">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ── Status Bar ── -->
+  <footer class="status-bar">
+    <div class="status-left">
+      <div class="status-item">
+        <span>当前工具:</span>
+        <span style="color:var(--accent); font-weight:600;" id="statusToolText">智能笔 [L]</span>
+      </div>
+      <div class="status-item">
+        <span>提示:</span>
+        <span>点击端点或输入尺寸创建线段；按 <kbd class="kbd-shortcut">W</kbd> 切换捕捉/绘制模式</span>
+      </div>
+    </div>
+    <div class="status-right">
+      <div class="status-item">
+        <span>光标:</span>
+        <span>X: 345.2 mm, Y: 172.0 mm</span>
+      </div>
+      <div class="status-item">
+        <span>缩放:</span>
+        <span>100%</span>
+      </div>
+      <div class="status-item">
+        <span>约束状态:</span>
+        <span style="color:var(--success);">● 已完全求解</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ── FormScaffold Modal Dialog Preview (SEGM-01) ── -->
+  <div class="dialog-backdrop" id="dialogBackdrop">
+    <div class="form-scaffold-dialog">
+      <!-- Title Bar (Deep Slate Ink + Terracotta Code) -->
+      <div class="form-title-bar">
+        <div class="dialog-title-text">
+          <span class="dialog-code-badge">SEGM-01</span>
+          线段几何与约束属性
+        </div>
+        <button class="dialog-close-btn" onclick="toggleDialog(false)">✕</button>
+      </div>
+
+      <!-- Dialog Body -->
+      <div class="dialog-body">
+        <!-- Section 1 -->
+        <div class="form-group-header">
+          <span class="group-code">IDENTITY</span>
+          <span class="group-title">线段标识与图层</span>
+        </div>
+        <div class="form-grid">
+          <label>线段名称:</label>
+          <input type="text" value="前领窝弧线" />
+
+          <label>所属图层:</label>
+          <select>
+            <option>主轮廓线 (Outline)</option>
+            <option>结构辅助线 (Auxiliary)</option>
+            <option>内部缝位线 (Internal)</option>
+          </select>
+        </div>
+
+        <!-- Section 2 -->
+        <div class="form-group-header">
+          <span class="group-code">GEOMETRY</span>
+          <span class="group-title">参数化几何约束</span>
+        </div>
+        <div class="form-grid">
+          <label>长度约束:</label>
+          <input type="text" value="B_bust / 4 - 2.5" />
+
+          <label>终点角度:</label>
+          <input type="text" value="45.0°" />
+
+          <label>跟随基准:</label>
+          <div style="display: flex; gap: 6px;">
+            <button class="strip-toggle-btn active" style="flex:1;">锁定跟随 (Welded)</button>
+            <button class="strip-toggle-btn" style="flex:1;">就地拆开 (Detach)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Button Bar -->
+      <div class="form-button-bar">
+        <button class="action-btn" onclick="toggleDialog(false)">取消 (Esc)</button>
+        <button class="action-btn btn-primary" onclick="toggleDialog(false)">应用更改 (Enter)</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Theme toggle
+    function toggleTheme() {
+      const body = document.body;
+      const current = body.getAttribute('data-theme');
+      const next = current === 'light' ? 'dark' : 'light';
+      body.setAttribute('data-theme', next);
+
+      const icon = document.getElementById('themeIcon');
+      const label = document.getElementById('themeLabel');
+      if (next === 'dark') {
+        icon.textContent = '🌙';
+        label.textContent = '碳黑夜纸 (Slate)';
+      } else {
+        icon.textContent = '☀️';
+        label.textContent = '温润纸白 (Ivory)';
+      }
+    }
+
+    // Tool activation
+    function setActiveTool(btn, toolName) {
+      document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('statusToolText').textContent = toolName;
+    }
+
+    // Tab switching
+    function switchTab(tab, type) {
+      document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      const container = document.getElementById('cardListContainer');
+      const countText = document.getElementById('panelCountText');
+
+      if (type === 'variables') {
+        countText.textContent = '已定义 3 项基础人体规格';
+        container.innerHTML = `
+          <div class="cad-card selected" data-role="variable">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#01</span>
+                <span class="card-name-chip">胸围 (B_bust)</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">84.00</span>
+                <span class="card-unit">cm</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-ref-code">REF: B</span>
+              <span style="font-size:10px; color:var(--text-3);">主围度规格 / 女标160/84A</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+          <div class="cad-card" data-role="variable">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#02</span>
+                <span class="card-name-chip">腰围 (W_waist)</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">68.00</span>
+                <span class="card-unit">cm</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-ref-code">REF: W</span>
+              <span style="font-size:10px; color:var(--text-3);">高腰基准位置</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+          <div class="cad-card" data-role="variable">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#03</span>
+                <span class="card-name-chip">后背长 (L_back)</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">38.50</span>
+                <span class="card-unit">cm</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-ref-code">REF: BL</span>
+              <span style="font-size:10px; color:var(--text-3);">第七颈椎点至腰线</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+        `;
+      } else if (type === 'formulas') {
+        countText.textContent = '已定义 4 条推导几何公式';
+        container.innerHTML = `
+          <div class="cad-card" data-role="formula">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#F1</span>
+                <span class="card-name-chip">前胸宽 (F_chest)</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">17.20</span>
+                <span class="card-unit">cm</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-formula-expr">B_bust / 6 + 3.2</span>
+              <span style="font-size:10px; color:var(--piece-2);">公式驱动</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+          <div class="cad-card" data-role="formula">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#F2</span>
+                <span class="card-name-chip">后背宽 (B_width)</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">17.80</span>
+                <span class="card-unit">cm</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-formula-expr">B_bust / 6 + 3.8</span>
+              <span style="font-size:10px; color:var(--piece-2);">公式驱动</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+          <div class="cad-card" data-role="formula">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#F3</span>
+                <span class="card-name-chip">袖窿深 (AH_depth)</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">19.50</span>
+                <span class="card-unit">cm</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-formula-expr">B_bust / 4 + 1.5</span>
+              <span style="font-size:10px; color:var(--piece-2);">公式驱动</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+        `;
+      } else if (type === 'measures') {
+        countText.textContent = '2 项动态测量与关联约束';
+        container.innerHTML = `
+          <div class="cad-card" data-role="measure">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#M1</span>
+                <span class="card-name-chip">前领窝实测弧长</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">18.42</span>
+                <span class="card-unit">cm</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-ref-code">SRC: L14-L02</span>
+              <span style="font-size:10px; color:var(--piece-3);">自动测量</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+          <div class="cad-card" data-role="measure">
+            <div class="card-header-row">
+              <div class="card-title-group">
+                <span class="card-index">#M2</span>
+                <span class="card-name-chip">侧缝夹角测量</span>
+              </div>
+              <div class="card-value-group">
+                <span class="card-numeric-val">92.4°</span>
+                <span class="card-unit">deg</span>
+              </div>
+            </div>
+            <div class="card-detail-row">
+              <span class="card-ref-code">SRC: ∠(L04, L05)</span>
+              <span style="font-size:10px; color:var(--piece-3);">角度测量</span>
+              <div class="card-actions"><button class="card-icon-btn">✕</button></div>
+            </div>
+          </div>
+        `;
+      } else if (type === 'empty-demo') {
+        countText.textContent = '空状态展示';
+        container.innerHTML = `
+          <div class="editorial-empty-state">
+            <div class="empty-icon-wrap">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"></polygon>
+              </svg>
+            </div>
+            <h4 class="empty-title">从第一块样板开始</h4>
+            <p class="empty-description">
+              使用智能笔在画布上绘制衣片轮廓，或在此录入人体规格公式与放码尺寸。
+            </p>
+            <button class="empty-ghost-btn">
+              <span>＋</span> 创建第一项规格
+            </button>
+          </div>
+        `;
+      }
+    }
+
+    // Modal dialog
+    function toggleDialog(open) {
+      const dialog = document.getElementById('dialogBackdrop');
+      if (open) dialog.classList.add('open');
+      else dialog.classList.remove('open');
+    }
+  </script>
+</body>
+</html>

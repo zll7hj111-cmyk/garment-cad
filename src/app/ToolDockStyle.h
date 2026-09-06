@@ -8,8 +8,8 @@
 
 namespace cad::app {
 
-/// 工具坞按钮样式 (ui-redesign-2026-08 §6.1 状态矩阵):
-/// 激活 = 实心 accent 黄底 + onAccent 墨色图标 —— 全屏唯一实心黄 (设计原则①);
+/// 工具坞按钮样式:
+/// 激活 = 实心 accent 陶土珊瑚底 + onAccent 纯白图标 (数字手艺人工作台);
 /// 按压 = accentStrong; 悬停 = surface2 底 + text1 图标; 默认 = text2 图标。
 /// 替代 ElaToolButtonStyle 的 BasicSelectedAlpha 灰蓝选中态, 其余绘制路径
 /// (ElaIcon 字体图标) 与 Ela 同构。

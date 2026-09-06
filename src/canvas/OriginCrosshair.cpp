@@ -42,4 +42,10 @@ void OriginCrosshair::paint(QPainter* painter,
     if (exposed.left() <= 0.0 && exposed.right() >= 0.0) {
         painter->drawLine(QLineF(0.0, exposed.top(), 0.0, exposed.bottom()));
     }
+
+    // Subtle origin mark
+    if (exposed.contains(0.0, 0.0)) {
+        painter->setBrush(Qt::NoBrush);
+        painter->drawEllipse(QPointF(0.0, 0.0), 2.5, 2.5);
+    }
 }

@@ -1,6 +1,7 @@
 ﻿#include "ui/SegmentAuxTab.h"
 
 #include <algorithm>
+#include <QUndoStack>
 
 #include "ElaTabWidget.h"
 #include <QVBoxLayout>
@@ -14,6 +15,7 @@
 #include "parametric/Serial.h"
 #include "ui/AuxPointForm.h"
 #include "ui/IntersectionForm.h"
+#include "document/commands/AttachmentCommands.h"
 
 namespace cad::ui {
 
@@ -76,6 +78,8 @@ void SegmentAuxTab::build(ElaTabWidget* tabs)
             [this]() { if (m_debounceRestart) m_debounceRestart(); });
     connect(m_auxForm, &AuxPointForm::edited,
             this, &SegmentAuxTab::onLiveUpdate);
+    connect(m_auxForm, &AuxPointForm::detachRequested,
+            this, &SegmentAuxTab::onDetachMountClicked);
     connect(m_ixForm, &IntersectionForm::dirty, this,
             [this]() { if (m_debounceRestart) m_debounceRestart(); });
     connect(m_ixForm, &IntersectionForm::edited,
@@ -122,6 +126,11 @@ void SegmentAuxTab::refreshList()
         m_auxList->addItem(item);
     }
 
+    if (m_auxList->count() > 0) {
+        int row = m_auxList->currentRow();
+        if (row < 0 || row >= m_auxList->count()) row = 0;
+        m_auxList->setCurrentRow(row);
+    }
     m_auxForm->setVisible(m_auxList->count() > 0 && m_auxList->currentRow() >= 0);
 }
 
@@ -210,6 +219,43 @@ void SegmentAuxTab::populateFields()
     }
 
     m_auxForm->loadFrom(*pt);
+
+    // Query attachments on this aux point:
+    // 1. Incoming mounts: other segments attach to this aux point (toPointId == auxId).
+    // 2. Outgoing followers: this aux point attaches to another segment (fromPointId == auxId).
+    QStringList connLabels;
+    bool hasConnection = false;
+    for (const auto& att : m_paramDoc->attachments()) {
+        if (att.isPin) continue;
+        if (att.toBlockId == m_blockId && att.toPointId == auxId) {
+            hasConnection = true;
+            if (const auto* fb = m_paramDoc->findBlock(att.fromBlockId)) {
+                const QUuid fs = fb->exitSegmentAtPoint(att.fromPointId);
+                if (const auto* fsg = fb->findSegment(fs)) {
+                    QString t = cad::param::Serial::tag(fsg->serial);
+                    if (!fsg->name.isEmpty()) t += QStringLiteral("·") + fsg->name;
+                    connLabels << QString::fromUtf8("挂载 ") + t;
+                }
+            }
+        } else if (att.fromBlockId == m_blockId && att.fromPointId == auxId) {
+            hasConnection = true;
+            if (const auto* tb = m_paramDoc->findBlock(att.toBlockId)) {
+                QUuid tsId = att.toSegmentId;
+                if (tsId.isNull()) tsId = tb->exitSegmentAtPoint(att.toPointId);
+                if (const auto* tsg = tb->findSegment(tsId)) {
+                    QString t = cad::param::Serial::tag(tsg->serial);
+                    if (!tsg->name.isEmpty()) t += QStringLiteral("·") + tsg->name;
+                    connLabels << QString::fromUtf8("跟随 ") + t;
+                }
+            }
+        }
+    }
+    QString mountText;
+    if (hasConnection) {
+        mountText = connLabels.join(QStringLiteral(", "));
+    }
+    m_auxForm->setMountInfo(mountText, hasConnection, false);
+
     m_auxForm->setVisible(true);
 }
 
@@ -380,4 +426,34 @@ void SegmentAuxTab::onLiveUpdate()
     m_sceneRefresh();
 }
 
+void SegmentAuxTab::onDetachMountClicked()
+{
+    if (!m_paramDoc || m_currentAuxId.isNull()) return;
+
+    QList<QUuid> attIds;
+    for (const auto& att : m_paramDoc->attachments()) {
+        if (att.isPin) continue;
+        if ((att.toBlockId == m_blockId && att.toPointId == m_currentAuxId) ||
+            (att.fromBlockId == m_blockId && att.fromPointId == m_currentAuxId)) {
+            attIds.append(att.id);
+        }
+    }
+    if (attIds.isEmpty()) return;
+
+    if (auto* stack = m_paramDoc->undoStack()) {
+        stack->beginMacro(QStringLiteral("拆开辅助点挂载"));
+        for (const auto& id : attIds) {
+            stack->push(new cad::cmd::RemoveAttachmentCommand(m_paramDoc, id));
+        }
+        stack->endMacro();
+    } else {
+        for (const auto& id : attIds) {
+            m_paramDoc->removeAttachment(id);
+        }
+    }
+    populateFields();
+    if (m_sceneRefresh) m_sceneRefresh();
+}
+
 } // namespace cad::ui
+

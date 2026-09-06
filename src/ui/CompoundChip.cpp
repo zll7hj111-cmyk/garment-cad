@@ -54,7 +54,7 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         const auto& t = cad::ui::Theme::tokens();
-        const qreal r = 3.0;
+        const qreal r = (height() - 1.0) / 2.0;
         const QRectF rect(0.5, 0.5, width() - 1.0, height() - 1.0);
 
         p.setPen(QPen(t.chipBorder, 1));
@@ -125,18 +125,21 @@ CompoundChip::CompoundChip(QWidget* parent)
 
     // Ref slot (left)
     m_refLabel = new CompoundChipLabel(CompoundChipLabel::Part::Ref, this, this);
+    m_refLabel->setObjectName(QStringLiteral("compoundRefLabel"));
     m_refLabel->setAlignment(Qt::AlignCenter);
     m_refLabel->setCursor(Qt::PointingHandCursor);
     m_refLabel->installEventFilter(this);
 
     // Name slot (right)
     m_nameLabel = new CompoundChipLabel(CompoundChipLabel::Part::Name, this, this);
+    m_nameLabel->setObjectName(QStringLiteral("compoundNameLabel"));
     m_nameLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_nameLabel->setCursor(Qt::PointingHandCursor);
     m_nameLabel->installEventFilter(this);
 
     // Edit overlays
     m_refEdit = new ElaLineEdit(this);
+    m_refEdit->setObjectName(QStringLiteral("compoundRefEdit"));
     m_refEdit->setMinimumHeight(0);
     m_refEdit->setMaximumHeight(QWIDGETSIZE_MAX);
     m_refEdit->setAlignment(Qt::AlignCenter);
@@ -148,6 +151,7 @@ CompoundChip::CompoundChip(QWidget* parent)
     m_refEdit->installEventFilter(this);
 
     m_nameEdit = new ElaLineEdit(this);
+    m_nameEdit->setObjectName(QStringLiteral("compoundNameEdit"));
     m_nameEdit->setMinimumHeight(0);
     m_nameEdit->setMaximumHeight(QWIDGETSIZE_MAX);
     m_nameEdit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -164,6 +168,7 @@ CompoundChip::CompoundChip(QWidget* parent)
     connect(m_copyFeedbackTimer, &QTimer::timeout, this, [this]() {
         m_showingCopyFeedback = false;
         m_refLabel->setText(m_refName.isEmpty() ? m_refPlaceholder : m_refName);
+        m_nameLabel->setText(m_name.isEmpty() ? m_namePlaceholder : m_name);
     });
 
     connect(m_refEdit, &QLineEdit::editingFinished, this, &CompoundChip::commitRefEdit);
@@ -216,26 +221,58 @@ void CompoundChip::setRefName(const QString& ref)
 void CompoundChip::setName(const QString& name)
 {
     const QString n = name.trimmed();
-    if (m_name == n) return;
+    if (m_name == n && !m_showingCopyFeedback) return;
     m_name = n;
-    if (m_name.isEmpty()) {
-        m_nameLabel->setText(m_namePlaceholder);
-        m_nameLabel->setPlaceholder(true);
-        m_nameLabel->setStyleSheet(QStringLiteral(
-            "font-size: %1px; color: %2; background: transparent; padding-left: 5px;")
-            .arg(QString::number(cad::ui::ThemeTokens::FontMd),
-                 cad::ui::Theme::tokens().text3.name()));
-        m_nameLabel->setToolTip(QStringLiteral("双击设置名称"));
-    } else {
-        m_nameLabel->setText(m_name);
-        m_nameLabel->setPlaceholder(false);
-        m_nameLabel->setStyleSheet(QStringLiteral(
-            "font-size: %1px; color: %2; background: transparent; padding-left: 5px;")
-            .arg(QString::number(cad::ui::ThemeTokens::FontMd),
-                 cad::ui::Theme::tokens().text1.name()));
-        m_nameLabel->setToolTip(QStringLiteral("名称: %1 (双击编辑)").arg(m_name));
+    if (!m_showingCopyFeedback) {
+        if (m_name.isEmpty()) {
+            m_nameLabel->setText(m_namePlaceholder);
+            m_nameLabel->setPlaceholder(true);
+            m_nameLabel->setStyleSheet(QStringLiteral(
+                "font-size: %1px; color: %2; background: transparent; padding-left: 5px;")
+                .arg(QString::number(cad::ui::ThemeTokens::FontMd),
+                     cad::ui::Theme::tokens().text3.name()));
+            m_nameLabel->setToolTip(QStringLiteral("双击设置名称"));
+        } else {
+            m_nameLabel->setText(m_name);
+            m_nameLabel->setPlaceholder(false);
+            m_nameLabel->setStyleSheet(QStringLiteral(
+                "font-size: %1px; color: %2; background: transparent; padding-left: 5px;")
+                .arg(QString::number(cad::ui::ThemeTokens::FontMd),
+                     cad::ui::Theme::tokens().text1.name()));
+            m_nameLabel->setToolTip(QStringLiteral("名称: %1 (单击复制，双击编辑)").arg(m_name));
+        }
     }
     updatePartsGeometry();
+}
+
+void CompoundChip::applyTheme()
+{
+    const auto& tk = cad::ui::Theme::tokens();
+    if (m_refName.isEmpty()) {
+        m_refLabel->setStyleSheet(QStringLiteral(
+            "font-family: %1; font-size: %2px; font-weight: 500; color: %3; background: transparent;")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily,
+                 QString::number(cad::ui::ThemeTokens::FontXs),
+                 tk.text3.name()));
+    } else {
+        m_refLabel->setStyleSheet(QStringLiteral(
+            "font-family: %1; font-size: %2px; font-weight: 600; color: %3; background: transparent;")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily,
+                 QString::number(cad::ui::ThemeTokens::FontSm),
+                 tk.text1.name()));
+    }
+    if (m_name.isEmpty()) {
+        m_nameLabel->setStyleSheet(QStringLiteral(
+            "font-size: %1px; color: %2; background: transparent; padding-left: 5px;")
+            .arg(QString::number(cad::ui::ThemeTokens::FontMd),
+                 tk.text3.name()));
+    } else {
+        m_nameLabel->setStyleSheet(QStringLiteral(
+            "font-size: %1px; color: %2; background: transparent; padding-left: 5px;")
+            .arg(QString::number(cad::ui::ThemeTokens::FontMd),
+                 tk.text1.name()));
+    }
+    update();
 }
 
 void CompoundChip::setPlaceholderText(const QString& ph)
@@ -367,6 +404,19 @@ void CompoundChip::copyRefText()
     emit refClicked(m_refName);
 }
 
+void CompoundChip::copyNameText()
+{
+    if (m_name.isEmpty()) return;
+    QClipboard* cb = QApplication::clipboard();
+    if (cb) {
+        cb->setText(m_name);
+    }
+    m_showingCopyFeedback = true;
+    m_nameLabel->setText(QStringLiteral("\u2713"));  // ✓
+    m_copyFeedbackTimer->start();
+    emit nameClicked(m_name);
+}
+
 bool CompoundChip::eventFilter(QObject* obj, QEvent* event)
 {
     if (obj == m_refLabel) {
@@ -405,7 +455,16 @@ bool CompoundChip::eventFilter(QObject* obj, QEvent* event)
                 return true;
             }
         } else if (event->type() == QEvent::MouseButtonPress) {
-            emit nameClicked(m_name);
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton) {
+                if (m_name.isEmpty()) {
+                    // Empty name: clicking also opens editor
+                    enterNameEdit();
+                } else {
+                    copyNameText();
+                }
+                return true;
+            }
         }
     } else if (obj == m_refEdit) {
         if (event->type() == QEvent::KeyPress) {

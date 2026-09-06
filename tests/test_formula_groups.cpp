@@ -1,4 +1,4 @@
-﻿/// 公式页分组回归测试 (2026-08):
+/// 公式页分组回归测试 (2026-08):
 /// ① VirtualCardList 结构性 setRows 后, 存活行 (同 key 幸存) 必须重新绑定
 ///    —— 否则分组头的成员数量/折叠箭头/卡片序号停留在旧值 (用户报告
 ///    "组的公式数量不随着加入更新"、"打开小箭头经常显示错误");
@@ -7,13 +7,16 @@
 /// ④ VirtualCardList 缓存池: 消失行 widget park 而非销毁, 同 key 返回时
 ///    原实例复用 (展开/回滚不重建);
 /// ⑤ 卡片序号 (setIndex, 各页统一) + 交替色 (setAlternate, 缓存复用下
-///    奇偶随新行号重设).
+///    奇偶随新行号重设);
+/// ⑥ CompoundChip 复合标签交互: 单击复制 (名称/代码) 到剪贴板 + ✓ 反馈,
+///    双击进编辑 (修复 2026-09: 名称格单击复制被 e38f54f 重构丢失).
 ///
 /// 注意: VirtualCardList/FormulaGroupHeader/FormulaCard 是全局命名空间类
 /// (与 VariableCard 一致), 仅 FormulaTabModel 在 cad::ui 命名空间内.
 
 #include <QtTest>
 #include <QApplication>
+#include <QClipboard>
 #include <QHash>
 #include <QVBoxLayout>
 #include <QUuid>
@@ -21,6 +24,9 @@
 #include <QPixmap>
 #include <QImage>
 #include <QColor>
+#include <QLineEdit>
+#include <QMouseEvent>
+#include <QTimer>
 #include <cmath>
 
 #include "ElaText.h"
@@ -29,7 +35,10 @@
 #include "ui/FormulaGroupHeader.h"
 #include "ui/FormulaCard.h"
 #include "ui/VariableCard.h"
+#include "ui/CompoundChip.h"
 #include "ui/LinkedCard.h"
+#include "ui/Theme.h"
+#include "TestHelpers.h"
 #include "ui/MeasureCard.h"
 #include "ui/AngleMeasureCard.h"
 #include "parametric/ParamDocument.h"
@@ -52,6 +61,7 @@ private slots:
     void collapseToggleHidesMemberRows();     ///< 折叠: 成员行消失/恢复
     void groupedCardIndents();                ///< 组内卡片右移缩进
     void cardOrdinalsAndAlternate();          ///< 序号 + 类型色竖线 (缓存复用配套)
+    void compoundChipClickCopyAndDblClickEdit(); ///< 复合标签: 单击复制 / 双击编辑
 };
 
 // ── ① VirtualCardList: 结构变化后存活行必须重绑定 ──
@@ -299,16 +309,16 @@ void TestFormulaGroups::cardOrdinalsAndAlternate()
     // setAlternate 仅保留 bind 契约, 不再改变竖线颜色 (幂等, 不抖动)。
     auto barColor = [](QWidget& card) {
         const QPixmap pm = card.grab();     // 触发 paintEvent 渲染
-        return pm.toImage().pixelColor(1, card.height() / 2);
+        return pm.toImage().pixelColor(3, card.height() / 2);
     };
     auto near = [](const QColor& a, const QColor& b) {
         return std::abs(a.red() - b.red()) <= 8
             && std::abs(a.green() - b.green()) <= 8
             && std::abs(a.blue() - b.blue()) <= 8;
     };
-    const QColor piece1(0x1E, 0x29, 0x3B);  // 变量 = 碳灰 (亮色 token)
-    const QColor piece2(0x0F, 0x76, 0x6E);  // 公式 = 深青
-    const QColor piece3(0xC8, 0x5A, 0x3E);  // 测量 = 陶土
+    const QColor piece1 = cad::ui::Theme::tokens().piece1;  // 变量 = 碳灰 (当前主题 token)
+    const QColor piece2 = cad::ui::Theme::tokens().piece2;  // 公式 = 深青
+    const QColor piece3 = cad::ui::Theme::tokens().piece3;  // 测量 = 陶土
 
     VariableCard va(v, false);
     va.resize(300, 72);
@@ -332,6 +342,55 @@ void TestFormulaGroups::cardOrdinalsAndAlternate()
     aa.resize(300, 72);
     aa.setAlternate(true);
     QVERIFY(near(barColor(aa), piece3));     // 角度测量: 陶土
+}
+
+// ── ⑥ CompoundChip 复合标签: 单击复制 / 双击编辑 ──
+// 回归 (2026-09, e38f54f 重构丢失): 名称格单击只 emit nameClicked 无人接收,
+// 剪贴板不再写入。修复: 单击非空名称 → 写剪贴板; 双击 → 行内编辑 (不冲突)。
+// 注意: 不推荐对 label 做 QCOMPARE 文本断言 —— ElaText 在无 Q_OBJECT 的
+// CompoundChipLabel (匿名 namespace) 下 QTest 宏可能触发 Qt 内部断言;
+// 剪贴板内容是交互契约, 用 clipboard 断言更稳。
+void TestFormulaGroups::compoundChipClickCopyAndDblClickEdit()
+{
+    cad::ui::CompoundChip chip;
+    chip.resize(220, 22);
+    chip.setName(QStringLiteral("胸围"));
+    chip.setRefName(QStringLiteral("B"));
+    chip.show();
+
+    // 名称格/代码格/编辑框: findChild by objectName (测试契约)
+    auto* nameLabel = chip.findChild<ElaText*>(QStringLiteral("compoundNameLabel"));
+    auto* refLabel = chip.findChild<ElaText*>(QStringLiteral("compoundRefLabel"));
+    auto* nameEdit = chip.findChild<QLineEdit*>(QStringLiteral("compoundNameEdit"));
+    QVERIFY(nameLabel);
+    QVERIFY(refLabel);
+    QVERIFY(nameEdit);
+
+    QApplication::clipboard()->clear();
+
+    // ① 单击名称格 → 剪贴板 = 名称 (e38f54f 回归: 此前只 emit 不复制)
+    QTest::mouseClick(nameLabel, Qt::LeftButton);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("胸围"));
+
+    // ② 单击代码格 → 剪贴板 = refName (既有契约不回归)
+    QTest::mouseClick(refLabel, Qt::LeftButton);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("B"));
+
+    // ③ 双击名称格 → 进入行内编辑 (输入框出现)
+    QTest::mouseDClick(nameLabel, Qt::LeftButton);
+    QVERIFY(nameEdit->isVisible());
+
+    // ④ 编辑提交 (向 QLineEdit 发送 Return 触发 editingFinished)
+    QTest::keyClick(nameEdit, Qt::Key_Return);
+    QVERIFY(!nameEdit->isVisible());           // 提交后覆盖层收起
+    QCOMPARE(chip.name(), QStringLiteral("胸围"));  // 未修改文本 -> 不变
+
+    // ⑤ 空名称单击 → 直接进编辑 (对偶代码格), 不复制
+    chip.setName(QString());
+    QApplication::clipboard()->clear();
+    QTest::mouseClick(nameLabel, Qt::LeftButton);
+    QVERIFY(nameEdit->isVisible());
+    QCOMPARE(QApplication::clipboard()->text(), QString());
 }
 
 QTEST_MAIN(TestFormulaGroups)

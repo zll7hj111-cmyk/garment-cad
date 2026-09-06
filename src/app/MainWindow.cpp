@@ -44,6 +44,8 @@
 #include "parametric/ParamPoint.h"
 #include "document/commands/VariableCommands.h"
 #include "document/commands/DocumentCommands.h"
+#include "document/commands/AttachmentCommands.h"
+#include "parametric/Serial.h"
 #include "ui/VariablePanel.h"
 #include "ui/ComponentTab.h"
 #include "ui/LayerPanel.h"
@@ -141,6 +143,8 @@ MainWindow::MainWindow(QWidget* parent)
     // 跨文档污染。
     m_undoStack = m_paramDoc->undoStack();
     m_canvasScene = new CanvasScene(m_paramDoc, this);
+    if (cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark)
+        m_canvasScene->setStyle(CanvasStyle::darkTheme());
     m_canvasView = new CanvasView(m_canvasScene, this);
     m_toolManager = new ToolManager(m_canvasScene, this);
     m_toolManager->setParamDocument(m_paramDoc);
@@ -170,15 +174,14 @@ MainWindow::MainWindow(QWidget* parent)
     setWindowIcon(cad::ui::IconHelper::appIcon());
     resize(1280, 800);
 
-    // 默认白色（亮色）主题；若用户在 main() 之后已切换为暗色则镜像到画布。
-    if (cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark)
-        m_canvasScene->setStyle(CanvasStyle::darkTheme());
+    const bool isDark = (cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark);
+    m_canvasScene->setStyle(isDark ? CanvasStyle::darkTheme()
+                                   : CanvasStyle::lightTheme());
 
     // Mirror the app theme into ElaWidgetTools so Ela widgets (menu bar,
     // dock title bar) follow the 视图 → 暗色主题 toggle.
     ElaTheme::getInstance()->setThemeMode(
-        cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark
-            ? ElaThemeType::Dark : ElaThemeType::Light);
+        isDark ? ElaThemeType::Dark : ElaThemeType::Light);
 
     // Load recent files from settings.
     QSettings settings;
@@ -342,6 +345,8 @@ void MainWindow::setupMenuBar()
     m_actionToggleTheme->setChecked(
         cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark);
     m_actionToggleTheme->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    m_actionToggleTheme->setShortcutContext(Qt::ApplicationShortcut);
+    this->addAction(m_actionToggleTheme);
     connect(m_actionToggleTheme, &QAction::toggled,
             this, &MainWindow::toggleTheme);
     viewMenu->addAction(m_actionToggleTheme);
@@ -384,17 +389,17 @@ void MainWindow::setupToolBar()
     dockLay->setContentsMargins(10, 5, 10, 5);
     dockLay->setSpacing(0);
 
-    auto* pill = new ElaScrollPageArea(m_toolDock);
-    pill->setObjectName(QStringLiteral("toolPill"));
-    pill->setFixedHeight(46);
-    pill->setStyleSheet(QStringLiteral(
+    m_toolPill = new ElaScrollPageArea(m_toolDock);
+    m_toolPill->setObjectName(QStringLiteral("toolPill"));
+    m_toolPill->setFixedHeight(46);
+    m_toolPill->setStyleSheet(QStringLiteral(
         "QFrame#toolPill {"
         "  background: %1;"
         "  border: 1px solid %2;"
         "  border-radius: 2px;"
         "}"
     ).arg(cad::ui::Theme::tokens().surface.name(), cad::ui::Theme::tokens().borderStrong.name()));
-    auto* pillLay = new QHBoxLayout(pill);
+    auto* pillLay = new QHBoxLayout(m_toolPill);
     pillLay->setContentsMargins(4, 4, 4, 4);
     pillLay->setSpacing(2);
 
@@ -402,7 +407,7 @@ void MainWindow::setupToolBar()
     // N1: 图标改键控查表 (见 toolDockIcon), 不再按枚举序下标 —— 新增工具
     // 漏配图标 = 兜底 + 警告, 不会越界读。
     for (ToolType type : m_toolOrder) {
-        auto* btn = new ElaToolButton(pill);
+        auto* btn = new ElaToolButton(m_toolPill);
         btn->setDefaultAction(m_toolActions.value(type));
         btn->setElaIcon(toolDockIcon(type));
         btn->setIsTransparent(true);
@@ -416,14 +421,14 @@ void MainWindow::setupToolBar()
 
     // ── 图层指示芯片: 色点 + 当前活动图层名, 点击弹出切换菜单 ──
     // 画布上不标图层会让用户画错层, 这里把"当前往哪个层画"常驻工具栏.
-    m_layerChipSeparator = new QFrame(pill);
+    m_layerChipSeparator = new QFrame(m_toolPill);
     m_layerChipSeparator->setFrameShape(QFrame::VLine);
     m_layerChipSeparator->setFixedWidth(1);
     pillLay->addSpacing(6);
     pillLay->addWidget(m_layerChipSeparator);
     pillLay->addSpacing(2);
 
-    m_layerChip = new ElaToolButton(pill);
+    m_layerChip = new ElaToolButton(m_toolPill);
     m_layerChip->setIsTransparent(true);
     m_layerChip->setCursor(Qt::PointingHandCursor);
     m_layerChip->setPopupMode(QToolButton::InstantPopup);
@@ -431,7 +436,7 @@ void MainWindow::setupToolBar()
     pillLay->addWidget(m_layerChip);
 
     dockLay->addStretch(1);
-    dockLay->addWidget(pill, 0, Qt::AlignHCenter);
+    dockLay->addWidget(m_toolPill, 0, Qt::AlignHCenter);
     dockLay->addStretch(1);
 
     refreshLayerChip();
@@ -517,10 +522,18 @@ void MainWindow::refreshToolIcons()
 void MainWindow::toggleTheme(bool dark)
 {
     const auto mode = dark ? cad::ui::ThemeMode::Dark : cad::ui::ThemeMode::Light;
-    cad::ui::Theme::apply(mode);
+    if (cad::ui::Theme::mode() != mode) {
+        cad::ui::Theme::apply(mode);
+    }
     // Ela widgets (Fluent menu bar / dock title bar) follow the same toggle.
-    ElaTheme::getInstance()->setThemeMode(
-        dark ? ElaThemeType::Dark : ElaThemeType::Light);
+    if (ElaTheme::getInstance()->getThemeMode() != (dark ? ElaThemeType::Dark : ElaThemeType::Light)) {
+        ElaTheme::getInstance()->setThemeMode(
+            dark ? ElaThemeType::Dark : ElaThemeType::Light);
+    }
+    if (m_actionToggleTheme && m_actionToggleTheme->isChecked() != dark) {
+        const QSignalBlocker blocker(m_actionToggleTheme);
+        m_actionToggleTheme->setChecked(dark);
+    }
     // Canvas tokens follow the chrome theme immediately.
     m_canvasScene->setStyle(dark ? CanvasStyle::darkTheme()
                                  : CanvasStyle::lightTheme());
@@ -531,11 +544,32 @@ void MainWindow::toggleTheme(bool dark)
         m_layerPanel->applyTheme();
     if (m_componentTab)
         m_componentTab->applyTheme();
+
+    const auto& tk = cad::ui::Theme::tokens();
+    if (m_toolPill) {
+        m_toolPill->setStyleSheet(QStringLiteral(
+            "QFrame#toolPill {"
+            "  background: %1;"
+            "  border: 1px solid %2;"
+            "  border-radius: 2px;"
+            "}"
+        ).arg(tk.surface.name(), tk.borderStrong.name()));
+    }
+    if (m_editBand) {
+        m_editBand->setStyleSheet(QStringLiteral(
+            "#stripBand { background: %1; border: 1px solid %2; border-radius: 4px; }")
+            .arg(tk.surface.name(), tk.border.name()));
+    }
+    if (m_contextStrip)
+        m_contextStrip->applyTheme();
+
     refreshToolIcons();
     refreshLayerChip();
     refreshStatusBarChrome();
     refreshPanelChrome();
     syncPanelTabs();  // 激活指示圆点颜色跟随主题
+
+    QSettings().setValue(QStringLiteral("view/darkMode"), dark);
 }
 
 void MainWindow::setupStatusBar()
@@ -629,6 +663,13 @@ void MainWindow::refreshStatusBarChrome()
 
 void MainWindow::connectSignals()
 {
+    connect(ElaTheme::getInstance(), &ElaTheme::themeModeChanged, this, [this](ElaThemeType::ThemeMode mode) {
+        const bool isDark = (mode == ElaThemeType::Dark);
+        if ((cad::ui::Theme::mode() == cad::ui::ThemeMode::Dark) != isDark) {
+            toggleTheme(isDark);
+        }
+    });
+
     connect(m_canvasView, &CanvasView::mouseScenePosChanged,
             this, &MainWindow::onSceneMouseMoved);
     connect(m_canvasView, &CanvasView::zoomFactorChanged,
@@ -742,6 +783,84 @@ void MainWindow::onSegmentContextMenu(const cad::canvas::SegmentHit& hit)
 
     ElaMenu menu(this);
 
+    // --- 拆开连接操作项 (全层穿透扫描) ---
+    const auto userPos = cad::geo::Coord::toUser(hit.scenePos);
+    const double zoom = m_canvasView ? m_canvasView->zoomFactor() : 1.0;
+    const double tol = 16.0 / (zoom > 1e-4 ? zoom : 1.0);
+
+    QSet<QUuid> nearBlockIds;
+    nearBlockIds.insert(hit.blockId);
+    for (const auto& b : m_paramDoc->blocks()) {
+        for (const auto& s : b.segments) {
+            const auto* sp = b.findPoint(s.startPointId);
+            const auto* ep = b.findPoint(s.endPointId);
+            if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
+            const auto w1 = b.transform.toWorld(sp->resolvedPos);
+            const auto w2 = b.transform.toWorld(ep->resolvedPos);
+            if (cad::geo::Vec2::distanceToSegment(userPos, w1, w2) <= tol) {
+                nearBlockIds.insert(b.id);
+                break;
+            }
+        }
+    }
+
+    struct DetachOption {
+        QUuid attId;
+        bool isAuxMount;
+        QString label;
+    };
+    QList<DetachOption> detachOptions;
+    QSet<QUuid> seenAtts;
+
+    for (const auto& att : m_paramDoc->attachments()) {
+        if (att.isPin || att.angleOnly) continue;
+        if (!nearBlockIds.contains(att.fromBlockId) && !nearBlockIds.contains(att.toBlockId))
+            continue;
+        if (seenAtts.contains(att.id)) continue;
+
+        const auto* fromBlk = m_paramDoc->findBlock(att.fromBlockId);
+        const auto* toBlk = m_paramDoc->findBlock(att.toBlockId);
+        if (!fromBlk || !toBlk) continue;
+
+        const auto* toPt = toBlk->findPoint(att.toPointId);
+        const bool isAux = (toPt && toPt->isAuxiliary);
+
+        QString fromName = fromBlk->name;
+        const QUuid fromSegId = fromBlk->exitSegmentAtPoint(att.fromPointId);
+        if (const auto* fs = fromBlk->findSegment(fromSegId)) {
+            fromName = cad::param::Serial::tag(fs->serial);
+            if (!fs->name.isEmpty()) fromName += QStringLiteral("·") + fs->name;
+        }
+
+        QString toName = toBlk->name;
+        if (isAux && toPt) {
+            toName = cad::param::Serial::tag(toPt->serial);
+            if (!toPt->name.isEmpty()) toName += QStringLiteral("·") + toPt->name;
+        } else if (const auto* ts = toBlk->findSegment(att.toSegmentId)) {
+            toName = cad::param::Serial::tag(ts->serial);
+            if (!ts->name.isEmpty()) toName += QStringLiteral("·") + ts->name;
+        }
+
+        QString menuText;
+        if (isAux) {
+            menuText = QStringLiteral("⚡ 拆开挂载连接: %1 (挂于 %2)").arg(fromName, toName);
+        } else {
+            menuText = QStringLiteral("⚡ 拆开连接: %1 ↔ %2").arg(fromName, toName);
+        }
+
+        seenAtts.insert(att.id);
+        detachOptions.append({att.id, isAux, menuText});
+    }
+
+    QMap<QAction*, DetachOption> detachActionMap;
+    for (const auto& opt : detachOptions) {
+        QAction* act = menu.addAction(opt.label);
+        detachActionMap.insert(act, opt);
+    }
+    if (!detachOptions.isEmpty()) {
+        menu.addSeparator();
+    }
+
     // Check if already published.
     const bool alreadyPublished =
         m_paramDoc->findLinkedBySource(hit.blockId, hit.segmentId) != nullptr;
@@ -769,6 +888,21 @@ void MainWindow::onSegmentContextMenu(const cad::canvas::SegmentHit& hit)
 
     QAction* chosen = menu.exec(hit.globalPos);
     if (!chosen) return;
+
+    if (detachActionMap.contains(chosen)) {
+        const auto& opt = detachActionMap[chosen];
+        if (opt.isAuxMount) {
+            m_paramDoc->undoStack()->push(
+                new cad::cmd::RemoveAttachmentCommand(m_paramDoc, opt.attId));
+            m_canvasScene->showToast(QStringLiteral("已彻底释放挂载连接"));
+        } else {
+            m_paramDoc->undoStack()->push(
+                new cad::cmd::SetAttachmentAngleOnlyCommand(m_paramDoc, opt.attId, true));
+            m_canvasScene->showToast(QStringLiteral("已拆开连接（保留角度）"));
+        }
+        m_canvasScene->refreshAllBlockItems();
+        return;
+    }
 
     if (chosen == publishAction && !alreadyPublished) {
         // Publish the segment length as a linked variable (shared factory).
@@ -1054,6 +1188,7 @@ void MainWindow::setupPages()
     // 形态已否决移除)。悬浮位置经 QSettings 记忆, 初始隐藏, 点击主窗口
     // 顶部 变量/图层 标签显示并切到对应大标签页。
     m_panelWindow = new QWidget(this, Qt::Tool);
+    m_panelWindow->setAttribute(Qt::WA_StyledBackground, true);
     m_panelWindow->setObjectName(QStringLiteral("panelFloatingWindow"));
     m_panelWindow->setWindowTitle(QString::fromUtf8("面板"));
     m_panelWindow->setMinimumSize(300, 360);
@@ -1065,6 +1200,7 @@ void MainWindow::setupPages()
 
     // 头行 = 分类大标签 (变量/图层/组件) + 隐藏 ✕。
     m_panelHeader = new QWidget(m_panelWindow);
+    m_panelHeader->setAttribute(Qt::WA_StyledBackground, true);
     auto* headerLay = new QHBoxLayout(m_panelHeader);
     headerLay->setContentsMargins(0, 0, 0, 0);
     headerLay->setSpacing(2);
@@ -1105,10 +1241,10 @@ void MainWindow::setupPages()
         m_panelWindow->hide();  // Hide 事件经 eventFilter 同步主标签
     });
     headerLay->addWidget(m_hidePanelBtn);
-    refreshPanelChrome();
     winLay->addWidget(m_panelHeader);
 
     m_panelStack = new QStackedWidget(m_panelWindow);
+    m_panelStack->setAttribute(Qt::WA_StyledBackground, true);
     m_variablePanel = new cad::ui::VariablePanel(m_paramDoc, m_panelStack);
     m_variablePanel->setUndoStack(m_undoStack);
     m_panelStack->addWidget(m_variablePanel);
@@ -1122,6 +1258,7 @@ void MainWindow::setupPages()
     m_panelStack->addWidget(m_componentTab);
 
     winLay->addWidget(m_panelStack, 1);
+    refreshPanelChrome();
 
     // 悬浮窗内切换大标签 → 切换面板内容页; 主窗口对应按钮跟随高亮。
     connect(m_panelBigBar, &QTabBar::currentChanged, this, [this](int category) {
@@ -1170,6 +1307,9 @@ void MainWindow::setupPages()
     m_editBand = new QWidget(this);
     m_editBand->setObjectName(QStringLiteral("stripBand"));
     m_editBand->setAttribute(Qt::WA_StyledBackground, true);  // QSS 底色/描边生效
+    m_editBand->setStyleSheet(QStringLiteral(
+        "#stripBand { background: %1; border: 1px solid %2; border-radius: 4px; }")
+        .arg(tk.surface.name(), tk.border.name()));
     auto* bandLay = new QHBoxLayout(m_editBand);
     bandLay->setContentsMargins(6, 4, 10, 4);
     bandLay->setSpacing(8);
@@ -1291,7 +1431,8 @@ void MainWindow::setupPages()
         const auto* am = m_paramDoc->findAngleMeasure(angleMeasureId);
         if (!am) return;
         if (!m_canvasScene->flashAngleMeasure(am->blockA, am->segmentA,
-                                              am->blockB, am->segmentB)) {
+                                              am->blockB, am->segmentB,
+                                              am->flipA, am->flipB)) {
             auto* bi = m_canvasScene->findBlockItem(am->blockA);
             if (!bi) return;
             bi->setToolLocked(true);
@@ -1374,9 +1515,31 @@ bool MainWindow::panelVisible() const
 
 void MainWindow::refreshPanelChrome()
 {
+    const auto& tk = cad::ui::Theme::tokens();
+    if (m_toolPill) {
+        m_toolPill->setStyleSheet(QStringLiteral(
+            "QFrame#toolPill {"
+            "  background: %1;"
+            "  border: 1px solid %2;"
+            "  border-radius: 2px;"
+            "}"
+        ).arg(tk.surface.name(), tk.borderStrong.name()));
+    }
+    if (m_panelWindow) {
+        m_panelWindow->setStyleSheet(QStringLiteral(
+            "QWidget#panelFloatingWindow { background: %1; border: 1px solid %2; border-radius: 4px; }"
+        ).arg(tk.surface.name(), tk.border.name()));
+    }
+    if (m_panelHeader) {
+        m_panelHeader->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
+    }
+    if (m_panelStack) {
+        m_panelStack->setStyleSheet(QStringLiteral(
+            "QStackedWidget { background: %1; border: none; }"
+        ).arg(tk.surface.name()));
+    }
     if (!m_hidePanelBtn)
         return;
-    const auto& tk = cad::ui::Theme::tokens();
     // 幽灵小按钮 QSS 随主题重建 (透明底, hover 出 surface2 底 + 描边)。
     const QString ghostBtnQss = QStringLiteral(
         "QToolButton { background: transparent; border: 1px solid transparent;"

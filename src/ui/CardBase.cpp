@@ -357,17 +357,23 @@ void CardBase::paintEvent(QPaintEvent*)
     QStyleOption opt;
     opt.initFrom(this);
     QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 
     const auto& tk = cad::ui::Theme::tokens();
 
-    // 1px technical border; hover 转描边 (§6.2: 默认 border / 悬停 borderStrong)
+    // 4px 功能圆角卡片 (RadiusLg); 常态填充 surface 纸白, 悬停平滑微调为 surface2 暖砂底
+    const QRectF cardRect(0.5, 0.5, width() - 1.0, height() - 1.0);
+    p.setPen(Qt::NoPen);
+    p.setBrush(m_hovered ? tk.surface2 : tk.surface);
+    p.drawRoundedRect(cardRect, cad::ui::ThemeTokens::RadiusLg, cad::ui::ThemeTokens::RadiusLg);
+
+    // 1px 发丝边框; 默认 border / 悬停转 borderStrong
     p.setPen(QPen(m_hovered ? tk.borderStrong : tk.border, 1));
     p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0));
+    p.drawRoundedRect(cardRect, cad::ui::ThemeTokens::RadiusLg, cad::ui::ThemeTokens::RadiusLg);
 
-    // Left accent bar — 类型色竖线 (方案 A): 变量=piece1 / 公式=piece2 /
-    // 测量=piece3 / 关联=piece4。token 每帧现读, 主题切换免重绑。
+    // Left accent bar — 类型色竖线: 变量=piece1 / 公式=piece2 / 测量=piece3 / 关联=piece4
     QColor bar;
     switch (m_accentRole) {
     case cad::ui::CardAccent::Variable: bar = tk.piece1; break;
@@ -377,8 +383,8 @@ void CardBase::paintEvent(QPaintEvent*)
     }
     p.setPen(Qt::NoPen);
     p.setBrush(bar);
-    const int barX = accentBarX();
-    p.drawRoundedRect(barX, 2, 3, height() - 4, 1.0, 1.0);
+    const int barX = accentBarX() + 2;
+    p.drawRoundedRect(QRectF(barX, 3, 3, height() - 6), 1.5, 1.5);
 }
 
 void CardBase::enterEvent(QEnterEvent*)

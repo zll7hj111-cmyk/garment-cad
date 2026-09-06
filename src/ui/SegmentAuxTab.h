@@ -62,6 +62,7 @@ public slots:
     void onAdd();
     void onRemove();
     void onLiveUpdate();
+    void onDetachMountClicked();
 
 private:
     /// Snapshot for aux points (revert support).

@@ -10,10 +10,10 @@
 
 namespace {
 
-/// 统一 Endfield 2.0 纸黄色工程图纸面规范
-constexpr QColor kPillBg(255, 250, 209, 245);
-constexpr QColor kPillBorder(216, 204, 128, 220);
-constexpr QColor kPillFg(26, 32, 44);
+/// 统一 Anthropic 温润象牙图纸面规范 (#FAF9F5 / #D5D0C5 / #141413)
+constexpr QColor kPillBg(250, 249, 245, 245);
+constexpr QColor kPillBorder(213, 208, 197, 220);
+constexpr QColor kPillFg(20, 20, 19);
 
 QFont hudFont()
 {
@@ -88,28 +88,35 @@ void HudItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*
 
     // 1. 微柔暖阴影 (向下 1px，微弱透明暖阴影)
     painter->setPen(Qt::NoPen);
-    painter->setBrush(QColor(60, 50, 20, 28));
+    painter->setBrush(QColor(20, 20, 19, 20));
     painter->drawRoundedRect(m_rect.adjusted(-0.5, 1.0, 0.5, 2.0), 4.0, 4.0);
 
-    // 2. 底色与边框：优先从场景取主题（或默认纸黄色）
+    // 2. 底色与边框：优先从场景取主题
     QColor bg = kPillBg;
     QColor fg = kPillFg;
     QColor border = kPillBorder;
 
-    if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        if (cs->style()) {
-            bg = cs->style()->hudBackground;
-            fg = cs->style()->hudText;
-            border = cs->style()->dark
-                ? QColor(107, 94, 56, 220)
-                : QColor(216, 204, 128, 220);
-        }
+    auto* cs = qobject_cast<CanvasScene*>(scene());
+    const bool isDark = cs && cs->style() && cs->style()->dark;
+
+    if (cs && cs->style()) {
+        bg = cs->style()->hudBackground;
+        fg = cs->style()->hudText;
+        border = isDark
+            ? QColor(77, 73, 67, 220)
+            : QColor(213, 208, 197, 220);
     }
 
     if (m_look == Look::DarkPill) {
-        bg = kPillBg;
-        fg = kPillFg;
-        border = kPillBorder;
+        if (isDark) {
+            bg = QColor(31, 30, 29, 245);
+            fg = QColor(236, 233, 226);
+            border = QColor(77, 73, 67, 220);
+        } else {
+            bg = kPillBg;
+            fg = kPillFg;
+            border = kPillBorder;
+        }
     }
 
     // 3. 绘制反转技术墨面圆角矩形 (3.5px 功能微圆角)

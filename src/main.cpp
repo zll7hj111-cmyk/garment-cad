@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QSettings>
 #include <QTranslator>
 #include <QLibraryInfo>
 #include "ElaApplication.h"
@@ -23,8 +24,9 @@ int main(int argc, char* argv[])
 
     // Global design system: Fusion base style + token-driven palette, with
     // the ElaTheme mode switched in lockstep (Theme::apply drives both).
-    // 用户拍板：默认使用白色（亮色）模式；暗色经 视图 → 暗色主题 (Ctrl+D) 切换。
-    cad::ui::Theme::apply(cad::ui::ThemeMode::Light);
+    // 用户偏好跨会话持久化 (QSettings view/darkMode); 默认使用暗色 (黑色) 模式.
+    const bool dark = QSettings().value(QStringLiteral("view/darkMode"), true).toBool();
+    cad::ui::Theme::apply(dark ? cad::ui::ThemeMode::Dark : cad::ui::ThemeMode::Light);
 
     MainWindow window;
     window.show();

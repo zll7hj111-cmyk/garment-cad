@@ -103,17 +103,65 @@ void VariablePanel::applyTheme()
     // them. findChildren by objectName also covers the MeasureTab instances
     // (they reuse the same names), so one pass restyles every list page.
     // 列表底色 = 画布纸色 (canvasBg), 与画布背景呼应 (2026-08 用户要求).
+    const auto& tk = cad::ui::Theme::tokens();
+    setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
+    if (m_header)
+        m_header->setStyleSheet(QStringLiteral("background: %1;").arg(tk.surface.name()));
+    if (m_stack)
+        m_stack->setStyleSheet(QStringLiteral("QStackedWidget { background: %1; border: none; }").arg(tk.surface.name()));
+
     const QString scrollQss = QStringLiteral(
         "QScrollArea { background: %1; border: none; }")
-        .arg(cad::ui::Theme::tokens().canvasBg.name());
+        .arg(tk.canvasBg.name());
     const QString containerQss = QStringLiteral("background: %1;")
-        .arg(cad::ui::Theme::tokens().canvasBg.name());
+        .arg(tk.canvasBg.name());
     for (ElaScrollArea* sa : findChildren<ElaScrollArea*>(QStringLiteral("cardListArea")))
         sa->setStyleSheet(scrollQss);
     for (QWidget* c : findChildren<QWidget*>(QStringLiteral("cardListContainer")))
         c->setStyleSheet(containerQss);
+
+    // Refresh sub-tab bar profiles
+    if (m_tabBar) {
+        m_tabBar->setTabProfile(0, tk.piece1, false);
+        m_tabBar->setTabProfile(1, tk.piece2, false);
+        m_tabBar->setTabProfile(2, tk.piece4, true);
+        m_tabBar->setTabProfile(3, tk.piece3, true);
+        m_tabBar->update();
+    }
+
+    if (m_addGroupBtn) {
+        m_addGroupBtn->setIcon(cad::ui::IconHelper::iconByName(
+            QStringLiteral("tree-structure"), tk.text1));
+    }
+
+    const QString titleQss = QStringLiteral(
+        "font-size: %1px; font-weight: 600; color: %2; background: transparent;")
+        .arg(QString::number(cad::ui::ThemeTokens::FontXl), tk.text1.name());
+    const QString guideQss = QStringLiteral(
+        "font-size: 11px; color: %1; background: transparent;")
+        .arg(tk.text2.name());
+    const QString ghostQss = QStringLiteral(
+        "QPushButton { background: transparent; border: 1px dashed %1;"
+        "  border-radius: 4px; padding: 0 14px; font-size: 11px; font-weight: 500; color: %2; }"
+        "QPushButton:hover { background: %3; border: 1px solid %2; color: %2; }")
+        .arg(tk.borderStrong.name(), tk.accent.name(), tk.accentTint.name());
+
+    for (auto* t : findChildren<ElaText*>(QStringLiteral("emptyTitle")))
+        t->setStyleSheet(titleQss);
+    for (auto* g : findChildren<ElaText*>(QStringLiteral("emptyGuide")))
+        g->setStyleSheet(guideQss);
+    for (auto* b : findChildren<QPushButton*>(QStringLiteral("emptyGhost")))
+        b->setStyleSheet(ghostQss);
+
+    if (m_varHost)
+        m_varHost->rebuildAll();
+    if (m_formulaHost)
+        m_formulaHost->rebuildAll();
+    if (m_linkedHost)
+        m_linkedHost->rebuildAll();
     if (m_measureTab)
-        m_measureTab->sync();
+        m_measureTab->applyTheme();
+
     update();  // 类型色竖线/悬停描边由 paintEvent 现读 token, 触发重绘即可
 }
 
@@ -126,6 +174,7 @@ void VariablePanel::setUndoStack(QUndoStack* stack)
 
 void VariablePanel::setupUi()
 {
+    setAttribute(Qt::WA_StyledBackground, true);
     auto* wrapperLayout = new QVBoxLayout(this);
     wrapperLayout->setContentsMargins(0, 0, 0, 0);
     wrapperLayout->setSpacing(0);
@@ -137,6 +186,8 @@ void VariablePanel::setupUi()
     //           标签页在 300~380px 宽的侧边栏窗口里看不到）。
     //   行 2 = 计数 pill + 新建分组 + 添加 按钮。
     auto* header = new QWidget(this);
+    m_header = header;
+    m_header->setAttribute(Qt::WA_StyledBackground, true);
     auto* headerLayout = new QVBoxLayout(header);
     headerLayout->setContentsMargins(8, 6, 10, 4);
     headerLayout->setSpacing(4);
@@ -223,16 +274,16 @@ void VariablePanel::setupUi()
 
     m_stack->addWidget(buildListPage(
         m_varScroll, m_varContainer, m_varHost, m_varEmptyHint,
-        QStringLiteral("暂无变量"),
-        QStringLiteral("点击下方按钮或右上角「＋ 添加」创建"),
-        QStringLiteral("＋ 新建变量"),
+        QStringLiteral("从第一项规格开始"),
+        QStringLiteral("录入人体胸围、腰围等基础围度，作为全衣片参数化推导的基准。\n点击下方按钮或右上角「＋ 添加」快速创建"),
+        QStringLiteral("＋ 新建规格变量"),
         [this]() { onAddClicked(); }));
 
     m_stack->addWidget(buildListPage(
         m_formulaScroll, m_formulaContainer, m_formulaHost, m_formulaEmptyHint,
-        QStringLiteral("暂无公式变量"),
-        QStringLiteral("表达式示例: 胸围/2+6 或 b/2+6"),
-        QStringLiteral("＋ 新建公式"),
+        QStringLiteral("建立推导公式"),
+        QStringLiteral("支持四则运算与几何函数，例如：胸围/2 + 6 或 b/2 + 6。\n点击下方按钮新建第一条推导公式"),
+        QStringLiteral("＋ 新建公式变量"),
         [this]() { onAddClicked(); }));
 
     // Formula page: accept card/header drops for reordering & grouping.
@@ -245,8 +296,8 @@ void VariablePanel::setupUi()
 
     m_stack->addWidget(buildListPage(
         m_linkedScroll, m_linkedContainer, m_linkedHost, m_linkedEmptyHint,
-        QStringLiteral("暂无关联参数"),
-        QStringLiteral("右键点击线段 →「发布长度参数」\n或在属性对话框中点击「发布」"),
+        QStringLiteral("关联画布线段"),
+        QStringLiteral("将画布线段的实际长度发布为动态参数。\n右键点击画布线段 →「发布长度参数」，或在属性对话框中发布"),
         QString(), {}));
 
     // Tab 3: measure variables (length + angle cards, extracted).
@@ -293,6 +344,7 @@ void VariablePanel::setupUi()
     connect(m_addGroupBtn, &QToolButton::clicked,
             this, &VariablePanel::onAddGroupClicked);
 
+    applyTheme();
     updateCountLabel();
 }
 
@@ -323,33 +375,36 @@ QWidget* VariablePanel::buildListPage(ElaScrollArea*& scrollOut, QWidget*& conta
     // ===== 空状态 (§5.4): 18px Semibold 主文案 + 13px 引导语 + 幽灵「＋新建」 =====
     auto* emptyBox = new QWidget(containerOut);
     auto* emptyLay = new QVBoxLayout(emptyBox);
-    emptyLay->setContentsMargins(0, 28, 0, 28);
-    emptyLay->setSpacing(6);
+    emptyLay->setContentsMargins(0, 36, 0, 36);
+    emptyLay->setSpacing(8);
     const auto& tk = cad::ui::Theme::tokens();
 
     auto* title = new ElaText(emptyTitle, cad::ui::ThemeTokens::FontXl, emptyBox);
+    title->setObjectName(QStringLiteral("emptyTitle"));
     title->setAlignment(Qt::AlignCenter);
     title->setStyleSheet(QStringLiteral(
         "font-size: %1px; font-weight: 600; color: %2; background: transparent;")
         .arg(QString::number(cad::ui::ThemeTokens::FontXl), tk.text1.name()));
     emptyLay->addWidget(title);
 
-    auto* guide = new ElaText(emptyGuide, 13, emptyBox);
+    auto* guide = new ElaText(emptyGuide, 11, emptyBox);
+    guide->setObjectName(QStringLiteral("emptyGuide"));
     guide->setAlignment(Qt::AlignCenter);
-    guide->setObjectName(QStringLiteral("dimText"));
+    guide->setStyleSheet(QStringLiteral(
+        "font-size: 11px; color: %1; background: transparent;")
+        .arg(tk.text2.name()));
     emptyLay->addWidget(guide);
 
     if (!ghostAddText.isEmpty()) {
-        // 幽灵按钮 (§5.1 Ghost): 透明底, hover 出 surface2 底 + 描边。
         auto* ghost = new QPushButton(ghostAddText, emptyBox);
+        ghost->setObjectName(QStringLiteral("emptyGhost"));
         ghost->setCursor(Qt::PointingHandCursor);
-        ghost->setFixedHeight(26);
+        ghost->setFixedHeight(28);
         ghost->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: 1px solid transparent;"
-            "  border-radius: 2px; padding: 0 12px; font-size: 12px; color: %1; }"
-            "QPushButton:hover { background: %2; border: 1px solid %3; color: %4; }")
-            .arg(tk.text2.name(), tk.surface.name(),
-                 tk.borderStrong.name(), tk.text1.name()));
+            "QPushButton { background: transparent; border: 1px dashed %1;"
+            "  border-radius: 4px; padding: 0 14px; font-size: 11px; font-weight: 500; color: %2; }"
+            "QPushButton:hover { background: %3; border: 1px solid %2; color: %2; }")
+            .arg(tk.borderStrong.name(), tk.accent.name(), tk.accentTint.name()));
         connect(ghost, &QPushButton::clicked, emptyBox, onGhostAdd);
         emptyLay->addWidget(ghost, 0, Qt::AlignHCenter);
     }
@@ -674,7 +729,8 @@ void VariablePanel::onConditionsEditRequested(const QUuid& id)
     const auto* f = m_doc->variablesView().formulaById(id);
     if (!f) return;
 
-    // Known variables (cm) under both display name and reference name.
+    // Known variables (cm) under both display name and reference name,
+    // including measurements (angles in degrees, lengths in cm).
     QHash<QString, double> known;
     for (const auto& v : m_doc->variables()) {
         const double cm = cad::geo::Units::mmToCm(v.value);
@@ -682,6 +738,29 @@ void VariablePanel::onConditionsEditRequested(const QUuid& id)
             known.insert(v.name, cm);
         if (!v.refName.isEmpty())
             known.insert(v.refName, cm);
+    }
+    for (const auto& lv : m_doc->linkedVars()) {
+        if (!lv.dangling && !lv.refName.isEmpty()) {
+            const double cm = cad::geo::Units::mmToCm(lv.value);
+            known.insert(lv.refName, cm);
+            if (!lv.name.isEmpty())
+                known.insert(lv.name, cm);
+        }
+    }
+    for (const auto& mv : m_doc->measureVars()) {
+        if (!mv.refName.isEmpty()) {
+            const double cm = cad::geo::Units::mmToCm(mv.value);
+            known.insert(mv.refName, cm);
+            if (!mv.name.isEmpty())
+                known.insert(mv.name, cm);
+        }
+    }
+    for (const auto& am : m_doc->angleMeasures()) {
+        if (!am.dangling && !am.refName.isEmpty()) {
+            known.insert(am.refName, am.value);
+            if (!am.name.isEmpty())
+                known.insert(am.name, am.value);
+        }
     }
 
     ConditionDialog dlg(f->name, f->expression, f->conditions, known, this);

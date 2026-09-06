@@ -117,7 +117,8 @@ public:
     /// the line intersection. The transient graphics self-destruct after
     /// ~1.5 s. Returns false when either segment is missing/unresolved.
     bool flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
-                           const QUuid& blockB, const QUuid& segmentB);
+                           const QUuid& blockB, const QUuid& segmentB,
+                           bool flipA = false, bool flipB = false);
     /// Notify listeners (MainWindow) that a segment was just created by the
     /// smart pen. The host shows the status-bar edit strip (SegmentEditBar)
     /// for immediate naming/length/angle edits — no creation dialog.

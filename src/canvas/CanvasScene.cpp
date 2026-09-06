@@ -287,8 +287,16 @@ void CanvasScene::setStyle(const CanvasStyle& s)
     // each view (only the view paints it), so sync every attached view here —
     // the single authoritative theme-switch path (constructor + toggleTheme).
     // QGraphicsView base is enough: no CanvasView-specific API is needed.
-    for (QGraphicsView* v : views())
+    for (QGraphicsView* v : views()) {
         v->setBackgroundBrush(m_style.canvasBackground);
+        v->setStyleSheet(QStringLiteral("QGraphicsView { background: %1; border: none; }")
+                             .arg(m_style.canvasBackground.name()));
+        if (v->viewport()) {
+            v->viewport()->setStyleSheet(QStringLiteral("background: %1; border: none;")
+                                             .arg(m_style.canvasBackground.name()));
+            v->viewport()->update();
+        }
+    }
 }
 
 void CanvasScene::showToast(const QString& text)
@@ -459,7 +467,8 @@ bool CanvasScene::flashMeasure(const QUuid& blockA, const QUuid& pointA,
 }
 
 bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
-                                    const QUuid& blockB, const QUuid& segmentB)
+                                    const QUuid& blockB, const QUuid& segmentB,
+                                    bool flipA, bool flipB)
 {
     if (!m_paramDoc) return false;
 
@@ -527,40 +536,15 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
         overlay.append(seg);
     }
 
-    // Half arc. Use the rays from the intersection towards the segments'
-    // actual endpoint bodies (not the raw start->end direction). When the
-    // vertex lies inside a segment, pick the pair that forms the smaller
-    // (acute) angle, which is the natural dimension visual.
-    const QPointF aOpts[2] = { a0s, a1s };
-    const QPointF bOpts[2] = { b0s, b1s };
-    constexpr double kZeroEps = 0.5;
-    bool haveRays = false;
-    double bestAbs = M_PI;
+    // Half arc. Follow the recorded ray directions (flipA/flipB) from the pivot.
     double dirA = 0.0;
     double dirB = 0.0;
-    for (int i = 0; i < 2; ++i) {
-        if ((aOpts[i] - pivot).manhattanLength() < kZeroEps) continue;
-        for (int j = 0; j < 2; ++j) {
-            if ((bOpts[j] - pivot).manhattanLength() < kZeroEps) continue;
-            const double da = std::atan2(aOpts[i].y() - pivot.y(),
-                                         aOpts[i].x() - pivot.x());
-            const double db = std::atan2(bOpts[j].y() - pivot.y(),
-                                         bOpts[j].x() - pivot.x());
-            double span = db - da;
-            while (span >  M_PI) span -= 2.0 * M_PI;
-            while (span < -M_PI) span += 2.0 * M_PI;
-            if (!haveRays || std::abs(span) < bestAbs) {
-                haveRays = true;
-                bestAbs = std::abs(span);
-                dirA = da;
-                dirB = db;
-            }
-        }
-    }
-    if (!haveRays) {
-        // Degenerate fallback: anchor at the middle of segment A.
-        dirA = 0.0;
-        dirB = 0.0;
+    if (havePivot) {
+        dirA = std::atan2(da.y(), da.x()) + (flipA ? M_PI : 0.0);
+        dirB = std::atan2(db.y(), db.x()) + (flipB ? M_PI : 0.0);
+    } else {
+        dirA = std::atan2(da.y(), da.x());
+        dirB = std::atan2(db.y(), db.x());
     }
     double span = dirB - dirA;
     while (span >  M_PI) span -= 2.0 * M_PI;

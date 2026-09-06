@@ -53,7 +53,8 @@ void ChipLabel::paintEvent(QPaintEvent* event)
     const auto& t = cad::ui::Theme::tokens();
     p.setPen(QPen(t.chipBorder, 1));
     p.setBrush(m_hovered ? t.surface2 : t.surface);
-    p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 3, 3);
+    const qreal r = (height() - 1.0) / 2.0;
+    p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), r, r);
     ElaText::paintEvent(event);
 }
 

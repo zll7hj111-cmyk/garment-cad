@@ -364,3 +364,201 @@ foreach(f ${ELA_STYLE_CPPS})
         file(WRITE "${f}" "${content}")
     endif()
 endforeach()
+
+# ---------------------------------------------------------------------------
+# Part 6 — LineEdit & SpinBox: pure capsule style without bottom bars (GCAD).
+#
+# Upstream ElaLineEdit and ElaSpinBox drew a static BasicHemline bottom line
+# in their styles, plus an active 2.5px PrimaryNormal expand-mark underline
+# in paintEvent. This patch:
+# 1. Removes the bottom hemline and bottom focus mark completely.
+# 2. Makes the border and background follow dynamic capsule geometry
+#    (radius = height / 2).
+# 3. Uses a full-contour highlight border (PrimaryNormal 1.5px) on focus.
+# ---------------------------------------------------------------------------
+
+file(GLOB_RECURSE ELA_LINEEDIT_STYLE_CPPS "ElaWidgetTools/DeveloperComponents/ElaLineEditStyle.cpp")
+foreach(f ${ELA_LINEEDIT_STYLE_CPPS})
+    file(READ "${f}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    if(content MATCHES "底边线绘制")
+        string(REPLACE
+"            // 边框绘制
+            painter->setPen(ElaThemeColor(_themeMode, BasicBorder));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(lineEditRect.adjusted(1, 1, -1, -1), 6, 6);
+            painter->setPen(Qt::NoPen);
+            //  背景绘制
+            if (fopt->state & QStyle::State_HasFocus)
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, DialogBase));
+            }
+            else if (fopt->state & QStyle::State_MouseOver)
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
+            }
+            else
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicBaseAlpha));
+            }
+            painter->drawRoundedRect(QRectF(lineEditRect.x() + 1.5, lineEditRect.y() + 1.5, lineEditRect.width() - 3, lineEditRect.height() - 3), 6, 6);
+
+            // 底边线绘制
+            painter->setBrush(ElaThemeColor(_themeMode, BasicHemline));
+            QPainterPath path;
+            path.moveTo(6, lineEditRect.height());
+            path.lineTo(lineEditRect.width() - 6, lineEditRect.height());
+            path.arcTo(QRectF(lineEditRect.width() - 12, lineEditRect.height() - 12, 12, 12), -90, 45);
+            path.lineTo(6 - 3 * std::sqrt(2), lineEditRect.height() - (6 - 3 * std::sqrt(2)));
+            path.arcTo(QRectF(0, lineEditRect.height() - 12, 12, 12), 225, 45);
+            path.closeSubpath();
+            painter->drawPath(path);"
+"            qreal radius = (lineEditRect.height() - 2) / 2.0;
+            if (radius < 2.0) radius = 2.0;
+            // 背景绘制 (纯胶囊)
+            painter->setPen(Qt::NoPen);
+            if (fopt->state & QStyle::State_HasFocus)
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, DialogBase));
+            }
+            else if (fopt->state & QStyle::State_MouseOver)
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
+            }
+            else
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicBaseAlpha));
+            }
+            painter->drawRoundedRect(QRectF(lineEditRect.x() + 1.0, lineEditRect.y() + 1.0, lineEditRect.width() - 2.0, lineEditRect.height() - 2.0), radius, radius);
+
+            // 边框绘制 (全包围纯胶囊: 聚焦全框高亮, 无底边横杠)
+            if (fopt->state & QStyle::State_HasFocus)
+            {
+                painter->setPen(QPen(ElaThemeColor(_themeMode, PrimaryNormal), 1.5));
+            }
+            else
+            {
+                painter->setPen(ElaThemeColor(_themeMode, BasicBorder));
+            }
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(QRectF(lineEditRect.x() + 0.5, lineEditRect.y() + 0.5, lineEditRect.width() - 1.0, lineEditRect.height() - 1.0), radius, radius);"
+            content "${content}")
+        file(WRITE "${f}" "${content}")
+        message(STATUS "ElaLineEditStyle patched for pure capsule without bottom bar in ${f}")
+    endif()
+endforeach()
+
+file(GLOB_RECURSE ELA_LINEEDIT_CPPS "ElaWidgetTools/ElaLineEdit.cpp")
+foreach(f ${ELA_LINEEDIT_CPPS})
+    file(READ "${f}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    if(content MATCHES "pExpandMarkWidth \\* 2, 2.5\\)")
+        string(REPLACE
+"    QPainter painter(this);
+    painter.save();
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(ElaThemeColor(d->_themeMode, PrimaryNormal));
+    painter.drawRoundedRect(QRectF(width() / 2 - d->_pExpandMarkWidth, height() - 2.5, d->_pExpandMarkWidth * 2, 2.5), 2, 2);
+    painter.restore();"
+"    // [GCAD patch] remove bottom focus mark: unified pure capsule style"
+            content "${content}")
+        string(REPLACE
+"setStyleSheet(\"#ElaLineEdit{background-color:transparent;padding-left: 10px;}\");"
+"setStyleSheet(\"#ElaLineEdit{background-color:transparent;padding-left: 10px;padding-right: 10px;}\");"
+            content "${content}")
+        file(WRITE "${f}" "${content}")
+        message(STATUS "ElaLineEdit bottom bar removed in ${f}")
+    endif()
+endforeach()
+
+file(GLOB_RECURSE ELA_SPINBOX_STYLE_CPPS "ElaWidgetTools/DeveloperComponents/ElaSpinBoxStyle.cpp")
+foreach(f ${ELA_SPINBOX_STYLE_CPPS})
+    file(READ "${f}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    if(content MATCHES "底边线")
+        string(REPLACE
+"        //背景
+        QRect spinBoxRect = sopt->rect.adjusted(1, 1, -1, -1);
+        painter->setPen(ElaThemeColor(_themeMode, BasicBorder));
+        bool isEnable = sopt->state.testFlag(QStyle::State_Enabled);
+        if (isEnable)
+        {
+            if (sopt->state & QStyle::State_MouseOver)
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicHover));
+            }
+            else
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicBase));
+            }
+        }
+        else
+        {
+            painter->setBrush(ElaThemeColor(_themeMode, BasicDisable));
+        }
+        painter->drawRoundedRect(spinBoxRect, 4, 4);
+        //底边线
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(ElaThemeColor(_themeMode, BasicHemline));
+        QPainterPath path;
+        path.moveTo(4, spinBoxRect.y() + spinBoxRect.height());
+        path.lineTo(spinBoxRect.width() - 4, spinBoxRect.y() + spinBoxRect.height());
+        path.arcTo(QRectF(spinBoxRect.width() - 8, spinBoxRect.y() + spinBoxRect.height() - 8, 8, 8), -90, 45);
+        path.lineTo(4 - 2 * std::sqrt(2), spinBoxRect.y() + spinBoxRect.height() - (4 - 2 * std::sqrt(2)));
+        path.arcTo(QRectF(0, spinBoxRect.y() + spinBoxRect.height() - 8, 8, 8), 225, 45);
+        path.closeSubpath();
+        painter->drawPath(path);"
+"        //背景与边框 (全包围纯胶囊: 无底边线)
+        QRect spinBoxRect = sopt->rect.adjusted(1, 1, -1, -1);
+        qreal spinRadius = spinBoxRect.height() / 2.0;
+        if (sopt->state & QStyle::State_HasFocus)
+        {
+            painter->setPen(QPen(ElaThemeColor(_themeMode, PrimaryNormal), 1.5));
+        }
+        else
+        {
+            painter->setPen(ElaThemeColor(_themeMode, BasicBorder));
+        }
+        bool isEnable = sopt->state.testFlag(QStyle::State_Enabled);
+        if (isEnable)
+        {
+            if (sopt->state & QStyle::State_MouseOver)
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicHover));
+            }
+            else
+            {
+                painter->setBrush(ElaThemeColor(_themeMode, BasicBase));
+            }
+        }
+        else
+        {
+            painter->setBrush(ElaThemeColor(_themeMode, BasicDisable));
+        }
+        painter->drawRoundedRect(spinBoxRect, spinRadius, spinRadius);"
+            content "${content}")
+        file(WRITE "${f}" "${content}")
+        message(STATUS "ElaSpinBoxStyle bottom bar removed in ${f}")
+    endif()
+endforeach()
+
+file(GLOB_RECURSE ELA_SPINBOX_CPPS "ElaWidgetTools/ElaDoubleSpinBox.cpp" "ElaWidgetTools/ElaSpinBox.cpp")
+foreach(f ${ELA_SPINBOX_CPPS})
+    file(READ "${f}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    if(content MATCHES "pExpandMarkWidth \\* 2, 2.5\\)")
+        string(REPLACE
+"    QPainter painter(this);
+    painter.save();
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(ElaThemeColor(d->_themeMode, PrimaryNormal));
+    painter.drawRoundedRect(QRectF(width() / 2 - d->_pExpandMarkWidth, height() - 2.5, d->_pExpandMarkWidth * 2, 2.5), 2, 2);
+    painter.restore();"
+"    // [GCAD patch] remove bottom focus mark"
+            content "${content}")
+        file(WRITE "${f}" "${content}")
+        message(STATUS "ElaSpinBox bottom bar removed in ${f}")
+    endif()
+endforeach()

@@ -20,6 +20,7 @@ class CompoundChipLabel;
 /// Dual-slot behavior:
 ///   • Both slots are permanently visible with clear placeholders ("代码" | "名称")
 ///   • Click on ref part  → copy refName to clipboard (emits refClicked / brief "✓")
+///   • Click on name part → copy name to clipboard (emits nameClicked / brief "✓")
 ///   • Double-click ref   → inline edit refName (emits refEdited)
 ///   • Double-click name  → inline edit name (emits nameEdited)
 ///   • Tab navigation: Tab in ref jumps to name; Tab in name advances to next widget
@@ -43,6 +44,9 @@ public:
 
     void setRefEditable(bool editable) { m_refEditable = editable; }
     void setRefCopyEnabled(bool enabled) { m_refCopyEnabled = enabled; }
+
+    /// Re-apply theme tokens to labels (e.g. after theme toggle).
+    void applyTheme();
 
     /// Focus inline editor for name (e.g. immediately after card creation).
     void focusNameEdit();
@@ -69,6 +73,7 @@ private:
     void enterNameEdit();
     void commitNameEdit();
     void copyRefText();
+    void copyNameText();
 
     QString m_refName;
     QString m_name;

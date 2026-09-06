@@ -116,6 +116,7 @@ private:
     cad::ui::FormulaTabModel* m_formulaModel = nullptr;
 
     cad::ui::PanelSubTabBar* m_tabBar = nullptr;
+    QWidget*        m_header = nullptr;
     QStackedWidget* m_stack = nullptr;
     ElaPushButton*    m_addBtn = nullptr;
     ElaToolButton*    m_addGroupBtn = nullptr;  ///< "新建分组" (formula tab only).

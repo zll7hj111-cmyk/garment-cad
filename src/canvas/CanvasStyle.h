@@ -77,27 +77,33 @@ public:
     /// Anchor-ring color for connection points (attachment nodes). The ring is
     /// drawn around the shared point of a leader/follower pair so connections
     /// are visible at a glance. A ring width of 0 disables the marker (print).
+    // ── Attachment markers ──
+    /// Anchor-ring color for connection points (attachment nodes). The ring is
+    /// drawn around the shared point of a leader/follower pair so connections
+    /// are visible at a glance. A ring width of 0 disables the marker (print).
     /// Teal — same family as ThemeTokens::teal.
-    QColor attachmentNodeColor = QColor(15, 118, 110);   // teal (light)
+    QColor attachmentNodeColor = QColor(42, 123, 136);   // teal #2A7B88
     /// Ring color for PROTECTED connections (拖动保护/焊接): amber tells the
     /// user this connection cannot be torn apart by dragging.
-    QColor lockedAttachmentColor = QColor(180, 83, 9);   // warning (light)
+    QColor lockedAttachmentColor = QColor(212, 139, 56); // warning #D48B38
     double attachmentRingWidth = 1.0;  ///< Cosmetic stroke width of the ring.
     double attachmentRingGap   = 1.5;  ///< Gap between point radius and ring.
 
     // ── Tool visuals ──
-    QColor previewLineColor   = QColor(47, 111, 237);    // accent
-    QColor snapIndicatorColor = QColor(220, 38, 38);     // danger
-    QColor snapPointColor     = QColor(21, 128, 61);     // success (light)
+    QColor previewLineColor   = QColor(204, 120, 92);    // accent #CC785C
+    QColor snapIndicatorColor = QColor(62, 137, 102);    // success #3E8966
+    QColor snapPointColor     = QColor(62, 137, 102);    // success #3E8966
     /// X marker on a segment body (smart pen: click to quick-create an
     /// auxiliary point). Matches the auxiliary point green.
-    QColor auxMarkerColor     = QColor(21, 128, 61);
-    QColor hudBackground      = QColor(255, 250, 209, 245);  // 纸黄色图纸面 (#FFFAD1)
-    QColor hudText            = QColor(26, 32, 44);          // 深碳黑文字 (#1A202C)
-    QColor crosshairColor     = QColor(203, 210, 220);
+    QColor auxMarkerColor     = QColor(62, 137, 102);    // success #3E8966
+    QColor hudBackground      = QColor(250, 249, 245, 245);  // 温润象牙纸面 (#FAF9F5)
+    QColor hudText            = QColor(20, 20, 19);          // 炭黑文字 (#141413)
+    QColor crosshairColor     = QColor(213, 208, 197);       // borderStrong #D5D0C5
+    QColor gridDotColor       = QColor(213, 208, 197, 180);   // Dot grid
+    QColor gridMajorColor     = QColor(229, 226, 218, 100);   // 100mm/50mm hairline rule (40% alpha)
 
-    // ── Canvas (Endfield blueprint ground, light theme) ──
-    QColor canvasBackground   = QColor(236, 239, 242);   // #ECEFF2 Endfield light concrete
+    // ── Canvas (Warm ivory drafting ground, light theme) ──
+    QColor canvasBackground   = QColor(250, 249, 245);   // #FAF9F5
 
     // ── Theme factories ──
     static CanvasStyle lightTheme();
@@ -112,33 +118,33 @@ private:
     // State tokens — one accent family drives every interaction state:
     // hover = 55% blend toward the accent, selected = solid accent,
     // locked = accent + weight. Same hue, three clear steps.
-    QColor  m_selectColor      = QColor(47, 111, 237);  // accent #2F6FED
+    QColor  m_selectColor      = QColor(204, 120, 92);  // accent #CC785C
     double  m_selectWidthDelta = 0.6;
     double  m_lockedWidthDelta = 1.8;  ///< Extra width for confirmed (locked) selection.
     double  m_lockedPointDelta = 0.8;  ///< Extra point radius when locked.
-    QColor  m_hoverTint        = QColor(47, 111, 237);  // accent
+    QColor  m_hoverTint        = QColor(204, 120, 92);  // accent #CC785C
     double  m_hoverTintRatio   = 0.55; ///< Blend strength; print sets 0.
 
     // Palette mirror (light defaults; darkTheme overrides): fills, washes and
     // soft borders for canvas overlays that QSS cannot reach (group
     // bounding boxes, HUD chips). Kept in sync with ThemeTokens by hand.
-    QColor m_surfaceColor = QColor(255, 255, 255);   // surface
-    QColor m_accentWash   = QColor(234, 242, 254);   // accentTint
-    QColor m_borderSoft   = QColor(213, 219, 219);   // badge idle border
+    QColor m_surfaceColor = QColor(255, 255, 255);   // surface #FFFFFF
+    QColor m_accentWash   = QColor(249, 239, 235);   // accentTint #F9EFEB pre-blended wash
+    QColor m_borderSoft   = QColor(229, 226, 218);   // border #E5E2DA
 
     // Point tokens — visual radius is a small marker (0.8), unified across
     // ALL point kinds (normal / auxiliary / curve anchor); the PICK radius in
     // BlockItem::shape() stays 2.5 so grabbing stays finger-friendly.
     // Auxiliary points render as solid green discs (绿色实心小圆).
-    QColor  m_pointColor       = QColor(29, 33, 41);     // text1
-    QColor  m_auxPointColor    = QColor(21, 128, 61);    // success (light)
-    double  m_pointRadius      = 0.8;   // 原 1.6 → 缩小一半，全点对齐
-    double  m_auxPointRadius   = 0.8;   // 原 2.2 → 对齐普通点
+    QColor  m_pointColor       = QColor(20, 20, 19);     // text1 #141413
+    QColor  m_auxPointColor    = QColor(62, 137, 102);    // success #3E8966
+    double  m_pointRadius      = 0.8;   // 对齐普通点
+    double  m_auxPointRadius   = 0.8;   // 对齐普通点
 
     // Label tokens
-    QColor  m_nameLabelColor   = QColor(77, 87, 102);    // text2 (light)
-    QColor  m_lengthLabelColor = QColor(21, 128, 61);    // deep success green
-    QColor  m_pointLabelColor  = QColor(77, 87, 102);
+    QColor  m_nameLabelColor   = QColor(92, 88, 80);     // text2 #5C5850
+    QColor  m_lengthLabelColor = QColor(62, 137, 102);    // success #3E8966
+    QColor  m_pointLabelColor  = QColor(92, 88, 80);
 
     // Interaction tokens
     double  m_hoverRadiusPx    = 8.0;
