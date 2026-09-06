@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QObject>
 #include <QUuid>
@@ -407,12 +407,6 @@ public:
     [[nodiscard]] bool isAuxLayer(const QUuid& layerId) const;
     /// True when the block lives on the auxiliary layer.
     [[nodiscard]] bool isAuxBlock(const Block& b) const { return isAuxLayer(b.layer); }
-    /// Effective visibility for RENDERING. Any non-active layer renders
-    /// GRAYED (BlockItem::LayerMode::Grayed) — including the auxiliary layer,
-    /// so its construction geometry stays visible as a reference draft.
-    /// Only layers manually hidden (layerVisible == false) are not rendered.
-    [[nodiscard]] bool layerEffectivelyVisible(const QUuid& layerId) const;
-
     /// Whether the layer's points/segments may be SNAP targets. Non-active
     /// WORKING layers stay snappable (grayed reference — new geometry can
     /// connect to them). The aux layer is ONLY snappable while it is the

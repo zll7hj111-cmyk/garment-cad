@@ -1,4 +1,4 @@
-﻿#include "ParamDocument.h"
+#include "ParamDocument.h"
 
 #include <algorithm>
 #include <cmath>
@@ -329,30 +329,9 @@ QUuid ParamDocument::memberOwningPoint(const Component& comp, const QUuid& point
 
 BBox ParamDocument::boundingBoxOf(const QUuid& componentId) const
 {
-    BBox box;
     const Component* c = findComponent(componentId);
-    if (!c) return box;
-    for (const QUuid& mid : c->memberBlockIds) {
-        const Block* b = blockById(mid);
-        if (!b) continue;
-        for (const auto& pt : b->points) {
-            if (!pt.resolved) continue;
-            box.expand(b->transform.toWorld(pt.resolvedPos));
-        }
-        // Curve control hulls (conservative): the spans cache carries the bbox.
-        for (const auto& seg : b->segments) {
-            const CurveSpanEntry* e = b->curveSpanEntry(seg.id);
-            if (!e) continue;
-            const geo::Vec2 corners[4] = {
-                b->transform.toWorld(e->bboxMin),
-                b->transform.toWorld(geo::Vec2(e->bboxMax.x, e->bboxMin.y)),
-                b->transform.toWorld(geo::Vec2(e->bboxMin.x, e->bboxMax.y)),
-                b->transform.toWorld(e->bboxMax),
-            };
-            for (const geo::Vec2& p : corners) box.expand(p);
-        }
-    }
-    return box;
+    if (!c) return {};
+    return boundingBoxOfBlocks(QList<QUuid>(c->memberBlockIds.begin(), c->memberBlockIds.end()));
 }
 
 BBox ParamDocument::boundingBoxOfBlocks(const QList<QUuid>& blockIds) const

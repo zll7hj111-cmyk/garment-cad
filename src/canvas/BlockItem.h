@@ -121,7 +121,7 @@ private:
         QPointF pCenter;       ///< 中心主轴拐点本地坐标
     };
     struct PointCache { QUuid id; QPointF pos; bool isAuxiliary; QString label; bool showLabel;
-                        bool isAttachmentNode; bool isCurveAnchor; bool isLockedNode; };
+                        bool isAttachmentNode; bool isCurveAnchor; bool isLockedNode; bool visible; };
 
     std::vector<LineCache>  m_lines;
     std::vector<CurveItem*> m_curveItems;  ///< One child item per curve segment.

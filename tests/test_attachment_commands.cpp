@@ -1,4 +1,4 @@
-#include <QtTest>
+﻿#include <QtTest>
 #include <QUuid>
 #include <QUndoStack>
 #include <cmath>
@@ -1448,8 +1448,7 @@ void TestAttachmentCommands::dartLine_undoRedo()
     block.dartAngleDeg     = 90.0;
     const QUuid dartId = block.id;
 
-    cad::param::Attachment dummy;
-    cad::cmd::DrawLineCommand cmd(&doc, std::move(block), dummy, false);
+    cad::cmd::DrawLineCommand cmd(&doc, std::move(block));
     cmd.redo();
     QVERIFY(doc.findBlock(dartId));
     QVERIFY(doc.findBlock(dartId)->isDart());

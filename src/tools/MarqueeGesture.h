@@ -1,10 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <QRectF>
 #include <QSet>
 #include <QUuid>
 
 #include "geometry/Vec2.h"
+#include "canvas/ManagedItems.h"
 
 class QGraphicsRectItem;
 
@@ -58,6 +59,7 @@ private:
     QGraphicsRectItem* m_item = nullptr;  ///< Dashed rect (created on begin).
     cad::geo::Vec2 m_start;               ///< Drag start (user coords).
     QSet<QUuid> m_base;                   ///< Selection snapshot at begin (toggle).
+    ManagedItems m_managed;
 };
 
 } // namespace cad::tools

@@ -1,4 +1,4 @@
-#include "MarqueeGesture.h"
+﻿#include "MarqueeGesture.h"
 
 #include <cmath>
 
@@ -8,6 +8,7 @@
 #include "canvas/CanvasScene.h"
 #include "canvas/BlockItem.h"
 #include "parametric/ParamDocument.h"
+#include "parametric/Component.h"
 #include "geometry/Units.h"
 
 namespace cad::tools {
@@ -51,9 +52,18 @@ MarqueeGesture::~MarqueeGesture()
     cancel();
 }
 
-QSet<QUuid> MarqueeGesture::expandWithGroups(cad::param::ParamDocument*, const QSet<QUuid>& ids)
+QSet<QUuid> MarqueeGesture::expandWithGroups(cad::param::ParamDocument* doc, const QSet<QUuid>& ids)
 {
-    return ids;
+    if (!doc || ids.isEmpty()) return ids;
+    QSet<QUuid> expanded = ids;
+    for (const QUuid& id : ids) {
+        if (const auto* comp = doc->componentOfBlock(id)) {
+            for (const QUuid& mid : comp->memberBlockIds) {
+                expanded.insert(mid);
+            }
+        }
+    }
+    return expanded;
 }
 
 void MarqueeGesture::begin(const cad::geo::Vec2& pos, const QSet<QUuid>& baseSelection)
@@ -64,6 +74,7 @@ void MarqueeGesture::begin(const cad::geo::Vec2& pos, const QSet<QUuid>& baseSel
     m_base = baseSelection;
 
     m_item = new QGraphicsRectItem();
+    m_managed.own(m_item, &m_item);
     QPen pen(QColor(0, 120, 215), 0);      // cosmetic 1px dash
     pen.setStyle(Qt::DashLine);
     m_item->setPen(pen);
@@ -100,10 +111,7 @@ QSet<QUuid> MarqueeGesture::end(const cad::geo::Vec2& pos)
 
 void MarqueeGesture::cancel()
 {
-    if (!m_scene || !m_item) return;
-    m_scene->removeItem(m_item);
-    delete m_item;
-    m_item = nullptr;
+    m_managed.clear();
 }
 
 QSet<QUuid> MarqueeGesture::hitsIn(const QRectF& rectUser) const

@@ -270,30 +270,7 @@ void ParamDocument::setAttachmentAngleIndependent(const QUuid& id, bool angleInd
         const Block* from = blockById(it->fromBlockId);
         const Block* to = blockById(it->toBlockId);
         if (from && to) {
-            // 若设置了独立角度基准, 退出角度独立后仍应回到那条基准。
-            const Block* refBlock = to;
-            double refWorld = to->transform.rotation
-                + to->exitDirectionAtPoint(it->toPointId, it->toSegmentId);
-            if (!it->angleRefBlockId.isNull()) {
-                if (const Block* rb = blockById(it->angleRefBlockId))
-                    refBlock = rb;
-            }
-            if (!it->angleRefBlockId.isNull() && !it->angleRefSegmentId.isNull()) {
-                if (const Segment* seg = refBlock->findSegment(it->angleRefSegmentId)) {
-                    if (!it->angleRefPointId.isNull()) {
-                        if (const ParamPoint* rp = refBlock->findPoint(it->angleRefPointId);
-                            rp && rp->resolved) {
-                            refWorld = refBlock->transform.rotation
-                                     + refBlock->exitDirectionAtPoint(
-                                           it->angleRefPointId, it->angleRefSegmentId);
-                        }
-                    } else if (const ParamPoint* sp = refBlock->findPoint(seg->startPointId);
-                               sp && sp->resolved) {
-                        refWorld = refBlock->transform.rotation
-                                 + refBlock->directionAtPoint(seg->startPointId);
-                    }
-                }
-            }
+            const double refWorld = effectiveAngleRefWorld(this, *it);
             const double localDir = from->directionAtPoint(it->fromPointId);
             it->followerAngle = backSolveFollowerAngle(
                 from->transform.rotation, localDir, refWorld);
@@ -340,43 +317,7 @@ void ParamDocument::setAttachmentAngleRef(const QUuid& id,
     const Block* from = blockById(it->fromBlockId);
     const Block* to = blockById(it->toBlockId);
     if (from && to) {
-        double refWorld = to->transform.rotation
-            + to->exitDirectionAtPoint(it->toPointId, it->toSegmentId);
-        const Block* refBlock = to;
-        if (!refBlockId.isNull()) {
-            if (const Block* rb = blockById(refBlockId))
-                refBlock = rb;
-        }
-        if (!ref2BlockId.isNull() && !ref2PointId.isNull()) {
-            // 两点连线方向 (PANEL_REDESIGN §6.4): 点1→点2, 与 Resolver
-            // applyAttachment 两点分支同解 (点未解析时回落位置宿主出口方向)。
-            const Block* rb2 = blockById(ref2BlockId);
-            const ParamPoint* p1 = refBlock->findPoint(refPointId);
-            const ParamPoint* p2 = rb2 ? rb2->findPoint(ref2PointId) : nullptr;
-            if (p1 && p2 && p1->resolved && p2->resolved) {
-                const auto w1 = refBlock->transform.toWorld(p1->resolvedPos);
-                const auto w2 = rb2->transform.toWorld(p2->resolvedPos);
-                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
-            }
-        } else if (!refBlockId.isNull() && !refSegmentId.isNull()) {
-            const Segment* seg = refBlock->findSegment(refSegmentId);
-            if (seg) {
-                if (!refPointId.isNull()) {
-                    // 使用用户选择的角度基准点的出口方向（与位置连接同构）。
-                    if (const ParamPoint* rp = refBlock->findPoint(refPointId);
-                        rp && rp->resolved) {
-                        refWorld = refBlock->transform.rotation
-                                 + refBlock->exitDirectionAtPoint(
-                                       refPointId, refSegmentId);
-                    }
-                } else if (const ParamPoint* sp = refBlock->findPoint(seg->startPointId);
-                           sp && sp->resolved) {
-                    // 旧档/未选点：保持历史行为，用 start→end 方向。
-                    refWorld = refBlock->transform.rotation
-                             + refBlock->directionAtPoint(seg->startPointId);
-                }
-            }
-        }
+        const double refWorld = effectiveAngleRefWorld(this, *it);
         const double localDir = from->directionAtPoint(it->fromPointId);
         it->followerAngle = backSolveFollowerAngle(
             from->transform.rotation, localDir, refWorld);

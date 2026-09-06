@@ -295,6 +295,8 @@ void BlockItem::paint(QPainter* painter,
     // allocated 2 QStrings + a concat on EVERY labeled point in EVERY paint.
     QSet<qint64> drawnPointLabels;
     for (const auto& pc : m_points) {
+        if (!pc.visible && pc.id != m_hoveredPointId) continue;
+
         EntityPaintParams pp;
         if (animator) {
             pp = animator->pointParams(this, pc.id,
@@ -866,8 +868,7 @@ void BlockItem::rebuildCache()
         QString lenText;
         {
             // 端点延长线：长度标注按"实际画出的长度"（本体+尾巴, D6）。
-            const double lenMm = block->worldPos(seg.startPointId)
-                                     .distanceTo(block->worldPos(seg.endPointId));
+            const double lenMm = w1.distanceTo(w2);
             lenText = cad::geo::Units::formatLength(lenMm);
         }
 
@@ -940,7 +941,7 @@ void BlockItem::rebuildCache()
 
     // Build point cache
     for (const auto& pt : block->points) {
-        if (!pt.visible || !pt.resolved) continue;
+        if (!pt.resolved) continue;
 
         cad::geo::Vec2 w = block->transform.toWorld(block->effectiveLocalPos(pt.id));
         QPointF pos = cad::geo::Coord::toScene(w.x - origin.x, w.y - origin.y);  // local scene coords
@@ -951,7 +952,8 @@ void BlockItem::rebuildCache()
         m_points.push_back({pt.id, pos, pt.isAuxiliary, pointLabel, pt.showName,
                             attachmentPoints.contains(pt.id),
                             pt.constraint == cad::param::PointConstraint::CurveAnchor,
-                            lockedPoints.contains(pt.id)});
+                            lockedPoints.contains(pt.id),
+                            pt.visible});
 
         // Include label area in bounds to prevent ghosting during drag
         QRectF ptBounds(pos - QPointF(6, 6), pos + QPointF(6, 6));

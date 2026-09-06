@@ -49,17 +49,19 @@ SetVariableValueCommand::SetVariableValueCommand(cad::param::ParamDocument* doc,
 
 void SetVariableValueCommand::redo()
 {
-    if (auto* v = m_doc->findVariable(m_varId)) {
-        v->value = m_newValue;
-        m_doc->recomputeFormulas();
+    if (const auto* v = m_doc->findVariable(m_varId)) {
+        cad::param::Variable updated = *v;
+        updated.value = m_newValue;
+        m_doc->updateVariable(updated);
     }
 }
 
 void SetVariableValueCommand::undo()
 {
-    if (auto* v = m_doc->findVariable(m_varId)) {
-        v->value = m_oldValue;
-        m_doc->recomputeFormulas();
+    if (const auto* v = m_doc->findVariable(m_varId)) {
+        cad::param::Variable updated = *v;
+        updated.value = m_oldValue;
+        m_doc->updateVariable(updated);
     }
 }
 

@@ -10,6 +10,7 @@
 #include "parametric/Attachment.h"
 #include "tools/SnapEngine.h"
 #include "tools/ConnectConfirm.h"  // ConfirmCandidate (共享定义)
+#include "canvas/ManagedItems.h"
 
 class QGraphicsEllipseItem;
 class QGraphicsPathItem;
@@ -80,6 +81,7 @@ private:
     QGraphicsEllipseItem* m_connectHalo   = nullptr;
     QGraphicsPathItem* m_confirmHighlight = nullptr;
     QGraphicsEllipseItem* m_sourcePortMarker = nullptr;
+    ManagedItems m_managed;
 };
 
 } // namespace cad::tools

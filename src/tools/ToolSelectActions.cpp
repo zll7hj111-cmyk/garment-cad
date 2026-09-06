@@ -14,6 +14,7 @@
 #include "document/commands/ComponentCommands.h"
 #include "document/commands/LayerCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/BlockLifecycleCommands.h"
 #include "document/commands/DocumentCommands.h"
 #include "document/commands/AttachmentCommands.h"
 #include "ui/DeleteImpactConfirm.h"
@@ -96,7 +97,7 @@ void ToolSelect::deleteSelectedBlocks()
         m_undoStack->beginMacro(QStringLiteral(
             "\xe5\x88\xa0\xe9\x99\xa4 %1 \xe6\x9d\xa1\xe7\xba\xbf\xe6\xae\xb5").arg(toRemove.size()));
         for (const QUuid& id : toRemove)
-            m_undoStack->push(new cad::cmd::DeleteBlockCommand(m_paramDoc, id));
+            m_undoStack->push(new cad::cmd::RemoveBlockCommand(m_paramDoc, id));
         m_undoStack->endMacro();
     } else {
         for (const QUuid& id : toRemove)

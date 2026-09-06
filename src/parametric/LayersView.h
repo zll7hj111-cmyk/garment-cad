@@ -66,11 +66,6 @@ public:
     /// True when the block lives on the auxiliary layer.
     [[nodiscard]] bool isAuxBlock(const Block& b) const { return m_doc->isAuxBlock(b); }
 
-    /// Effective visibility for RENDERING: non-active layers render grayed,
-    /// only manually hidden layers are not rendered.
-    [[nodiscard]] bool layerEffectivelyVisible(const QUuid& layerId) const
-    { return m_doc->layerEffectivelyVisible(layerId); }
-
     /// Whether the layer's points/segments may be SNAP targets (the aux layer
     /// only while it is the active layer — snap targets must never be
     /// connectable).

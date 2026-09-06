@@ -1,4 +1,4 @@
-#include "DocumentCommands.h"
+﻿#include "DocumentCommands.h"
 
 #include <QSet>
 #include <QtLogging>
@@ -13,14 +13,12 @@ namespace cad::cmd {
 
 DrawLineCommand::DrawLineCommand(cad::param::ParamDocument* doc,
                                  cad::param::Block block,
-                                 const cad::param::Attachment& att,
-                                 bool hasAttachment,
+                                 std::optional<cad::param::Attachment> att,
                                  QUndoCommand* parent)
     : QUndoCommand(parent)
     , m_doc(doc)
     , m_block(std::move(block))
-    , m_att(att)
-    , m_hasAttachment(hasAttachment)
+    , m_att(std::move(att))
 {
     setText(QStringLiteral("画线"));
 }
@@ -28,92 +26,14 @@ DrawLineCommand::DrawLineCommand(cad::param::ParamDocument* doc,
 void DrawLineCommand::redo()
 {
     m_doc->addBlock(m_block);
-    if (m_hasAttachment)
-        m_doc->addAttachment(m_att);
+    if (m_att.has_value())
+        m_doc->addAttachment(*m_att);
 }
 
 void DrawLineCommand::undo()
 {
     // removeBlock also removes attachments referencing this block
     m_doc->removeBlock(m_block.id);
-}
-
-// ─── DeleteBlockCommand ───
-
-DeleteBlockCommand::DeleteBlockCommand(cad::param::ParamDocument* doc,
-                                       const QUuid& blockId,
-                                       QUndoCommand* parent)
-    : QUndoCommand(parent)
-    , m_doc(doc)
-{
-    setText(QStringLiteral("删除线段"));
-
-    const auto* b = doc->findBlock(blockId);
-    if (!b) return;  // Already gone (e.g. cascaded away earlier in a macro).
-    m_block = *b;
-    m_valid = true;
-
-    // Cascade set: the block itself + every bridge pinned to it (the model
-    // layer releases those bridges as independent segments when the host
-    // goes away — their pre-deletion state is snapshotted for undo).
-    QSet<QUuid> cascade{blockId};
-    for (const QUuid& bridgeId : doc->attachmentsView().bridgesPinnedTo(blockId)) {
-        if (cascade.contains(bridgeId)) continue;
-        cascade.insert(bridgeId);
-        if (const auto* bridge = doc->findBlock(bridgeId))
-            m_bridges.push_back(*bridge);
-    }
-
-    // Snapshot every attachment touching any block in the cascade set.
-    QSet<QUuid> seen;
-    for (const auto& att : doc->attachments()) {
-        if (!cascade.contains(att.fromBlockId) && !cascade.contains(att.toBlockId))
-            continue;
-        if (seen.contains(att.id)) continue;
-        seen.insert(att.id);
-        m_attachments.push_back(att);
-    }
-
-    // Snapshot variables auto-deleted with the block (removeBlock purges
-    // them in redo; undo must re-publish the exact copies). Measure variables
-    // match as an endpoint OR as their owner bridge line.
-    for (const QUuid& srcId : cascade) {
-        for (const auto& lv : doc->linkedVars())
-            if (lv.sourceBlockId == srcId)
-                m_linked.push_back(lv);
-        for (const auto& mv : doc->measureVars())
-            if (mv.blockA == srcId || mv.blockB == srcId || mv.ownerBlockId == srcId)
-                m_measures.push_back(mv);
-    }
-}
-
-void DeleteBlockCommand::redo()
-{
-    if (!m_valid) return;
-    // removeBlock cascades: erases attachments + releases orphaned bridges.
-    m_doc->removeBlock(m_block.id);
-}
-
-void DeleteBlockCommand::undo()
-{
-    if (!m_valid) return;
-    // Bridges pinned to the deleted block were RELEASED by redo() (converted
-    // to independent segments, still present in the document). Remove the
-    // released versions first, then restore the pristine snapshots.
-    for (const auto& bridge : m_bridges)
-        m_doc->removeBlock(bridge.id);
-    m_doc->addBlock(m_block);
-    for (const auto& bridge : m_bridges)
-        m_doc->addBlock(bridge);
-    for (const auto& att : m_attachments)
-        m_doc->addAttachment(att);
-    // Re-publish the auto-deleted measurement variables.
-    for (const auto& lv : m_linked)
-        m_doc->addLinked(lv);
-    for (const auto& mv : m_measures)
-        m_doc->addMeasure(mv);
-    if (!m_linked.empty() || !m_measures.empty())
-        m_doc->resolveAll();
 }
 
 // ─── DrawMeasureLineCommand ───

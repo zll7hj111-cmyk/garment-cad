@@ -17,12 +17,6 @@
       "reason": "Core parametric block entity model and effective geometry calculation; scheduled for Phase 3.",
       "scheduled_phase": "Phase 3"
     },
-    "src/tools/LineFactory.cpp": {
-      "lines": 1293,
-      "threshold": 900,
-      "reason": "Line segment creation logic; scheduled for Phase 3.",
-      "scheduled_phase": "Phase 3"
-    },
     "src/app/ContextStrip.cpp": {
       "lines": 1154,
       "threshold": 900,

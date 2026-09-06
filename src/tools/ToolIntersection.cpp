@@ -1,4 +1,4 @@
-#include "ToolIntersection.h"
+﻿#include "ToolIntersection.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -377,7 +377,10 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
 
     cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
     cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-    double segAngleRad = std::atan2(w2.y - w1.y, w2.x - w1.x);
+    cad::geo::Vec2 segDir = w2 - w1;
+    if (segDir.length() < 1e-9) return;
+    double segAngleRad = std::atan2(segDir.y, segDir.x);
+    TargetGeometry targetGeom{block, seg, w1, w2, segDir, segAngleRad};
 
     m_lastCursorPos = cursorPos;
 
@@ -443,7 +446,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
 
     // Compute intersection with the finalized angle.
     double t = 0.0;
-    auto hit = computeIntersection(m_currentAngleDeg, &t);
+    auto hit = computeIntersection(m_currentAngleDeg, &t, &targetGeom);
 
     // --- Draw preview ray ---
     if (!m_previewRay) {
@@ -564,25 +567,40 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
 // ---------------------------------------------------------------------------
 
 std::optional<cad::geo::Vec2> ToolIntersection::computeIntersection(
-    double angleDeg, double* outT) const
+    double angleDeg, double* outT, const TargetGeometry* cachedGeom) const
 {
     if (!m_paramDoc) return std::nullopt;
 
-    const auto* block = m_paramDoc->findBlock(m_targetBlockId);
-    const auto* seg = block ? block->findSegment(m_targetSegmentId) : nullptr;
+    const cad::param::Block* block = nullptr;
+    const cad::param::Segment* seg = nullptr;
+    cad::geo::Vec2 w1, w2, segDir;
+    double baseAngle = 0.0;
+
+    if (cachedGeom) {
+        block = cachedGeom->block;
+        seg = cachedGeom->seg;
+        w1 = cachedGeom->w1;
+        w2 = cachedGeom->w2;
+        segDir = cachedGeom->segDir;
+        baseAngle = cachedGeom->baseAngle;
+    } else {
+        block = m_paramDoc->findBlock(m_targetBlockId);
+        seg = block ? block->findSegment(m_targetSegmentId) : nullptr;
+        if (!block || !seg) return std::nullopt;
+
+        const auto* sp = block->findPoint(seg->startPointId);
+        const auto* ep = block->findPoint(seg->endPointId);
+        if (!sp || !ep || !sp->resolved || !ep->resolved) return std::nullopt;
+
+        w1 = block->transform.toWorld(sp->resolvedPos);
+        w2 = block->transform.toWorld(ep->resolvedPos);
+        segDir = w2 - w1;
+        if (segDir.length() < 1e-9) return std::nullopt;
+
+        baseAngle = std::atan2(segDir.y, segDir.x);
+    }
     if (!block || !seg) return std::nullopt;
 
-    const auto* sp = block->findPoint(seg->startPointId);
-    const auto* ep = block->findPoint(seg->endPointId);
-    if (!sp || !ep || !sp->resolved || !ep->resolved) return std::nullopt;
-
-    cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-    cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-    cad::geo::Vec2 segDir = w2 - w1;
-    double segLen = segDir.length();
-    if (segLen < 1e-9) return std::nullopt;
-
-    double baseAngle = std::atan2(segDir.y, segDir.x);
     double theta = baseAngle + angleDeg * M_PI / 180.0;
     cad::geo::Vec2 d{std::cos(theta), std::sin(theta)};
 

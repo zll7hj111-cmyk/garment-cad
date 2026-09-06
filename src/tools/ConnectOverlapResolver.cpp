@@ -25,10 +25,7 @@ constexpr double kSourcePortRadiusPx = 5.0;
 
 void ConnectOverlapResolver::dispose()
 {
-    removeConfirmHighlight();
-    removeSourcePortMarker();
-    removeConnectMarker();
-    removeConnectHalo();
+    m_managed.clear();
 }
 
 // ── 候选收集 ──
@@ -118,6 +115,7 @@ void ConnectOverlapResolver::updateHighlightAt(
 
     if (!m_confirmHighlight) {
         m_confirmHighlight = new QGraphicsPathItem();
+        m_managed.own(m_confirmHighlight, &m_confirmHighlight);
         QPen pen(QColor(0xF39C12), 3.0);
         pen.setCosmetic(true);
         m_confirmHighlight->setPen(pen);
@@ -135,9 +133,7 @@ void ConnectOverlapResolver::updateHighlightAt(
 void ConnectOverlapResolver::removeConfirmHighlight()
 {
     if (m_confirmHighlight) {
-        m_confirmHighlight->setVisible(false);
-        delete m_confirmHighlight;
-        m_confirmHighlight = nullptr;
+        m_managed.release(m_confirmHighlight);
     }
 }
 
@@ -153,6 +149,7 @@ void ConnectOverlapResolver::setSourcePortMarker(const ConfirmCandidate& cand)
         blk->worldPos(cand.pointId).x, blk->worldPos(cand.pointId).y);
     if (!m_sourcePortMarker) {
         m_sourcePortMarker = new QGraphicsEllipseItem();
+        m_managed.own(m_sourcePortMarker, &m_sourcePortMarker);
         m_sourcePortMarker->setPen(QPen(cad::ui::Theme::tokens().accent, 2.0));
         m_sourcePortMarker->setBrush(QColor(47, 111, 237, 120));
         m_sourcePortMarker->setZValue(100.0);
@@ -168,9 +165,7 @@ void ConnectOverlapResolver::setSourcePortMarker(const ConfirmCandidate& cand)
 void ConnectOverlapResolver::removeSourcePortMarker()
 {
     if (m_sourcePortMarker) {
-        if (m_scene) m_scene->removeItem(m_sourcePortMarker);
-        delete m_sourcePortMarker;
-        m_sourcePortMarker = nullptr;
+        m_managed.release(m_sourcePortMarker);
     }
 }
 
@@ -186,6 +181,7 @@ void ConnectOverlapResolver::showConnectMarker(const Vec2& worldPos)
 
     if (!m_connectMarker) {
         m_connectMarker = new QGraphicsEllipseItem();
+        m_managed.own(m_connectMarker, &m_connectMarker);
         QPen pen(QColor(38, 166, 154));          // teal: "release = connect"
         pen.setWidthF(2.0);
         pen.setCosmetic(true);
@@ -201,9 +197,7 @@ void ConnectOverlapResolver::showConnectMarker(const Vec2& worldPos)
 void ConnectOverlapResolver::removeConnectMarker()
 {
     if (m_connectMarker) {
-        if (m_scene) m_scene->removeItem(m_connectMarker);
-        delete m_connectMarker;
-        m_connectMarker = nullptr;
+        m_managed.release(m_connectMarker);
     }
 }
 
@@ -218,6 +212,7 @@ void ConnectOverlapResolver::updateConnectHalo(const Vec2& fromPointWorld)
 
     if (!m_connectHalo) {
         m_connectHalo = new QGraphicsEllipseItem();
+        m_managed.own(m_connectHalo, &m_connectHalo);
         QPen pen(QColor(38, 166, 154));
         pen.setWidthF(1.5);
         pen.setCosmetic(true);
@@ -234,9 +229,7 @@ void ConnectOverlapResolver::updateConnectHalo(const Vec2& fromPointWorld)
 void ConnectOverlapResolver::removeConnectHalo()
 {
     if (m_connectHalo) {
-        if (m_scene) m_scene->removeItem(m_connectHalo);
-        delete m_connectHalo;
-        m_connectHalo = nullptr;
+        m_managed.release(m_connectHalo);
     }
 }
 

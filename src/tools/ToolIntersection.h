@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Tool.h"
 #include "ToolRegistry.h"
@@ -14,7 +14,12 @@ class QGraphicsPathItem;
 class QGraphicsView;
 #include "canvas/ManagedItems.h"
 
-namespace cad::param { class ParamDocument; struct ParamPoint; }
+namespace cad::param {
+class ParamDocument;
+struct ParamPoint;
+class Block;
+struct Segment;
+}
 
 class HudItem;
 
@@ -95,11 +100,21 @@ private:
     /// thinner live-hover style vs the thicker confirmed-selection style.
     void ensureSegHighlight(bool hover);
 
+    struct TargetGeometry {
+        const cad::param::Block* block = nullptr;
+        const cad::param::Segment* seg = nullptr;
+        cad::geo::Vec2 w1;
+        cad::geo::Vec2 w2;
+        cad::geo::Vec2 segDir;
+        double baseAngle = 0.0;
+    };
+
     /// Compute the intersection of the ray (from m_originPos at m_currentAngleDeg
     /// relative to the target segment direction) with the target segment.
     /// Returns the intersection position and the segment parameter t, or nullopt.
     [[nodiscard]] std::optional<cad::geo::Vec2> computeIntersection(
-        double angleDeg, double* outT = nullptr) const;
+        double angleDeg, double* outT = nullptr,
+        const TargetGeometry* cachedGeom = nullptr) const;
 
     /// Create the intersection ParamPoint and push to undo stack.
     void commitIntersection();

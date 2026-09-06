@@ -66,7 +66,6 @@ bool ParamDocument::layerVisible(const QUuid& layerId) const { return m_layerReg
 QUuid ParamDocument::activeLayer() const { return m_layerRegistry->activeLayer(); }
 void ParamDocument::setActiveLayer(const QUuid& layerId) { m_layerRegistry->setActiveLayer(layerId); }
 bool ParamDocument::isAuxLayer(const QUuid& layerId) const { return m_layerRegistry->isAuxLayer(layerId); }
-bool ParamDocument::layerEffectivelyVisible(const QUuid& layerId) const { return layerVisible(layerId); }
 bool ParamDocument::layerSnappable(const QUuid& layerId) const
 {
     if (!layerVisible(layerId)) return false;

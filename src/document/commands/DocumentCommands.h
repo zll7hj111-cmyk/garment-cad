@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QUndoCommand>
 #include <QUuid>
@@ -11,6 +11,7 @@
 #include "parametric/LinkedVariable.h"
 #include "parametric/MeasureVariable.h"
 #include "geometry/Vec2.h"
+#include "document/commands/BlockLifecycleCommands.h"
 
 namespace cad::param { class ParamDocument; }
 
@@ -23,8 +24,7 @@ class DrawLineCommand : public QUndoCommand
 public:
     DrawLineCommand(cad::param::ParamDocument* doc,
                     cad::param::Block block,
-                    const cad::param::Attachment& att,
-                    bool hasAttachment,
+                    std::optional<cad::param::Attachment> att = std::nullopt,
                     QUndoCommand* parent = nullptr);
     void redo() override;
     void undo() override;
@@ -32,32 +32,12 @@ public:
 private:
     cad::param::ParamDocument* m_doc;
     cad::param::Block m_block;
-    cad::param::Attachment m_att;
-    bool m_hasAttachment;
+    std::optional<cad::param::Attachment> m_att;
 };
 
-/// Composite: delete a block + all its attachments.
-/// Also snapshots bridge lines pinned to the block (the model layer cascades
-/// their deletion) so undo can restore the whole set.
-class DeleteBlockCommand : public QUndoCommand
-{
-public:
-    DeleteBlockCommand(cad::param::ParamDocument* doc,
-                       const QUuid& blockId,
-                       QUndoCommand* parent = nullptr);
-    void redo() override;
-    void undo() override;
-
-private:
-    cad::param::ParamDocument* m_doc;
-    cad::param::Block m_block;
-    std::vector<cad::param::Block> m_bridges;  ///< Bridges cascaded away with the block.
-    std::vector<cad::param::Attachment> m_attachments;
-    std::vector<cad::param::LinkedVariable> m_linked;   ///< Auto-deleted with the block.
-    std::vector<cad::param::MeasureVariable> m_measures; ///< Auto-deleted with the block.
-    bool m_valid = false;  ///< False when the block was already gone at construction
-                           ///< (e.g. cascaded away by a previous command in a macro).
-};
+/// Composite: delete a block + all its attachments + shadow cascade.
+/// Alias to RemoveBlockCommand for full shadow and baked-consumer cascade support.
+using DeleteBlockCommand = RemoveBlockCommand;
 
 /// Composite: draw a measured line (new bridge model) = add a free block whose
 /// length formula references a fresh MeasureVariable (two-point distance).
