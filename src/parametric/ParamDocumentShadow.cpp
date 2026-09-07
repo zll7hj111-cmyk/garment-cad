@@ -1,4 +1,4 @@
-﻿#include "ParamDocument.h"
+#include "ParamDocument.h"
 
 #include <algorithm>
 #include <cmath>
@@ -229,8 +229,8 @@ bool ParamDocument::buildShadowDetach(const QUuid& attId, Block& outShadow,
     if (!att || att->isPin || !att->fromComponentId.isNull()) return false;
     const Block* master = blockById(att->toBlockId);
     if (!master || master->isShadow) return false;  // 影子基准走 ④ 释放路由
-    // 降级门 (计划 L2-2.1): 桥线/省道/组件成员/多段块/曲线段 → 旧 angleOnly。
-    if (master->isBridge || master->isDart()) return false;
+    // 降级门 (计划 L2-2.1): 桥线/组件成员/多段块/曲线段 → 旧 angleOnly。
+    if (master->isBridge) return false;
     if (master->segments.size() != 1) return false;
     if (componentOfBlock(master->id)) return false;
     const Segment* seg = master->findSegment(att->toSegmentId);

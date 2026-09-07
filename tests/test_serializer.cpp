@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QUuid>
@@ -706,20 +706,6 @@ void TestSerializer::blocksRoundTrip()
     seg.lengthFormula = QStringLiteral("w/3");
     block.addSegment(std::move(seg));
 
-    // 省道线字段 (用户拍板 2026-08, Optional since v7): plain ids are enough
-    // to prove the round-trip — the serializer is a field mirror (references
-    // are validated later by the Resolver, not by blockJson).
-    block.dartStartBlockId = QUuid::createUuid();
-    block.dartStartPointId = QUuid::createUuid();
-    block.dartRefBlockId   = QUuid::createUuid();
-    block.dartRefPointId   = QUuid::createUuid();
-    block.dartRefSegmentId = QUuid::createUuid();
-    block.dartOffsetMm     = 12.5;
-    block.dartOffsetFormula = QStringLiteral("hip/10");
-    block.dartAngleDeg     = 90.0;
-    block.dartAngleFormula = QStringLiteral("beta+5");
-    QVERIFY(block.isDart());
-
     QUuid blockId = block.id;
     src.addBlock(std::move(block));
 
@@ -746,18 +732,6 @@ void TestSerializer::blocksRoundTrip()
     QCOMPARE(rs.showName, true);
     QCOMPARE(rs.showLength, false);
     QCOMPARE(rs.lengthFormula, QStringLiteral("w/3"));
-
-    // 省道线 round-trip.
-    QVERIFY(rb.isDart());
-    QCOMPARE(rb.dartStartBlockId, block.dartStartBlockId);
-    QCOMPARE(rb.dartStartPointId, block.dartStartPointId);
-    QCOMPARE(rb.dartRefBlockId, block.dartRefBlockId);
-    QCOMPARE(rb.dartRefPointId, block.dartRefPointId);
-    QCOMPARE(rb.dartRefSegmentId, block.dartRefSegmentId);
-    QVERIFY(qFuzzyCompare(rb.dartOffsetMm, 12.5));
-    QCOMPARE(rb.dartOffsetFormula, QStringLiteral("hip/10"));
-    QVERIFY(qFuzzyCompare(rb.dartAngleDeg, 90.0));
-    QCOMPARE(rb.dartAngleFormula, QStringLiteral("beta+5"));
 }
 
 void TestSerializer::attachmentsRoundTrip()

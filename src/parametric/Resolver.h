@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QHash>
@@ -33,7 +33,7 @@ struct ResolveDiagnostic {
 
 /// Budget of every bounded fixpoint loop in the resolver (Resolver.cpp and
 /// ParamDocumentResolver.cpp — attachment settle, cross-block intersections,
-/// endpoint aims, dart lines, cross-layer phases, component follow). Each loop
+/// endpoint aims, cross-layer phases, component follow). Each loop
 /// breaks early on the first round that makes no progress, so EXHAUSTING the
 /// budget means the geometry was STILL MOVING on the final allowed round: the
 /// pass did not reach a fixed point and reports NotConverged instead of

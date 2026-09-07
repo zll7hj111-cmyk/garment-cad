@@ -1,4 +1,4 @@
-﻿#include "DocumentSerializer.h"
+#include "DocumentSerializer.h"
 
 #include <algorithm>
 #include <array>
@@ -381,15 +381,6 @@ QJsonObject blockJson(const Block& b) {
         {"endTargetPointId", uuidStr(b.endTargetPointId)},
         {"endTargetOffset", b.endTargetOffset},
         {"endTargetOffsetFormula", b.endTargetOffsetFormula},
-        {"dartStartBlockId", uuidStr(b.dartStartBlockId)},
-        {"dartStartPointId", uuidStr(b.dartStartPointId)},
-        {"dartRefBlockId", uuidStr(b.dartRefBlockId)},
-        {"dartRefPointId", uuidStr(b.dartRefPointId)},
-        {"dartRefSegmentId", uuidStr(b.dartRefSegmentId)},
-        {"dartOffsetMm", b.dartOffsetMm},
-        {"dartOffsetFormula", b.dartOffsetFormula},
-        {"dartAngleDeg", b.dartAngleDeg},
-        {"dartAngleFormula", b.dartAngleFormula},
         {"points", pts},
         {"segments", segs},
     };
@@ -419,16 +410,6 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     b.endTargetPointId = uuidFrom(o["endTargetPointId"].toString());
     b.endTargetOffset = o["endTargetOffset"].toDouble();
     b.endTargetOffsetFormula = o["endTargetOffsetFormula"].toString();
-    // Dart-line constraint (省道线, Optional since v7 — absent = plain line).
-    b.dartStartBlockId  = uuidFrom(o["dartStartBlockId"].toString());
-    b.dartStartPointId  = uuidFrom(o["dartStartPointId"].toString());
-    b.dartRefBlockId    = uuidFrom(o["dartRefBlockId"].toString());
-    b.dartRefPointId    = uuidFrom(o["dartRefPointId"].toString());
-    b.dartRefSegmentId  = uuidFrom(o["dartRefSegmentId"].toString());
-    b.dartOffsetMm      = o["dartOffsetMm"].toDouble();
-    b.dartOffsetFormula = o["dartOffsetFormula"].toString();
-    b.dartAngleDeg      = o["dartAngleDeg"].toDouble(90.0);
-    b.dartAngleFormula  = o["dartAngleFormula"].toString();
     for (const auto& v : o["points"].toArray())
         b.addPoint(pointFrom(v.toObject(), warnings));
     for (const auto& v : o["segments"].toArray())

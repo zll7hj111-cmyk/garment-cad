@@ -110,7 +110,7 @@ Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指�
 - **工具生命周期**：Tool::activate/deactivate 非虚，派生只实现 onActivate/onDeactivate 虚钩子；上下文一次注入 ToolContext；实例常驻（重复点击当前工具 = no-op）；onActivate 必须复位会话状态。
 - **连接角度会话**：条带是纯输入面，连接语义全在 ConnectGesture；会话内条带绝不 push 命令；°/⌒ 切换 = 数值几何保持换算 + 公式原样搬移（不乘系数）；° /⌒ 按钮必须原生 QPushButton + chipButtonStyle + QButtonGroup 互斥；输入锁定只认真桥线 `block->isBridge`。
 - **约束类型分派点登记表**（ParamPoint.h）：改 PointConstraint 枚举必须逐层同步 12 处（清单见 CONVENTIONS.md）；序列化映射已表驱动（DocumentSerializer.cpp 四组枚举表）。
-- **删除影响报告**：新删善后分支必须同步更新 `deleteImpactReport` 与测试（十项计数）。
+- **删除影响报告**：新删善后分支必须同步更新 `deleteImpactReport` 与测试（九项计数，2026-09 下线省道线 dartLinesDegraded 后收敛）。
 - **卡片抽取范式**：子卡片持 doc 指针 + 目标 id，setTarget/refresh 双入口，模型变更经 `changed(ChangeKind)` 信号回报。
 - **卡片基类 CardBase**：五张虚拟列表卡片继承 CardBase；改卡片骨架先改 CardBase 再改派生；indexLabel 固定 objectName（varIndex/cardIndex/linkedIndex/measureIndex/angleIndex）是测试契约勿改。
 - **角度工具收口**：存储域归一化 `normalizeDeg360`/`normalizeDeg180`、显示格式化 `formatDegValue`/`formatDegTrimmed`、弧长↔角度换算 `arcMmToDeg`/`degToArcMm`、双模切换 `followerModeSwitchValues`——统一在 `src/geometry/Angle.h`/`Units.h`/`FollowerAngle.h`，改角度约定只改这几处。

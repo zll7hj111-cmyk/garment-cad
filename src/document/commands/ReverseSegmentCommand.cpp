@@ -1,4 +1,4 @@
-﻿#include "document/commands/ReverseSegmentCommand.h"
+#include "document/commands/ReverseSegmentCommand.h"
 
 #include <cmath>
 #include <algorithm>
@@ -85,8 +85,6 @@ bool ReverseSegmentCommand::canReverse(cad::param::ParamDocument* doc,
         return fail(QString::fromUtf8("端点缺失或重合"));
     if (block->isBridge)
         return fail(QString::fromUtf8("桥接线两端被动, 无换向意义"));
-    if (block->isDart())
-        return fail(QString::fromUtf8("省道线由约束算出, 不可换向"));
     if (!block->endTargetPointId.isNull())
         return fail(QString::fromUtf8("终点指向在驱动方向, 先清除指向再换向"));
 

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 namespace cad::param {
 
@@ -15,7 +15,6 @@ struct DeleteImpact {
     int measureVarsRemoved   = 0;  ///< 删除的测量变量（不可恢复）。
     int angleVarsRemoved     = 0;  ///< 删除的角度测量变量（不可恢复）。
     int formulasBroken       = 0;  ///< 引用被删测量名的公式（将失效报错）。
-    int dartLinesDegraded    = 0;  ///< 失去起点/偏移点而降级为普通线的省道线。
 
     [[nodiscard]] bool hasImpact() const
     {
@@ -23,8 +22,7 @@ struct DeleteImpact {
                intersectionsFrozen > 0 || intersectionsAimCleared > 0 ||
                linkedFrozen > 0 ||
                linkedVarsRemoved > 0 || measureVarsRemoved > 0 ||
-               angleVarsRemoved > 0 || formulasBroken > 0 ||
-               dartLinesDegraded > 0;
+               angleVarsRemoved > 0 || formulasBroken > 0;
     }
     DeleteImpact& operator+=(const DeleteImpact& o)
     {
@@ -37,7 +35,6 @@ struct DeleteImpact {
         measureVarsRemoved  += o.measureVarsRemoved;
         angleVarsRemoved    += o.angleVarsRemoved;
         formulasBroken      += o.formulasBroken;
-        dartLinesDegraded   += o.dartLinesDegraded;
         return *this;
     }
 };

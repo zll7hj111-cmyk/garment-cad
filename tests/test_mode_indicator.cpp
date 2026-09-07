@@ -83,7 +83,6 @@ private slots:
     void selectTogglePersistsInStatusBar();
     void measureCycleReportsPosition();
     void intersectionWActionIsContextual();
-    void smartPenDartModePersists();
     // ── L2 画布角标 (P2) ──
     void canvasBadgeShowsOnlyForNonDefaultMode();
     void canvasBadgeFollowsViewportScroll();
@@ -151,19 +150,6 @@ void TestModeIndicator::intersectionWActionIsContextual()
     QVERIFY2(!f.last().contains(QString::fromUtf8("W 切跟随角度")), qPrintable(f.last()));
     QVERIFY2(!f.last().contains(QString::fromUtf8("W 切绝对角度")), qPrintable(f.last()));
     QVERIFY2(f.last().contains(QString::fromUtf8("瞄准中")), qPrintable(f.last()));
-}
-
-void TestModeIndicator::smartPenDartModePersists()
-{
-    Fixture f;
-    f.tm.switchTool(ToolType::SmartPen);
-    QVERIFY2(f.last().contains(QString::fromUtf8("[直线]")), qPrintable(f.last()));
-
-    pressW(f.tm);
-    QVERIFY2(f.last().contains(QString::fromUtf8("[省道线]")), qPrintable(f.last()));
-    // 省道线的操作序列与直线完全不同 (起点必须吸附已有点), 模式名必须在
-    // 状态栏常驻 —— 只看一眼 toast 是不够的。
-    QVERIFY2(f.last().contains(QString::fromUtf8("W 切直线")), qPrintable(f.last()));
 }
 
 void TestModeIndicator::canvasBadgeShowsOnlyForNonDefaultMode()

@@ -54,10 +54,7 @@ ToolDescriptor ToolSmartPen::describe()
     d.displayName = QString::fromUtf8("智能笔(&L)");
     d.iconName = QStringLiteral("pen");
     d.shortcut = QKeySequence(Qt::Key_L);
-    // M5 (TOOL_SYSTEM_AUDIT): 原提示完全没提 W —— 省道线模式在界面上不可
-    // 发现 (切过去后下一次点击的语义完全不同: 起点必须吸附到已有点, 否则
-    // 直接被拒)。提示带上当前模式 + W 键, 且模式切换时会被实时覆盖。
-    d.hintText = modeIndicatorFor(Mode::Line, State::Idle, 0)
+    d.hintText = modeIndicatorFor(State::Idle, 0)
                      .hint(reinterpret_cast<const char*>(u8"智能笔"));
     d.factory = [] { return std::make_unique<ToolSmartPen>(); };
     return d;
@@ -67,13 +64,8 @@ void ToolSmartPen::onActivate(CanvasScene& scene, cad::param::ParamDocument* par
 {
     (void)scene;
     (void)paramDoc;
-    // 这里刻意直接赋值而不是 setState(): 上面 m_mode 还没复位、下面的
-    // m_leaderPicker 也还是旧的, 此时刷提示会拿半成品状态去算文案。
-    // 统一在末尾 (模式已复位 + 协作对象已重建) 刷一次。
     m_state    = State::Idle;
     m_angleSnap = false;
-    // P2/L5 常驻实例: 每次进入回到直线模式 (旧"销毁重建"即此语义)。
-    m_mode     = Mode::Line;
     m_startSnap.reset();
     m_currentSnap.reset();
     // (Re)create the extracted collaborators with the current context.
@@ -87,8 +79,6 @@ void ToolSmartPen::onActivate(CanvasScene& scene, cad::param::ParamDocument* par
         [this](const QString& msg) {
             if (m_scene) m_scene->showToast(msg);
         });
-    // 常驻实例下每次进入都要把状态栏刷回直线模式 —— 和画布反馈同理, 否则
-    // 上次会话停在省道线而状态栏还写着直线。
     refreshModeIndicator();
 }
 
@@ -103,8 +93,6 @@ void ToolSmartPen::onDeactivate()
 {
     if (m_auxDialog)
         m_auxDialog->close();  // WA_DeleteOnClose; finished(Rejected) → no-op
-    if (m_dartDialog)
-        m_dartDialog->close();  // finished(Rejected) → keeps Drawing state
     clearDialogBlockedCursor();   // M10: 工具切走恢复画布光标
     cancelLine();
     delete m_lineFactory;
@@ -119,10 +107,10 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
 {
     if (!m_scene) return;
 
-    // While a non-modal helper dialog (quick-aux / dart) is open, canvas
+    // While a non-modal helper dialog (quick-aux) is open, canvas
     // clicks are ignored — the stroke waits for the dialog to be answered.
     // M10: 兜底维持 Forbidden 光标 (打开时已设, 防被 hover 路径覆写)。
-    if (m_auxDialog || m_dartDialog) {
+    if (m_auxDialog) {
         showDialogBlockedFeedback();
         return;
     }
@@ -149,22 +137,6 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
     }
 
     if (m_state == State::Idle) {
-        if (m_mode == Mode::Dart) {
-            // 省道线起点 A：必须吸附到已有点（自由起点禁止进入省道模式；
-            // 系统设计点不孤立，均挂线/端点）。线段身点击不创建辅助点。
-            double zoom = m_scene->currentZoom();
-            auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
-            if (!snap) {
-                if (m_scene)
-                    m_scene->showToast(QStringLiteral("省道线起点必须吸附到已有点"));
-                return;
-            }
-            setupSnappedStart(*snap);
-            m_startPool.clear();
-            beginStroke(event->modifiers());  // rubber-band preview toward B
-            return;
-        }
-
         // Line-body quick aux point: the X marker (m_segSnap) is live while
         // the cursor hovers a non-candidate segment body — a click opens the
         // QuickAuxDialog, creates the auxiliary point on the host segment and
@@ -194,20 +166,6 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         startStroke(event->modifiers());
     }
     else if (m_state == State::Drawing) {
-        if (m_mode == Mode::Dart) {
-            // 省道线第二击：选择偏移点 B（线段上的点）。预览线已显示
-            // A→光标；B 确定后弹窗填 偏移 d / 角度 β（默认 90）/ 名称。
-            double zoom = m_scene->currentZoom();
-            auto bSnap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
-            if (!bSnap) {
-                if (m_scene)
-                    m_scene->showToast(QStringLiteral("省道线偏移点必须选择线段上的点"));
-                return;  // stay in Drawing — pick another B
-            }
-            openDartDialog(*bSnap);
-            return;
-        }
-
         // --- Set end point and commit ---
         // 预输入约束优先：长度/角度已由状态栏给定，终点按约束计算，
         // 不再借用线段身辅助点或终点吸附（预输入 = 几何已确定）。
@@ -410,7 +368,7 @@ void ToolSmartPen::mouseMove(QGraphicsSceneMouseEvent* event)
     if (!m_scene) return;
 
     // Freeze hover feedback while a non-modal helper dialog is open.
-    if (m_auxDialog || m_dartDialog) {
+    if (m_auxDialog) {
         showDialogBlockedFeedback();   // M10: 维持 Forbidden + 提示 (toast 同值短路)
         return;
     }
@@ -432,10 +390,7 @@ void ToolSmartPen::mouseMove(QGraphicsSceneMouseEvent* event)
         // Idle: keep the segment-body X marker (quick aux point) in sync with
         // the cursor. This is the ONLY place it is refreshed — without it the
         // marker never appears and line-body aux points cannot be created.
-        // Dart mode keeps the marker hidden (segment-body clicks are reserved
-        // for line mode; the dart flow only snaps to existing points).
-        if (m_mode == Mode::Line)
-            updateSegMarker(cursorPos);
+        updateSegMarker(cursorPos);
         // 上下文属性条: 智能笔**只上报悬停, 从不锁定** —— 这里的点击是
         // 落点/画线, 没有"选中线段"这回事 (用户拍板)。画线中条带显示的是
         // 正在画的那条线 (MainWindow 经 showStrokePreview 驱动), 所以只有
@@ -474,18 +429,13 @@ void ToolSmartPen::keyPress(QKeyEvent* event)
 {
     // The open non-modal helper dialog owns keyboard interaction (its Esc/Enter
     // must not cancel or disturb the pending stroke).
-    if (m_auxDialog || m_dartDialog) return;
+    if (m_auxDialog) return;
 
     if (event->key() == Qt::Key_Shift) {
         m_angleSnap = true;
     }
     else if (event->key() == Qt::Key_W) {
-        if (m_state == State::Idle) {
-            // 工具模式切换统一用 W 键：空闲时循环 直线 ↔ 省道线。
-            // (W instead of Tab: Tab is a focus-navigation key and would move focus.)
-            cycleMode();
-            event->accept();
-        } else if (m_state == State::Drawing
+        if (m_state == State::Drawing
             && m_leaderPicker->candidates().size() > 1) {
             // 画线中：W 循环 leader 候选（构造角参考/吸附目标的切换）。
             m_leaderPicker->setIndex((m_leaderPicker->index() + 1)
@@ -579,53 +529,27 @@ ModeIndicator ToolSmartPen::modeIndicator() const
 {
     const int leaderCount = m_leaderPicker
         ? static_cast<int>(m_leaderPicker->candidates().size()) : 0;
-    return modeIndicatorFor(m_mode, m_state, leaderCount);
+    return modeIndicatorFor(m_state, leaderCount);
 }
 
-ModeIndicator ToolSmartPen::modeIndicatorFor(Mode mode, State state, int leaderCount)
+ModeIndicator ToolSmartPen::modeIndicatorFor(State state, int leaderCount)
 {
     ModeIndicator mi;
-    mi.modeName = (mode == Mode::Dart) ? QString::fromUtf8("省道线")
-                                       : QString::fromUtf8("直线");
+    mi.modeName = QString::fromUtf8("直线");
+    mi.detail  = QString::fromUtf8("点设起点 | 再点设终点 | Shift约束45° | 右键/Esc取消 | 空白右键→选择");
+    mi.isDefault = true;
 
-    if (mode == Mode::Dart) {
-        mi.detail  = QString::fromUtf8("点起点A(须吸附已有点) | 点线段上偏移点B | 填偏移d/角度β | 右键/Esc取消");
-        mi.wAction = QString::fromUtf8("W 切直线");
-        mi.toast   = QString::fromUtf8("省道线模式：点起点A → 点偏移点B → 填偏移 d 与角度");
-    } else {
-        mi.detail  = QString::fromUtf8("点设起点 | 再点设终点 | Shift约束45° | 右键/Esc取消 | 空白右键→选择");
-        mi.wAction = QString::fromUtf8("W 切省道线");
-        mi.toast   = QString::fromUtf8("智能笔：直线模式");
-        // 直线是默认态 → 画布角标不显示; 切到省道线才挂上。省道线的起点
-        // 必须吸附已有点, 否则直接被拒 —— 这个"下一次点击的语义"值得常驻
-        // 提示, 光靠 1.4 秒的 toast 不够。
-        mi.isDefault = true;
-    }
-
-    // 画线中/确认终点态: 把步骤描述换成"当前该做的事" —— Idle 版写的是
-    // "点设起点", 起笔后还挂着这句就是误导。
+    // 画线中/确认终点态: 把步骤描述换成"当前该做的事"
     if (state == State::Drawing)
         mi.detail = QString::fromUtf8("移动预览长度与角度 | 再点设终点 | Shift约束45° | 右键/Esc取消");
     else if (state == State::ConfirmEnd)
         mi.detail = QString::fromUtf8("点击或回车确认终点 | 右键/Esc取消");
 
-    // W 的语义随状态变化: 只有 Idle 才切模式, Drawing 且有多个 leader 候选
-    // 时 W = 循环候选。只跟 mode 走会给出「W 切省道线」这种此刻根本不成立
-    // 的指引 (旧实现正是如此 —— 画线中按 W 会静默循环候选, 提示却说切模式)。
-    if (state != State::Idle) {
-        mi.wAction = (state == State::Drawing && leaderCount > 1)
-                         ? QString::fromUtf8("W 循环 leader 候选")
-                         : QString();   // 单候选/确认终点态 W 无效 → 别提它
+    // W 的语义: Drawing 且有多个 leader 候选时 W = 循环候选
+    if (state == State::Drawing && leaderCount > 1) {
+        mi.wAction = QString::fromUtf8("W 循环 leader 候选");
     }
     return mi;
-}
-
-void ToolSmartPen::cycleMode()
-{
-    m_mode = (m_mode == Mode::Line) ? Mode::Dart : Mode::Line;
-    // 单一出口: toast 讲"刚切成什么了" (1.4s 后消失), 状态栏常驻讲
-    // "现在是哪个模式、W 会切到哪"。
-    announceModeChange();
 }
 
 void ToolSmartPen::showDialogBlockedFeedback()
@@ -634,9 +558,7 @@ void ToolSmartPen::showDialogBlockedFeedback()
     // "工具卡死" (旧实现所有输入被静默吞掉, 光标不变、无提示)。
     if (m_scene && !m_scene->views().isEmpty())
         m_scene->views().first()->viewport()->setCursor(Qt::ForbiddenCursor);
-    const QString toast = m_auxDialog
-        ? QString::fromUtf8("请先完成「快速辅助点」设置")
-        : QString::fromUtf8("请先完成「省道线」设置");
+    const QString toast = QString::fromUtf8("请先完成「快速辅助点」设置");
     // 同值守卫: 文案不变就不重复 toast —— showToast 无内置短路, mouseMove
     // 每帧早退调用会重定位+重启 1400ms 定时器造成刷屏。
     if (m_scene && toast != m_lastDialogToast) {

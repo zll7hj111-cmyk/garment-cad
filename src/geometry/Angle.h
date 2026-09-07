@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cmath>
 #include <numbers>
@@ -34,7 +34,7 @@ inline double normalizeDeg180(double deg)
 }
 
 /// Normalize an angle in degrees to the storage domain [0, 360) (存储域 α —
-/// followerAngle / dart angles / serialization). Formerly duplicated as
+/// followerAngle / serialization). Formerly duplicated as
 /// alphaFromSignedFold in ToolRotate/ConnectGesture/SegmentConnectionCard.
 inline double normalizeDeg360(double deg)
 {

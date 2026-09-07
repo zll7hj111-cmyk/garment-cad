@@ -439,7 +439,6 @@ void LinePropertyDialog::populateFromModel()
     if (m_connCard)  m_connCard->setTarget(m_blockId, m_segmentId);
     if (m_refCard)   m_refCard->setTarget(m_blockId, m_segmentId);
     if (m_angleCard) m_angleCard->setTarget(m_blockId, m_segmentId);
-    if (m_angleCard) m_angleCard->setVisible(!block->isDart());
 
     if (m_endpointSection)
         m_endpointSection->populateFromModel(*block, *seg);
@@ -526,8 +525,6 @@ void LinePropertyDialog::refreshConnHint()
             }
         }
     }
-    if (connHint.isEmpty() && block->isDart())
-        connHint = QString::fromUtf8("省道线");
     m_lblConnHint->setText(connHint);
 }
 

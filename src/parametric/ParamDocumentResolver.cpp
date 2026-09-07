@@ -158,11 +158,6 @@ bool ParamDocument::blockReferences(const Block& b, const QUuid& targetBlockId) 
     // Endpoint-aim target (终点指向).
     if (b.endTargetBlockId == targetBlockId)
         return true;
-    // Dart-line references (省道线): the start pin A and the offset point B
-    // must both re-solve (the dart block re-computes its transform) whenever
-    // their host blocks move.
-    if (b.dartStartBlockId == targetBlockId || b.dartRefBlockId == targetBlockId)
-        return true;
     // Curve-anchor follow target (曲线点跟随).
     for (const auto& pt : b.points)
         if (pt.followBlockId == targetBlockId)

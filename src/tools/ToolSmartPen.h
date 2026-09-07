@@ -37,17 +37,13 @@ class LeaderCandidatePicker;
 
 /// Smart Pen tool — parametric line creation with snapping.
 ///
-/// Two drawing modes cycled with W while idle (直线 ↔ 省道线):
-///   Flow B interaction (直线):
-///     Click → set start (auto-snap) → move → preview + HUD → click → set end (auto-snap)
-///     → line created (host shows the status-bar edit strip, no dialog) → back to Idle.
-///   Dart-line flow (省道线, 用户拍板 2026-08):
-///     Click A (must snap to an existing point) → click B (a point on a segment)
-///     → dialog (offset d, angle β default 90°, name) → line created with its
-///     END point computed as B + d·dir(segment at B + β); length/direction are
-///     recalculated by the Resolver on every change (线是算出来的).
+/// Parametric line creation with snapping.
 ///
-/// Right-click / Esc cancels.  Hold Shift for 45° angle constraint (line mode).
+/// Flow B interaction (直线):
+///   Click → set start (auto-snap) → move → preview + HUD → click → set end (auto-snap)
+///   → line created (host shows the status-bar edit strip, no dialog) → back to Idle.
+///
+/// Right-click / Esc cancels.  Hold Shift for 45° angle constraint.
 class ToolSmartPen : public Tool
 {
 public:
@@ -72,44 +68,21 @@ public:
 private:
     enum class State { Idle, Drawing, ConfirmEnd };
 
-    /// Construction mode, cycled with W while idle.
-    enum class Mode {
-        Line,  ///< Ordinary parametric line (直线).
-        Dart,  ///< Dart line: computed end offset from reference point B (省道线).
-    };
-
     /// 状态迁移入口: 状态决定"此刻按 W 会发生什么" (Drawing 态 W = 循环
-    /// leader 候选, 不是切模式), 所以刷新提示挂在这里, 而不是散在赋值点。
+    /// leader 候选), 所以刷新提示挂在这里, 而不是散在赋值点。
     void setState(State s);
 
-    /// 运行期模式指示 (状态栏 L1 + toast L3)。由 {模式, 状态, leader 候选数}
-    /// 共同决定 —— 见 modeIndicatorFor 的注释。
+    /// 运行期模式指示 (状态栏 L1 + toast L3)。由 {状态, leader 候选数} 共同决定。
     [[nodiscard]] ModeIndicator modeIndicator() const override;
 
-    /// 纯函数版: 静态 describe() (默认 = 直线 + Idle) 与运行期覆盖共用这一处,
-    /// 替代原 hintForMode(Mode) —— 两处文案不可能漂移。
+    /// 纯函数版: 静态 describe() (默认 = Idle) 与运行期覆盖共用这一处。
     /// @param leaderCount Drawing 态的 leader 候选数; >1 时 W = 循环候选。
-    [[nodiscard]] static ModeIndicator modeIndicatorFor(Mode mode, State state,
-                                                        int leaderCount);
+    [[nodiscard]] static ModeIndicator modeIndicatorFor(State state, int leaderCount);
 
     void commitLine(const cad::geo::Vec2& end,
                     const std::optional<SnapResult>& endSnap);
     void cancelLine();
     void clearPreview();
-
-    /// Cycle the construction mode (W while Idle) and announce it.
-    void cycleMode();
-    /// Commit a dart line from the picked start A and reference B.
-    /// Offset/angle formulas (cm domain) are stored live-linked when non-empty.
-    void commitDartLine(const QUuid& aBlockId, const QUuid& aPointId,
-                        const QUuid& bBlockId, const QUuid& bPointId,
-                        double offsetMm, double angleDeg, const QString& name,
-                        const QString& offsetFormula = {},
-                        const QString& angleFormula = {});
-    /// Open the NON-modal dart parameter dialog (offset d, angle β default 90,
-    /// name). Non-modal so the user can switch to the variable/formula panel
-    /// and copy while it stays open; canvas clicks stay ignored until answered.
-    void openDartDialog(const SnapResult& bSnap);
 
     [[nodiscard]] cad::geo::Vec2 applyAngleSnap(const cad::geo::Vec2& raw) const;
     void updatePreview(const cad::geo::Vec2& effectiveEnd);
@@ -206,7 +179,6 @@ private:
     void consumePreInput();
 
     State m_state = State::Idle;
-    Mode  m_mode  = Mode::Line;  ///< Construction mode (W cycles while Idle).
 
     LinePreInput m_preInput;       ///< Pending pre-input from the status bar.
     /// 预输入值计算 (阶段 3 拆分): capture/apply/fixed/build/consume 迁入
@@ -232,9 +204,6 @@ private:
     bool m_auxDialogForStart = false;          ///< true = start scenario, false = end.
     SegmentSnapResult m_auxDialogSegSnap;      ///< Host segment captured at open time.
 
-    // Non-modal dart parameter dialog (省道线弹窗). Kept non-modal so the
-    // user can switch to the variable/formula panel and copy while it is open.
-    QPointer<QDialog> m_dartDialog;            ///< Open dialog (null when none).
     /// M10: 上次弹窗阻塞提示文案 (同值守卫 —— mouseMove 每帧早退不刷 toast)。
     QString m_lastDialogToast;
 

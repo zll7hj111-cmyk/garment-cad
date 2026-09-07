@@ -389,7 +389,6 @@ add_library(gcad_tools STATIC
     src/tools/ToolSmartPen.h
     src/tools/ToolSmartPen.cpp
     src/tools/SmartPenEndConfirm.cpp
-    src/tools/SmartPenDart.cpp
     src/tools/SmartPenAuxPoint.cpp
     src/tools/SmartPenStrokeInput.h
     src/tools/SmartPenStrokeInput.cpp
