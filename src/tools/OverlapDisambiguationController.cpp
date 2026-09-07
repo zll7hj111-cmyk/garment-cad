@@ -2,7 +2,7 @@
 
 #include "canvas/CanvasScene.h"
 #include "canvas/BlockItem.h"
-#include "canvas/HudItem.h"
+#include "canvas/OverlapBatteryHud.h"
 #include "parametric/Block.h"
 #include "parametric/DomainViews.h"
 #include "geometry/Vec2.h"
@@ -47,11 +47,61 @@ OverlapDisambiguationController::collect(const cad::geo::Vec2& worldPos) const
     return out;
 }
 
+QList<OverlapDisambiguationController::Candidate>
+OverlapDisambiguationController::collectPoints(const cad::geo::Vec2& worldPos, double zoom) const
+{
+    QList<Candidate> out;
+    if (!m_scene || !m_paramDoc) return out;
+    if (zoom < 1e-9) zoom = 1.0;
+
+    const double reach = 10.0 / zoom;  // 10px 抓取半径转用户单位
+    const QUuid activeLayer = m_paramDoc->activeLayer();
+
+    struct PtEntry {
+        const cad::param::Block* block = nullptr;
+        cad::param::ParamPoint pt;
+        cad::geo::Vec2 wpos;
+    };
+    std::vector<PtEntry> nearby;
+
+    for (const auto& blk : m_paramDoc->blocks()) {
+        if (!activeLayer.isNull() && blk.layer != activeLayer)
+            continue;
+        for (const auto& pt : blk.points) {
+            if (!pt.resolved) continue;
+            const cad::geo::Vec2 wp = blk.worldPos(pt.id);
+            if (wp.distanceTo(worldPos) <= reach) {
+                nearby.push_back({&blk, pt, wp});
+            }
+        }
+    }
+
+    if (nearby.size() < 2) return out;
+
+    // 按到光标的距离排序
+    std::sort(nearby.begin(), nearby.end(), [&](const PtEntry& a, const PtEntry& b) {
+        return a.wpos.distanceTo(worldPos) < b.wpos.distanceTo(worldPos);
+    });
+
+    const cad::geo::Vec2 refPos = nearby.front().wpos;
+    constexpr double kOverlapEps = 0.5; // mm 容差内视为同一重叠点
+
+    for (const auto& entry : nearby) {
+        if (entry.wpos.distanceTo(refPos) <= kOverlapEps) {
+            out.append(makePointCandidate(*entry.block, entry.pt));
+        }
+    }
+
+    if (out.size() < 2) out.clear();
+    return out;
+}
+
 OverlapDisambiguationController::Candidate
 OverlapDisambiguationController::makeCandidate(const cad::param::Block& blk,
                                               const QUuid& segmentId) const
 {
     Candidate c;
+    c.kind = Candidate::Kind::Segment;
     c.blockId = blk.id;
     c.segmentId = segmentId;
     const cad::param::Segment* seg = nullptr;
@@ -60,11 +110,16 @@ OverlapDisambiguationController::makeCandidate(const cad::param::Block& blk,
     if (!seg && !blk.segments.empty())
         seg = &blk.segments.front();
 
-    // 显示名: 线段名 → 块名 → 线段 serial (可读 ID, 无名的重叠也有身份).
+    c.serial = seg ? seg->serial.toInt() : 0;
+    c.title = seg ? (seg->serial.startsWith(QLatin1Char('L')) ? seg->serial : QStringLiteral("L%1").arg(seg->serial)) : QStringLiteral("L");
+
+    // 显示名: 线段名 → 块名 → 线段 serial
     if (seg && !seg->name.isEmpty())        c.name = seg->name;
     else if (!blk.name.isEmpty())           c.name = blk.name;
     else if (seg && !seg->serial.isEmpty()) c.name = seg->serial;
     else                                    c.name = QString::fromUtf8("(未命名)");
+
+    c.blockName = blk.name;
 
     bool isOrtho = false;
     if (seg) {
@@ -85,6 +140,38 @@ OverlapDisambiguationController::makeCandidate(const cad::param::Block& blk,
     return c;
 }
 
+OverlapDisambiguationController::Candidate
+OverlapDisambiguationController::makePointCandidate(const cad::param::Block& blk,
+                                                    const cad::param::ParamPoint& pt) const
+{
+    Candidate c;
+    c.kind = Candidate::Kind::Point;
+    c.blockId = blk.id;
+    c.pointId = pt.id;
+    c.segmentId = blk.exitSegmentAtPoint(pt.id);
+    c.serial = 0;
+    c.title = pt.serial.isEmpty() ? QStringLiteral("P") : pt.serial;
+    c.name = !pt.name.isEmpty() ? pt.name : (!blk.name.isEmpty() ? blk.name : c.title);
+    c.blockName = blk.name;
+    c.isPlaced = pt.isPlaced;
+    c.isAuxiliary = pt.isAuxiliary;
+    c.isCurveAnchor = false;
+
+    if (pt.isPlaced) {
+        c.roleText = QString::fromUtf8("放置点");
+    } else if (pt.isAuxiliary) {
+        c.roleText = QString::fromUtf8("辅助点");
+    } else {
+        c.roleText = QString::fromUtf8("端点");
+    }
+
+    c.layerName.clear();
+    for (const auto& l : m_paramDoc->layers())
+        if (l.id == blk.layer) { c.layerName = l.name; break; }
+
+    return c;
+}
+
 // ── 循环上下文 ──
 
 void OverlapDisambiguationController::activate(const QList<Candidate>& cands,
@@ -93,23 +180,20 @@ void OverlapDisambiguationController::activate(const QList<Candidate>& cands,
 {
     if (cands.size() < 2) { deactivate(); return; }
     m_candidates = cands;
-    // 与单击命中一致: 首项 = hitBlock 首选; 找不到时取 0.
     int idx = 0;
     for (int i = 0; i < m_candidates.size(); ++i)
         if (m_candidates[i].blockId == hitBlockId) { idx = i; break; }
     m_index = idx;
     m_anchor = anchor;
     applyPick(m_index);
-    // 常驻循环 HUD (锚定集群, 不随光标走).
-    const auto& c = m_candidates[m_index];
-    showHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
-                 .arg(m_candidates.size())
-                 .arg(m_index + 1)
-                 .arg(m_candidates.size())
-                 .arg(c.roleText)
-                 .arg(c.name),
-             m_anchor);
-    // 进入循环上下文: W 的语义从"切模式"变成"循环候选", 状态栏整句要跟着换。
+
+    // 联动展开电池组 HUD
+    showBattery(anchor, m_candidates, cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+    if (m_batteryHud) {
+        m_batteryHud->setHoveredIndex(m_index);
+        m_batteryHud->setSelectedIndex(m_index);
+    }
+
     m_modeFn();
 }
 
@@ -117,8 +201,7 @@ void OverlapDisambiguationController::deactivate()
 {
     m_index = -1;
     m_candidates.clear();
-    hideHint();
-    // 状态没变但"此刻按 W 会发生什么"变了 (从循环候选回到切模式)。
+    hideBattery();
     m_modeFn();
 }
 
@@ -126,12 +209,17 @@ void OverlapDisambiguationController::cycle()
 {
     if (m_index < 0 || m_candidates.isEmpty()) return;
 
-    // 剔除已消失的块 (拖走/删除后名单失效), 实时重取身份信息.
+    // 剔除已消失的块, 实时重取身份信息
     QList<Candidate> live;
     for (const auto& c : m_candidates) {
         const auto* blk = m_paramDoc->blocksView().byId(c.blockId);
         if (!blk) continue;
-        live.append(makeCandidate(*blk, c.segmentId));
+        if (c.kind == Candidate::Kind::Point) {
+            if (const auto* pt = blk->findPoint(c.pointId))
+                live.append(makePointCandidate(*blk, *pt));
+        } else {
+            live.append(makeCandidate(*blk, c.segmentId));
+        }
     }
     if (live.isEmpty()) { deactivate(); return; }
     if (live.size() != m_candidates.size())
@@ -140,16 +228,12 @@ void OverlapDisambiguationController::cycle()
 
     m_index = (m_index + 1) % m_candidates.size();
     applyPick(m_index);
-    const auto& c = m_candidates[m_index];
-    showHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
-                 .arg(m_candidates.size())
-                 .arg(m_index + 1)
-                 .arg(m_candidates.size())
-                 .arg(c.roleText)
-                 .arg(c.name),
-             m_anchor);
-    // 循环后状态栏的「第 x/y 项」要跟着走 —— 这是持久层相对 HUD 的价值:
-    // HUD 锚在集群上可能被遮挡, 状态栏永远在读同一份索引。
+
+    if (m_batteryHud) {
+        m_batteryHud->setHoveredIndex(m_index);
+        m_batteryHud->setSelectedIndex(m_index);
+    }
+
     m_modeFn();
 }
 
@@ -157,7 +241,11 @@ void OverlapDisambiguationController::applyPick(int index)
 {
     if (index < 0 || index >= m_candidates.size()) return;
     const auto& c = m_candidates[index];
-    if (m_selFn) m_selFn(c.blockId, c.segmentId);
+    if (c.kind == Candidate::Kind::Point) {
+        if (m_pointSelFn) m_pointSelFn(c.blockId, c.pointId);
+    } else {
+        if (m_selFn) m_selFn(c.blockId, c.segmentId);
+    }
 }
 
 void OverlapDisambiguationController::pick(int index)
@@ -165,84 +253,151 @@ void OverlapDisambiguationController::pick(int index)
     if (index < 0 || index >= m_candidates.size()) return;
     m_index = index;
     applyPick(index);
-    const auto& c = m_candidates[index];
-    showHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
-                 .arg(m_candidates.size())
-                 .arg(index + 1)
-                 .arg(m_candidates.size())
-                 .arg(c.roleText)
-                 .arg(c.name),
-             m_anchor);
+
+    if (m_batteryHud) {
+        m_batteryHud->setHoveredIndex(m_index);
+        m_batteryHud->setSelectedIndex(m_index);
+    }
 }
 
-// ── 悬停提示 ──
+// ── 电池组 HUD (引线 + 胶囊卡片, 任务 4) ──
 
-void OverlapDisambiguationController::refreshHint(
-    const cad::geo::Vec2& worldPos, const QList<Candidate>* precomputed)
+void OverlapDisambiguationController::showBattery(
+    const cad::geo::Vec2& worldPos, const QList<Candidate>& cands,
+    cad::canvas::OverlapBatteryHud::DisplayMode mode)
 {
-    if (m_index >= 0 && !m_candidates.isEmpty()) {
-        // 循环上下文已存在: HUD 锚定集群位置, 不随光标移动; 同值短路由
-        // showHint 内部处理 (拖帧路径零重建).
-        const auto& c = m_candidates[m_index];
-        showHint(QString::fromUtf8("重叠 %1 条 ｜ 第 %2/%3 ｜ %4 %5（W 循环）")
-                     .arg(m_candidates.size())
-                     .arg(m_index + 1)
-                     .arg(m_candidates.size())
-                     .arg(c.roleText)
-                     .arg(c.name),
-                 m_anchor);
+    if (!m_scene || !m_paramDoc || cands.isEmpty()) {
+        hideBattery();
         return;
     }
 
-    const QList<Candidate> cands = precomputed ? *precomputed : collect(worldPos);
-    if (cands.size() >= 2) {
-        QString text = QString::fromUtf8("此处重叠 %1 条 ｜").arg(cands.size());
-        for (int i = 0; i < cands.size(); ++i) {
-            if (i) text += QStringLiteral("、");
-            text += cands[i].name;
-        }
-        text += QString::fromUtf8("（点选后按 W 循环）");
-        showHint(text, worldPos);
-    } else {
-        hideHint();
+    m_batteryAnchor = worldPos;
+    m_batteryCandidates = cands;
+
+    std::vector<cad::canvas::BatteryCandidate> bCands;
+    bCands.reserve(cands.size());
+    for (const auto& c : cands) {
+        cad::canvas::BatteryCandidate bc;
+        bc.kind = (c.kind == Candidate::Kind::Point)
+            ? cad::canvas::BatteryCandidate::Kind::Point
+            : cad::canvas::BatteryCandidate::Kind::Segment;
+        bc.blockId = c.blockId;
+        bc.pointId = c.pointId;
+        bc.segmentId = c.segmentId;
+        bc.serial = c.serial;
+        bc.title = c.title;
+        bc.name = c.name;
+        bc.blockName = c.blockName;
+        bc.layerName = c.layerName;
+        bc.roleText = c.roleText;
+        bc.metricValue = c.lengthMm;
+        bc.isPlaced = c.isPlaced;
+        bc.isAuxiliary = c.isAuxiliary;
+        bc.isCurveAnchor = c.isCurveAnchor;
+        bCands.push_back(bc);
+    }
+
+    if (!m_batteryHud) {
+        m_batteryHud = new cad::canvas::OverlapBatteryHud();
+        m_scene->addItem(m_batteryHud);
+        m_managed.own(m_batteryHud, &m_batteryHud);
+    }
+
+    m_batteryHud->setCandidates(std::move(bCands));
+    m_batteryHud->setConnectMode(false);
+    m_batteryHud->setDisplayMode(mode);
+
+    const QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
+    m_batteryHud->updatePosition(worldPos, view);
+    m_batteryHud->setVisible(true);
+}
+
+void OverlapDisambiguationController::hideBattery()
+{
+    m_batteryCandidates.clear();
+    if (m_batteryHud) {
+        m_managed.release(m_batteryHud);
     }
 }
 
-void OverlapDisambiguationController::showHint(const QString& text,
-                                                const cad::geo::Vec2& anchor)
+bool OverlapDisambiguationController::hasBattery() const
 {
-    if (!m_scene) return;
-    if (text == m_hitText && m_hint && m_hint->isVisible())
-        return;  // 同值短路: 悬停/拖帧路径不重构 HUD
-
-    if (!m_hint) {
-        m_hint = new HudItem();
-        m_hint->setLook(HudItem::Look::DarkPill);
-        m_hint->setZValue(9990.0);
-        m_scene->addItem(m_hint);
-    }
-    m_hitText = text;
-    m_hint->setText(text);
-    // 锚点右下 12px 屏幕常量 (HudItem 内部除以 zoom; 原实现写 12 场景单位,
-    // 缩放下与光标忽远忽近 —— M1)。
-    QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    m_hint->moveToPoint(anchor, view, QPointF(12.0, 12.0));
-    m_hint->show();
+    return m_batteryHud != nullptr && m_batteryHud->isVisible() &&
+           m_batteryHud->displayMode() != cad::canvas::OverlapBatteryHud::DisplayMode::Hidden;
 }
 
-void OverlapDisambiguationController::hideHint()
+cad::canvas::OverlapBatteryHud::DisplayMode OverlapDisambiguationController::batteryMode() const
 {
-    if (m_hint) m_hint->setText(QString());
-    if (m_hint) m_hint->hide();
-    // 清缓存重触发: 每次都重新隐现
-    m_hitText.clear();
+    return m_batteryHud ? m_batteryHud->displayMode() : cad::canvas::OverlapBatteryHud::DisplayMode::Hidden;
+}
+
+void OverlapDisambiguationController::setBatteryMode(cad::canvas::OverlapBatteryHud::DisplayMode mode)
+{
+    if (m_batteryHud) {
+        m_batteryHud->setDisplayMode(mode);
+    }
+}
+
+int OverlapDisambiguationController::hitBatteryCandidateAt(const QPointF& scenePos, double zoom) const
+{
+    if (!hasBattery()) return -1;
+    return m_batteryHud->hitCandidateAtScene(scenePos, zoom);
+}
+
+int OverlapDisambiguationController::hitBatteryCandidateAtWorld(const cad::geo::Vec2& worldPos, double zoom) const
+{
+    if (!hasBattery()) return -1;
+    return m_batteryHud->hitCandidateAtWorld(worldPos, zoom);
+}
+
+bool OverlapDisambiguationController::hitBatteryBadgeAt(const QPointF& scenePos, double zoom) const
+{
+    if (!hasBattery()) return false;
+    return m_batteryHud->hitBadgeAtScene(scenePos, zoom);
+}
+
+void OverlapDisambiguationController::setBatteryHoveredIndex(int index)
+{
+    if (m_batteryHud) {
+        m_batteryHud->setHoveredIndex(index);
+    }
+}
+
+int OverlapDisambiguationController::batteryHoveredIndex() const
+{
+    return m_batteryHud ? m_batteryHud->hoveredIndex() : -1;
+}
+
+void OverlapDisambiguationController::setBatterySelectedIndex(int index)
+{
+    if (m_batteryHud) {
+        m_batteryHud->setSelectedIndex(index);
+    }
+}
+
+int OverlapDisambiguationController::batterySelectedIndex() const
+{
+    return m_batteryHud ? m_batteryHud->selectedIndex() : -1;
+}
+
+int OverlapDisambiguationController::batteryCandidateCount() const
+{
+    return m_batteryCandidates.size();
+}
+
+OverlapDisambiguationController::Candidate
+OverlapDisambiguationController::batteryCandidateAt(int index) const
+{
+    if (index >= 0 && index < m_batteryCandidates.size())
+        return m_batteryCandidates[index];
+    return Candidate{};
 }
 
 void OverlapDisambiguationController::dispose()
 {
-    deactivate();
-    delete m_hint;
-    m_hint = nullptr;
+    m_index = -1;
+    m_candidates.clear();
+    hideBattery();
 }
 
 } // namespace cad::tools

@@ -1,4 +1,4 @@
-﻿#include "ConnectGesture.h"
+#include "ConnectGesture.h"
 
 #include <cmath>
 #include <utility>
@@ -183,8 +183,39 @@ void ConnectGesture::removeSourcePortMarker()
 
 void ConnectGesture::move(const Vec2& pos)
 {
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    if (zoom < 1e-9) zoom = 1.0;
+
     if (m_state == SelectState::ConfirmTarget) {
-        updateCandidateHighlight(pos, m_confirmCandidates);
+        if (m_overlap.hasBatteryLandingPads()) {
+            const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
+            int hitIdx = m_overlap.hitBatteryCandidateAt(scenePt, zoom);
+            if (hitIdx >= 0 && hitIdx < static_cast<int>(m_confirmCandidates.size())) {
+                m_overlap.setBatteryHoveredIndex(hitIdx);
+                const auto& cand = m_confirmCandidates[hitIdx];
+                m_overlap.highlightCandidate(cand.blockId, cand.segId);
+            } else {
+                // Moving on canvas: find candidate segment under cursor
+                QUuid hitBlock, hitSeg;
+                int candIdx = -1;
+                if (const auto segSnap = m_snapEngine.findSegmentSnap(
+                        pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx())) {
+                    for (int i = 0; i < static_cast<int>(m_confirmCandidates.size()); ++i) {
+                        if (m_confirmCandidates[i].blockId == segSnap->blockId &&
+                            m_confirmCandidates[i].segId == segSnap->segmentId) {
+                            hitBlock = segSnap->blockId;
+                            hitSeg = segSnap->segmentId;
+                            candIdx = i;
+                            break;
+                        }
+                    }
+                }
+                m_overlap.setBatteryHoveredIndex(candIdx);
+                m_overlap.highlightCandidate(hitBlock, hitSeg);
+            }
+        } else {
+            updateCandidateHighlight(pos, m_confirmCandidates);
+        }
         return;
     }
     if (m_state == SelectState::ConfirmSource) {
@@ -203,14 +234,69 @@ void ConnectGesture::move(const Vec2& pos)
     auto* blk = m_paramDoc->findBlock(m_connectFromBlock);
     if (!blk) return;
 
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    // Check if cursor hits an existing battery landing pad chip
+    std::optional<SnapResult> snap;
+    int batteryHitIdx = -1;
+    if (m_overlap.hasBatteryLandingPads()) {
+        const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
+        batteryHitIdx = m_overlap.hitBatteryCandidateAt(scenePt, zoom);
+        m_overlap.setBatteryHoveredIndex(batteryHitIdx);
+        if (batteryHitIdx >= 0 && batteryHitIdx < static_cast<int>(m_confirmCandidates.size())) {
+            const auto& cand = m_confirmCandidates[batteryHitIdx];
+            const auto* cb = m_paramDoc->findBlock(cand.blockId);
+            const Vec2 wpos = cb ? cb->worldPos(cand.pointId) : pos;
+            snap = SnapResult{wpos, cand.blockId, cand.pointId, QString()};
+            m_overlap.highlightCandidate(cand.blockId, cand.segId);
+        } else {
+            m_overlap.removeConfirmHighlight();
+        }
+    }
 
-    // Generous radius while connecting: dropping onto a target must feel easy.
-    auto snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom, kConnectSnapRadius,
-                                      {}, &m_connectFromBlock);
-    if (snap.has_value()) {
-        if (snap->blockId == m_connectFromBlock) {
-            snap.reset();
+    // If not hovering a battery chip, search normal snap
+    if (batteryHitIdx < 0) {
+        snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom, kConnectSnapRadius,
+                                     {}, &m_connectFromBlock);
+        if (snap.has_value()) {
+            if (snap->blockId == m_connectFromBlock) {
+                snap.reset();
+            }
+        }
+    }
+
+    // Overlapping detection while dragging: auto-expand battery landing pads
+    if (snap.has_value() && !isComponentConnect()) {
+        if (!m_overlap.hasBatteryLandingPads()) {
+            const auto allCands = m_snapEngine.findSnapCandidates(
+                pos, m_paramDoc, zoom, kConnectSnapRadius, {}, &m_connectFromBlock);
+            std::vector<SnapResult> pool;
+            for (const auto& c : allCands) {
+                if (c.blockId == m_connectFromBlock) continue;
+                if (lineConnectValid(c.blockId, c.pointId))
+                    pool.push_back(c);
+            }
+            std::vector<SnapResult> overlap;
+            for (const auto& c : pool)
+                if (c.worldPos.distanceTo(snap->worldPos) < kSnapOverlapEps)
+                    overlap.push_back(c);
+
+            if (overlap.size() > 1) {
+                m_confirmCandidates = m_overlap.collectConfirmCandidates(
+                    snap->worldPos, m_connectFromBlock);
+                if (!m_confirmCandidates.empty()) {
+                    m_overlap.showBatteryLandingPads(snap->worldPos, m_confirmCandidates);
+                }
+            }
+        }
+    } else if (m_overlap.hasBatteryLandingPads() && batteryHitIdx < 0) {
+        // If moved away from the overlap cluster, collapse landing pads
+        if (!m_confirmCandidates.empty()) {
+            const double threshold = (kConnectSnapRadius / zoom) * 3.5;
+            const auto* cb = m_paramDoc->findBlock(m_confirmCandidates.front().blockId);
+            const Vec2 refWpos = cb ? cb->worldPos(m_confirmCandidates.front().pointId) : pos;
+            if (pos.distanceTo(refWpos) > threshold) {
+                m_overlap.hideBatteryLandingPads();
+                m_confirmCandidates.clear();
+            }
         }
     }
 
@@ -267,6 +353,29 @@ void ConnectGesture::release(const Vec2& pos)
     removeConnectHalo();
     bool connected = false;
 
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    if (zoom < 1e-9) zoom = 1.0;
+
+    // Direct release over battery landing pad chip
+    if (m_overlap.hasBatteryLandingPads()) {
+        const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
+        int hitIdx = m_overlap.hitBatteryCandidateAt(scenePt, zoom);
+        if (hitIdx >= 0 && hitIdx < static_cast<int>(m_confirmCandidates.size())) {
+            const auto cand = m_confirmCandidates[hitIdx];
+            m_overlap.hideBatteryLandingPads();
+            removeConfirmHighlight();
+            connected = attachToTarget(cand.blockId, cand.pointId, cand.segId);
+            m_confirmCandidates.clear();
+            if (!connected) commitConnectMove();
+            if (m_state != SelectState::AngleInput) {
+                m_connectFromBlock = QUuid();
+                m_connectFromPoint = QUuid();
+                m_connectTarget.reset();
+            }
+            return;
+        }
+    }
+
     if (m_connectTarget.has_value() && m_paramDoc) {
         // Overlapping-target disambiguation: gather every candidate within the
         // snap radius that would actually attach, then check whether several
@@ -274,7 +383,6 @@ void ConnectGesture::release(const Vec2& pos)
         // stacked at one position). Ambiguous → ConfirmTarget: the user clicks
         // the intended leader segment (its endpoint on the connection spot is
         // the anchor, its id becomes toSegmentId).
-        double zoom = m_scene ? m_scene->currentZoom() : 1.0;
         const auto allCands = m_snapEngine.findSnapCandidates(
             pos, m_paramDoc, zoom, kConnectSnapRadius, {}, &m_connectFromBlock);
         std::vector<SnapResult> pool;
@@ -300,14 +408,15 @@ void ConnectGesture::release(const Vec2& pos)
 
             if (overlap.size() > 1 && !isComponentConnect()) {
                 // Multiple points stacked here — ask the user to confirm the
-                // leader by clicking one of the candidate segments.
+                // leader by clicking one of the candidate chips or segments.
                 m_confirmCandidates = m_overlap.collectConfirmCandidates(
                     refPos, m_connectFromBlock);
                 if (!m_confirmCandidates.empty()) {
+                    m_overlap.showBatteryLandingPads(refPos, m_confirmCandidates);
                     setState(SelectState::ConfirmTarget);
                     if (m_scene)
                         m_scene->showToast(QString::fromUtf8(
-                            "连接位置存在多个重叠点：点选基准线段确认连接"));  // 连接位置存在多个重叠点：点选基准线段确认连接
+                            "连接位置存在多个重叠点：点选芯片卡片或基准线段确认连接"));
                     return;
                 }
             }
@@ -332,12 +441,30 @@ void ConnectGesture::pressConfirmTarget(const Vec2& pos)
 {
     if (!m_paramDoc || !m_scene) { cancel(); return; }
     double zoom = m_scene->currentZoom();
+    if (zoom < 1e-9) zoom = 1.0;
+
+    // Check battery chip click
+    if (m_overlap.hasBatteryLandingPads()) {
+        const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
+        int hitIdx = m_overlap.hitBatteryCandidateAt(scenePt, zoom);
+        if (hitIdx >= 0 && hitIdx < static_cast<int>(m_confirmCandidates.size())) {
+            const auto cand = m_confirmCandidates[hitIdx];
+            m_overlap.hideBatteryLandingPads();
+            removeConfirmHighlight();
+            m_confirmCandidates.clear();
+            if (attachToTarget(cand.blockId, cand.pointId, cand.segId))
+                return;
+            cancel();
+            return;
+        }
+    }
 
     const auto segSnap = m_snapEngine.findSegmentSnap(
         pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
     if (segSnap) {
         for (const auto& cand : m_confirmCandidates) {
             if (cand.blockId == segSnap->blockId && cand.segId == segSnap->segmentId) {
+                m_overlap.hideBatteryLandingPads();
                 removeConfirmHighlight();
                 m_confirmCandidates.clear();
                 if (attachToTarget(cand.blockId, cand.pointId, cand.segId))
@@ -347,6 +474,7 @@ void ConnectGesture::pressConfirmTarget(const Vec2& pos)
         }
     }
     // Blank or non-candidate click: abort the whole gesture.
+    m_overlap.hideBatteryLandingPads();
     removeConfirmHighlight();
     m_confirmCandidates.clear();
     cancel();
@@ -459,6 +587,7 @@ void ConnectGesture::cancel()
     removeConnectHalo();
     removeConfirmHighlight();
     removeSourcePortMarker();
+    m_overlap.hideBatteryLandingPads();
     m_confirmCandidates.clear();
     m_selectedSourceCandidate.reset();
     m_componentSwitchCandidates.clear();

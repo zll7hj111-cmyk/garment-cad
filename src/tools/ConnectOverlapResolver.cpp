@@ -1,4 +1,4 @@
-﻿#include "ConnectOverlapResolver.h"
+#include "ConnectOverlapResolver.h"
 
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
@@ -13,6 +13,8 @@
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"           // Coord::toScene
 #include "tools/ConnectGesture.h"    // kConnectSnapRadius (吸附环半径常量)
+#include "canvas/OverlapBatteryHud.h"
+#include <QGraphicsView>
 #include "ui/Theme.h"
 
 namespace cad::tools {
@@ -85,6 +87,50 @@ ConnectOverlapResolver::collectComponentSwitchCandidates(
 
 // ── ConfirmTarget 高亮 ──
 
+void ConnectOverlapResolver::highlightCandidate(const QUuid& blockId, const QUuid& segId)
+{
+    if (!m_paramDoc || !m_scene || blockId.isNull() || segId.isNull()) {
+        if (m_confirmHighlight) m_confirmHighlight->setVisible(false);
+        return;
+    }
+    const auto* blk = m_paramDoc->findBlock(blockId);
+    const auto* seg = blk ? blk->findSegment(segId) : nullptr;
+    if (!seg) {
+        if (m_confirmHighlight) m_confirmHighlight->setVisible(false);
+        return;
+    }
+    const auto* sp = blk->findPoint(seg->startPointId);
+    const auto* ep = blk->findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) {
+        if (m_confirmHighlight) m_confirmHighlight->setVisible(false);
+        return;
+    }
+
+    if (!m_confirmHighlight) {
+        m_confirmHighlight = new QGraphicsPathItem();
+        m_managed.own(m_confirmHighlight, &m_confirmHighlight);
+        QPen pen(QColor(0xF39C12), 3.0);
+        pen.setCosmetic(true);
+        m_confirmHighlight->setPen(pen);
+        m_confirmHighlight->setBrush(Qt::NoBrush);
+        m_confirmHighlight->setZValue(101.0);
+        m_scene->addItem(m_confirmHighlight);
+    }
+    QPainterPath path;
+    const auto* curveSpan = blk->curveSpanEntry(seg->id);
+    if (curveSpan && !curveSpan->flatLocal.empty()) {
+        path.moveTo(cad::geo::Coord::toScene(blk->transform.toWorld(curveSpan->flatLocal.front())));
+        for (size_t i = 1; i < curveSpan->flatLocal.size(); ++i) {
+            path.lineTo(cad::geo::Coord::toScene(blk->transform.toWorld(curveSpan->flatLocal[i])));
+        }
+    } else {
+        path.moveTo(cad::geo::Coord::toScene(blk->worldPos(sp->id)));
+        path.lineTo(cad::geo::Coord::toScene(blk->worldPos(ep->id)));
+    }
+    m_confirmHighlight->setPath(path);
+    m_confirmHighlight->setVisible(true);
+}
+
 void ConnectOverlapResolver::updateHighlightAt(
     const Vec2& pos, const std::vector<ConfirmCandidate>& candidates)
 {
@@ -103,31 +149,7 @@ void ConnectOverlapResolver::updateHighlightAt(
         }
     }
 
-    if (hitSeg.isNull()) {
-        if (m_confirmHighlight) m_confirmHighlight->setVisible(false);
-        return;
-    }
-    const auto* blk = m_paramDoc->findBlock(hitBlock);
-    const auto* seg = blk ? blk->findSegment(hitSeg) : nullptr;
-    const auto* sp = seg ? blk->findPoint(seg->startPointId) : nullptr;
-    const auto* ep = seg ? blk->findPoint(seg->endPointId) : nullptr;
-    if (!sp || !ep || !sp->resolved || !ep->resolved) return;
-
-    if (!m_confirmHighlight) {
-        m_confirmHighlight = new QGraphicsPathItem();
-        m_managed.own(m_confirmHighlight, &m_confirmHighlight);
-        QPen pen(QColor(0xF39C12), 3.0);
-        pen.setCosmetic(true);
-        m_confirmHighlight->setPen(pen);
-        m_confirmHighlight->setBrush(Qt::NoBrush);
-        m_confirmHighlight->setZValue(101.0);
-        m_scene->addItem(m_confirmHighlight);
-    }
-    QPainterPath path;
-    path.moveTo(cad::geo::Coord::toScene(blk->worldPos(sp->id)));
-    path.lineTo(cad::geo::Coord::toScene(blk->worldPos(ep->id)));
-    m_confirmHighlight->setPath(path);
-    m_confirmHighlight->setVisible(true);
+    highlightCandidate(hitBlock, hitSeg);
 }
 
 void ConnectOverlapResolver::removeConfirmHighlight()
@@ -231,6 +253,88 @@ void ConnectOverlapResolver::removeConnectHalo()
     if (m_connectHalo) {
         m_managed.release(m_connectHalo);
     }
+}
+
+// ── 电池组靶标 (Battery Landing Pad, 任务 4) ──
+
+void ConnectOverlapResolver::showBatteryLandingPads(
+    const Vec2& worldPos, const std::vector<ConfirmCandidate>& candidates)
+{
+    if (!m_scene || !m_paramDoc || candidates.empty()) {
+        hideBatteryLandingPads();
+        return;
+    }
+
+    std::vector<cad::canvas::BatteryCandidate> bCands;
+    bCands.reserve(candidates.size());
+
+    for (const auto& c : candidates) {
+        const auto* blk = m_paramDoc->findBlock(c.blockId);
+        if (!blk) continue;
+        const auto* pt = blk->findPoint(c.pointId);
+        const auto* seg = blk->findSegment(c.segId);
+
+        cad::canvas::BatteryCandidate bc;
+        bc.kind = cad::canvas::BatteryCandidate::Kind::Point;
+        bc.blockId = c.blockId;
+        bc.pointId = c.pointId;
+        bc.segmentId = c.segId;
+        bc.serial = 0;
+        bc.title = pt ? (pt->serial.isEmpty() ? QStringLiteral("P") : pt->serial) : QString();
+        bc.name = (pt && !pt->name.isEmpty()) ? pt->name : (seg && !seg->name.isEmpty() ? seg->name : blk->name);
+        bc.blockName = blk->name;
+        bc.roleText = (seg && !seg->name.isEmpty()) ? seg->name : QString::fromUtf8("基准目标");
+        bc.isPlaced = pt ? pt->isPlaced : false;
+        bc.isAuxiliary = pt ? pt->isAuxiliary : false;
+        bc.isCurveAnchor = false;
+        bCands.push_back(bc);
+    }
+
+    if (!m_batteryHud) {
+        m_batteryHud = new cad::canvas::OverlapBatteryHud();
+        m_scene->addItem(m_batteryHud);
+        m_managed.own(m_batteryHud, &m_batteryHud);
+    }
+
+    m_batteryHud->setCandidates(std::move(bCands));
+    m_batteryHud->setConnectMode(true);
+    m_batteryHud->setDisplayMode(cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+
+    const QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
+    m_batteryHud->updatePosition(worldPos, view);
+    m_batteryHud->setVisible(true);
+}
+
+void ConnectOverlapResolver::hideBatteryLandingPads()
+{
+    if (m_batteryHud) {
+        m_managed.release(m_batteryHud);
+    }
+}
+
+bool ConnectOverlapResolver::hasBatteryLandingPads() const
+{
+    return m_batteryHud != nullptr && m_batteryHud->isVisible() &&
+           m_batteryHud->displayMode() == cad::canvas::OverlapBatteryHud::DisplayMode::Expanded;
+}
+
+int ConnectOverlapResolver::hitBatteryCandidateAt(const QPointF& scenePos, double zoom) const
+{
+    if (!hasBatteryLandingPads()) return -1;
+    return m_batteryHud->hitCandidateAtScene(scenePos, zoom);
+}
+
+void ConnectOverlapResolver::setBatteryHoveredIndex(int index)
+{
+    if (m_batteryHud) {
+        m_batteryHud->setHoveredIndex(index);
+    }
+}
+
+QPointF ConnectOverlapResolver::batteryPortScenePos(int index, double zoom) const
+{
+    if (!m_batteryHud) return QPointF();
+    return m_batteryHud->candidatePortScenePos(index, zoom);
 }
 
 } // namespace cad::tools

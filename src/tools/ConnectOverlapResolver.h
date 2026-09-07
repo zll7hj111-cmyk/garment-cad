@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QPointer>
@@ -16,6 +16,7 @@ class QGraphicsEllipseItem;
 class QGraphicsPathItem;
 class CanvasScene;
 
+namespace cad::canvas { class OverlapBatteryHud; }
 namespace cad::param { class ParamDocument; }
 
 namespace cad::tools {
@@ -50,6 +51,8 @@ public:
         const QUuid& fromBlockId, const QUuid& componentId) const;
 
     // ── ConfirmTarget 高亮 (鼠标悬停在某个候选线段上的加粗路径) ──
+    /// 精确高亮指定候选线段 (用于 hover 电池卡片等已知目标时，支持直线与曲线)
+    void highlightCandidate(const QUuid& blockId, const QUuid& segId);
     /// 由线段命中 (findSegmentSnap) 在 @p candidates 里找匹配候选;
     /// 命中 → 更新并显示高亮, 未命中 → 隐藏。
     void updateHighlightAt(const Vec2& pos,
@@ -72,6 +75,14 @@ public:
     [[nodiscard]] bool hasConnectHalo() const
     { return m_connectHalo != nullptr; }
 
+    // ── 电池组靶标 (Battery Landing Pad, 任务 4) ──
+    void showBatteryLandingPads(const Vec2& worldPos, const std::vector<ConfirmCandidate>& candidates);
+    void hideBatteryLandingPads();
+    [[nodiscard]] bool hasBatteryLandingPads() const;
+    [[nodiscard]] int hitBatteryCandidateAt(const QPointF& scenePos, double zoom) const;
+    void setBatteryHoveredIndex(int index);
+    [[nodiscard]] QPointF batteryPortScenePos(int index, double zoom) const;
+
 private:
     CanvasScene* m_scene = nullptr;
     cad::param::ParamDocument* m_paramDoc = nullptr;
@@ -81,6 +92,7 @@ private:
     QGraphicsEllipseItem* m_connectHalo   = nullptr;
     QGraphicsPathItem* m_confirmHighlight = nullptr;
     QGraphicsEllipseItem* m_sourcePortMarker = nullptr;
+    cad::canvas::OverlapBatteryHud* m_batteryHud = nullptr;
     ManagedItems m_managed;
 };
 
