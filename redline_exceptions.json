@@ -64,8 +64,8 @@
   "bool_flag_exceptions": {
     "ParamPoint": {
       "file": "src/parametric/ParamPoint.h",
-      "count": 10,
-      "reason": "Constraint & interpolation flag fields on data entity struct; evaluated as model fields. EVALUATED 2026-09-04: isAuxiliary/visible/selectable/showName/resolved are persistent model fields; tangentLocked/autoTangent/interBidirectional are tangent/interpolation config flags each independently driving render/resolve branches, no composite hidden state machine; retained per Rule 附1 (pure data/config fields exempt).",
+      "count": 11,
+      "reason": "Constraint & interpolation flag fields on data entity struct; evaluated as model fields. EVALUATED 2026-09-04: isAuxiliary/isPlaced/visible/selectable/showName/resolved are persistent model fields; tangentLocked/autoTangent/interBidirectional are tangent/interpolation config flags each independently driving render/resolve branches, no composite hidden state machine; retained per Rule 附1 (pure data/config fields exempt).",
       "scheduled_phase": "Exempt"
     },
     "ContextStrip": {

@@ -63,6 +63,7 @@ if(NOT elawidgettools_POPULATED)
     if(MSVC)
         target_compile_options(ElaWidgetTools PRIVATE /utf-8 /FS)
     endif()
+    target_compile_definitions(ElaWidgetTools INTERFACE ELAWIDGETTOOLS_LIBRARY)
 endif()
 
 # --- spdlog (fast C++ logging, MIT) ---
@@ -197,6 +198,10 @@ add_library(gcad_canvas STATIC
     src/canvas/BlockItem.cpp
     src/canvas/CurveItem.h
     src/canvas/CurveItem.cpp
+    src/canvas/OverlapBatteryHud.h
+    src/canvas/OverlapBatteryHud.cpp
+    src/canvas/overlay/TransientOverlay.h
+    src/canvas/overlay/TransientOverlay.cpp
 )
 target_include_directories(gcad_canvas PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_canvas PUBLIC
@@ -317,6 +322,8 @@ add_library(gcad_ui STATIC
     src/ui/AuxPointForm.cpp
     src/ui/QuickAuxDialog.h
     src/ui/QuickAuxDialog.cpp
+    src/ui/PlacedPointDialog.h
+    src/ui/PlacedPointDialog.cpp
     src/ui/MeasureResultDialog.h
     src/ui/MeasureResultDialog.cpp
     src/ui/IntersectionForm.h
@@ -416,6 +423,8 @@ add_library(gcad_tools STATIC
     src/tools/ToolBreak.cpp
     src/tools/ToolIntersection.h
     src/tools/ToolIntersection.cpp
+    src/tools/ToolPlacePoint.h
+    src/tools/ToolPlacePoint.cpp
     src/tools/ToolMeasure.h
     src/tools/ToolMeasure.cpp
     src/tools/ToolAngleMeasure.h
@@ -782,6 +791,30 @@ target_include_directories(test_log_probe PRIVATE ${GCAD_SRC})
 target_link_libraries(test_log_probe PRIVATE Qt6::Core Qt6::Test spdlog::spdlog Tracy::TracyClient)
 add_test(NAME test_log_probe COMMAND test_log_probe)
 
+# ── Test: place-point tool & placed point dialog ──
+add_executable(test_place_point tests/test_place_point.cpp)
+target_include_directories(test_place_point PRIVATE ${GCAD_SRC})
+target_link_libraries(test_place_point PRIVATE
+    gcad_ui gcad_canvas gcad_document gcad_parametric gcad_tools gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_place_point COMMAND test_place_point)
+
+# ── Test: overlap battery chips & drag landing pads (任务 4) ──
+add_executable(test_overlap_battery tests/test_overlap_battery.cpp)
+target_include_directories(test_overlap_battery PRIVATE ${GCAD_SRC})
+target_link_libraries(test_overlap_battery PRIVATE
+    gcad_canvas gcad_document gcad_parametric gcad_tools gcad_ui gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_overlap_battery COMMAND test_overlap_battery)
+
+# ── Test: transient visual overlay pipeline & lifecycle bus ──
+add_executable(test_transient_overlay tests/test_transient_overlay.cpp)
+target_include_directories(test_transient_overlay PRIVATE ${GCAD_SRC})
+target_link_libraries(test_transient_overlay PRIVATE
+    gcad_canvas gcad_document gcad_parametric gcad_tools gcad_ui gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_transient_overlay COMMAND test_transient_overlay)
+
 # ── PDB 膨胀治理（2026-08）：全链测试关增量链接 ────────────────────────────
 # 这些测试把整个项目 + ElaWidgetTools 链接进一个 exe，Debug /Zi 符号下 PDB
 # 达 ~1GB；/INCREMENTAL 让 PDB 跨重链只增不减（实测 12GB 总量，大头在此）。
@@ -791,6 +824,7 @@ foreach(_t IN ITEMS
         test_realdoc_full test_nav_smoke test_aux_layer test_smartpen_aux
         test_measure test_context_strip test_tool_intersection
         test_select_wkey test_curve_edit test_rotate_copy test_dialog_tabs
-        test_component test_ortho_offset)
+        test_component test_ortho_offset test_place_point test_overlap_battery
+        test_transient_overlay)
     target_link_options(${_t} PRIVATE /INCREMENTAL:NO)
 endforeach()
