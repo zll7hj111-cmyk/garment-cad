@@ -146,23 +146,11 @@ LinePropertyDialog::LinePropertyDialog(const QUuid& blockId, const QUuid& segmen
     }
     m_tabs->setAcceptDrops(false);
     buildPage1(m_tabs);
-    // Sub-tab: 锚点 / 辅助点 (extracted widgets; they read/write the model
+    // Sub-tab: 锚点 (extracted widgets; they read/write the model
     // directly and request scene refresh through callbacks).
     m_anchorTab = new SegmentAnchorTab(m_paramDoc,
                                        [this]() { refreshScene(); }, this);
     m_anchorTab->build(m_tabs);
-    m_auxTab = new SegmentAuxTab(m_paramDoc, m_scene,
-                                 [this]() { refreshScene(); },
-                                 [this]() { if (m_debounce) m_debounce->start(); },
-                                 this);
-    m_auxTab->build(m_tabs);
-    // m_auxTab is a bare QWidget container: its page was reparented into the
-    // tab widget, but the container itself stays an orphan at (0,0,100,30) —
-    // and it ends up VISIBLE, covering the 属性/锚点 tab-bar buttons (the
-    // reported "属性 tab 点击判定区域极小，只能点靠下" bug). Hide it so clicks
-    // reach the QTabBar. (SegmentAnchorTab is registered via addTab(this) and
-    // lives inside the QStackedWidget, so it does not need this.)
-    m_auxTab->hide();
     mainLayout->addWidget(m_tabs);
 
     const auto btns = cad::ui::makeDialogButtons(
@@ -363,6 +351,14 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     layout->addWidget(m_angleCard);
 
     layout->addWidget(makeDivider(page));
+
+    // ─── 线上点 (原辅助点独立 Tab 下沉至摆放页) ───
+    layout->addWidget(makeSectionHeader(QString::fromUtf8("线上点"), page));
+    m_auxTab = new SegmentAuxTab(m_paramDoc, m_scene,
+                                 [this]() { refreshScene(); },
+                                 [this]() { if (m_debounce) m_debounce->start(); },
+                                 page);
+    m_auxTab->buildAsSection(layout);
 
     layout->addStretch();
 

@@ -1,4 +1,4 @@
-﻿#include "ui/AuxPointForm.h"
+#include "ui/AuxPointForm.h"
 
 #include "ElaCheckBox.h"
 #include "ElaComboBox.h"
@@ -85,25 +85,6 @@ AuxPointForm::AuxPointForm(QWidget* parent)
     constantRow->addWidget(makePasteBtn(m_editConstant));
     layout->addRow(QString::fromUtf8("\u5e38\u91cf(cm):"), constantRow);  // 常量(cm):
 
-    // Offset: construction-angle semantics — 0° = along the host segment
-    // direction (CCW+); "从终点" flips the base. Both fields support formulas.
-    m_editOffsetAngle = new ElaLineEdit(this);
-    m_editOffsetAngle->setPlaceholderText(QString::fromUtf8("\u5982 45 \u6216\u516c\u5f0f"));  // 如 45 或公式
-    m_editOffsetAngle->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("偏移角度 (°)"),
-        QStringLiteral("0° = 沿宿主线段方向直行，逆时针为正；“从终点”计算时基准方向翻转，支持公式")));  // 偏移角度(度)：跟随角度语义——0° = 沿宿主线段方向直行，逆时针为正；“从终点”计算时基准方向翻转。支持公式。
-    layout->addRow(QString::fromUtf8("\u504f\u79fb\u89d2\u5ea6:"), m_editOffsetAngle);  // 偏移角度:
-
-    m_editOffsetDist = new ElaLineEdit(this);
-    m_editOffsetDist->setPlaceholderText(QString::fromUtf8("\u5982 1.5 (cm)\u6216\u516c\u5f0f"));  // 如 1.5 (cm)或公式
-    m_editOffsetDist->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("偏移距离 (cm)"),
-        QStringLiteral("沿偏移角度方向的位移距离，0 = 点仍在线上，支持公式")));  // 偏移距离(cm)：沿偏移角度方向的位移，0 = 点仍在线上。支持公式。
-    auto* offsetRow = new QHBoxLayout();
-    offsetRow->addWidget(m_editOffsetDist, 1);
-    offsetRow->addWidget(makePasteBtn(m_editOffsetDist));
-    layout->addRow(QString::fromUtf8("\u504f\u79fb\u8ddd\u79bb(cm):"), offsetRow);  // 偏移距离(cm):
-
     m_lblMountInfo = new ElaText(QString::fromUtf8("无挂载"), 12, this);
     m_lblMountInfo->setObjectName(QStringLiteral("auxMountInfo"));
     m_btnDetachMount = new ElaPushButton(QString::fromUtf8("拆开"), this);
@@ -121,8 +102,7 @@ AuxPointForm::AuxPointForm(QWidget* parent)
 
     // textChanged → dirty (owner restarts debounce); commits → edited.
     cad::ui::applyFormGrid(layout);  // 88px 标签栅格 (ui-redesign §4.5)
-    for (auto* edit : {m_editName, m_editPercent, m_editConstant,
-                       m_editOffsetAngle, m_editOffsetDist}) {
+    for (auto* edit : {m_editName, m_editPercent, m_editConstant}) {
         connect(edit, &QLineEdit::textChanged,     this, &AuxPointForm::dirty);
         connect(edit, &QLineEdit::editingFinished, this, &AuxPointForm::edited);
     }
@@ -170,8 +150,7 @@ void AuxPointForm::setRefPointList(const std::vector<std::pair<QUuid, QString>>&
 void AuxPointForm::loadFrom(const cad::param::ParamPoint& pt)
 {
     const QSignalBlocker b1(m_editName), b2(m_cmbDir), b3(m_editPercent),
-                         b4(m_editConstant), b5(m_editOffsetAngle),
-                         b6(m_editOffsetDist),
+                         b4(m_editConstant),
                          b7(m_chkShowName), b8(m_cmbRefPoint);
 
     m_editName->setText(pt.name);
@@ -203,18 +182,6 @@ void AuxPointForm::loadFrom(const cad::param::ParamPoint& pt)
     else
         m_editConstant->setText(QString::number(cad::geo::Units::mmToCm(pt.interpConstant), 'g', 6));
 
-    // Offset angle: show formula if present, else numeric (degrees)
-    if (!pt.interpOffsetAngleFormula.isEmpty())
-        m_editOffsetAngle->setText(pt.interpOffsetAngleFormula);
-    else
-        m_editOffsetAngle->setText(QString::number(pt.interpOffsetAngle, 'g', 6));
-
-    // Offset distance: show formula if present, else convert mm→cm for display
-    if (!pt.interpOffsetDistFormula.isEmpty())
-        m_editOffsetDist->setText(pt.interpOffsetDistFormula);
-    else
-        m_editOffsetDist->setText(QString::number(cad::geo::Units::mmToCm(pt.interpOffsetDist), 'g', 6));
-
     m_chkShowName->setChecked(pt.showName);
 }
 
@@ -242,27 +209,11 @@ void AuxPointForm::applyTo(cad::param::ParamPoint& pt) const
         pt.interpConstantFormula = constText;
     }
 
-    // Offset angle (degrees, construction-angle semantics)
-    QString angleText = m_editOffsetAngle->text().trimmed();
-    isNum = false;
-    numVal = angleText.toDouble(&isNum);
-    if (isNum) {
-        pt.interpOffsetAngle = numVal;
-        pt.interpOffsetAngleFormula.clear();
-    } else if (!angleText.isEmpty()) {
-        pt.interpOffsetAngleFormula = angleText;
-    }
-
-    // Offset distance (user inputs cm → store mm)
-    QString distText = m_editOffsetDist->text().trimmed();
-    isNum = false;
-    numVal = distText.toDouble(&isNum);
-    if (isNum) {
-        pt.interpOffsetDist = cad::geo::Units::cmToMm(numVal);
-        pt.interpOffsetDistFormula.clear();
-    } else if (!distText.isEmpty()) {
-        pt.interpOffsetDistFormula = distText;
-    }
+    // 纯线上辅助点：偏移角度与偏移距离置零
+    pt.interpOffsetAngle = 0.0;
+    pt.interpOffsetAngleFormula.clear();
+    pt.interpOffsetDist = 0.0;
+    pt.interpOffsetDistFormula.clear();
 
     pt.showName = m_chkShowName->isChecked();
 

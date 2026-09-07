@@ -84,6 +84,23 @@ QUuid addAuxPoint(ParamDocument& doc, const QUuid& blockId, const QUuid& segId)
     return id;
 }
 
+QUuid addAnchorPoint(ParamDocument& doc, const QUuid& blockId, const QUuid& segId)
+{
+    Block* blk = doc.findBlock(blockId);
+    auto* seg = blk->findSegment(segId);
+    seg->type = SegmentType::Bezier;
+    ParamPoint pp;
+    pp.constraint = PointConstraint::CurveAnchor;
+    pp.hostSegmentId = segId;
+    pp.interpPercent = 0.5;
+    pp.interpOffsetDist = 20.0;
+    pp.autoTangent = true;
+    pp.serial = doc.newPointSerial();
+    const QUuid id = blk->addPoint(pp);
+    seg->passPointIds.push_back(id);
+    return id;
+}
+
 /// Open the dialog over a fresh scene with one leader + one line (+aux point).
 void setup(ParamDocument& doc, CanvasScene& scene, LineSetup& line)
 {
@@ -109,6 +126,7 @@ void TestDialogTabs::switchBackAfterTyping()
     LineSetup line;
     setup(doc, scene, line);
     addAuxPoint(doc, line.blockId, line.segId);
+    addAnchorPoint(doc, line.blockId, line.segId);
     doc.resolveAll();
     qInfo() << "[dialog-tabs] seg aux after add:"
             << doc.findBlock(line.blockId)->findSegment(line.segId)->auxPointIds.size()
@@ -128,26 +146,14 @@ void TestDialogTabs::switchBackAfterTyping()
              "timed out waiting for QTabWidget* to appear");
     auto* tabs = dlg->findChild<QTabWidget*>();
     QVERIFY(tabs);
-    // 2026-08: 「点连接」只读 tab 已删 (属性页连接分区覆盖其内容), 3 枚 =
-    // 属性 / 锚点 / 辅助点。
-    QCOMPARE(tabs->count(), 3);
+    // 2026-08: 「点连接」只读 tab 已删 (属性页连接分区覆盖其内容);
+    // 2026-09: 辅助点下沉为属性页【线上点】分区, 现为 2 枚 = 属性 / 锚点。
+    QCOMPARE(tabs->count(), 2);
 
-    // ── 0→2 (属性 → 辅助点): baseline ──
-    QElapsedTimer t0;
-    t0.start();
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(2).center());
-    const qint64 msToAux = t0.elapsed();
-    QCOMPARE(tabs->currentIndex(), 2);
-
-    // Select the aux list item → edit form becomes visible. The list lives in
-    // the aux tab PAGE, which QTabWidget reparents into its internal
-    // QStackedWidget — locate it via the page (widget(2)) ancestor chain.
+    // 辅助点已作为分区嵌入在属性页 (tab 0) 内，无需切换 tab 即可找到
     auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
     QVERIFY(auxTab);
-    QListWidget* list = nullptr;
-    for (auto* w : dlg->findChildren<QListWidget*>())
-        if (tabs->widget(2) && tabs->widget(2)->isAncestorOf(w)) { list = w; break; }
+    auto* list = auxTab->findChild<QListWidget*>();
     QVERIFY(list);
     qInfo() << "[dialog-tabs] list count after dialog open:"
             << list->count()
@@ -172,7 +178,17 @@ void TestDialogTabs::switchBackAfterTyping()
     QTest::keyClicks(percentEdit, QStringLiteral("0.6"));
     QCOMPARE(percentEdit->text(), QStringLiteral("0.6"));
 
-    // ── 2→0 (辅助点 → 属性): the suspected freeze point ──
+    // ── 0→1 (属性 → 锚点): the suspected freeze point with focus loss ──
+    QElapsedTimer t0;
+    t0.start();
+    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
+                      tabs->tabBar()->tabRect(1).center());
+    const qint64 msToAnchor = t0.elapsed();
+    QVERIFY2(cad::test::waitUntil([&] { return tabs->currentIndex() == 1; }),
+             "timed out waiting for the tab switch to 锚点");
+    QCOMPARE(tabs->currentIndex(), 1);
+
+    // ── 1→0 (锚点 → 属性) ──
     QElapsedTimer t1;
     t1.start();
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
@@ -207,22 +223,22 @@ void TestDialogTabs::switchBackAfterTyping()
     QVERIFY(pt);
     QVERIFY(std::abs(pt->interpPercent - 0.6) < 1e-9);
 
-    qInfo() << "[dialog-tabs] latency 0->2:" << msToAux
-            << "ms; 2->0 after typing:" << msBack << "ms";
+    qInfo() << "[dialog-tabs] latency 0->1:" << msToAnchor
+            << "ms; 1->0 after typing:" << msBack << "ms";
 
     // Simulate frantic re-clicking (odd count must land on 属性)
     QElapsedTimer t2;
     t2.start();
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(2).center());
+                      tabs->tabBar()->tabRect(1).center());
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
                       tabs->tabBar()->tabRect(0).center());
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(2).center());
+                      tabs->tabBar()->tabRect(1).center());
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
                       tabs->tabBar()->tabRect(0).center());
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(2).center());
+                      tabs->tabBar()->tabRect(1).center());
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
                       tabs->tabBar()->tabRect(0).center());
     const qint64 msRapid = t2.elapsed();
@@ -279,6 +295,7 @@ void TestDialogTabs::switchBackLargeDoc()
         const QUuid id = a->addPoint(pt);
         a->findSegment(target.segId)->auxPointIds.push_back(id);
     }
+    addAnchorPoint(doc, target.blockId, target.segId);
     doc.resolveAll();
 
     CanvasView view(&scene);
@@ -301,13 +318,10 @@ void TestDialogTabs::switchBackLargeDoc()
     doc.resolveAll();
     const qint64 resolveMs = tr.elapsed();
 
-    // Go to 辅助点, select the aux item, type into percent (focus!),
-    // then switch back to 属性 — the reported freeze point.
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(2).center());
-    QListWidget* list = nullptr;
-    for (auto* w : dlg->findChildren<QListWidget*>())
-        if (tabs->widget(2) && tabs->widget(2)->isAncestorOf(w)) { list = w; break; }
+    // Aux point list is in 属性 tab (index 0).
+    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
+    QVERIFY(auxTab);
+    auto* list = auxTab->findChild<QListWidget*>();
     QVERIFY(list);
     QCOMPARE(list->count(), 5);
     QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
@@ -325,6 +339,11 @@ void TestDialogTabs::switchBackLargeDoc()
     QTest::keyClicks(percentEdit, QStringLiteral("0.6"));
     QCOMPARE(percentEdit->text(), QStringLiteral("0.6"));
 
+    // Switch to 锚点 (1) then back to 属性 (0)
+    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
+                      tabs->tabBar()->tabRect(1).center());
+    QCOMPARE(tabs->currentIndex(), 1);
+
     QElapsedTimer t1;
     t1.start();
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
@@ -333,7 +352,7 @@ void TestDialogTabs::switchBackLargeDoc()
     QCOMPARE(tabs->currentIndex(), 0);
 
     qInfo() << "[dialog-tabs] large doc: resolveAll" << resolveMs
-            << "ms; 2->0 after typing:" << msBack << "ms";
+            << "ms; 1->0 after typing:" << msBack << "ms";
     delete dlg;
 }
 
@@ -343,6 +362,7 @@ void TestDialogTabs::probeTabHitArea()
     CanvasScene scene(&doc);
     LineSetup line;
     setup(doc, scene, line);
+    addAnchorPoint(doc, line.blockId, line.segId);
     doc.resolveAll();
 
     CanvasView view(&scene);
@@ -382,22 +402,19 @@ void TestDialogTabs::probeTabHitArea()
     qInfo() << "[hit] auxTab visible:" << auxTab->isVisible();
     qInfo() << "[hit] tab0 top/mid/bot:"
             << widgetAt(0, 1) << widgetAt(0, 2) << widgetAt(0, 3)
-            << "| tab2 mid:" << widgetAt(2, 2);
+            << "| tab1 mid:" << widgetAt(1, 2);
 
     // Regression: the aux-tab container must never sit on top of the tab bar.
-    // It used to be a visible orphan QWidget at (0,0) that swallowed clicks on
-    // the 属性/锚点 tabs (reported: "只能点击靠下才能切换").
     // ElaTabWidget uses an ElaTabBar (className "ElaTabBar") — a QTabBar
     // subclass — so the hit-test asserts on that name.
-    QVERIFY(!auxTab->isVisible());
     QCOMPARE(widgetAt(0, 1), QStringLiteral("ElaTabBar"));
     QCOMPARE(widgetAt(0, 2), QStringLiteral("ElaTabBar"));
-    QCOMPARE(widgetAt(2, 2), QStringLiteral("ElaTabBar"));
+    QCOMPARE(widgetAt(1, 2), QStringLiteral("ElaTabBar"));
 
-    // Sanity: a click on the 属性 tab now actually switches to it.
+    // Sanity: a click on the 锚点 tab now actually switches to it.
     QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier,
-                      bar->tabRect(2).center());
-    QCOMPARE(tabs->currentIndex(), 2);
+                      bar->tabRect(1).center());
+    QCOMPARE(tabs->currentIndex(), 1);
     QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier,
                       bar->tabRect(0).topLeft() + QPoint(24, 4));
     QCOMPARE(tabs->currentIndex(), 0);
@@ -471,6 +488,7 @@ void TestDialogTabs::switchBackWithoutEditing()
     CanvasScene scene(&doc);
     LineSetup line;
     setup(doc, scene, line);
+    addAnchorPoint(doc, line.blockId, line.segId);
     doc.resolveAll();
 
     CanvasView view(&scene);
@@ -491,8 +509,9 @@ void TestDialogTabs::switchBackWithoutEditing()
     QElapsedTimer t0;
     t0.start();
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(2).center());
-    const qint64 msToAux = t0.elapsed();
+                      tabs->tabBar()->tabRect(1).center());
+    const qint64 msToAnchor = t0.elapsed();
+    QCOMPARE(tabs->currentIndex(), 1);
 
     QElapsedTimer t1;
     t1.start();
@@ -501,8 +520,8 @@ void TestDialogTabs::switchBackWithoutEditing()
     const qint64 msBack = t1.elapsed();
     QCOMPARE(tabs->currentIndex(), 0);
 
-    qInfo() << "[dialog-tabs] control (no editing): 0->2:" << msToAux
-            << "ms; 2->0:" << msBack << "ms";
+    qInfo() << "[dialog-tabs] control (no editing): 0->1:" << msToAnchor
+            << "ms; 1->0:" << msBack << "ms";
     delete dlg;
 }
 
@@ -1535,16 +1554,12 @@ void TestDialogTabs::auxPointOutgoingFollowerMountAndDetach()
     auto* tabs = dlg->findChild<QTabWidget*>();
     QVERIFY(tabs);
 
-    // Switch to 辅助点 tab (index 2)
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(2).center());
-    QCOMPARE(tabs->currentIndex(), 2);
+    // 辅助点已作为【线上点】分区嵌入在属性页 (tab 0)
+    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
+    QVERIFY(auxTab);
 
     // Click aux list item
-    QListWidget* list = nullptr;
-    for (auto* w : dlg->findChildren<QListWidget*>()) {
-        if (tabs->widget(2) && tabs->widget(2)->isAncestorOf(w)) { list = w; break; }
-    }
+    auto* list = auxTab->findChild<QListWidget*>();
     QVERIFY(list);
     QCOMPARE(list->count(), 1);
     QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,

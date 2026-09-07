@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -41,7 +41,9 @@ public:
                   const std::function<void()>& debounceRestart,
                   QWidget* parent = nullptr);
 
-    /// Build the tab and register it with @p tabs.
+    /// 嵌入到摆放页底部（新单列流，无独立 Tab）
+    void buildAsSection(QVBoxLayout* parentLayout);
+    /// Build the tab and register it with @p tabs (兼容保留).
     void build(ElaTabWidget* tabs);
     /// Switch the tab to a different segment.
     void setTarget(const QUuid& blockId, const QUuid& segmentId);

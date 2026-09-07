@@ -1,4 +1,4 @@
-﻿#include "ui/SegmentAuxTab.h"
+#include "ui/SegmentAuxTab.h"
 
 #include <algorithm>
 #include <QUndoStack>
@@ -38,40 +38,39 @@ void SegmentAuxTab::setTarget(const QUuid& blockId, const QUuid& segmentId)
     m_segmentId = segmentId;
 }
 
-void SegmentAuxTab::build(ElaTabWidget* tabs)
+void SegmentAuxTab::buildAsSection(QVBoxLayout* parentLayout)
 {
-    // --- "辅助点" tab ---
-    auto* auxPage = new QWidget(this);
-    auto* auxLayout = new QVBoxLayout(auxPage);
-    auxLayout->setSpacing(8);
+    auto* lay = new QVBoxLayout(this);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(8);
 
     // --- Aux point list ---
-    m_auxList = new QListWidget(auxPage);
+    m_auxList = new QListWidget(this);
     m_auxList->setMaximumHeight(120);
     m_auxList->setSelectionMode(QAbstractItemView::SingleSelection);
-    auxLayout->addWidget(m_auxList);
+    lay->addWidget(m_auxList);
 
     // --- Add / Remove buttons ---
     auto* btnRow = new QHBoxLayout();
-    auto* btnAdd = new ElaPushButton(QString::fromUtf8("+ \u6dfb\u52a0"), auxPage);  // + 添加
-    auto* btnRemove = new ElaPushButton(QString::fromUtf8("\u2212 \u5220\u9664"), auxPage);  // − 删除
+    auto* btnAdd = new ElaPushButton(QString::fromUtf8("+ \u6dfb\u52a0"), this);  // + 添加
+    auto* btnRemove = new ElaPushButton(QString::fromUtf8("\u2212 \u5220\u9664"), this);  // − 删除
     btnRow->addWidget(btnAdd);
     btnRow->addWidget(btnRemove);
     btnRow->addStretch();
-    auxLayout->addLayout(btnRow);
+    lay->addLayout(btnRow);
 
     connect(btnAdd,    &QPushButton::clicked, this, &SegmentAuxTab::onAdd);
     connect(btnRemove, &QPushButton::clicked, this, &SegmentAuxTab::onRemove);
     connect(m_auxList, &QListWidget::itemSelectionChanged, this, &SegmentAuxTab::onSelectionChanged);
 
     // --- Edit forms: aux (Interpolated) and intersection, toggled by type ---
-    m_auxForm = new AuxPointForm(auxPage);
+    m_auxForm = new AuxPointForm(this);
     m_auxForm->setVisible(false);
-    auxLayout->addWidget(m_auxForm);
+    lay->addWidget(m_auxForm);
 
-    m_ixForm = new IntersectionForm(auxPage);
+    m_ixForm = new IntersectionForm(this);
     m_ixForm->setVisible(false);
-    auxLayout->addWidget(m_ixForm);
+    lay->addWidget(m_ixForm);
 
     // Field commits apply immediately; text changes restart the global debounce.
     connect(m_auxForm, &AuxPointForm::dirty, this,
@@ -93,14 +92,24 @@ void SegmentAuxTab::build(ElaTabWidget* tabs)
     });
 
     // --- Hint ---
-    auto* hint = new ElaText(QString::fromUtf8("\u00b7 \u8f85\u52a9\u70b9\u4f4d\u7f6e = \u8ba1\u91cf\u7aef\u70b9 + \u65b9\u5411 \u00d7 (\u8ddd\u79bb\u00d7\u767e\u5206\u6bd4 + \u5e38\u91cf) + \u504f\u79fb(\u89d2\u5ea6,\u8ddd\u79bb)\n"
-                          "\u00b7 \u8ba1\u7b97\u65b9\u5411\u51b3\u5b9a\u4ece\u8d77\u70b9\u8fd8\u662f\u7ec8\u70b9\u5f00\u59cb\u8ba1\u91cf\uff0c\u504f\u8f6c\u89d2\u4ee5\u8be5\u65b9\u5411\u4e3a 0\u00b0\n"
+    auto* hint = new ElaText(QString::fromUtf8("\u00b7 \u7ebf\u4e0a\u70b9\u4f4d\u7f6e = \u8ba1\u91cf\u7aef\u70b9 + \u65b9\u5411 \u00d7 (\u8ddd\u79bb\u00d7\u767e\u5206\u6bd4 + \u5e38\u91cf)\n"
+                          "\u00b7 \u8ba1\u7b97\u65b9\u5411\u51b3\u5b9a\u4ece\u8d77\u70b9\u8fd8\u662f\u7ec8\u70b9\u5f00\u59cb\u8ba1\u91cf\n"
                           "\u00b7 \u767e\u5206\u6bd4\u53ef\u8d85\u51fa [0,1] \u5b9e\u73b0\u5916\u63d2\n"
-                          "\u00b7 \u8f85\u52a9\u70b9\u53ef\u4f5c\u4e3a\u5176\u4ed6\u7ebf\u6bb5\u7684\u7aef\u70b9\u6216\u9644\u7740\u76ee\u6807"), 13, auxPage);
+                          "\u00b7 \u7ebf\u4e0a\u70b9\u53ef\u4f5c\u4e3a\u5176\u4ed6\u7ebf\u6bb5\u7684\u7aef\u70b9\u6216\u9644\u7740\u76ee\u6807"), 13, this);
     hint->setStyleSheet("font-size:11px;");
-    auxLayout->addWidget(hint);
-    auxLayout->addStretch();
+    lay->addWidget(hint);
 
+    if (parentLayout)
+        parentLayout->addWidget(this);
+}
+
+void SegmentAuxTab::build(ElaTabWidget* tabs)
+{
+    // 兼容保留旧版 Tab 调用
+    auto* auxPage = new QWidget(this);
+    auto* auxLayout = new QVBoxLayout(auxPage);
+    auxLayout->setSpacing(8);
+    buildAsSection(auxLayout);
     tabs->addTab(auxPage, QString::fromUtf8("\u8f85\u52a9\u70b9"));  // 辅助点
 }
 

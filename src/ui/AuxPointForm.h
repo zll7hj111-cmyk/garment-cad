@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -73,8 +73,6 @@ private:
     ElaComboBox*   m_cmbRefPoint      = nullptr;   ///< Measurement reference point.
     ElaLineEdit*   m_editPercent      = nullptr;
     ElaLineEdit*   m_editConstant     = nullptr;   ///< cm input.
-    ElaLineEdit*   m_editOffsetAngle  = nullptr;   ///< degrees, construction-angle semantics.
-    ElaLineEdit*   m_editOffsetDist   = nullptr;   ///< cm input.
     ElaText*       m_lblMountInfo     = nullptr;   ///< Incoming mount description.
     ElaPushButton* m_btnDetachMount   = nullptr;   ///< Detach / reconnect mount toggle button.
     ElaCheckBox*   m_chkShowName      = nullptr;
