@@ -1,4 +1,4 @@
-﻿#include "Resolver.h"
+#include "Resolver.h"
 
 #include <algorithm>
 #include <cmath>
@@ -272,6 +272,11 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             // Bridge pins are pure position constraints resolved in Step 4 —
             // they never participate in the leader forest settlement.
             if (att.isPin) continue;
+            // Component-level connections have a null fromBlockId (the pose
+            // carrier lives in the component) and are settled exclusively by
+            // settleComponents — never by the block forest. Without this skip
+            // they would be flagged as dangling from-blocks on every resolve.
+            if (!att.fromComponentId.isNull()) continue;
             auto fromIt = blockIndex.find(att.fromBlockId);
             if (fromIt == blockIndex.end()) {              // dangling from-block
                 report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
@@ -629,110 +634,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
 
-    // Step 8: dart-line constraints (省道线, 用户拍板 2026-08). The block's
-    // start point pins to A on another block and its end point E is derived
-    // from reference point B:
-    //     E = B_world + d · dir(θ_B + β),  θ_B = ref rotation + local exit dir
-    // The block is then placed with origin = A_world and rotation = A→E, and
-    // its end point's Polar distance is written back as |A−E| — the line's
-    // length and direction are computed every pass (线是算出来的). Bounded
-    // iteration handles chains where a start/reference block is itself
-    // dart-driven (B may be another dart line's computed endpoint). Applied
-    // LAST so it overrides any transform the block might have inherited.
-    {
-        GCAD_PERF_SCOPE("r.dart");
-        bool dartMoved = false;
-        bool dartConverged = false;
-        for (int dartPass = 0; dartPass < kMaxSettleRounds; ++dartPass) {
-            bool passMoved = false;
-            for (auto& block : blocks) {
-                if (!inScope(block)) continue;  // frozen group
-                if (!block.isDart()) continue;
-                if (block.segments.empty()) continue;
 
-                const auto startIt = blockIndex.find(block.dartStartBlockId);
-                const auto refIt   = blockIndex.find(block.dartRefBlockId);
-                if (startIt == blockIndex.end() || refIt == blockIndex.end())
-                    continue;  // reference vanished (delete-time cleanup clears fields)
-
-                const Block& startBlock = blocks[startIt.value()];
-                const Block& refBlock   = blocks[refIt.value()];
-                const ParamPoint* aPt = startBlock.findPoint(block.dartStartPointId);
-                const ParamPoint* bPt = refBlock.findPoint(block.dartRefPointId);
-                if (!aPt || !bPt || !aPt->resolved || !bPt->resolved) continue;
-
-                const geo::Vec2 aWorld = startBlock.worldPos(block.dartStartPointId);
-                const geo::Vec2 bWorld = refBlock.worldPos(block.dartRefPointId);
-
-                const double thetaB = refBlock.transform.rotation
-                    + refBlock.exitDirectionAtPoint(block.dartRefPointId,
-                                                    block.dartRefSegmentId);
-
-                // Offset distance d (formula overrides the numeric value;
-                // formula domain is cm, auto-converted to mm).
-                double dMm = block.dartOffsetMm;
-                ConditionEngine::evaluateLengthMm(block.dartOffsetFormula, params, conditioned, dMm, &ctx);
-                // Angle β relative to the reference segment (formula override).
-                double betaDeg = block.dartAngleDeg;
-                if (!block.dartAngleFormula.isEmpty()) {
-                    auto r = ConditionEngine::evaluate(block.dartAngleFormula,
-                                                       params, conditioned, &ctx);
-                    if (r.ok) betaDeg = r.value;
-                }
-                const double betaRad = betaDeg * M_PI / 180.0;
-                const geo::Vec2 eWorld = bWorld
-                    + geo::Vec2(std::cos(thetaB + betaRad),
-                                std::sin(thetaB + betaRad)) * dMm;
-
-                const Segment& seg = block.segments.front();
-                ParamPoint* sp = block.findPoint(seg.startPointId);
-                ParamPoint* ep = block.findPoint(seg.endPointId);
-                if (!sp || !ep) continue;
-
-                const geo::Vec2 delta = eWorld - aWorld;
-                const double newRotation = std::atan2(delta.y, delta.x);
-                const double newLength = delta.length();
-
-                const bool rotChanged =
-                    std::abs(newRotation - block.transform.rotation) > 1e-9;
-                const bool orgChanged =
-                    block.transform.origin.distanceSquaredTo(aWorld) > 1e-12;
-                const bool lenChanged = std::abs(ep->distance - newLength) > 1e-9;
-
-                block.transform.origin   = aWorld;
-                block.transform.rotation = newRotation;
-                // The start point is Free at local (0,0); its resolved cache
-                // stays put under a rigid-body transform move.
-                sp->resolved = true;
-                ep->distance = newLength;
-                const geo::Vec2 newEndLocal(newLength, 0.0);
-                if (ep->resolvedPos.distanceSquaredTo(newEndLocal) > 1e-9) {
-                    block.touchGeometry();
-                    ep->resolvedPos = newEndLocal;
-                    ep->resolved = true;
-                }
-
-                if (rotChanged || orgChanged || lenChanged) {
-                    passMoved = true;
-                    dartMoved = true;
-                }
-            }
-            if (!passMoved) { dartConverged = true; break; }
-        }
-        // Budget exhausted = dart endpoints were still moving on the last round
-        // (a dart chain that never reaches its fixed point).
-        if (!dartConverged)
-            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
-
-        // Dart-driven endpoints may carry followers (a line snapped to the
-        // computed end point E): re-settle the forest with aim-driven
-        // rotations preserved so followers track the freshly placed points.
-        // Dart blocks themselves own no incoming attachment (start A is a
-        // plain reference, not an Attachment), so the settle never fights
-        // their computed transforms.
-        if (dartMoved && settleAttachments(/*preserveEndTargetRotation=*/true))
-            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
-    }
 }
 
 bool Resolver::applyAttachment(Block& from, const Attachment& att,

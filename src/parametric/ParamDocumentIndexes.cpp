@@ -1,4 +1,4 @@
-﻿#include "ParamDocument.h"
+#include "ParamDocument.h"
 
 #include <algorithm>
 #include <cmath>
@@ -49,8 +49,17 @@ void ParamDocument::removeLayer(const QUuid& layerId)
     // (removal no longer shifts any references).
     QUuid targetId = row > 0 ? m_layerRegistry->layers()[static_cast<size_t>(row - 1)].id
                              : QUuid();
-    if (targetId.isNull() || m_layerRegistry->isAuxLayer(targetId))
-        targetId = m_layerRegistry->firstWorkingLayerId();
+    // firstWorkingLayerId() returns the layer being removed when it is the
+    // first working layer — re-layering to itself is a no-op and leaves the
+    // blocks as orphans. Fall back to any OTHER surviving working layer.
+    if (targetId.isNull() || m_layerRegistry->isAuxLayer(targetId) || targetId == layerId) {
+        targetId = QUuid();
+        for (const auto& l : m_layerRegistry->layers()) {
+            if (l.id == layerId || l.type == LayerType::Auxiliary) continue;
+            targetId = l.id;
+            break;
+        }
+    }
     for (auto& b : m_blocks) {
         if (b.layer == layerId)
             b.layer = targetId;
@@ -109,8 +118,6 @@ void ParamDocument::ensureReferencesIndex() const
 
     for (const auto& b : m_blocks) {
         addRef(b.endTargetBlockId, b.id);      // 终点指向
-        addRef(b.dartStartBlockId, b.id);      // 省道: 起点 pin A
-        addRef(b.dartRefBlockId, b.id);        // 省道: 偏移点 B
         for (const auto& pt : b.points) {
             addRef(pt.followBlockId, b.id);    // 曲线锚点跟随
             const QUuid refs[] = {pt.refPointId, pt.refPointA, pt.refPointB,

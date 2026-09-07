@@ -1,4 +1,4 @@
-﻿#include "ui/SegmentRefCard.h"
+#include "ui/SegmentRefCard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -206,17 +206,18 @@ void SegmentRefCard::refresh()
     const auto* block = m_doc->findBlock(m_blockId);
     const auto* att = findFollowerAttachment();
 
+    // 整卡恒显示: 省道线整卡隐藏的显隐门已随省道线删除移除 (原
+    // setVisible(!isDart))。保留 setVisible(true) 是对未显示顶层 widget
+    // (测试/独立使用) 的显式显示门 —— 删除前它承担了这个副作用。
+    setVisible(true);
+
     // 方向段 (点1/点2/[独立]) 在"角度由约束决定"时无意义 → 隐藏:
     //   · 终点指向 (endTarget): 旋转由 Resolver Step 7 驱动;
     //   · 桥接线 (pin+pin): 角度由两点决定。
     // **对齐点段恒显示** (2026-09 规则表): 自由线灰显默认进点、已连接真实
     // 钉点、桥接/指向禁用 (无进点语义或锁定 start 端)。
-    // 省道线: 计算线, 整卡隐藏。判定收口到本函数 (2026-09 审核 F5)。
     const bool hasEnd = block && !block->endTargetPointId.isNull();
     const bool isBridge = block && block->isBridge;
-    const bool isDart = block && block->isDart();
-    setVisible(!isDart);
-    if (isDart) return;
     const bool dirHidden = hasEnd || isBridge;
     if (m_lblDirWord) m_lblDirWord->setVisible(!dirHidden);
     if (m_angleRefPoint) m_angleRefPoint->setVisible(!dirHidden);

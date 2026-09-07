@@ -1,6 +1,7 @@
 #include "ui/LineGeometrySection.h"
 #include "ui/LineOrthoOffsetCard.h"
 
+#include <algorithm>
 #include <cmath>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -19,6 +20,7 @@
 #include "parametric/Block.h"
 #include "parametric/LinkedVariable.h"
 #include "parametric/AttachmentGraph.h"
+#include "document/commands/CurveCommands.h"
 #include "canvas/CanvasScene.h"
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
@@ -409,11 +411,6 @@ void LineGeometrySection::refreshLengthMode()
     m_btnLenSpec->setEnabled(!bridge);
     if (m_editLength)
         m_editLength->setEnabled(!autoMode && !bridge);
-    if (block->isDart()) {
-        if (m_btnLenAuto) m_btnLenAuto->setEnabled(false);
-        if (m_btnLenSpec) m_btnLenSpec->setEnabled(false);
-        if (m_editLength) m_editLength->setEnabled(false);
-    }
 }
 
 void LineGeometrySection::applyBridgeReadOnly()
@@ -444,10 +441,6 @@ void LineGeometrySection::refreshSlideRow()
     const bool hasEnd = block && !block->endTargetPointId.isNull();
     const bool bridge = hasAtt && hasEnd;
 
-    if (block && block->isDart()) {
-        m_slideRow->setVisible(false);
-        return;
-    }
     m_slideRow->setVisible(true);
 
     const bool slideOk = hasAtt && !bridge && !att->angleOnly && !att->angleIndependent;
@@ -623,18 +616,31 @@ void LineGeometrySection::onConvertToLine()
     auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
     if (!block || !seg || !seg->isCurve()) return;
 
-    for (const auto& ppId : seg->passPointIds) {
+    // Push a dedicated command: curve-to-line is a structural topology change
+    // (pass-points are removed) that the session snapshot / SetLineProperties
+    // commit never captures. Pushing it here makes it a single undo step.
+    if (auto* stack = m_paramDoc->undoStack()) {
+        stack->push(new cad::cmd::ConvertCurveToLineCommand(
+            m_paramDoc, m_blockId, m_segmentId));
+    } else {
         auto& pts = block->points;
-        pts.erase(std::remove_if(pts.begin(), pts.end(),
-            [&](const cad::param::ParamPoint& p) { return p.id == ppId; }),
-            pts.end());
+        for (const auto& ppId : seg->passPointIds) {
+            pts.erase(std::remove_if(pts.begin(), pts.end(),
+                [&ppId](const cad::param::ParamPoint& p) { return p.id == ppId; }),
+                pts.end());
+        }
+        block->rebuildPointIndex();
+        seg->passPointIds.clear();
+        seg->type = cad::param::SegmentType::Line;
+        block->touchGeometry();
+        m_paramDoc->resolveAll();
     }
-    block->rebuildPointIndex();
-    seg->passPointIds.clear();
-    seg->type = cad::param::SegmentType::Line;
-    m_paramDoc->resolveAll();
+
     emit sceneRefreshRequested();
-    populateFromModel(*block, *seg);
+    if (auto* b = m_paramDoc->findBlock(m_blockId)) {
+        if (auto* s = b->findSegment(m_segmentId))
+            populateFromModel(*b, *s);
+    }
 }
 
 void LineGeometrySection::onDebounceTimeout()

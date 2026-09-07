@@ -1,4 +1,4 @@
-﻿#include "ui/LineEndpointSection.h"
+#include "ui/LineEndpointSection.h"
 
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -271,7 +271,7 @@ void LineEndpointSection::populateFromModel(const cad::param::Block& block,
         m_chkShowStartName->setChecked(ptTop->showName);
     }
     if (m_noteStart && ptTop) {
-        m_noteStart->setText(ptTop->annotation);
+        m_noteStart->setNote(ptTop->annotation);
     }
 
     if (m_editEndName && ptBot) {
@@ -283,7 +283,7 @@ void LineEndpointSection::populateFromModel(const cad::param::Block& block,
         m_chkShowEndName->setChecked(ptBot->showName);
     }
     if (m_noteEnd && ptBot) {
-        m_noteEnd->setText(ptBot->annotation);
+        m_noteEnd->setNote(ptBot->annotation);
     }
 
     refreshEndpointConnRows();
@@ -302,12 +302,12 @@ void LineEndpointSection::applyToModel(cad::param::Block* block, cad::param::Seg
     if (auto* p = block->findPoint(topPtId)) {
         if (m_editStartName) p->name = m_editStartName->text();
         if (m_chkShowStartName) p->showName = m_chkShowStartName->isChecked();
-        if (m_noteStart) p->annotation = m_noteStart->text();
+        if (m_noteStart) p->annotation = m_noteStart->note();
     }
     if (auto* p = block->findPoint(botPtId)) {
         if (m_editEndName) p->name = m_editEndName->text();
         if (m_chkShowEndName) p->showName = m_chkShowEndName->isChecked();
-        if (m_noteEnd) p->annotation = m_noteEnd->text();
+        if (m_noteEnd) p->annotation = m_noteEnd->note();
     }
 }
 
@@ -323,12 +323,12 @@ QString LineEndpointSection::endName() const
 
 QString LineEndpointSection::startAnnotation() const
 {
-    return m_noteStart ? m_noteStart->text() : QString();
+    return m_noteStart ? m_noteStart->note() : QString();
 }
 
 QString LineEndpointSection::endAnnotation() const
 {
-    return m_noteEnd ? m_noteEnd->text() : QString();
+    return m_noteEnd ? m_noteEnd->note() : QString();
 }
 
 bool LineEndpointSection::startShowName() const
@@ -506,8 +506,6 @@ void LineEndpointSection::refreshEndpointExtends()
         cardReason = QString::fromUtf8("曲线暂不支持延长");
     else if (block->isBridge)
         cardReason = QString::fromUtf8("桥接线两端均已钉住，不支持延长");
-    else if (block->isDart())
-        cardReason = QString::fromUtf8("省道线为计算线，不支持延长");
 
     const bool wholeGray = !cardReason.isEmpty();
     const QUuid topId = fixedTopPointId(block, seg);
@@ -642,7 +640,7 @@ void LineEndpointSection::refreshDirectionArrow()
     if (!block || !seg) { m_btnDirectionArrow->setVisible(false); return; }
 
     QString why;
-    const bool ok = !block->isBridge && !block->isDart() &&
+    const bool ok = !block->isBridge &&
                     block->endTargetPointId.isNull() &&
                     cad::cmd::ReverseSegmentCommand::canReverse(m_paramDoc, m_blockId, m_segmentId, &why);
     m_btnDirectionArrow->setVisible(ok);

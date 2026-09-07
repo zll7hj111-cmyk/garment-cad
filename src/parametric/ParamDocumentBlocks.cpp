@@ -120,9 +120,27 @@ void ParamDocument::removeBlock(const QUuid& id)
     for (const auto& lv : m_measureStore->linkedVars()) {
         if (lv.sourceBlockId != id || lv.refName.isEmpty()) continue;
         for (auto& b : m_blocks) {
-            for (auto& s : b.segments)
+            for (auto& s : b.segments) {
                 if (s.lengthFormula == lv.refName)
                     s.lengthFormula.clear();
+                // Extend formulas consume the same linked measurement; freeze
+                // them at their current evaluated value instead of letting a
+                // dangling formula collapse the extended tail to 0.
+                if (s.extendStartFormula == lv.refName) {
+                    double mm = s.extendStartMm;
+                    (void)ConditionEngine::evaluateLengthMm(
+                        s.extendStartFormula, m_parameters, m_conditioned, mm);
+                    s.extendStartMm = mm;
+                    s.extendStartFormula.clear();
+                }
+                if (s.extendEndFormula == lv.refName) {
+                    double mm = s.extendEndMm;
+                    (void)ConditionEngine::evaluateLengthMm(
+                        s.extendEndFormula, m_parameters, m_conditioned, mm);
+                    s.extendEndMm = mm;
+                    s.extendEndFormula.clear();
+                }
+            }
             for (auto& p : b.points) {
                 if (p.distanceFormula != lv.refName) continue;
                 p.distance = lv.value;   // frozen measurement (mm)
@@ -132,20 +150,6 @@ void ParamDocument::removeBlock(const QUuid& id)
     }
     m_measureStore->purgeBlockReferences(id);
 
-    // Dart lines (省道线) that referenced the removed block (as start pin A
-    // or offset point B) lose their constraint and degrade to plain lines —
-    // their current geometry stays frozen in place (降级普通线).
-    for (auto& b : m_blocks) {
-        if (b.dartStartBlockId == id || b.dartRefBlockId == id) {
-            b.dartStartBlockId = {};
-            b.dartStartPointId = {};
-            b.dartRefBlockId   = {};
-            b.dartRefPointId   = {};
-            b.dartRefSegmentId = {};
-            b.dartOffsetFormula.clear();
-            b.dartAngleFormula.clear();
-        }
-    }
 
     // ── 影子善后 (拆开影子基准, DETACH_SHADOW_DESIGN.md §6 状态机 ⑤⑥⑦) ──
     // ⑥ 本体 (master) 被删 → 其影子块级联删除 (系统级, 不计入影响报告);
@@ -578,13 +582,6 @@ ParamDocument::DeleteImpact ParamDocument::deleteImpactReport(const QUuid& id) c
         }
     }
 
-    // 9. Dart lines (省道线) that referenced the victim (start pin A or offset
-    //    point B) degrade to plain lines, keeping their current geometry.
-    for (const auto& b : m_blocks) {
-        if (b.id == id) continue;
-        if (b.dartStartBlockId == id || b.dartRefBlockId == id)
-            ++r.dartLinesDegraded;
-    }
     return r;
 }
 
