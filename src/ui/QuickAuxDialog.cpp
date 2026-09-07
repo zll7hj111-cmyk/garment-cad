@@ -29,14 +29,13 @@ QuickAuxDialog::QuickAuxDialog(const cad::param::ParamPoint& pt,
     setWindowTitle(QStringLiteral("新建辅助点"));
 
     // ElaAppBar's default close path is `close(); processEvents();
-    // windowHandle->close();` — with WA_DeleteOnClose the processEvents()
-    // destroys the dialog mid-call (use-after-free crash). Route the X
-    // button through the safe signal branch instead; the caller no longer
-    // sets WA_DeleteOnClose (the dialog deletes itself on close).
+    // windowHandle->close();` — with the old self-deleteLater it destroyed the
+    // dialog mid-call (use-after-free crash). Route the X button through the
+    // safe signal branch; lifecycle is owned by the caller (tool / main
+    // window), which deletes via QDialog::finished.
     setIsDefaultClosed(false);
     connect(this, &ElaDialog::closeButtonClicked, this, [this]() {
         QDialog::reject();
-        deleteLater();
     });
 
     // ── 工具表单群统一骨架 (ui-redesign §4.5/§5.5): 分组标题 + 88px 栅格

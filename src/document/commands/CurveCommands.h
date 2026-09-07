@@ -3,6 +3,8 @@
 #include <QUndoCommand>
 #include <QUuid>
 
+#include <vector>
+
 #include "geometry/Vec2.h"
 #include "parametric/ParamPoint.h"
 #include "parametric/Segment.h"
@@ -139,6 +141,28 @@ private:
     QUuid m_oldFollowBlockId;
     QUuid m_oldFollowPointId;
     cad::geo::Vec2 m_oldFollowOffset;
+};
+
+/// Convert a Bézier curve segment back to a straight line (「转为直线」).
+/// Removes every pass-point and its backing point, restoring the segment type.
+/// Undo re-creates the removed points at their original positions and order
+/// — needed because the previous direct-write path couldn't be undone at all.
+class ConvertCurveToLineCommand : public QUndoCommand
+{
+public:
+    ConvertCurveToLineCommand(cad::param::ParamDocument* doc,
+                              const QUuid& blockId, const QUuid& segmentId,
+                              QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    QUuid m_segmentId;
+    std::vector<cad::param::ParamPoint> m_pts;  ///< Saved copies of the pass-points.
+    std::vector<QUuid> m_passIds;               ///< passPointIds order at construction.
+    cad::param::SegmentType m_oldType;
 };
 
 } // namespace cad::cmd

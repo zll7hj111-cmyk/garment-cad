@@ -9,6 +9,8 @@
 
 #include <miniz.h>
 
+#include <limits>
+
 #include "document/DocumentSerializer.h"
 #include "document/FormatMigration.h"
 #include "parametric/ParamDocument.h"
@@ -47,6 +49,13 @@ QByteArray zipReadFile(mz_zip_archive& zip, const char* name)
 
     mz_zip_archive_file_stat stat;
     if (!mz_zip_reader_file_stat(&zip, static_cast<mz_uint>(idx), &stat))
+        return {};
+
+    // Uncompressed size comes straight from the ZIP central directory and may
+    // be forged/truncated for hostile or damaged files. Guard against memory
+    // bombs (huge declared sizes) and int overflow before allocating.
+    constexpr mz_uint64 kMaxEntrySize = 256ull * 1024 * 1024;  // 256 MB
+    if (stat.m_uncomp_size > kMaxEntrySize || stat.m_uncomp_size > static_cast<mz_uint64>(std::numeric_limits<int>::max()))
         return {};
 
     QByteArray buf(static_cast<int>(stat.m_uncomp_size), '\0');

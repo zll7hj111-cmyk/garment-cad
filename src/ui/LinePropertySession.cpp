@@ -184,9 +184,12 @@ void LinePropertySession::rollback(cad::param::ParamDocument* doc,
         block->endTargetPointId = m_snapshot.endTargetPointId;
         block->endTargetOffset  = m_snapshot.endTargetOffset;
         block->endTargetOffsetFormula = m_snapshot.endTargetOffsetFormula;
-    }
 
-    doc->restoreFollowerAttachment(blockId, m_snapshot.followerAtt);
+        // 仅当目标块仍存活时才回滚附件。若用户在对话框存续期间删掉了目标
+        // 块，此时再重插快照附件会生成指向已删块的悬空 fromBlockId（幽灵
+        // 拓扑 + DanglingBlock 诊断）——跳过恢复，让附件随块删除而清理。
+        doc->restoreFollowerAttachment(blockId, m_snapshot.followerAtt);
+    }
 
     if (auxTab)
         auxTab->restoreSnapshots();

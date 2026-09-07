@@ -281,4 +281,65 @@ void ReleaseCurveFollowCommand::undo()
     m_doc->resolveAll();
 }
 
+// ─── ConvertCurveToLineCommand ───
+
+ConvertCurveToLineCommand::ConvertCurveToLineCommand(
+    cad::param::ParamDocument* doc,
+    const QUuid& blockId, const QUuid& segmentId,
+    QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_blockId(blockId)
+    , m_segmentId(segmentId)
+    , m_oldType(cad::param::SegmentType::Bezier)
+{
+    setText(QStringLiteral("转为直线"));
+    // Snapshot every pass-point (and the segment type) now — undo must be able
+    // to re-create them exactly after redo removed them.
+    if (const auto* b = doc->findBlock(blockId)) {
+        if (const auto* s = b->findSegment(segmentId)) {
+            m_oldType = s->type;
+            m_passIds = s->passPointIds;
+            for (const QUuid& pid : m_passIds) {
+                if (const auto* pt = b->findPoint(pid))
+                    m_pts.push_back(*pt);
+            }
+        }
+    }
+}
+
+void ConvertCurveToLineCommand::redo()
+{
+    auto* block = m_doc->findBlock(m_blockId);
+    auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
+    if (!block || !seg) return;
+
+    seg->passPointIds.clear();
+    seg->type = cad::param::SegmentType::Line;
+    auto& pts = block->points;
+    for (const auto& pid : m_passIds) {
+        pts.erase(std::remove_if(pts.begin(), pts.end(),
+            [&pid](const cad::param::ParamPoint& p) { return p.id == pid; }),
+            pts.end());
+    }
+    block->rebuildPointIndex();
+    block->touchGeometry();  // curve structure changed, no point moved
+    m_doc->resolveAll();
+}
+
+void ConvertCurveToLineCommand::undo()
+{
+    auto* block = m_doc->findBlock(m_blockId);
+    auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
+    if (!block || !seg) return;
+
+    for (auto& pt : m_pts)
+        block->addPoint(pt);
+    seg->passPointIds = m_passIds;
+    seg->type = m_oldType;
+    block->rebuildPointIndex();
+    block->touchGeometry();
+    m_doc->resolveAll();
+}
+
 } // namespace cad::cmd

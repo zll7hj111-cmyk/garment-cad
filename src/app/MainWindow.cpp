@@ -186,6 +186,9 @@ MainWindow::MainWindow(QWidget* parent)
     // Load recent files from settings.
     QSettings settings;
     m_recentFiles = settings.value(QStringLiteral("recentFiles")).toStringList();
+    // setupMenuBar() 在加载设置之前调用了 updateRecentFilesMenu()（当时
+    // m_recentFiles 为空），这里必须补一次，否则冷启动菜单恒为「(无)」。
+    updateRecentFilesMenu();
 
     updateTitle();
     if (m_canvasView)
@@ -927,11 +930,18 @@ void MainWindow::onSegmentContextMenu(const cad::canvas::SegmentHit& hit)
         pt.interpPercent = hit.paramT;
         pt.serial = m_paramDoc->newPointSerial();
 
-        cad::ui::QuickAuxDialog dlg(pt, pSp, pEp, this);
-        if (dlg.exec() == QDialog::Accepted) {
-            m_paramDoc->undoStack()->push(new cad::cmd::AddAuxPointCommand(
-                m_paramDoc, hit.blockId, hit.segmentId, dlg.point()));
-        }
+        cad::ui::QuickAuxDialog* dlg = new cad::ui::QuickAuxDialog(pt, pSp, pEp, this);
+        QObject::connect(dlg, &QDialog::finished, dlg,
+            [dlg, this, hit = hit](int result) {
+                if (result == QDialog::Accepted) {
+                    m_paramDoc->undoStack()->push(new cad::cmd::AddAuxPointCommand(
+                        m_paramDoc, hit.blockId, hit.segmentId, dlg->point()));
+                }
+                // The dialog is heap-allocated now (the previous stack+exec()
+                // form double-destructed the dialog when the X path did
+                // deleteLater()). Deferred-delete it here for OK/Cancel too.
+                dlg->deleteLater();
+            });
     } else if (chosen->property("bakeTargetLayer").isValid()) {
         // Bake a COPY of the measure line onto the chosen working layer, then
         // switch to that layer and select the new line.

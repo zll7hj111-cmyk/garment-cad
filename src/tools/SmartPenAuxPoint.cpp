@@ -94,6 +94,10 @@ void ToolSmartPen::openAuxDialog(const SegmentSnapResult& segSnap, bool forStart
             onAuxDialogAccepted(dlg->point());
         // Rejected / closed: nothing created, stroke state untouched
         // (Idle stays Idle; Drawing keeps its rubber band).
+        // Ownership lives with the caller: QuickAuxDialog no longer self-
+        // deletes on its X path, so delete it here for every close path.
+        if (dlg)
+            dlg->deleteLater();
     });
     dlg->show();
     dlg->raise();
