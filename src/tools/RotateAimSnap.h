@@ -21,7 +21,16 @@ public:
     RotateAimSnap() = default;
     ~RotateAimSnap() = default;
 
-    /// Calculate candidate point and snap angleDeg if within threshold.
+    /// Calculate candidate point and snap deltaDeg for a guide point rotating around pivot.
+    void checkGuideSnap(cad::param::ParamDocument* doc,
+                        CanvasScene* scene,
+                        const QSet<QUuid>& rotatingBlockIds,
+                        const cad::geo::Vec2& pivot,
+                        const cad::geo::Vec2& guidePointInitialWorld,
+                        double zoom,
+                        double& inOutDeltaDeg);
+
+    /// Calculate candidate point and snap angleDeg if within threshold (legacy compatibility).
     void checkSnap(cad::param::ParamDocument* doc,
                    CanvasScene* scene,
                    const QUuid& currentBlockId,

@@ -1,4 +1,4 @@
-﻿#include "tools/MultiRotateSession.h"
+#include "tools/MultiRotateSession.h"
 
 #include <cmath>
 #include <QUndoStack>
@@ -54,8 +54,13 @@ void MultiRotateSession::captureBase(cad::param::ParamDocument* doc)
     }
 
     for (const auto& a : doc->attachments()) {
-        if (m_selection.contains(a.fromBlockId) && !a.isPin) {
+        const bool fromIn = m_selection.contains(a.fromBlockId);
+        const bool toIn   = m_selection.contains(a.toBlockId);
+        if (((fromIn && !toIn) || (!fromIn && toIn)) && !a.isPin) {
             m_multiReleasedAtts.push_back(a);
+            if (auto* child = doc->findBlock(a.fromBlockId)) {
+                child->preservedBenchmarkAngle = a.followerAngle;
+            }
         }
     }
     for (const auto& a : m_multiReleasedAtts) {

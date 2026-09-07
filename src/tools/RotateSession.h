@@ -155,6 +155,8 @@ private:
 
     cad::geo::Vec2 m_anchorLocal;
     double m_localDir = 0.0;
+
+    QList<QUuid> m_detachedFollowerAttIds;
 };
 
 } // namespace cad::tools

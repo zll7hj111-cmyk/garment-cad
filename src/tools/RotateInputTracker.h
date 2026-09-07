@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "geometry/Vec2.h"
 #include "canvas/ManagedItems.h"
@@ -50,8 +50,6 @@ public:
     }
 
 private:
-    void ensureHoverSnapRing(CanvasScene* scene);
-
     bool m_hoverSnapped = false;
     bool m_pivotPicked = false;
     bool m_pressPending = false;
@@ -60,9 +58,7 @@ private:
     cad::geo::Vec2 m_hoverSnapPoint;
     cad::geo::Vec2 m_pressPos;
     cad::geo::Vec2 m_pendingPivot;
-
-    QGraphicsEllipseItem* m_hoverSnapRing = nullptr;
-    ManagedItems m_managed;
+    CanvasScene*   m_scene = nullptr;
 };
 
 } // namespace cad::tools

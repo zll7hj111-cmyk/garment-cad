@@ -1,4 +1,4 @@
-﻿#include "ToolRotate.h"
+#include "ToolRotate.h"
 
 #include <cmath>
 #include <algorithm>
@@ -36,8 +36,8 @@ ToolDescriptor ToolRotate::describe()
     d.id          = ToolType::Rotate;
     d.displayName = QString::fromUtf8("旋转(&R)");
     d.iconName    = QStringLiteral("rotate");
-    d.shortcut    = QKeySequence(Qt::Key_R);
-    d.hintText    = QString::fromUtf8("旋转：点击线段选中 | 右键或回车确认 | 拖动旋转(Shift吸附15°) | HUD输入角度/公式 | X切换锚心 | Esc反悔");
+    d.shortcut    = QKeySequence(Qt::CTRL | Qt::Key_T);
+    d.hintText    = QString::fromUtf8("旋转：选择线段 | 右键或回车确定 | 点击指定中心 | 拖动旋转(Shift吸附15°) | 回车/松开提交 | Esc取消");
     d.factory     = []() { return std::make_unique<ToolRotate>(); };
     return d;
 }
@@ -522,6 +522,25 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
         m_accumulatedAngleDeg = 0.0;
         m_dragAngle0 = 0.0;
 
+        m_guidePoint = pos;
+        double bestDist = std::numeric_limits<double>::max();
+        if (m_paramDoc) {
+            for (const auto& blkId : m_multi.selection()) {
+                if (const auto* b = m_paramDoc->findBlock(blkId)) {
+                    for (const auto& pt : b->points) {
+                        if (pt.resolved) {
+                            const cad::geo::Vec2 wpt = b->worldPos(pt.id);
+                            const double dist = wpt.distanceTo(pos);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                m_guidePoint = wpt;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (m_paramDoc) m_paramDoc->resolveAll();
         if (m_scene) m_scene->syncBlockPositions();
         updateStatusHint();
@@ -565,7 +584,12 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
 
     if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
         double deltaDeg = m_accumulatedAngleDeg;
-        if (snap) deltaDeg = std::round(deltaDeg / 15.0) * 15.0;
+        if (snap) {
+            deltaDeg = std::round(deltaDeg / 15.0) * 15.0;
+        } else {
+            m_aimSnap.checkGuideSnap(m_paramDoc, m_scene, m_multi.selection(),
+                                     m_session.pivot(), m_guidePoint, currentZoom(), deltaDeg);
+        }
         m_multi.applyModeValue(m_paramDoc, m_scene, m_session.pivot(), deltaDeg);
         updateGizmo();
         updateStatusHint();
@@ -793,8 +817,25 @@ void ToolRotate::clearAimCandidate()
 
 void ToolRotate::buildGizmo()
 {
-    if (m_gizmo)
-        m_gizmo->build(m_session.pivot(), m_session.refWorldRad(), currentZoom());
+    if (!m_gizmo) return;
+
+    double refBaseRad = 0.0;
+    double prevPoseRad = 0.0;
+
+    if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
+        refBaseRad = 0.0;
+        prevPoseRad = 0.0;
+    } else if (m_session.isConnected()) {
+        refBaseRad = m_session.refWorldRad();
+        prevPoseRad = refBaseRad + M_PI - cad::geo::degToRad(m_session.base().baseAngle);
+    } else {
+        double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
+        if (m_session.anchor().isEnd) origRad += M_PI;
+        prevPoseRad = cad::geo::normalizeRad(origRad);
+        refBaseRad = prevPoseRad;
+    }
+
+    m_gizmo->build(m_session.pivot(), refBaseRad, prevPoseRad, currentZoom());
 }
 
 double ToolRotate::originalWorldRotDeg() const
@@ -829,37 +870,36 @@ void ToolRotate::updateGizmo()
     m_gizmo->setConfirmed(m_selectionConfirmed
                           || (m_copyGesture && m_copyGesture->active()));
 
-    double dashRad = m_session.refWorldRad();
-    double arcStart = 0.0;
-    double arcEnd = 0.0;
+    double refBaseRad = 0.0;
+    double prevPoseRad = 0.0;
+    double deltaDeg = 0.0;
 
     if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
-        dashRad = m_dragCursorAngle0;
-        arcStart = m_dragCursorAngle0;
-        arcEnd = m_dragCursorAngle0 + cad::geo::degToRad(m_accumulatedAngleDeg);
+        refBaseRad = 0.0;
+        prevPoseRad = m_dragCursorAngle0;
+        deltaDeg = (m_state == RotateState::Rotating) ? m_accumulatedAngleDeg : 0.0;
     } else if (m_copyGesture && m_copyGesture->active()) {
         double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
         if (m_session.anchor().isEnd) origRad += M_PI;
         origRad = cad::geo::normalizeRad(origRad);
 
-        double cloneRad = m_copyGesture->currentWorldRad();
-        if (m_session.anchor().isEnd) cloneRad += M_PI;
-        cloneRad = cad::geo::normalizeRad(cloneRad);
-
-        dashRad = origRad;
-        arcStart = origRad;
-        double span = cloneRad - arcStart;
-        while (span >  M_PI) span -= 2.0 * M_PI;
-        while (span < -M_PI) span += 2.0 * M_PI;
-        arcEnd = arcStart + span;
+        refBaseRad = m_session.refWorldRad();
+        prevPoseRad = origRad;
+        deltaDeg = m_copyGesture->currentRelativeAngle();
     } else {
-        const auto ga = m_session.calculateGizmoAngles(
-            currentAngleDeg(), m_state == RotateState::Rotating, m_dragAngle0);
-        dashRad = ga.dashRad;
-        arcStart = ga.arcStart;
-        arcEnd = ga.arcEnd;
+        if (m_session.isConnected()) {
+            refBaseRad = m_session.refWorldRad();
+            prevPoseRad = refBaseRad + M_PI - cad::geo::degToRad(m_dragAngle0);
+            deltaDeg = (m_state == RotateState::Rotating) ? (currentAngleDeg() - m_dragAngle0) : 0.0;
+        } else {
+            double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
+            if (m_session.anchor().isEnd) origRad += M_PI;
+            prevPoseRad = cad::geo::normalizeRad(origRad);
+            refBaseRad = prevPoseRad;
+            deltaDeg = (m_state == RotateState::Rotating) ? (currentAngleDeg() - m_dragAngle0) : 0.0;
+        }
     }
-    m_gizmo->update(currentZoom(), dashRad, arcStart, arcEnd);
+    m_gizmo->update(currentZoom(), refBaseRad, prevPoseRad, deltaDeg);
     updateStatusHint();
 }
 

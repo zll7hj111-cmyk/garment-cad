@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -175,6 +175,7 @@ private:
     bool m_selectionConfirmed = false;
 
     // ── Drag angle tracking ──
+    cad::geo::Vec2 m_guidePoint;
     double m_dragCursorAngle0 = 0.0;
     double m_dragCursorAnglePrev = 0.0;
     double m_accumulatedAngleDeg = 0.0;

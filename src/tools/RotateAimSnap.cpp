@@ -134,6 +134,74 @@ void RotateAimSnap::checkSnap(cad::param::ParamDocument* doc,
     }
 }
 
+void RotateAimSnap::checkGuideSnap(cad::param::ParamDocument* doc,
+                                   CanvasScene* scene,
+                                   const QSet<QUuid>& rotatingBlockIds,
+                                   const cad::geo::Vec2& pivot,
+                                   const cad::geo::Vec2& guidePointInitialWorld,
+                                   double zoom,
+                                   double& inOutDeltaDeg)
+{
+    if (!doc || !scene) return;
+
+    const cad::geo::Vec2 initialVec = guidePointInitialWorld - pivot;
+    const double r0 = initialVec.length();
+    if (r0 < 1e-4) {
+        clear();
+        return;
+    }
+    const double initialAngleRad = std::atan2(initialVec.y, initialVec.x);
+    const double currentAngleRad = initialAngleRad + inOutDeltaDeg * M_PI / 180.0;
+    const cad::geo::Vec2 currentPos = pivot + cad::geo::Vec2{std::cos(currentAngleRad), std::sin(currentAngleRad)} * r0;
+
+    constexpr double searchRadiusPx = 15.0;
+    const double searchRadius = searchRadiusPx / (zoom > 1e-9 ? zoom : 1.0);
+
+    QUuid bestBlockId, bestPointId;
+    cad::geo::Vec2 bestPos;
+    double bestDist = searchRadius;
+
+    for (const auto& blk : doc->blocks()) {
+        if (rotatingBlockIds.contains(blk.id)) continue;
+        for (const auto& pt : blk.points) {
+            if (!pt.resolved || !pt.selectable) continue;
+            const cad::geo::Vec2 wpos = blk.transform.toWorld(pt.resolvedPos);
+            const double d = wpos.distanceTo(currentPos);
+            if (d > searchRadius) continue;
+
+            const double targetR = (wpos - pivot).length();
+            if (std::abs(targetR - r0) > searchRadius) continue;
+
+            if (d < bestDist) {
+                bestDist = d;
+                bestBlockId = blk.id;
+                bestPointId = pt.id;
+                bestPos = wpos;
+            }
+        }
+    }
+
+    if (bestPointId.isNull()) {
+        clear();
+        return;
+    }
+
+    const cad::geo::Vec2 targetVec = bestPos - pivot;
+    const double targetAngleRad = std::atan2(targetVec.y, targetVec.x);
+    double diffRad = targetAngleRad - initialAngleRad;
+    while (diffRad > M_PI) diffRad -= 2.0 * M_PI;
+    while (diffRad <= -M_PI) diffRad += 2.0 * M_PI;
+
+    inOutDeltaDeg = diffRad * 180.0 / M_PI;
+    m_aimBlockId = bestBlockId;
+    m_aimPointId = bestPointId;
+    m_scene = scene;
+
+    if (m_scene && m_scene->overlay()) {
+        m_scene->overlay()->showSnapAim(bestPos);
+    }
+}
+
 void RotateAimSnap::clear()
 {
     m_aimBlockId = QUuid();

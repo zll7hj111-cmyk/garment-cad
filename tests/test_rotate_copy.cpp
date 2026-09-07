@@ -20,11 +20,12 @@ void TestRotateCopy::cloneAttachesToOriginalWithRelativeAngle()
         doc.addLinked(lv);
     doc.addBlock(clone);
     QVERIFY(doc.addAttachment(
-        attachCloneToOriginal(doc, clone, a.blockId, a, -30.0)));
+        attachCloneToOriginal(doc, clone, a.blockId, a, 150.0)));
     doc.resolveAll();
 
-    // Stored −30° (闭合基准 2026-08: 0° = 折叠重叠, 180° = 直行延续; 起点
-    // 出口反向) → clone is 30° CCW of the original (relative-angle semantics
+    // 闭合基准存储 150° (母线直线向量基准 2026-09: refWorld = 0°):
+    // world = refWorld + 180° − followerAngle = 0° + 180° − 150° = 30°
+    // clone is 30° CCW of the original (relative-angle semantics
     // of the rotate-copy gesture).
     const Block* orig = doc.findBlock(a.blockId);
     const Block* cln = doc.findBlock(clone.id);
@@ -46,11 +47,11 @@ void TestRotateCopy::cloneFollowsOriginalRotation()
     for (const auto& lv : r.newLinked)
         doc.addLinked(lv);
     doc.addBlock(clone);
-    doc.addAttachment(attachCloneToOriginal(doc, clone, a.blockId, a, -30.0));
+    doc.addAttachment(attachCloneToOriginal(doc, clone, a.blockId, a, 150.0));
     doc.resolveAll();
 
-    // Relative angle = 180° − (−30°) − 180° = 30° before and 75° after the
-    // 45° turn (闭合基准存储).
+    // Relative angle = 180° − 150° = 30° before and 75° after the
+    // 45° turn (母线直线向量基准存储 2026-09).
     QVERIFY(std::abs(worldAngleDeg(doc, clone.id) - 30.0) < 1e-6);
 
     // Rotate the ORIGINAL 45° about its start → the clone keeps its 30°
@@ -89,9 +90,9 @@ void TestRotateCopy::rotateCopyCommandUndoRedo()
     QCOMPARE(doc.blocks().size(), size_t(2));
     QVERIFY(doc.findBlock(clone.id) != nullptr);
     QVERIFY(cloneAttachment(doc, clone.id, a.blockId) != nullptr);
-    // Stored 120° (闭合基准存储值, 挂起点 → refWorld = 180°):
-    // world = refWorld + 180° − 120° = 240° ≡ −120°.
-    QVERIFY(std::abs(worldAngleDeg(doc, clone.id) + 120.0) < 1e-6);
+    // Stored 120° (闭合基准存储值, 母线直线向量 refWorld = 0°):
+    // world = refWorld + 180° − 120° = 60°.
+    QVERIFY(std::abs(worldAngleDeg(doc, clone.id) - 60.0) < 1e-6);
 
     stack.undo();
     QCOMPARE(doc.blocks().size(), size_t(1));
@@ -102,7 +103,7 @@ void TestRotateCopy::rotateCopyCommandUndoRedo()
     QCOMPARE(doc.blocks().size(), size_t(2));
     QVERIFY(doc.findBlock(clone.id) != nullptr);
     QVERIFY(cloneAttachment(doc, clone.id, a.blockId) != nullptr);
-    QVERIFY(std::abs(worldAngleDeg(doc, clone.id) + 120.0) < 1e-6);
+    QVERIFY(std::abs(worldAngleDeg(doc, clone.id) - 60.0) < 1e-6);
 }
 
 void TestRotateCopy::formulaLockedOriginalCopyIsFree()

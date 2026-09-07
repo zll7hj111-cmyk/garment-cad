@@ -15,13 +15,16 @@ public:
     explicit RotateGizmo(CanvasScene* scene);
     ~RotateGizmo();
 
-    /// (Re)build all items around @p pivotWorld (world mm) with the reference dash along @p refWorldRad.
+    /// (Re)build all items around @p pivotWorld with dual reference dashes.
+    void build(const cad::geo::Vec2& pivotWorld, double refBaseRad, double prevPoseRad, double zoom = 1.0);
+
+    /// Refresh dual dashes and sweep wedge for deltaDeg.
+    void update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg);
+
+    /// 兼容旧版：单基准弧线构建
     void build(const cad::geo::Vec2& pivotWorld, double refWorldRad, double zoom = 1.0);
 
-    /// Refresh the arc from @p arcStartRad to @p arcEndRad (world radians) and reference dash.
-    void update(double zoom, double dashRad, double arcStartRad, double arcEndRad);
-
-    /// D15 确认门可视区分: 未确认 = 虚线弧 + 空心环; 确认 = 实线弧 + 实心环。
+    /// D15 确认门兼容（已无实际视觉差别）
     void setConfirmed(bool confirmed);
 
     [[nodiscard]] bool confirmed() const { return m_confirmed; }
@@ -30,16 +33,19 @@ public:
     void remove();
 
     [[nodiscard]] bool visible() const { return m_visible; }
-    [[nodiscard]] double refWorldRad() const { return m_refWorldRad; }
+    [[nodiscard]] double refBaseRad() const { return m_refBaseRad; }
+    [[nodiscard]] double prevPoseRad() const { return m_prevPoseRad; }
+    [[nodiscard]] double deltaDeg() const { return m_deltaDeg; }
+    [[nodiscard]] double refWorldRad() const { return m_refBaseRad; }
     [[nodiscard]] bool isArcEmpty() const;
 
 private:
     CanvasScene* m_scene = nullptr;
 
     cad::geo::Vec2 m_pivotWorld;
-    double m_refWorldRad = 0.0;
-    double m_arcStartRad = 0.0;
-    double m_arcEndRad = 0.0;
+    double m_refBaseRad = 0.0;
+    double m_prevPoseRad = 0.0;
+    double m_deltaDeg = 0.0;
     bool   m_confirmed = false;
     bool   m_visible = false;
 };

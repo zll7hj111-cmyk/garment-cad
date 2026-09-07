@@ -5,6 +5,7 @@
 #include <QUndoStack>
 
 #include "parametric/ParamDocument.h"
+#include "parametric/FollowerAngle.h"
 #include "parametric/Block.h"
 #include "geometry/Angle.h"
 #include "tools/ToolRotate.h"
@@ -69,11 +70,6 @@ void RotateCopyGesture::begin(const Vec2& pos)
     // attachExit + π − FA = attachExit + baseOffset + rel = 原线朝向 + rel。
     // （旧实现用"锚心偏移 0/180°"近似：水平自由线碰巧正确，斜线与连接线
     // 差 180°−α —— 用户报告"复制以 180° 创建"。）
-    m_attachExitRad = 0.0;
-    if (!orig->segments.empty())
-        m_attachExitRad = orig->transform.rotation
-                          + orig->exitDirectionAtPoint(m_pivotPointId, m_leaderSegmentId);
-    m_baseOffsetDeg = o.originalWorldRotDeg() - cad::geo::radToDeg(m_attachExitRad);
     for (const auto& lv : m_copyResult.newLinked)
         o.m_paramDoc->addLinked(lv);
     o.m_paramDoc->addBlock(clone);
@@ -83,6 +79,8 @@ void RotateCopyGesture::begin(const Vec2& pos)
     cloneAtt.toBlockId = o.m_session.blockId();
     cloneAtt.toPointId = m_pivotPointId;
     cloneAtt.toSegmentId = m_leaderSegmentId;
+    m_attachExitRad = cad::param::effectiveAngleRefWorld(o.m_paramDoc, cloneAtt);
+    m_baseOffsetDeg = o.originalWorldRotDeg() - cad::geo::radToDeg(m_attachExitRad);
     cloneAtt.followerAngle = 180.0 - m_baseOffsetDeg;   // 闭合基准存储
     cloneAtt.rotationMode = cad::param::RotationMode::Angle;
     m_cloneAttId = cloneAtt.id;
@@ -155,19 +153,27 @@ void RotateCopyGesture::convert(const Vec2& pos)
     // 姿态，须用 m_baseTf + 首段局部方向计算（与 begin() 的
     // originalWorldRotDeg() 等价）。挂接点出口方向取 base 姿态旋转角
     // （exitDirectionAtPoint 返回局部方向，与姿态无关）。
-    double baseOrigRotDeg = 0.0;
+    double baseOrigRotDeg = o.m_session.base().baseTf.rotation * 180.0 / M_PI;
     if (!blk->segments.empty()) {
         const auto& seg0 = blk->segments.front();
         const auto* sp = blk->findPoint(seg0.startPointId);
         const auto* ep = blk->findPoint(seg0.endPointId);
         if (sp && ep && sp->resolved && ep->resolved) {
             const cad::geo::Vec2 d = ep->resolvedPos - sp->resolvedPos;  // 局部方向
-            baseOrigRotDeg = std::atan2(d.y, d.x) * 180.0 / M_PI;
+            baseOrigRotDeg += std::atan2(d.y, d.x) * 180.0 / M_PI;
         }
     }
-    baseOrigRotDeg += o.m_session.base().baseTf.rotation * 180.0 / M_PI;
-    m_attachExitRad = o.m_session.base().baseTf.rotation + blk->exitDirectionAtPoint(m_pivotPointId,
-                                                                      m_leaderSegmentId);
+    double baseBenchmarkRad = o.m_session.base().baseTf.rotation;
+    if (const auto* seg = blk->findSegment(m_leaderSegmentId)) {
+        const auto* sp = blk->findPoint(seg->startPointId);
+        const auto* ep = blk->findPoint(seg->endPointId);
+        if (sp && ep && sp->resolved && ep->resolved) {
+            const cad::geo::Vec2 d = ep->resolvedPos - sp->resolvedPos;
+            if (d.lengthSquared() > 1e-12)
+                baseBenchmarkRad += std::atan2(d.y, d.x);
+        }
+    }
+    m_attachExitRad = baseBenchmarkRad;
     m_baseOffsetDeg = baseOrigRotDeg - cad::geo::radToDeg(m_attachExitRad);
 
     // 副本不继承终点指向（与 beginRotateCopy 一致）。

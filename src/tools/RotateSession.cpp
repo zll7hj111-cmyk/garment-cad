@@ -36,6 +36,7 @@ void RotateSession::clear()
     m_base = RotateBaseSnapshot();
     m_anchorLocal = cad::geo::Vec2();
     m_localDir = 0.0;
+    m_detachedFollowerAttIds.clear();
 }
 
 void RotateSession::setupTarget(cad::param::ParamDocument* doc,
@@ -45,6 +46,15 @@ void RotateSession::setupTarget(cad::param::ParamDocument* doc,
     m_blockId = blockId;
     m_anchor.releaseAttHeld = false;
     m_anchor.releaseAttId = QUuid();
+
+    m_detachedFollowerAttIds.clear();
+    if (doc) {
+        for (const auto& a : doc->attachments()) {
+            if (a.toBlockId == m_blockId && a.fromBlockId != m_blockId && !a.isPin) {
+                m_detachedFollowerAttIds.append(a.id);
+            }
+        }
+    }
 
     m_anchor.isEnd = false;
     if (doc) {
@@ -270,7 +280,7 @@ void RotateSession::applyAngleDeg(cad::param::ParamDocument* doc,
 
     QList<QUuid> rotSeeds{m_blockId};
     if (!m_shadow.shadowId.isNull()) rotSeeds.append(m_shadow.shadowId);
-    doc->resolveForDrag(rotSeeds);
+    doc->resolveForDrag(rotSeeds, m_detachedFollowerAttIds);
     if (scene) scene->syncBlockPositions();
 }
 
@@ -481,6 +491,7 @@ void RotateSession::restoreBase(cad::param::ParamDocument* doc, CanvasScene* sce
         m_anchor.releaseAttId = QUuid();
         m_anchor.releaseAttHeld = false;
     }
+    m_detachedFollowerAttIds.clear();
     doc->resolveAll();
     if (scene) scene->refreshAllBlockItems();
 }
@@ -595,6 +606,17 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
         m_base.baseEndTargetPoint = curEndPoint;
         m_anchor.releaseAttId = QUuid();
         m_anchor.releaseAttHeld = false;
+
+        for (const QUuid& attId : m_detachedFollowerAttIds) {
+            if (auto* a = doc->findAttachment(attId)) {
+                if (auto* child = doc->findBlock(a->fromBlockId)) {
+                    child->preservedBenchmarkAngle = a->followerAngle;
+                }
+                undoStack->push(new cad::cmd::RemoveAttachmentCommand(doc, attId));
+            }
+        }
+        m_detachedFollowerAttIds.clear();
+
         return true;
     }
 }

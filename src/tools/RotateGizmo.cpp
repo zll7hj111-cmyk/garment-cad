@@ -16,43 +16,41 @@ RotateGizmo::~RotateGizmo()
     remove();
 }
 
-void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refWorldRad, double zoom)
+void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refBaseRad, double prevPoseRad, double zoom)
 {
     (void)zoom;
     m_pivotWorld = pivotWorld;
-    m_refWorldRad = refWorldRad;
-    m_arcStartRad = refWorldRad;
-    m_arcEndRad = refWorldRad;
+    m_refBaseRad = refBaseRad;
+    m_prevPoseRad = prevPoseRad;
+    m_deltaDeg = 0.0;
     m_visible = true;
 
     if (m_scene && m_scene->overlay()) {
-        m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refWorldRad,
-                                            m_arcStartRad, m_arcEndRad, m_confirmed);
+        m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
     }
 }
 
-void RotateGizmo::update(double zoom, double dashRad, double arcStartRad, double arcEndRad)
+void RotateGizmo::update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg)
 {
     (void)zoom;
-    m_refWorldRad = dashRad;
-    m_arcStartRad = arcStartRad;
-    m_arcEndRad = arcEndRad;
+    m_refBaseRad = refBaseRad;
+    m_prevPoseRad = prevPoseRad;
+    m_deltaDeg = deltaDeg;
     m_visible = true;
 
     if (m_scene && m_scene->overlay()) {
-        m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refWorldRad,
-                                            m_arcStartRad, m_arcEndRad, m_confirmed);
+        m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
     }
+}
+
+void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refWorldRad, double zoom)
+{
+    build(pivotWorld, refWorldRad, refWorldRad, zoom);
 }
 
 void RotateGizmo::setConfirmed(bool confirmed)
 {
-    if (m_confirmed == confirmed) return;
     m_confirmed = confirmed;
-    if (m_visible && m_scene && m_scene->overlay()) {
-        m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refWorldRad,
-                                            m_arcStartRad, m_arcEndRad, m_confirmed);
-    }
 }
 
 void RotateGizmo::remove()
@@ -66,7 +64,7 @@ void RotateGizmo::remove()
 bool RotateGizmo::isArcEmpty() const
 {
     if (!m_visible) return true;
-    return std::abs(m_arcEndRad - m_arcStartRad) <= 1e-6;
+    return std::abs(m_deltaDeg) <= 1e-4;
 }
 
 } // namespace cad::tools
