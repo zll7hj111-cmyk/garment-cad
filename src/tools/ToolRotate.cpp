@@ -899,7 +899,11 @@ void ToolRotate::updateGizmo()
             deltaDeg = (m_state == RotateState::Rotating) ? (currentAngleDeg() - m_dragAngle0) : 0.0;
         }
     }
-    m_gizmo->update(currentZoom(), refBaseRad, prevPoseRad, deltaDeg);
+    QString badgeText;
+    if (m_state == RotateState::Rotating && std::abs(deltaDeg) > 0.01) {
+        badgeText = QString::asprintf("%.1f°", std::abs(deltaDeg));
+    }
+    m_gizmo->update(currentZoom(), refBaseRad, prevPoseRad, deltaDeg, badgeText);
     updateStatusHint();
 }
 

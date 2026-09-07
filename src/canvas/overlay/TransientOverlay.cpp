@@ -3,6 +3,8 @@
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
+#include <QGraphicsSimpleTextItem>
+#include <QFont>
 #include <QPen>
 #include <QBrush>
 #include <cmath>
@@ -35,10 +37,14 @@ public:
     QGraphicsPathItem*    gestureGuideLine = nullptr;
 
     // ── Tier 3: Session Slots (RotateGizmo) ──
-    QGraphicsEllipseItem* gizmoPivotRing = nullptr;
-    QGraphicsPathItem*    gizmoRefLine = nullptr;
-    QGraphicsPathItem*    gizmoPrevPoseLine = nullptr;
-    QGraphicsPathItem*    gizmoArc = nullptr;
+    QGraphicsEllipseItem*    gizmoPivotRing = nullptr;
+    QGraphicsEllipseItem*    gizmoPivotDot = nullptr;
+    QGraphicsPathItem*       gizmoPivotCross = nullptr;
+    QGraphicsPathItem*       gizmoRefLine = nullptr;
+    QGraphicsPathItem*       gizmoPrevPoseLine = nullptr;
+    QGraphicsPathItem*       gizmoArc = nullptr;
+    QGraphicsPathItem*       gizmoBadgeBg = nullptr;
+    QGraphicsSimpleTextItem* gizmoBadgeText = nullptr;
 
     // 辅助获取或创建 Item（保持 Item 始终挂载在 Scene）
     template <typename T>
@@ -217,13 +223,14 @@ void TransientOverlay::showMarqueeBox(const cad::geo::Vec2& p1World, const cad::
 void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
                                       double refBaseWorldRad,
                                       double prevPoseWorldRad,
-                                      double deltaDeg)
+                                      double deltaDeg,
+                                      const QString& badgeText)
 {
     const QPointF c = cad::geo::Coord::toScene(pivotWorld.x, pivotWorld.y);
 
-    // 1. Pivot Ring
+    // 1. Pivot Anchor (Professional CAD Bullseye: Ring + Center Dot + Crosshair Ticks)
     auto* ring = m_impl->ensureItem(m_impl->gizmoPivotRing);
-    constexpr double ringR = 5.0;
+    constexpr double ringR = 6.0;
     ring->setRect(-ringR, -ringR, ringR * 2.0, ringR * 2.0);
     ring->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     ring->setPos(c);
@@ -231,9 +238,36 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     QPen ringPen(QColor(38, 166, 154), 1.5);
     ringPen.setCosmetic(true);
     ring->setPen(ringPen);
-    ring->setBrush(QColor(38, 166, 154, 80));
+    ring->setBrush(QColor(38, 166, 154, 40));
     ring->setZValue(9998.0);
     ring->setVisible(true);
+
+    auto* dot = m_impl->ensureItem(m_impl->gizmoPivotDot);
+    constexpr double dotR = 2.0;
+    dot->setRect(-dotR, -dotR, dotR * 2.0, dotR * 2.0);
+    dot->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+    dot->setPos(c);
+    dot->setPen(Qt::NoPen);
+    dot->setBrush(QColor(38, 166, 154));
+    dot->setZValue(9999.0);
+    dot->setVisible(true);
+
+    auto* cross = m_impl->ensureItem(m_impl->gizmoPivotCross);
+    QPainterPath crossPath;
+    crossPath.moveTo(-9.0, 0.0); crossPath.lineTo(-4.0, 0.0);
+    crossPath.moveTo(4.0, 0.0);  crossPath.lineTo(9.0, 0.0);
+    crossPath.moveTo(0.0, -9.0); crossPath.lineTo(0.0, -4.0);
+    crossPath.moveTo(0.0, 4.0);  crossPath.lineTo(0.0, 9.0);
+    cross->setPath(crossPath);
+    cross->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+    cross->setPos(c);
+
+    QPen crossPen(QColor(38, 166, 154), 1.2);
+    crossPen.setCosmetic(true);
+    cross->setPen(crossPen);
+    cross->setBrush(Qt::NoBrush);
+    cross->setZValue(9999.0);
+    cross->setVisible(true);
 
     // 2. Dash 1: Reference Base Dash along refBaseWorldRad (55 px)
     auto* refLine = m_impl->ensureItem(m_impl->gizmoRefLine);
@@ -291,6 +325,47 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     arc->setBrush(QBrush(QColor(251, 140, 0, 38))); // semi-transparent sector
     arc->setZValue(9998.0);
     arc->setVisible(true);
+
+    // 5. Canvas Floating Degree Text Badge
+    if (!badgeText.isEmpty() && std::abs(deltaDeg) > 1e-3) {
+        auto* bg = m_impl->ensureItem(m_impl->gizmoBadgeBg);
+        auto* textItem = m_impl->ensureItem(m_impl->gizmoBadgeText);
+
+        const double curRad = prevPoseWorldRad + deltaDeg * M_PI / 180.0;
+        constexpr double badgeDist = 58.0;
+        const double bx = badgeDist * std::cos(curRad);
+        const double by = -badgeDist * std::sin(curRad);
+
+        QFont font(QStringLiteral("Segoe UI"), 9, QFont::Bold);
+        textItem->setFont(font);
+        textItem->setText(badgeText);
+        textItem->setBrush(QColor(255, 255, 255));
+        textItem->setPen(Qt::NoPen);
+
+        QRectF tb = textItem->boundingRect();
+        constexpr double padX = 5.0;
+        constexpr double padY = 2.0;
+        QRectF bgRect(bx - tb.width() / 2.0 - padX, by - tb.height() / 2.0 - padY,
+                      tb.width() + 2.0 * padX, tb.height() + 2.0 * padY);
+        QPainterPath bgPath;
+        bgPath.addRoundedRect(bgRect, 3.0, 3.0);
+        bg->setPath(bgPath);
+        bg->setPen(QPen(QColor(255, 255, 255, 120), 1.0));
+        bg->setBrush(QColor(33, 33, 33, 210));
+
+        bg->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+        bg->setPos(c);
+        bg->setZValue(10001.0);
+        bg->setVisible(true);
+
+        textItem->setParentItem(bg);
+        textItem->setPos(bx - tb.width() / 2.0, by - tb.height() / 2.0);
+        textItem->setZValue(10002.0);
+        textItem->setVisible(true);
+    } else {
+        if (m_impl->gizmoBadgeBg) m_impl->gizmoBadgeBg->setVisible(false);
+        if (m_impl->gizmoBadgeText) m_impl->gizmoBadgeText->setVisible(false);
+    }
 }
 
 void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
@@ -301,15 +376,19 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
 {
     (void)isConfirmed;
     const double deltaDeg = (arcEndWorldRad - arcStartWorldRad) * 180.0 / M_PI;
-    showRotateGizmo(pivotWorld, refWorldRad, arcStartWorldRad, deltaDeg);
+    showRotateGizmo(pivotWorld, refWorldRad, arcStartWorldRad, deltaDeg, QString());
 }
 
 void TransientOverlay::hideRotateGizmo()
 {
     if (m_impl->gizmoPivotRing) m_impl->gizmoPivotRing->setVisible(false);
+    if (m_impl->gizmoPivotDot) m_impl->gizmoPivotDot->setVisible(false);
+    if (m_impl->gizmoPivotCross) m_impl->gizmoPivotCross->setVisible(false);
     if (m_impl->gizmoRefLine) m_impl->gizmoRefLine->setVisible(false);
     if (m_impl->gizmoPrevPoseLine) m_impl->gizmoPrevPoseLine->setVisible(false);
     if (m_impl->gizmoArc) m_impl->gizmoArc->setVisible(false);
+    if (m_impl->gizmoBadgeBg) m_impl->gizmoBadgeBg->setVisible(false);
+    if (m_impl->gizmoBadgeText) m_impl->gizmoBadgeText->setVisible(false);
 }
 
 bool TransientOverlay::isEndpointHoverVisible() const

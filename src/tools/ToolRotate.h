@@ -16,10 +16,6 @@
 #include "parametric/Attachment.h"
 #include "parametric/Duplicate.h"
 
-class QGraphicsEllipseItem;
-class QGraphicsSimpleTextItem;
-#include "canvas/ManagedItems.h"
-
 #include "tools/RotateAimSnap.h"
 #include "tools/RotateInputTracker.h"
 #include "tools/RotateSession.h"
@@ -185,7 +181,6 @@ private:
     std::unique_ptr<RotateCopyGesture> m_copyGesture;
     std::unique_ptr<MarqueeGesture> m_marqueeGesture;
     std::unique_ptr<RotateGizmo> m_gizmo;
-    ManagedItems m_managed;
 
     friend class RotateCopyGesture;
 };

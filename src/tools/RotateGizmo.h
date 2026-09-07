@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QString>
 #include "geometry/Vec2.h"
 
 class CanvasScene;
@@ -18,8 +19,8 @@ public:
     /// (Re)build all items around @p pivotWorld with dual reference dashes.
     void build(const cad::geo::Vec2& pivotWorld, double refBaseRad, double prevPoseRad, double zoom = 1.0);
 
-    /// Refresh dual dashes and sweep wedge for deltaDeg.
-    void update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg);
+    /// Refresh dual dashes and sweep wedge for deltaDeg, with optional degree badge.
+    void update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg, const QString& badgeText = QString());
 
     /// 兼容旧版：单基准弧线构建
     void build(const cad::geo::Vec2& pivotWorld, double refWorldRad, double zoom = 1.0);

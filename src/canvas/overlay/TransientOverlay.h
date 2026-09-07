@@ -76,15 +76,17 @@ public:
     void showMarqueeBox(const cad::geo::Vec2& p1World, const cad::geo::Vec2& p2World);
 
     // ─── Tier 3: 复合 Gizmo（彻底消灭坐标混乱） ────────────────
-    /// 旋转量角器手柄（双虚线基准 + 绝不画反的展开扇形）
+    /// 旋转量角器手柄（双虚线基准 + 绝不画反的展开扇形 + 动态度数徽标）
     /// @param pivotWorld 旋转轴心世界坐标
     /// @param refBaseWorldRad 虚线 1：基准方向弧度（母线出射角或全局 X 轴）
     /// @param prevPoseWorldRad 虚线 2：上次姿态方向弧度（旋转开始前的线段朝向）
     /// @param deltaDeg 旋转相对角度增量（度数，逆时针为正，顺时针为负）
+    /// @param badgeText 画布浮动度数徽标文本（空则隐藏）
     void showRotateGizmo(const cad::geo::Vec2& pivotWorld,
                          double refBaseWorldRad,
                          double prevPoseWorldRad,
-                         double deltaDeg);
+                         double deltaDeg,
+                         const QString& badgeText = QString());
 
     /// 兼容旧版调用：旋转量角器手柄
     void showRotateGizmo(const cad::geo::Vec2& pivotWorld,

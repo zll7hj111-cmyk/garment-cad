@@ -132,6 +132,22 @@ private slots:
         QCOMPARE(overlay->isEndpointHoverVisible(), false);
         QCOMPARE(overlay->isRotateGizmoVisible(), false);
     }
+
+    void testRotateGizmoBadgeAndBullseye()
+    {
+        ParamDocument doc;
+        CanvasScene scene(&doc);
+        auto* overlay = scene.overlay();
+        QVERIFY(overlay != nullptr);
+
+        // 验证带有度数徽标与专业靶心的调用
+        overlay->showRotateGizmo(cad::geo::Vec2(20.0, 30.0), 0.0, 0.0, 45.0, QStringLiteral("45.0°"));
+        QCOMPARE(overlay->isRotateGizmoVisible(), true);
+
+        // 隐藏旋转手柄
+        overlay->hideRotateGizmo();
+        QCOMPARE(overlay->isRotateGizmoVisible(), false);
+    }
 };
 
 QTEST_MAIN(TestTransientOverlay)

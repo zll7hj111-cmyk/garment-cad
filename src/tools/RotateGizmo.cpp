@@ -26,11 +26,15 @@ void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refBaseRad, dou
     m_visible = true;
 
     if (m_scene && m_scene->overlay()) {
-        m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
+        if (m_confirmed) {
+            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
+        } else {
+            m_scene->overlay()->hideRotateGizmo();
+        }
     }
 }
 
-void RotateGizmo::update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg)
+void RotateGizmo::update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg, const QString& badgeText)
 {
     (void)zoom;
     m_refBaseRad = refBaseRad;
@@ -39,7 +43,11 @@ void RotateGizmo::update(double zoom, double refBaseRad, double prevPoseRad, dou
     m_visible = true;
 
     if (m_scene && m_scene->overlay()) {
-        m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
+        if (m_confirmed) {
+            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg, badgeText);
+        } else {
+            m_scene->overlay()->hideRotateGizmo();
+        }
     }
 }
 
@@ -50,7 +58,15 @@ void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refWorldRad, do
 
 void RotateGizmo::setConfirmed(bool confirmed)
 {
+    if (m_confirmed == confirmed) return;
     m_confirmed = confirmed;
+    if (m_scene && m_scene->overlay() && m_visible) {
+        if (m_confirmed) {
+            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
+        } else {
+            m_scene->overlay()->hideRotateGizmo();
+        }
+    }
 }
 
 void RotateGizmo::remove()
