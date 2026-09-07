@@ -37,6 +37,7 @@ public:
     // ── Tier 3: Session Slots (RotateGizmo) ──
     QGraphicsEllipseItem* gizmoPivotRing = nullptr;
     QGraphicsPathItem*    gizmoRefLine = nullptr;
+    QGraphicsPathItem*    gizmoPrevPoseLine = nullptr;
     QGraphicsPathItem*    gizmoArc = nullptr;
 
     // 辅助获取或创建 Item（保持 Item 始终挂载在 Scene）
@@ -105,10 +106,10 @@ void TransientOverlay::showSnapAim(const cad::geo::Vec2& worldPos, ScreenPx radi
     item->setRect(-r, -r, 2.0 * r, 2.0 * r);
     item->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
 
-    QPen pen(QColor(255, 152, 0), 2.0);
+    QPen pen(QColor(140, 100, 0), 1.0);
     pen.setCosmetic(true);
     item->setPen(pen);
-    item->setBrush(Qt::NoBrush);
+    item->setBrush(QColor(255, 193, 7)); // 小实心黄点
     item->setZValue(10000.0);
 
     item->setPos(cad::geo::Coord::toScene(worldPos.x, worldPos.y));
@@ -214,95 +215,100 @@ void TransientOverlay::showMarqueeBox(const cad::geo::Vec2& p1World, const cad::
 }
 
 void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
-                                      double refWorldRad,
-                                      double arcStartWorldRad,
-                                      double arcEndWorldRad,
-                                      bool isConfirmed)
+                                      double refBaseWorldRad,
+                                      double prevPoseWorldRad,
+                                      double deltaDeg)
 {
     const QPointF c = cad::geo::Coord::toScene(pivotWorld.x, pivotWorld.y);
 
     // 1. Pivot Ring
     auto* ring = m_impl->ensureItem(m_impl->gizmoPivotRing);
-    constexpr double ringR = 6.0;
+    constexpr double ringR = 5.0;
     ring->setRect(-ringR, -ringR, ringR * 2.0, ringR * 2.0);
     ring->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     ring->setPos(c);
 
-    QPen ringPen(QColor(38, 166, 154));
+    QPen ringPen(QColor(38, 166, 154), 1.5);
     ringPen.setCosmetic(true);
-    if (isConfirmed) {
-        ringPen.setWidthF(2.0);
-        ringPen.setStyle(Qt::SolidLine);
-        ring->setBrush(QColor(38, 166, 154, 40));
-    } else {
-        ringPen.setWidthF(1.5);
-        ringPen.setStyle(Qt::DashLine);
-        ring->setBrush(Qt::NoBrush);
-    }
     ring->setPen(ringPen);
+    ring->setBrush(QColor(38, 166, 154, 80));
     ring->setZValue(9998.0);
     ring->setVisible(true);
 
-    // 2. Reference Dash along refWorldRad (60 px on screen)
-    // 注意：因 Qt 场景 Y 轴向下，世界数学角 theta 的 Y 增量为 -sin(theta)
+    // 2. Dash 1: Reference Base Dash along refBaseWorldRad (55 px)
     auto* refLine = m_impl->ensureItem(m_impl->gizmoRefLine);
-    constexpr double refLen = 60.0;
+    constexpr double refLen = 55.0;
     QPainterPath refPath;
     refPath.moveTo(0, 0);
-    refPath.lineTo(refLen * std::cos(refWorldRad), -refLen * std::sin(refWorldRad));
+    refPath.lineTo(refLen * std::cos(refBaseWorldRad), -refLen * std::sin(refBaseWorldRad));
     refLine->setPath(refPath);
     refLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     refLine->setPos(c);
 
-    QPen refPen(QColor(120, 144, 156), 1.0, Qt::DashLine);
+    QPen refPen(QColor(120, 144, 156), 1.2, Qt::DashLine);
     refPen.setCosmetic(true);
     refLine->setPen(refPen);
     refLine->setBrush(Qt::NoBrush);
-    refLine->setZValue(9997.0);
+    refLine->setZValue(9996.0);
     refLine->setVisible(true);
 
-    // 3. Angle Arc (40 px on screen)
+    // 3. Dash 2: Previous Pose Dash along prevPoseWorldRad (65 px)
+    auto* prevLine = m_impl->ensureItem(m_impl->gizmoPrevPoseLine);
+    constexpr double prevLen = 65.0;
+    QPainterPath prevPath;
+    prevPath.moveTo(0, 0);
+    prevPath.lineTo(prevLen * std::cos(prevPoseWorldRad), -prevLen * std::sin(prevPoseWorldRad));
+    prevLine->setPath(prevPath);
+    prevLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+    prevLine->setPos(c);
+
+    QPen prevPen(QColor(245, 124, 0), 1.2, Qt::DashLine);
+    prevPen.setCosmetic(true);
+    prevLine->setPen(prevPen);
+    prevLine->setBrush(Qt::NoBrush);
+    prevLine->setZValue(9997.0);
+    prevLine->setVisible(true);
+
+    // 4. Angle Wedge (Arc + Sector) from prevPoseWorldRad by deltaDeg (42 px)
     auto* arc = m_impl->ensureItem(m_impl->gizmoArc);
-    constexpr double arcR = 40.0;
+    constexpr double arcR = 42.0;
     QPainterPath arcPath;
-    if (std::abs(arcEndWorldRad - arcStartWorldRad) > 1e-6) {
-        constexpr int kSamples = 40;
-        for (int i = 0; i <= kSamples; ++i) {
-            const double t = static_cast<double>(i) / kSamples;
-            const double rad = arcStartWorldRad + t * (arcEndWorldRad - arcStartWorldRad);
-            const double px = arcR * std::cos(rad);
-            const double py = -arcR * std::sin(rad);  // scene is Y-down
-            if (i == 0) {
-                arcPath.moveTo(px, py);
-            } else {
-                arcPath.lineTo(px, py);
-            }
-        }
+    if (std::abs(deltaDeg) > 1e-4) {
+        arcPath.moveTo(0, 0);
+        // Scene Y is down => screen angle is negated
+        const double sceneStartDeg = -prevPoseWorldRad * 180.0 / M_PI;
+        const double sceneSweepDeg = -deltaDeg;
+        arcPath.arcTo(QRectF(-arcR, -arcR, arcR * 2.0, arcR * 2.0), sceneStartDeg, sceneSweepDeg);
+        arcPath.closeSubpath();
     }
     arc->setPath(arcPath);
     arc->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     arc->setPos(c);
 
-    QPen arcPen;
+    QPen arcPen(QColor(251, 140, 0), 1.8, Qt::SolidLine);
     arcPen.setCosmetic(true);
-    arcPen.setWidthF(2.0);
-    if (isConfirmed) {
-        arcPen.setColor(QColor(251, 140, 0));
-        arcPen.setStyle(Qt::SolidLine);
-    } else {
-        arcPen.setColor(QColor(251, 140, 0, 140));
-        arcPen.setStyle(Qt::DashLine);
-    }
     arc->setPen(arcPen);
-    arc->setBrush(Qt::NoBrush);
+    arc->setBrush(QBrush(QColor(251, 140, 0, 38))); // semi-transparent sector
     arc->setZValue(9998.0);
     arc->setVisible(true);
+}
+
+void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
+                                      double refWorldRad,
+                                      double arcStartWorldRad,
+                                      double arcEndWorldRad,
+                                      bool isConfirmed)
+{
+    (void)isConfirmed;
+    const double deltaDeg = (arcEndWorldRad - arcStartWorldRad) * 180.0 / M_PI;
+    showRotateGizmo(pivotWorld, refWorldRad, arcStartWorldRad, deltaDeg);
 }
 
 void TransientOverlay::hideRotateGizmo()
 {
     if (m_impl->gizmoPivotRing) m_impl->gizmoPivotRing->setVisible(false);
     if (m_impl->gizmoRefLine) m_impl->gizmoRefLine->setVisible(false);
+    if (m_impl->gizmoPrevPoseLine) m_impl->gizmoPrevPoseLine->setVisible(false);
     if (m_impl->gizmoArc) m_impl->gizmoArc->setVisible(false);
 }
 
@@ -323,7 +329,8 @@ bool TransientOverlay::isMarkerCrossVisible() const
 
 bool TransientOverlay::isRotateGizmoVisible() const
 {
-    return m_impl->gizmoArc && m_impl->gizmoArc->isVisible();
+    return (m_impl->gizmoPivotRing && m_impl->gizmoPivotRing->isVisible()) ||
+           (m_impl->gizmoArc && m_impl->gizmoArc->isVisible());
 }
 
 } // namespace cad::canvas

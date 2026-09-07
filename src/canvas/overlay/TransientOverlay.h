@@ -54,8 +54,8 @@ public:
     /// 端点悬停指示青圈（自动维持屏幕像素大小，自动 toScene 映射）
     void showEndpointHover(const cad::geo::Vec2& worldPos, ScreenPx radius = ScreenPx(6.0));
 
-    /// 瞄准吸附指示黄圈（旋转/智能笔等端点瞄准通用）
-    void showSnapAim(const cad::geo::Vec2& worldPos, ScreenPx radius = ScreenPx(8.0));
+    /// 瞄准吸附指示实心小黄点（旋转/智能笔等端点瞄准通用）
+    void showSnapAim(const cad::geo::Vec2& worldPos, ScreenPx radius = ScreenPx(4.0));
 
     /// 空心标记圆环（自定义颜色，如 ToolBreak 可打断点绿色环）
     void showMarkerRing(const cad::geo::Vec2& worldPos, const QColor& color, ScreenPx radius = ScreenPx(7.0), double penWidth = 2.0);
@@ -76,12 +76,17 @@ public:
     void showMarqueeBox(const cad::geo::Vec2& p1World, const cad::geo::Vec2& p2World);
 
     // ─── Tier 3: 复合 Gizmo（彻底消灭坐标混乱） ────────────────
-    /// 旋转量角器手柄（世界坐标轴心、世界参考角、当前角；自动处理 Y 轴镜像与角度换算）
+    /// 旋转量角器手柄（双虚线基准 + 绝不画反的展开扇形）
     /// @param pivotWorld 旋转轴心世界坐标
-    /// @param refWorldRad 基准射线世界方向弧度（数学坐标系逆时针）
-    /// @param arcStartWorldRad 夹角圆弧起始弧度
-    /// @param arcEndWorldRad 夹角圆弧终止弧度
-    /// @param isConfirmed 是否为确认门状态（未确认虚线空心，确认实线实心）
+    /// @param refBaseWorldRad 虚线 1：基准方向弧度（母线出射角或全局 X 轴）
+    /// @param prevPoseWorldRad 虚线 2：上次姿态方向弧度（旋转开始前的线段朝向）
+    /// @param deltaDeg 旋转相对角度增量（度数，逆时针为正，顺时针为负）
+    void showRotateGizmo(const cad::geo::Vec2& pivotWorld,
+                         double refBaseWorldRad,
+                         double prevPoseWorldRad,
+                         double deltaDeg);
+
+    /// 兼容旧版调用：旋转量角器手柄
     void showRotateGizmo(const cad::geo::Vec2& pivotWorld,
                          double refWorldRad,
                          double arcStartWorldRad,
