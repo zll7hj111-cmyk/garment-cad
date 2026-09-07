@@ -20,6 +20,7 @@ enum class ToolType {
     Rotate,
     Break,
     Intersection,
+    PlacePoint,
     Measure,
     AngleMeasure,
 };

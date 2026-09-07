@@ -215,6 +215,7 @@ QJsonObject pointJson(const ParamPoint& p) {
     o["tangentLocked"] = p.tangentLocked;
     o["autoTangent"] = p.autoTangent;
     o["isAuxiliary"] = p.isAuxiliary;
+    o["isPlaced"] = p.isPlaced;
     o["visible"] = p.visible;
     o["selectable"] = p.selectable;
     o["showName"] = p.showName;
@@ -267,6 +268,7 @@ ParamPoint pointFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     p.tangentLocked = o.contains("tangentLocked") ? o["tangentLocked"].toBool() : true;
     p.autoTangent = o.contains("autoTangent") ? o["autoTangent"].toBool() : true;
     p.isAuxiliary = o["isAuxiliary"].toBool();
+    p.isPlaced = o["isPlaced"].toBool(false);
     p.visible = o["visible"].toBool(true);
     p.selectable = o["selectable"].toBool(true);
     p.showName = o["showName"].toBool();

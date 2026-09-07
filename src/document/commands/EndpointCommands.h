@@ -1,10 +1,12 @@
-﻿#pragma once
+#pragma once
 
 #include <QUndoCommand>
 #include <QUuid>
 #include <QString>
+#include <vector>
 
 #include "parametric/ParamPoint.h"
+#include "parametric/Attachment.h"
 #include "geometry/Vec2.h"
 
 namespace cad::param { class ParamDocument; class Block; }
@@ -116,6 +118,44 @@ private:
     QUuid m_pointId;
     cad::geo::Vec2 m_oldPos;
     cad::geo::Vec2 m_newPos;
+};
+
+/// Edit a placed point's parametric offset parameters.
+class EditPlacedPointCommand : public QUndoCommand
+{
+public:
+    EditPlacedPointCommand(cad::param::ParamDocument* doc,
+                           const QUuid& blockId,
+                           const cad::param::ParamPoint& oldPt,
+                           const cad::param::ParamPoint& newPt,
+                           QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    cad::param::ParamPoint m_oldPt;
+    cad::param::ParamPoint m_newPt;
+};
+
+/// Remove a placed point (or auxiliary point) without deleting the host segment.
+class RemovePlacedPointCommand : public QUndoCommand
+{
+public:
+    RemovePlacedPointCommand(cad::param::ParamDocument* doc,
+                             const QUuid& blockId,
+                             const QUuid& pointId,
+                             QUndoCommand* parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    cad::param::ParamDocument* m_doc;
+    QUuid m_blockId;
+    QUuid m_segmentId;
+    cad::param::ParamPoint m_pt;
+    std::vector<cad::param::Attachment> m_removedAttachments;
 };
 
 } // namespace cad::cmd

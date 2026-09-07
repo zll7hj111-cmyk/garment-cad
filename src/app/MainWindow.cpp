@@ -1,4 +1,4 @@
-﻿#include "ContextStrip.h"
+#include "ContextStrip.h"
 #include "ToolDockStyle.h"
 
 #include "MainWindow.h"
@@ -104,6 +104,7 @@ void showLoadWarnings(QWidget* parent, const QStringList& warnings)
         { ToolType::Intersection, ElaIconType::Intersection },
         { ToolType::Measure,      ElaIconType::RulerCombined },
         { ToolType::AngleMeasure, ElaIconType::Angle },
+        { ToolType::PlacePoint,   ElaIconType::Diamond },
     };
     if (auto it = kIcons.constFind(type); it != kIcons.constEnd())
         return *it;
@@ -737,6 +738,43 @@ void MainWindow::connectSignals()
             this, &MainWindow::onRotateAnchorStateChanged);
     connect(m_contextStrip, &cad::app::ContextStrip::reverseRequested,
             m_toolManager, &ToolManager::forwardReverseRequest);
+
+    // 放置点状态与会话联动
+    connect(m_toolManager, &ToolManager::placedPointTargetChanged,
+            this, [this](const QUuid& b, const QUuid& p) {
+                if (!m_contextStrip) return;
+                if (p.isNull()) m_contextStrip->clearPlacedPoint();
+                else m_contextStrip->setPlacedPointTarget(b, p);
+                updateEditBand();
+            });
+    connect(m_toolManager, &ToolManager::placePointSessionChanged,
+            this, [this](bool active, const QString& seg) {
+                if (!m_contextStrip) return;
+                if (active) m_contextStrip->beginPlacePointSession(seg);
+                else m_contextStrip->endPlacePointSession();
+                updateEditBand();
+            });
+    connect(m_toolManager, &ToolManager::placePointSessionUpdated,
+            this, [this](double dist, double ang, bool dl, bool al) {
+                if (m_contextStrip)
+                    m_contextStrip->updatePlacePointValues(dist, ang, dl, al);
+            });
+    connect(m_toolManager, &ToolManager::placePointFocusNextField,
+            this, [this]() {
+                if (m_contextStrip)
+                    m_contextStrip->focusNextPlacedPointField();
+            });
+    connect(m_contextStrip, &cad::app::ContextStrip::placePointDistChanged,
+            m_toolManager, &ToolManager::forwardPlacePointDist);
+    connect(m_contextStrip, &cad::app::ContextStrip::placePointAngleChanged,
+            m_toolManager, &ToolManager::forwardPlacePointAngle);
+    connect(m_contextStrip, &cad::app::ContextStrip::placePointCommitted,
+            m_toolManager, &ToolManager::forwardPlacePointCommit);
+    connect(m_contextStrip, &cad::app::ContextStrip::placedPointDeleted,
+            this, [this](const QUuid&, const QUuid&) {
+                if (m_canvasScene) m_canvasScene->refreshAllBlockItems();
+                updateEditBand();
+            });
 
     // 撤销/重做瞬时反馈 (§6.5): 「已撤销：创建线段」1.5s 还原。
     // 编辑条可见时跳过 (条带编辑的 SegmentEditBarCommand 高频提交不刷屏);

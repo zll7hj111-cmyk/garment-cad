@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QString>
@@ -149,6 +149,7 @@ struct ParamPoint {
 
     // --- Metadata ---
     bool isAuxiliary = false;  ///< Auxiliary point (positioning only, no line drawn).
+    bool isPlaced    = false;  ///< True when created by Point Placement Tool (diamond visual marker).
     bool visible     = true;
     bool selectable  = true;   ///< false for anchor points (invisible pivot).
     bool showName    = false;  ///< Whether to display the point name on canvas.

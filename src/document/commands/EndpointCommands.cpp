@@ -1,4 +1,4 @@
-﻿#include "document/commands/EndpointCommands.h"
+#include "document/commands/EndpointCommands.h"
 
 #include <algorithm>
 
@@ -270,6 +270,124 @@ void MovePointCommand::undo()
     if (!pt) return;
     pt->freePos = m_oldPos;
     pt->constraint = cad::param::PointConstraint::Free;
+    m_doc->resolveAll();
+}
+
+// ─── EditPlacedPointCommand ───
+
+EditPlacedPointCommand::EditPlacedPointCommand(cad::param::ParamDocument* doc,
+                                               const QUuid& blockId,
+                                               const cad::param::ParamPoint& oldPt,
+                                               const cad::param::ParamPoint& newPt,
+                                               QUndoCommand* parent)
+    : QUndoCommand(QString::fromUtf8("编辑放置点"), parent)
+    , m_doc(doc)
+    , m_blockId(blockId)
+    , m_oldPt(oldPt)
+    , m_newPt(newPt)
+{
+}
+
+void EditPlacedPointCommand::redo()
+{
+    if (!m_doc) return;
+    auto* blk = m_doc->findBlock(m_blockId);
+    if (!blk) return;
+    auto* pt = blk->findPoint(m_newPt.id);
+    if (pt) {
+        *pt = m_newPt;
+        m_doc->resolveAll();
+    }
+}
+
+void EditPlacedPointCommand::undo()
+{
+    if (!m_doc) return;
+    auto* blk = m_doc->findBlock(m_blockId);
+    if (!blk) return;
+    auto* pt = blk->findPoint(m_oldPt.id);
+    if (pt) {
+        *pt = m_oldPt;
+        m_doc->resolveAll();
+    }
+}
+
+// ─── RemovePlacedPointCommand ───
+
+RemovePlacedPointCommand::RemovePlacedPointCommand(cad::param::ParamDocument* doc,
+                                                   const QUuid& blockId,
+                                                   const QUuid& pointId,
+                                                   QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , m_doc(doc)
+    , m_blockId(blockId)
+{
+    setText(QStringLiteral("删除放置点"));
+    if (!m_doc) return;
+    auto* blk = m_doc->findBlock(blockId);
+    if (!blk) return;
+    if (auto* pt = blk->findPoint(pointId)) {
+        m_pt = *pt;
+        m_segmentId = pt->hostSegmentId;
+    }
+    if (m_segmentId.isNull()) {
+        for (const auto& seg : blk->segments) {
+            if (std::find(seg.auxPointIds.begin(), seg.auxPointIds.end(), pointId) != seg.auxPointIds.end()) {
+                m_segmentId = seg.id;
+                break;
+            }
+        }
+    }
+    for (const auto& att : m_doc->attachments()) {
+        if ((att.fromBlockId == blockId && att.fromPointId == pointId) ||
+            (att.toBlockId == blockId && att.toPointId == pointId)) {
+            m_removedAttachments.push_back(att);
+        }
+    }
+}
+
+void RemovePlacedPointCommand::redo()
+{
+    if (!m_doc) return;
+    auto* blk = m_doc->findBlock(m_blockId);
+    if (!blk) return;
+
+    for (const auto& att : m_removedAttachments) {
+        m_doc->removeAttachment(att.id);
+    }
+
+    if (auto* seg = blk->findSegment(m_segmentId)) {
+        auto& ids = seg->auxPointIds;
+        ids.erase(std::remove(ids.begin(), ids.end(), m_pt.id), ids.end());
+    }
+
+    auto& pts = blk->points;
+    pts.erase(std::remove_if(pts.begin(), pts.end(),
+        [this](const cad::param::ParamPoint& p) { return p.id == m_pt.id; }),
+        pts.end());
+    blk->rebuildPointIndex();
+    m_doc->resolveAll();
+}
+
+void RemovePlacedPointCommand::undo()
+{
+    if (!m_doc) return;
+    auto* blk = m_doc->findBlock(m_blockId);
+    if (!blk) return;
+
+    blk->addPoint(m_pt);
+
+    if (auto* seg = blk->findSegment(m_segmentId)) {
+        if (std::find(seg->auxPointIds.begin(), seg->auxPointIds.end(), m_pt.id) == seg->auxPointIds.end()) {
+            seg->auxPointIds.push_back(m_pt.id);
+        }
+    }
+
+    for (const auto& att : m_removedAttachments) {
+        m_doc->addAttachment(att);
+    }
+
+    blk->rebuildPointIndex();
     m_doc->resolveAll();
 }
 

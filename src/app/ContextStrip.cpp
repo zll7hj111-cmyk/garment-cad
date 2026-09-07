@@ -30,6 +30,7 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/BlockTransformCommands.h"
 #include "document/commands/AttachmentCommands.h"
 
 namespace cad::app {
@@ -85,7 +86,13 @@ ContextStrip::ContextStrip(cad::param::ParamDocument* paramDoc, QWidget* parent)
 
 void ContextStrip::buildUi()
 {
-    auto* lay = new QHBoxLayout(this);
+    auto* rootLay = new QHBoxLayout(this);
+    rootLay->setContentsMargins(0, 0, 0, 0);
+    rootLay->setSpacing(0);
+
+    // ── 1. 线段条带容器 ──
+    m_segmentBar = new QWidget(this);
+    auto* lay = new QHBoxLayout(m_segmentBar);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(4);
 
@@ -95,7 +102,7 @@ void ContextStrip::buildUi()
 
     // 串号徽章: 等宽, 图纸编号感。
     const auto& tk = cad::ui::Theme::tokens();
-    m_idLabel = new ElaText(QString(), 11, this);
+    m_idLabel = new ElaText(QString(), 11, m_segmentBar);
     m_idLabel->setObjectName(QStringLiteral("stripSerial"));
     m_idLabel->setStyleSheet(QStringLiteral(
         "#stripSerial { %1 font-size: 10px; font-weight: 600; color: %2; background: %3; border: 1px solid %4; border-radius: 2px; padding: 2px 6px; }")
@@ -105,12 +112,12 @@ void ContextStrip::buildUi()
     // 字段标签只用于排版, 不需要持有 (文本恒定)。
     auto addField = [this, lay](const QString& caption, ElaLineEdit*& edit, int width,
                                 const QString& placeholder) {
-        auto* label = new ElaText(caption, 11, this);
+        auto* label = new ElaText(caption, 11, m_segmentBar);
         label->setObjectName(QStringLiteral("stripField"));
         // 全局 QWidget 兜底字号 13px 在此钉回 11px (实例样式优先于应用级)。
         label->setStyleSheet(QStringLiteral("font-size: 11px;"));
         lay->addWidget(label);
-        edit = new ElaLineEdit(this);
+        edit = new ElaLineEdit(m_segmentBar);
         edit->setPlaceholderText(placeholder);
         edit->setFixedHeight(kFieldH);
         edit->setMaximumWidth(width);
@@ -126,7 +133,7 @@ void ContextStrip::buildUi()
              QString::fromUtf8("数值或公式"));
     m_lenEdit->setObjectName(QStringLiteral("lenEdit"));
 
-    m_btnPasteLen = new ElaPushButton(QStringLiteral("填入"), this);
+    m_btnPasteLen = new ElaPushButton(QStringLiteral("填入"), m_segmentBar);
     m_btnPasteLen->setObjectName(QStringLiteral("pasteLenBtn"));
     m_btnPasteLen->setFixedSize(46, kFieldH);
     m_btnPasteLen->setStyleSheet(QStringLiteral("font-size: 11px;"));
@@ -141,7 +148,7 @@ void ContextStrip::buildUi()
              QString::fromUtf8("数值或公式"));
     m_angleEdit->setObjectName(QStringLiteral("angleEdit"));
 
-    m_btnPasteAngle = new ElaPushButton(QStringLiteral("填入"), this);
+    m_btnPasteAngle = new ElaPushButton(QStringLiteral("填入"), m_segmentBar);
     m_btnPasteAngle->setObjectName(QStringLiteral("pasteAngleBtn"));
     m_btnPasteAngle->setFixedSize(46, kFieldH);
     m_btnPasteAngle->setStyleSheet(QStringLiteral("font-size: 11px;"));
@@ -152,12 +159,8 @@ void ContextStrip::buildUi()
     connect(m_btnPasteAngle, &QAbstractButton::clicked, this, &ContextStrip::onPasteAngle);
     lay->addWidget(m_btnPasteAngle);
 
-    // 单位分段 (° | ⌒ | ↔): 写 attachment.rotationMode。原生 QPushButton +
-    // chipButtonStyle —— ElaPushButton 自绘不吃 QSS 且 paintEvent 没有
-    // isChecked 分支 (选中态完全不渲染, 用户报告 2026-12「状态栏看不出
-    // 处于什么模式」); chip 样式带 :checked 实底, 选中一眼可见。QButtonGroup
-    // 互斥防多钮同时选中。
-    auto* unitBox = new QWidget(this);
+    // 单位分段 (° | ⌒ | ↔): 写 attachment.rotationMode
+    auto* unitBox = new QWidget(m_segmentBar);
     auto* unitLay = new QHBoxLayout(unitBox);
     unitLay->setContentsMargins(0, 0, 0, 0);
     unitLay->setSpacing(0);
@@ -193,18 +196,14 @@ void ContextStrip::buildUi()
             this, [this] { onUnitSelected(cad::param::RotationMode::ChordLength); });
     lay->addWidget(unitBox);
 
-    // ── 连接维度 拆开/重连 (2026-xx 用户拍板): 与属性对话框「连接」「基准」
-    // 两按钮同语义 —— 位置维度 (连接) 与角度维度 (基准) 正交独立, 双拆开 =
-    // 自由线。标签列在按钮外 (与 名称:/长度(cm): 同款 mutedText), 按钮只显示
-    // 两字面 拆开/重连 —— 11px 紧凑字体装得下 (2026-xx 反馈: 五字长文本 +
-    // Ela 默认字号导致溢出)。Pinned + 有附件时可用 (refreshChrome 控制)。──
+    // ── 连接维度 拆开/重连 ──
     auto addDimToggle = [this, lay](const QString& caption, ElaPushButton*& btn,
                                     const QString& objectName, const QString& tip) {
-        auto* label = new ElaText(caption, 11, this);
+        auto* label = new ElaText(caption, 11, m_segmentBar);
         label->setObjectName(QStringLiteral("stripField"));
         label->setStyleSheet(QStringLiteral("font-size: 11px;"));
         lay->addWidget(label);
-        btn = new ElaPushButton(QString::fromUtf8("拆开"), this);
+        btn = new ElaPushButton(QString::fromUtf8("拆开"), m_segmentBar);
         btn->setObjectName(objectName);
         btn->setFixedSize(46, kFieldH);
         btn->setStyleSheet(QStringLiteral("font-size: 11px;"));
@@ -227,7 +226,7 @@ void ContextStrip::buildUi()
     connect(m_btnAngleDetach, &QAbstractButton::clicked,
             this, &ContextStrip::onAngleDetachClicked);
 
-    m_btnReverse = new ElaPushButton(QString::fromUtf8("换向"), this);
+    m_btnReverse = new ElaPushButton(QString::fromUtf8("换向"), m_segmentBar);
     m_btnReverse->setObjectName(QStringLiteral("reverseBtn"));
     m_btnReverse->setFixedSize(46, kFieldH);
     m_btnReverse->setStyleSheet(QStringLiteral("font-size: 11px;"));
@@ -236,7 +235,7 @@ void ContextStrip::buildUi()
             this, &ContextStrip::onReverseClicked);
     lay->addWidget(m_btnReverse);
 
-    m_btnBasis = new ElaPushButton(QString::fromUtf8("起点 → 终点"), this);
+    m_btnBasis = new ElaPushButton(QString::fromUtf8("起点 → 终点"), m_segmentBar);
     m_btnBasis->setObjectName(QStringLiteral("basisBtn"));
     m_btnBasis->setFixedSize(88, kFieldH);
     m_btnBasis->setStyleSheet(QStringLiteral("font-size: 11px;"));
@@ -245,18 +244,84 @@ void ContextStrip::buildUi()
         QStringLiteral("起点 → 终点。换向后修改长度/角度将驱动对端。")));
     lay->addWidget(m_btnBasis);
 
-    m_badge = new ElaText(QString(), 11, this);
+    m_badge = new ElaText(QString(), 11, m_segmentBar);
     m_badge->setObjectName(QStringLiteral("stripNote"));
     m_badge->setStyleSheet(QStringLiteral("font-size: 11px;"));
     lay->addWidget(m_badge);
 
     lay->addStretch();
 
-    m_hint = new ElaText(QString(), 11, this);
+    m_hint = new ElaText(QString(), 11, m_segmentBar);
     m_hint->setObjectName(QStringLiteral("stripNote"));
     m_hint->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_hint->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     lay->addWidget(m_hint);
+
+    // ── 2. 放置点条带容器 (不显示线段状态，专属独立) ──
+    m_placedPointBar = new QWidget(this);
+    auto* ptLay = new QHBoxLayout(m_placedPointBar);
+    ptLay->setContentsMargins(0, 0, 0, 0);
+    ptLay->setSpacing(6);
+
+    m_ptSerialLabel = new ElaText(QString(), 11, m_placedPointBar);
+    m_ptSerialLabel->setObjectName(QStringLiteral("stripPtSerial"));
+    m_ptSerialLabel->setStyleSheet(QStringLiteral(
+        "#stripPtSerial { %1 font-size: 10px; font-weight: 600; color: %2; background: %3; border: 1px solid %4; border-radius: 2px; padding: 2px 6px; }")
+        .arg(cad::ui::ThemeTokens::kMonospaceFamily, tk.text1.name(), tk.surface3.name(), tk.borderStrong.name()));
+    ptLay->addWidget(m_ptSerialLabel);
+
+    auto addPtField = [this, ptLay, kFieldH](const QString& caption, ElaLineEdit*& edit, int width,
+                                            const QString& placeholder) {
+        auto* label = new ElaText(caption, 11, m_placedPointBar);
+        label->setObjectName(QStringLiteral("stripPtField"));
+        label->setStyleSheet(QStringLiteral("font-size: 11px;"));
+        ptLay->addWidget(label);
+        edit = new ElaLineEdit(m_placedPointBar);
+        edit->setPlaceholderText(placeholder);
+        edit->setFixedHeight(kFieldH);
+        edit->setMaximumWidth(width);
+        edit->setStyleSheet(QStringLiteral("%1 font-size: 11px;")
+                                .arg(cad::ui::ThemeTokens::kMonospaceFamily));
+        ptLay->addWidget(edit);
+    };
+
+    addPtField(QString::fromUtf8("点名称:"), m_ptNameEdit, 100, QString::fromUtf8("点名称"));
+    addPtField(QString::fromUtf8("偏置距离:"), m_ptDistEdit, 70, QStringLiteral("0.0"));
+    auto* lblDistUnit = new ElaText(QStringLiteral("cm"), 11, m_placedPointBar);
+    lblDistUnit->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    ptLay->addWidget(lblDistUnit);
+
+    addPtField(QString::fromUtf8("偏置角度:"), m_ptAngleEdit, 70, QStringLiteral("90.0"));
+    auto* lblAngleUnit = new ElaText(QStringLiteral("°"), 11, m_placedPointBar);
+    lblAngleUnit->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    ptLay->addWidget(lblAngleUnit);
+
+    auto* lblBaseSeg = new ElaText(QString::fromUtf8("基准线段:"), 11, m_placedPointBar);
+    lblBaseSeg->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    ptLay->addWidget(lblBaseSeg);
+    m_ptBaseSegLabel = new ElaText(QString(), 11, m_placedPointBar);
+    m_ptBaseSegLabel->setStyleSheet(QStringLiteral("font-size: 11px; font-weight: 500;"));
+    ptLay->addWidget(m_ptBaseSegLabel);
+
+    m_btnDeletePlacedPt = new ElaPushButton(QString::fromUtf8("删除"), m_placedPointBar);
+    m_btnDeletePlacedPt->setFixedSize(46, kFieldH);
+    m_btnDeletePlacedPt->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    m_btnDeletePlacedPt->setCursor(Qt::PointingHandCursor);
+    m_btnDeletePlacedPt->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("删除放置点"),
+        QStringLiteral("仅删除当前选中的放置点，不会删除宿主线段")));
+    connect(m_btnDeletePlacedPt, &QAbstractButton::clicked, this, &ContextStrip::onDeletePlacedPointClicked);
+    ptLay->addWidget(m_btnDeletePlacedPt);
+
+    m_ptHint = new ElaText(QString(), 11, m_placedPointBar);
+    m_ptHint->setObjectName(QStringLiteral("stripPtHint"));
+    m_ptHint->setStyleSheet(QStringLiteral("font-size: 11px; color: %1;").arg(tk.text2.name()));
+    ptLay->addWidget(m_ptHint);
+    ptLay->addStretch();
+
+    rootLay->addWidget(m_segmentBar);
+    rootLay->addWidget(m_placedPointBar);
+    m_placedPointBar->hide();
 
     // 名称立即应用; 长度 200ms 防抖 + Enter/失焦立即应用。
     connect(m_nameEdit, &QLineEdit::textChanged, this, [this] { applyName(); });
@@ -273,7 +338,13 @@ void ContextStrip::buildUi()
     });
     connect(m_angleEdit, &QLineEdit::editingFinished, this, [this] { applyAngle(); });
 
-    for (auto* edit : {m_nameEdit, m_lenEdit, m_angleEdit})
+    connect(m_ptDistEdit, &QLineEdit::textEdited, this, &ContextStrip::onPlacedPointDistEdited);
+    connect(m_ptAngleEdit, &QLineEdit::textEdited, this, &ContextStrip::onPlacedPointAngleEdited);
+    connect(m_ptNameEdit, &QLineEdit::editingFinished, this, [this] {
+        if (m_isPlacedPointMode && !m_placePointSession) applyPlacedPointEdits();
+    });
+
+    for (auto* edit : {m_nameEdit, m_lenEdit, m_angleEdit, m_ptNameEdit, m_ptDistEdit, m_ptAngleEdit})
         edit->installEventFilter(this);
 }
 
@@ -369,6 +440,7 @@ void ContextStrip::setHoverTarget(const QUuid& blockId, const QUuid& segmentId)
 
 void ContextStrip::flushHover()
 {
+    if (m_isPlacedPointMode) return;
     if (m_focus == StripFocus::Pinned || m_strokePreview) return;   // 不抢锁定显示
     if (inputHasFocus()) return;                                    // 焦点保护
     if (QApplication::mouseButtons() != Qt::NoButton) return;       // 鼠标按下期间不抢显悬停条带, 避免打断长按/拖拽
@@ -399,6 +471,15 @@ void ContextStrip::setPinnedTarget(const QUuid& blockId, const QUuid& segmentId,
     const auto* seg = blk ? blk->findSegment(segmentId) : nullptr;
     if (!blk || !seg) return;
 
+    if (m_isPlacedPointMode) {
+        m_isPlacedPointMode = false;
+        m_placePointSession = false;
+        m_placedBlockId = QUuid();
+        m_placedPointId = QUuid();
+        if (m_placedPointBar) m_placedPointBar->hide();
+        if (m_segmentBar) m_segmentBar->show();
+    }
+
     m_blockId = blockId;
     m_segmentId = segmentId;
     m_focus = StripFocus::Pinned;
@@ -425,6 +506,10 @@ void ContextStrip::clearHover()
 
 void ContextStrip::clearPinned()
 {
+    if (m_isPlacedPointMode) {
+        clearPlacedPoint();
+        return;
+    }
     if (m_focus != StripFocus::Pinned) return;
     m_focus = StripFocus::Empty;
     m_creationPinned = false;
@@ -450,11 +535,17 @@ void ContextStrip::pinCreatedLine(const QUuid& blockId, const QUuid& segmentId,
 
 void ContextStrip::showStrokePreview(double lenCm, double angleDeg)
 {
-    // 0,0 = 落笔取消: 收起读数。
-    if (std::abs(lenCm) < 1e-9 && std::abs(angleDeg) < 1e-9) { hideBar(); return; }
-
-    m_strokePreview = true;
+    if (lenCm <= 0.0) {
+        // 画线终止但尚未生成线段 (Esc / 右键取消 / 零长释放) → 收起条带。
+        hideBar();
+        return;
+    }
+    m_hoverTimer->stop();       // 画线中不跑悬停节流, 悬停条带不抢显
     m_focus = StripFocus::Empty;
+    m_strokePreview = true;
+    m_creationPinned = false;
+    m_connectSession = false;
+    m_connectAttId = QUuid();
     m_blockId = QUuid();
     m_segmentId = QUuid();
     m_idLabel->setText(QString::fromUtf8("新线"));
@@ -500,6 +591,14 @@ void ContextStrip::hideBar()
     m_rotateAnchorIsEnd = false;
     m_rotateCanToggle = false;
     m_rotateReason.clear();
+
+    m_isPlacedPointMode = false;
+    m_placePointSession = false;
+    m_placedBlockId = QUuid();
+    m_placedPointId = QUuid();
+    if (m_placedPointBar) m_placedPointBar->hide();
+    if (m_segmentBar) m_segmentBar->show();
+
     hide();
 }
 
@@ -555,9 +654,10 @@ void ContextStrip::refreshFields()
         }
     }
 
+    const cad::param::Attachment* att = findEditAttachment();
+
     if (!m_angleEdit->hasFocus()) {
         const QSignalBlocker ab(m_angleEdit);
-        const cad::param::Attachment* att = findEditAttachment();
         // 独立角度 (angleIndependent): 角度自管 = 世界角, 与自由线同显示
         // (followerAngle 已被 Resolver 忽略, 显示它会读到陈旧/无意义值)。
         if (att && !att->angleIndependent) {
@@ -850,6 +950,189 @@ void ContextStrip::refreshChrome()
     if (m_btnPasteAngle) m_btnPasteAngle->setEnabled(!m_angleEdit->isReadOnly());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 放置点专属逻辑
+// ─────────────────────────────────────────────────────────────────────────────
+
+void ContextStrip::setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId)
+{
+    if (blockId.isNull() || pointId.isNull() || !m_paramDoc) {
+        clearPlacedPoint();
+        return;
+    }
+    auto* blk = m_paramDoc->findBlock(blockId);
+    if (!blk) { clearPlacedPoint(); return; }
+    auto* pt = blk->findPoint(pointId);
+    if (!pt) { clearPlacedPoint(); return; }
+
+    m_isPlacedPointMode = true;
+    m_placePointSession = false;
+    m_placedBlockId = blockId;
+    m_placedPointId = pointId;
+
+    m_segmentBar->hide();
+    m_placedPointBar->show();
+
+    m_ptSerialLabel->setText(cad::param::Serial::tag(pt->serial));
+    m_ptNameEdit->setText(pt->name);
+    m_ptDistEdit->setText(QString::number(pt->interpOffsetDist / 10.0, 'f', 1));
+    m_ptAngleEdit->setText(QString::number(pt->interpOffsetAngle, 'f', 1));
+
+    if (auto* seg = blk->findSegment(pt->hostSegmentId)) {
+        QString tag = cad::param::Serial::tag(seg->serial);
+        if (!seg->name.isEmpty()) tag += QStringLiteral("·") + seg->name;
+        m_ptBaseSegLabel->setText(tag);
+    } else {
+        m_ptBaseSegLabel->setText(QString::fromUtf8("无宿主"));
+    }
+
+    m_btnDeletePlacedPt->setEnabled(true);
+    m_ptHint->setText(QString::fromUtf8("Enter 应用修改 | Del/删除按钮 仅删除放置点"));
+
+    m_focus = StripFocus::Pinned;
+    show();
+    update();
+}
+
+void ContextStrip::clearPlacedPoint()
+{
+    m_isPlacedPointMode = false;
+    m_placePointSession = false;
+    m_placedBlockId = QUuid();
+    m_placedPointId = QUuid();
+    if (m_placedPointBar) m_placedPointBar->hide();
+    if (m_segmentBar) m_segmentBar->show();
+    hideBar();
+}
+
+void ContextStrip::beginPlacePointSession(const QString& baseSegName)
+{
+    m_isPlacedPointMode = true;
+    m_placePointSession = true;
+    m_placedBlockId = QUuid();
+    m_placedPointId = QUuid();
+
+    m_segmentBar->hide();
+    m_placedPointBar->show();
+
+    m_ptSerialLabel->setText(QString::fromUtf8("放置"));
+    m_ptNameEdit->clear();
+    m_ptDistEdit->clear();
+    m_ptAngleEdit->clear();
+    m_ptBaseSegLabel->setText(baseSegName.isEmpty() ? QString::fromUtf8("未选择 (请点击端点/线段)") : baseSegName);
+    m_btnDeletePlacedPt->setEnabled(false);
+    m_ptHint->setText(QString::fromUtf8("Tab 切换输入框 | 有输入锁方向 | 回车确认"));
+
+    m_focus = StripFocus::Pinned;
+    show();
+    update();
+}
+
+void ContextStrip::updatePlacePointValues(double distCm, double angleDeg, bool distLocked, bool angleLocked)
+{
+    if (!m_placePointSession) return;
+    if (!distLocked && !m_ptDistEdit->hasFocus()) {
+        m_ptDistEdit->setText(QString::number(distCm, 'f', 1));
+    }
+    if (!angleLocked && !m_ptAngleEdit->hasFocus()) {
+        m_ptAngleEdit->setText(QString::number(angleDeg, 'f', 1));
+    }
+}
+
+void ContextStrip::endPlacePointSession()
+{
+    if (m_placePointSession) {
+        clearPlacedPoint();
+    }
+}
+
+void ContextStrip::focusNextPlacedPointField()
+{
+    if (!m_isPlacedPointMode) return;
+    if (m_ptDistEdit->hasFocus()) {
+        m_ptAngleEdit->setFocus();
+        m_ptAngleEdit->selectAll();
+    } else {
+        m_ptDistEdit->setFocus();
+        m_ptDistEdit->selectAll();
+    }
+}
+
+void ContextStrip::onPlacedPointDistEdited(const QString& text)
+{
+    if (!m_placePointSession) {
+        applyPlacedPointEdits();
+        return;
+    }
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty()) {
+        emit placePointDistChanged(0.0, false);
+    } else {
+        bool ok = false;
+        double val = trimmed.toDouble(&ok);
+        if (ok) {
+            emit placePointDistChanged(val, true);
+        }
+    }
+}
+
+void ContextStrip::onPlacedPointAngleEdited(const QString& text)
+{
+    if (!m_placePointSession) {
+        applyPlacedPointEdits();
+        return;
+    }
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty()) {
+        emit placePointAngleChanged(0.0, false);
+    } else {
+        bool ok = false;
+        double val = trimmed.toDouble(&ok);
+        if (ok) {
+            emit placePointAngleChanged(val, true);
+        }
+    }
+}
+
+void ContextStrip::applyPlacedPointEdits()
+{
+    if (!m_paramDoc || m_placedBlockId.isNull() || m_placedPointId.isNull()) return;
+    auto* blk = m_paramDoc->findBlock(m_placedBlockId);
+    if (!blk) return;
+    auto* pt = blk->findPoint(m_placedPointId);
+    if (!pt) return;
+
+    cad::param::ParamPoint oldPt = *pt;
+    cad::param::ParamPoint newPt = oldPt;
+
+    newPt.name = m_ptNameEdit->text().trimmed();
+    bool ok = false;
+    double distCm = m_ptDistEdit->text().toDouble(&ok);
+    if (ok) newPt.interpOffsetDist = distCm * 10.0;
+    double angleDeg = m_ptAngleEdit->text().toDouble(&ok);
+    if (ok) newPt.interpOffsetAngle = angleDeg;
+
+    if (m_undoStack) {
+        m_undoStack->push(new cad::cmd::EditPlacedPointCommand(m_paramDoc, m_placedBlockId, oldPt, newPt));
+    } else {
+        *pt = newPt;
+        m_paramDoc->resolveAll();
+    }
+}
+
+void ContextStrip::onDeletePlacedPointClicked()
+{
+    if (!m_paramDoc || m_placedBlockId.isNull() || m_placedPointId.isNull()) return;
+    const QUuid bId = m_placedBlockId;
+    const QUuid pId = m_placedPointId;
+    clearPlacedPoint();
+    if (m_undoStack) {
+        m_undoStack->push(new cad::cmd::RemovePlacedPointCommand(m_paramDoc, bId, pId));
+    }
+    emit placedPointDeleted(bId, pId);
+    hideBar();
+}
+
 void ContextStrip::applyTheme()
 {
     const auto& tk = cad::ui::Theme::tokens();
@@ -857,6 +1140,14 @@ void ContextStrip::applyTheme()
         m_idLabel->setStyleSheet(QStringLiteral(
             "#stripSerial { %1 font-size: 10px; font-weight: 600; color: %2; background: %3; border: 1px solid %4; border-radius: 2px; padding: 2px 6px; }")
             .arg(cad::ui::ThemeTokens::kMonospaceFamily, tk.text1.name(), tk.surface3.name(), tk.borderStrong.name()));
+    }
+    if (m_ptSerialLabel) {
+        m_ptSerialLabel->setStyleSheet(QStringLiteral(
+            "#stripPtSerial { %1 font-size: 10px; font-weight: 600; color: %2; background: %3; border: 1px solid %4; border-radius: 2px; padding: 2px 6px; }")
+            .arg(cad::ui::ThemeTokens::kMonospaceFamily, tk.text1.name(), tk.surface3.name(), tk.borderStrong.name()));
+    }
+    if (m_ptHint) {
+        m_ptHint->setStyleSheet(QStringLiteral("font-size: 11px; color: %1;").arg(tk.text2.name()));
     }
     const QString unitChip = cad::ui::chipButtonStyle();
     if (m_btnUnitAngle)
@@ -1228,7 +1519,10 @@ void ContextStrip::commitState(cad::cmd::SegmentEditBarCommand::State st)
 
 bool ContextStrip::inputHasFocus() const
 {
-    return m_nameEdit->hasFocus() || m_lenEdit->hasFocus() || m_angleEdit->hasFocus();
+    return m_nameEdit->hasFocus() || m_lenEdit->hasFocus() || m_angleEdit->hasFocus()
+        || (m_ptNameEdit && m_ptNameEdit->hasFocus())
+        || (m_ptDistEdit && m_ptDistEdit->hasFocus())
+        || (m_ptAngleEdit && m_ptAngleEdit->hasFocus());
 }
 
 void ContextStrip::returnFocusToCanvas()
@@ -1261,6 +1555,49 @@ bool ContextStrip::eventFilter(QObject* watched, QEvent* event)
     }
     if (event->type() == QEvent::KeyPress) {
         auto* ke = static_cast<QKeyEvent*>(event);
+
+        // 放置点输入框按键处理
+        if (watched == m_ptNameEdit || watched == m_ptDistEdit || watched == m_ptAngleEdit) {
+            if (m_placePointSession) {
+                if (ke->key() == Qt::Key_Escape) {
+                    emit cancelRequested();
+                    return true;
+                }
+                if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                    emit placePointCommitted();
+                    return true;
+                }
+                if (ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab) {
+                    focusNextPlacedPointField();
+                    return true;
+                }
+            } else if (m_isPlacedPointMode) {
+                if (ke->key() == Qt::Key_Escape) {
+                    clearPlacedPoint();
+                    returnFocusToCanvas();
+                    return true;
+                }
+                if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                    applyPlacedPointEdits();
+                    returnFocusToCanvas();
+                    return true;
+                }
+                if (ke->key() == Qt::Key_Tab) {
+                    if (watched == m_ptNameEdit)       { m_ptDistEdit->setFocus();  m_ptDistEdit->selectAll(); }
+                    else if (watched == m_ptDistEdit)  { m_ptAngleEdit->setFocus(); m_ptAngleEdit->selectAll(); }
+                    else if (watched == m_ptAngleEdit) { m_ptNameEdit->setFocus();  m_ptNameEdit->selectAll(); }
+                    return true;
+                }
+                if (ke->key() == Qt::Key_Backtab) {
+                    if (watched == m_ptAngleEdit)      { m_ptDistEdit->setFocus();  m_ptDistEdit->selectAll(); }
+                    else if (watched == m_ptDistEdit)  { m_ptNameEdit->setFocus();  m_ptNameEdit->selectAll(); }
+                    else if (watched == m_ptNameEdit)  { m_ptAngleEdit->setFocus(); m_ptAngleEdit->selectAll(); }
+                    return true;
+                }
+            }
+            return QWidget::eventFilter(watched, event);
+        }
+
         // 连接角度会话 (二期): Enter/Esc 是会话收尾键, 由手势处理 ——
         // 不得走普通锁定的 解除锁定/撤销创建 路径。
         if (m_connectSession) {
@@ -1296,15 +1633,29 @@ bool ContextStrip::eventFilter(QObject* watched, QEvent* event)
             return true;
         }
         if (ke->key() == Qt::Key_Tab) {
-            if (watched == m_nameEdit)       { m_lenEdit->setFocus();  m_lenEdit->selectAll(); }
-            else if (watched == m_lenEdit)   { m_angleEdit->setFocus(); m_angleEdit->selectAll(); }
-            else if (watched == m_angleEdit) { m_nameEdit->setFocus();  m_nameEdit->selectAll(); }
+            if (watched == m_nameEdit) {
+                m_lenEdit->setFocus();
+                m_lenEdit->selectAll();
+            } else if (watched == m_lenEdit) {
+                m_angleEdit->setFocus();
+                m_angleEdit->selectAll();
+            } else if (watched == m_angleEdit) {
+                m_nameEdit->setFocus();
+                m_nameEdit->selectAll();
+            }
             return true;
         }
         if (ke->key() == Qt::Key_Backtab) {
-            if (watched == m_angleEdit)      { m_lenEdit->setFocus();  m_lenEdit->selectAll(); }
-            else if (watched == m_lenEdit)   { m_nameEdit->setFocus(); m_nameEdit->selectAll(); }
-            else if (watched == m_nameEdit)  { m_angleEdit->setFocus(); m_angleEdit->selectAll(); }
+            if (watched == m_angleEdit) {
+                m_lenEdit->setFocus();
+                m_lenEdit->selectAll();
+            } else if (watched == m_lenEdit) {
+                m_nameEdit->setFocus();
+                m_nameEdit->selectAll();
+            } else if (watched == m_nameEdit) {
+                m_angleEdit->setFocus();
+                m_angleEdit->selectAll();
+            }
             return true;
         }
     }

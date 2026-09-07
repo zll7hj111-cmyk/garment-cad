@@ -6,6 +6,7 @@
 #include "ToolRotate.h"
 #include "ToolBreak.h"
 #include "ToolIntersection.h"
+#include "ToolPlacePoint.h"
 #include "ToolMeasure.h"
 #include "ToolAngleMeasure.h"
 
@@ -22,6 +23,7 @@ ToolRegistry::ToolRegistry()
     registerTool<ToolRotate>();
     registerTool<ToolBreak>();
     registerTool<ToolIntersection>();
+    registerTool<ToolPlacePoint>();
     registerTool<ToolMeasure>();
     registerTool<ToolAngleMeasure>();
 }

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -120,9 +120,28 @@ public:
     /// 角度基准读数 (P1 → P2)。
     [[nodiscard]] QString basisText() const;
 
+    // ── 放置点专属模式与会话 ──
+    /// 选中放置点: 底部条带完全切换为放置点状态 (不显示线段状态)
+    void setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId);
+    void clearPlacedPoint();
+
+    /// 激活放置点工具: 底栏出现放置点输入框与基准显示
+    void beginPlacePointSession(const QString& baseSegName = QString());
+    void updatePlacePointValues(double distCm, double angleDeg, bool distLocked, bool angleLocked);
+    void endPlacePointSession();
+    void focusNextPlacedPointField();
+
+    [[nodiscard]] bool isPlacedPointMode() const { return m_isPlacedPointMode; }
+
 signals:
     /// Esc 由"创建后锁定"触发: 宿主撤销创建命令 (删线)。
     void cancelRequested();
+
+    // ── 放置点交互信号 ──
+    void placePointDistChanged(double distCm, bool locked);
+    void placePointAngleChanged(double angleDeg, bool locked);
+    void placePointCommitted();
+    void placedPointDeleted(const QUuid& blockId, const QUuid& pointId);
 
     // ── 旋转会话换向 (2026-12): 旋转工具激活时, 换向 = 切换锚心 ──
     /// 换向按钮点击 (仅旋转会话内发出): 宿主转交激活工具 (ToolRotate 切锚心)。
@@ -215,6 +234,27 @@ private:
     ElaText*       m_hint = nullptr;
     QTimer*        m_debounce = nullptr;
     QTimer*        m_hoverTimer = nullptr;
+
+    // ── 放置点专属控件与状态 ──
+    void applyPlacedPointEdits();
+    void onDeletePlacedPointClicked();
+    void onPlacedPointDistEdited(const QString& text);
+    void onPlacedPointAngleEdited(const QString& text);
+
+    QWidget*       m_segmentBar = nullptr;
+    QWidget*       m_placedPointBar = nullptr;
+    ElaText*       m_ptSerialLabel = nullptr;
+    ElaLineEdit*   m_ptNameEdit = nullptr;
+    ElaLineEdit*   m_ptDistEdit = nullptr;
+    ElaLineEdit*   m_ptAngleEdit = nullptr;
+    ElaText*       m_ptBaseSegLabel = nullptr;
+    ElaPushButton* m_btnDeletePlacedPt = nullptr;
+    ElaText*       m_ptHint = nullptr;
+
+    bool           m_isPlacedPointMode = false;
+    bool           m_placePointSession = false;
+    QUuid          m_placedBlockId;
+    QUuid          m_placedPointId;
 };
 
 } // namespace cad::app

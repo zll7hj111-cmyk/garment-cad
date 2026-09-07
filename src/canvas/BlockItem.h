@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QGraphicsObject>
 #include <QPainterPath>
@@ -92,6 +92,9 @@ public:
     void setToolLocked(bool locked);
     [[nodiscard]] bool toolLocked() const { return m_toolLocked; }
 
+    void setSelectedPoint(const QUuid& pointId);
+    [[nodiscard]] QUuid selectedPoint() const { return m_selectedPointId; }
+
 
 protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override;
@@ -120,7 +123,7 @@ private:
         bool showAxis = false; ///< 是否显示中心基准轴虚线
         QPointF pCenter;       ///< 中心主轴拐点本地坐标
     };
-    struct PointCache { QUuid id; QPointF pos; bool isAuxiliary; QString label; bool showLabel;
+    struct PointCache { QUuid id; QPointF pos; bool isAuxiliary; bool isPlaced; QString label; bool showLabel;
                         bool isAttachmentNode; bool isCurveAnchor; bool isLockedNode; bool visible; };
 
     std::vector<LineCache>  m_lines;
@@ -130,6 +133,7 @@ private:
     LayerMode m_layerMode = LayerMode::Normal;  ///< From owning block's layer.
     QUuid m_hoveredEntity;  ///< Currently hovered entity (null = none).
     QUuid m_hoveredPointId;  ///< Currently hovered point (null = none).
+    QUuid m_selectedPointId; ///< Currently selected point (null = none).
     QUuid m_leaderEntity;   ///< Segment highlighted as leader candidate (null = none).
     bool  m_toolSelected = false;  ///< Tool-managed selection (red highlight).
     bool  m_toolLocked   = false;  ///< Confirmed selection (red + bold).

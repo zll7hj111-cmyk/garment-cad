@@ -1,4 +1,4 @@
-﻿#include "BlockItem.h"
+#include "BlockItem.h"
 #include "CanvasScene.h"
 #include "CanvasAnimator.h"
 #include "CanvasStyle.h"
@@ -126,7 +126,7 @@ QPainterPath BlockItem::shape() const
     // PICK radius is unified at 2.5 for ALL point kinds — deliberately larger
     // than the 0.8 visual radius so grabbing stays finger-friendly.
     for (const auto& pc : m_points) {
-        const double rPx = 2.5;
+        const double rPx = pc.isPlaced ? 6.0 : 2.5;
         const double r = rPx * pxToLocal;
         path.addEllipse(pc.pos, r, r);
     }
@@ -319,6 +319,12 @@ void BlockItem::paint(QPainter* painter,
             pp.pointRadius = 0.8;   // 原 2.0 → 缩小一半多；命中范围不变 (shape() 2.5)
         }
 
+        // Placed points (放置点) render as a distinct diamond (菱形) marker
+        if (pc.isPlaced) {
+            pp.pointFill = QColor(255, 140, 0);  // Amber/orange
+            pp.pointRadius = 1.1;
+        }
+
         // Hovered point: enlarged + teal — the "this is a grab/connect point"
         // affordance (same highlight language as hovered lines).
         if (pc.id == m_hoveredPointId) {
@@ -333,7 +339,17 @@ void BlockItem::paint(QPainter* painter,
             pp.pointFill = kGray;
         painter->setPen(Qt::NoPen);
         painter->setBrush(pp.pointFill);
-        painter->drawEllipse(pc.pos, pp.pointRadius, pp.pointRadius);
+        if (pc.isPlaced) {
+            const double r = pp.pointRadius * 1.3;
+            QPolygonF diamond;
+            diamond << QPointF(pc.pos.x(), pc.pos.y() - r)
+                    << QPointF(pc.pos.x() + r, pc.pos.y())
+                    << QPointF(pc.pos.x(), pc.pos.y() + r)
+                    << QPointF(pc.pos.x() - r, pc.pos.y());
+            painter->drawPolygon(diamond);
+        } else {
+            painter->drawEllipse(pc.pos, pp.pointRadius, pp.pointRadius);
+        }
 
         // Anchor ring marking a connection point (attachment node). Protected
         // connections use the amber ring (拖动保护视觉区分).
@@ -346,6 +362,27 @@ void BlockItem::paint(QPainter* painter,
             painter->setBrush(Qt::NoBrush);
             const double r = pp.pointRadius + style->attachmentRingGap;
             painter->drawEllipse(pc.pos, r, r);
+        }
+
+        // Selected point indicator (accent ring/diamond)
+        if (pc.id == m_selectedPointId) {
+            const QColor selColor = style ? style->pointColor(EntityState::Selected, false) : QColor(204, 120, 92);
+            QPen selPen(selColor, 1.8);
+            selPen.setCosmetic(true);
+            painter->setPen(selPen);
+            painter->setBrush(Qt::NoBrush);
+            if (pc.isPlaced) {
+                const double r = pp.pointRadius * 2.2;
+                QPolygonF selDiamond;
+                selDiamond << QPointF(pc.pos.x(), pc.pos.y() - r)
+                           << QPointF(pc.pos.x() + r, pc.pos.y())
+                           << QPointF(pc.pos.x(), pc.pos.y() + r)
+                           << QPointF(pc.pos.x() - r, pc.pos.y());
+                painter->drawPolygon(selDiamond);
+            } else {
+                const double r = pp.pointRadius * 2.0;
+                painter->drawEllipse(pc.pos, r, r);
+            }
         }
 
         // Draw label (suppressed on grayed reference layers). Overlapping
@@ -450,6 +487,14 @@ void BlockItem::setToolLocked(bool locked)
                            static_cast<EntityState>(resolveState(pc.id)));
     }
     update();
+}
+
+void BlockItem::setSelectedPoint(const QUuid& pointId)
+{
+    if (m_selectedPointId != pointId) {
+        m_selectedPointId = pointId;
+        update();
+    }
 }
 
 QVariant BlockItem::itemChange(GraphicsItemChange change, const QVariant& value)
@@ -949,7 +994,7 @@ void BlockItem::rebuildCache()
         // "show name" checkbox has no visible effect.
         const QString pointLabel = pt.name.isEmpty()
             ? cad::param::Serial::tag(pt.serial) : pt.name;
-        m_points.push_back({pt.id, pos, pt.isAuxiliary, pointLabel, pt.showName,
+        m_points.push_back({pt.id, pos, pt.isAuxiliary, pt.isPlaced, pointLabel, pt.showName,
                             attachmentPoints.contains(pt.id),
                             pt.constraint == cad::param::PointConstraint::CurveAnchor,
                             lockedPoints.contains(pt.id),
