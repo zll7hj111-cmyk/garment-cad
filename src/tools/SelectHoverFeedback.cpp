@@ -1,4 +1,4 @@
-﻿#include "SelectHoverFeedback.h"
+#include "SelectHoverFeedback.h"
 
 #include "parametric/Block.h"
 #include "parametric/DomainViews.h"
@@ -39,12 +39,13 @@ Qt::CursorShape SelectHoverFeedback::cursorShapeFor(
     cad::param::ParamDocument* doc, const QUuid& blockHit,
     const cad::geo::Vec2& pos, double zoom, bool ctrlHeld) const
 {
-    if (blockHit.isNull()) return Qt::ArrowCursor;
-    if (ctrlHeld) return Qt::DragCopyCursor;
+    if (ctrlHeld && !blockHit.isNull()) return Qt::DragCopyCursor;
     const double worldR = kConnectGrabRadius / (zoom > 1e-9 ? zoom : 1.0);
-    if (blockHasEndpointNear(doc, blockHit, pos, worldR))
+    if (findEndpointNear(doc, pos, worldR))
         return Qt::CrossCursor;
-    return Qt::OpenHandCursor;
+    if (!blockHit.isNull())
+        return Qt::OpenHandCursor;
+    return Qt::ArrowCursor;
 }
 
 bool SelectHoverFeedback::blockHasEndpointNear(cad::param::ParamDocument* doc,
@@ -59,6 +60,36 @@ bool SelectHoverFeedback::blockHasEndpointNear(cad::param::ParamDocument* doc,
         if (!pt.selectable || !pt.resolved) continue;
         if (blk->worldPos(pt.id).distanceSquaredTo(pos) < rSq)
             return true;
+    }
+    return false;
+}
+
+bool SelectHoverFeedback::findEndpointNear(cad::param::ParamDocument* doc,
+                                           const cad::geo::Vec2& pos,
+                                           double worldRadius,
+                                           cad::geo::Vec2* outPos,
+                                           QUuid* outBlockId,
+                                           QUuid* outPointId) const
+{
+    if (!doc) return false;
+    const double rSq = worldRadius * worldRadius;
+    const QUuid activeLayer = doc->layersView().activeLayer();
+    for (const auto& blk : doc->blocks()) {
+        if (blk.isBridge) continue;
+        if (blk.layer != activeLayer) continue;
+        for (const auto& seg : blk.segments) {
+            for (const QUuid& pid : {seg.startPointId, seg.endPointId}) {
+                const auto* pt = blk.findPoint(pid);
+                if (!pt || !pt->selectable || !pt->resolved) continue;
+                const cad::geo::Vec2 wpt = blk.worldPos(pid);
+                if (wpt.distanceSquaredTo(pos) < rSq) {
+                    if (outPos) *outPos = wpt;
+                    if (outBlockId) *outBlockId = blk.id;
+                    if (outPointId) *outPointId = pid;
+                    return true;
+                }
+            }
+        }
     }
     return false;
 }

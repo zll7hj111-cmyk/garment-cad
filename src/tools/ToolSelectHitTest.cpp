@@ -1,4 +1,4 @@
-﻿#include "ToolSelect.h"
+#include "ToolSelect.h"
 
 #include <vector>
 #include <utility>
@@ -55,14 +55,15 @@ void ToolSelect::notifyEditTarget()
 
 bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
 {
-    if (m_selection.isEmpty()) return false;
+    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
 
     // Curve anchor first: press near a pass point of any SELECTED curve.
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    const auto anchorHit = m_anchorDrag->hitAt(pos, zoom, m_selection);
-    if (anchorHit) {
-        m_anchorDrag->begin(anchorHit->first, anchorHit->second);
-        return true;
+    if (!m_selection.isEmpty() && m_anchorDrag) {
+        const auto anchorHit = m_anchorDrag->hitAt(pos, zoom, m_selection);
+        if (anchorHit) {
+            m_anchorDrag->begin(anchorHit->first, anchorHit->second);
+            return true;
+        }
     }
 
     if (!m_connectGesture || !m_paramDoc) return false;
@@ -70,38 +71,50 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
     const auto cands = m_connectGesture->hitPointCandidates(pos);
     if (cands.empty()) return false;
 
-    std::vector<SnapResult> validCands;
-    for (const auto& c : cands) {
-        if (!m_selection.contains(c.blockId))
-            continue;
-        const auto* blk = m_paramDoc->blocksView().byId(c.blockId);
-        if (!blk || blk->isBridge) continue;
-        if (blk->layer != m_paramDoc->layersView().activeLayer()) continue;
+    // 优先使用已选集合中的端点；若无则放宽至所有候选端点 (悬停端点直连)
+    auto filterCands = [&](bool requireSelected) {
+        std::vector<SnapResult> res;
+        for (const auto& c : cands) {
+            if (requireSelected && !m_selection.contains(c.blockId))
+                continue;
+            const auto* blk = m_paramDoc->blocksView().byId(c.blockId);
+            if (!blk || blk->isBridge) continue;
+            if (blk->layer != m_paramDoc->layersView().activeLayer()) continue;
 
-        if (!m_paramDoc->componentsView().ofBlock(c.blockId)) {
-            bool externalWelded = false;
-            for (const auto& att : m_paramDoc->attachments()) {
-                if (!att.isLocked) continue;
-                if (att.fromBlockId == c.blockId
-                    || (att.toBlockId == c.blockId && att.toPointId == c.pointId)) {
-                    externalWelded = true;
-                    break;
+            if (!m_paramDoc->componentsView().ofBlock(c.blockId)) {
+                bool externalWelded = false;
+                for (const auto& att : m_paramDoc->attachments()) {
+                    if (!att.isLocked) continue;
+                    if (att.fromBlockId == c.blockId
+                        || (att.toBlockId == c.blockId && att.toPointId == c.pointId)) {
+                        externalWelded = true;
+                        break;
+                    }
                 }
+                if (externalWelded) continue;
+
+                bool isFollower = false;
+                bool angleOnlyFree = false;
+                for (const auto& att : m_paramDoc->attachments())
+                    if (att.fromBlockId == c.blockId) {
+                        isFollower = true;
+                        if (!att.isPin && att.angleOnly) angleOnlyFree = true;
+                        break;
+                    }
+                if (isFollower && !angleOnlyFree) continue;
             }
-            if (externalWelded) continue;
 
-            bool isFollower = false;
-            bool angleOnlyFree = false;
-            for (const auto& att : m_paramDoc->attachments())
-                if (att.fromBlockId == c.blockId) {
-                    isFollower = true;
-                    if (!att.isPin && att.angleOnly) angleOnlyFree = true;
-                    break;
-                }
-            if (isFollower && !angleOnlyFree) continue;
+            res.push_back(c);
         }
+        return res;
+    };
 
-        validCands.push_back(c);
+    std::vector<SnapResult> validCands;
+    if (!m_selection.isEmpty()) {
+        validCands = filterCands(true);
+    }
+    if (validCands.empty()) {
+        validCands = filterCands(false);
     }
 
     if (validCands.size() >= 2) {

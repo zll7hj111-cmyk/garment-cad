@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include <QList>
@@ -108,14 +108,20 @@ private:
     void setState(SelectState s);
     void clearSelectionAndIdle();
 
-    // ── Selection mode (W toggle) ──
-    void toggleSelectionMode();
+    // ── Mode Indicator & Toast ──
     void showToast(const QString& text);  ///< Generic transient canvas toast.
 
     [[nodiscard]] ModeIndicator modeIndicator() const override;
-    [[nodiscard]] static ModeIndicator modeIndicatorFor(SelectionMode mode,
-                                                       int overlapIndex,
-                                                       int overlapCount);
+    [[nodiscard]] static ModeIndicator modeIndicatorFor(int overlapIndex,
+                                                        int overlapCount);
+
+    // ── 端点悬停圆环指示器 ──
+    void updateHoverEndpointRing(const cad::geo::Vec2& pos);
+    void hideHoverEndpointRing();
+
+    // ── 确认选中状态 (流派 A: 右键菜单确认移动) ──
+    void setSelectionConfirmed(bool confirmed);
+    [[nodiscard]] bool isSelectionConfirmed() const { return m_selectionConfirmed; }
 
     // ── Selection management (add/remove, red highlight) ──
     void toggleBlock(const QUuid& blockId);
@@ -133,15 +139,27 @@ private:
     void createComponentFromSelection();
     void deleteSelectedBlocks();
     void quickDetachSelection();
+    void showContextMenu(QGraphicsSceneMouseEvent* event);
 
     // ── Core state ──
     SelectState m_state = SelectState::Idle;
-    SelectionMode m_selectionMode = SelectionMode::Single;
+    bool m_selectionConfirmed = false;
 
     // Persistent, toggleable selection (block ids).
     QSet<QUuid> m_selection;
 
+    // ── Placed point selection ──
+    QUuid m_selectedPlacedBlockId;
+    QUuid m_selectedPlacedPointId;
+    void selectPlacedPoint(const QUuid& blockId, const QUuid& pointId);
+    void clearPlacedPointSelection();
+
     QUuid m_lastHitSegmentId;
+
+    // ── 单独重叠点与电池组交互 ──
+    cad::geo::Vec2 m_clickedOverlapPos;
+    QList<OverlapDisambiguationController::Candidate> m_clickedOverlapCands;
+    cad::geo::Vec2 m_lastCursorPos;
 
     // ── Extracted gesture controllers (阶段 3 拆分, onActivate 时构造) ──
     std::unique_ptr<SelectDragController>            m_dragCtl;

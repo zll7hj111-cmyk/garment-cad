@@ -10,7 +10,8 @@ enum class SelectState {
                     ///< ToolSelect::setState 归一化为本态 — 选中即就绪,
                     ///< 按住线身移动 = 拖动, 无需右键确认.)
     Confirmed,      ///< 保留枚举 (ConnectGesture/CopyDragController 仍会发
-                    ///< 该值), ToolSelect::setState 统一归一化为 Selecting.
+                    ///< 该值).
+    ConfirmedReady, ///< 右键菜单确认选中: 选中对象已锁定就绪, 长按任意处拖动平移整组, 松手提交并退出.
     Marquee,        ///< Left-drag on empty space: drawing selection rectangle.
     Dragging,       ///< Moving selection (anchored at the press point).
     CopyDragging,   ///< Ctrl+drag on a segment: dragging freshly cloned copies.
@@ -22,12 +23,6 @@ enum class SelectState {
                     ///< member segment to choose which member endpoint starts
                     ///< the connection; Esc/blank cancels.
     AngleInput,     ///< Connection made; HUD active for construction-angle entry.
-};
-
-/// Selection behaviour mode (W toggles within the select tool).
-enum class SelectionMode {
-    Multi,   ///< Click toggles blocks in/out of the selection; marquee supported.
-    Single,  ///< Click selects exactly ONE block (replaces previous); no marquee.
 };
 
 } // namespace cad::tools

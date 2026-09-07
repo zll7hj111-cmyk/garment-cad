@@ -40,11 +40,12 @@ namespace {
 const ToolType kAllTypes[] = {
     ToolType::Select,  ToolType::SmartPen,   ToolType::CurveEdit,
     ToolType::Rotate,  ToolType::Break,      ToolType::Intersection,
+    ToolType::PlacePoint,
     ToolType::Measure, ToolType::AngleMeasure,
 };
 
 /// 注册序预期规模 —— 新增工具必须同步 +1, 否则 registryOrderCoversEveryTool 红。
-constexpr int kExpectedRegistered = 8;
+constexpr int kExpectedRegistered = 9;
 
 } // namespace
 

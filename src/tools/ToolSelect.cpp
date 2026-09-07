@@ -1,4 +1,4 @@
-﻿#include "ToolSelect.h"
+#include "ToolSelect.h"
 #include "ToolManager.h"
 
 #include "SelectDragController.h"
@@ -43,10 +43,12 @@
 #include "geometry/CurveMath.h"
 #include "parametric/FollowerAngle.h"
 #include "ui/LinePropertyDialog.h"
+#include "ui/PlacedPointDialog.h"
 #include "ConnectGesture.h"
 #include "CopyDragController.h"
 #include "MarqueeGesture.h"
 #include "document/commands/BlockCommands.h"
+#include "document/commands/EndpointCommands.h"
 #include "document/commands/ComponentCommands.h"
 #include "document/commands/DocumentCommands.h"
 #include "document/commands/AttachmentCommands.h"
@@ -72,7 +74,7 @@ ToolDescriptor ToolSelect::describe()
     d.displayName = QString::fromUtf8("选择(&V)");
     d.iconName = QStringLiteral("cursor-click");
     d.shortcut = QKeySequence(Qt::Key_V);
-    d.hintText = modeIndicatorFor(SelectionMode::Single, -1, 0)
+    d.hintText = modeIndicatorFor(-1, 0)
                      .hint(reinterpret_cast<const char*>(u8"选择"));
     d.factory = [] { return std::make_unique<ToolSelect>(); };
     return d;
@@ -86,7 +88,7 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
     (void)scene;
     (void)paramDoc;
     m_state = SelectState::Idle;
-    m_selectionMode = SelectionMode::Single;
+    m_selectionConfirmed = false;
 
     QUndoStack* const undo = m_paramDoc ? m_paramDoc->undoStack() : nullptr;
 
@@ -98,14 +100,43 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
     m_overlapCtl = std::make_unique<OverlapDisambiguationController>(
         m_scene, m_paramDoc,
         [this](const QUuid& bid, const QUuid& sid) {
-            // 把候选写回选择集 + 编辑目标 (与单击选中语义一致).
-            m_selection = {bid};
+            // 在常驻多选模式下，消歧选择仅替换重叠候选簇内的对象，保留簇外已选对象
+            if (m_overlapCtl) {
+                for (const auto& c : m_overlapCtl->candidates()) {
+                    if (c.blockId != bid)
+                        m_selection.remove(c.blockId);
+                }
+            }
+            m_selection.insert(bid);
             m_lastHitSegmentId = sid;
             syncSelectionVisual();
             setState(SelectState::Selecting);
             notifyEditTarget();
         },
-        [this]() { refreshModeIndicator(); });
+        [this]() { refreshModeIndicator(); },
+        [this](const QUuid& bid, const QUuid& pid) {
+            // 点候选命中: 若为放置点则进入放置点属性状态
+            if (m_paramDoc) {
+                if (auto* blk = m_paramDoc->findBlock(bid)) {
+                    if (auto* pt = blk->findPoint(pid)) {
+                        if (pt->isPlaced) {
+                            selectPlacedPoint(bid, pid);
+                            return;
+                        }
+                    }
+                }
+            }
+            if (m_overlapCtl) {
+                for (const auto& c : m_overlapCtl->candidates()) {
+                    if (c.blockId != bid)
+                        m_selection.remove(c.blockId);
+                }
+            }
+            m_selection.insert(bid);
+            syncSelectionVisual();
+            setState(SelectState::Selecting);
+            notifyEditTarget();
+        });
 
     // (Re)create the extracted gestures with the current context. The tools
     // forward their state transitions / selection queries through callbacks.
@@ -125,7 +156,6 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
         m_scene, m_paramDoc, undo,
         [this](SelectState s) { setState(s); },
         [this]() {
-            // 2026-09 取消确认基准: 选中即就绪 (Confirmed 由 setState 归一化).
             setState(m_selection.isEmpty() ? SelectState::Idle
                                            : SelectState::Selecting);
         },
@@ -136,6 +166,8 @@ void ToolSelect::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
 
 void ToolSelect::onDeactivate()
 {
+    hideHoverEndpointRing();
+
     if (m_copyDrag && m_copyDrag->active())
         m_copyDrag->cancel();
     if (m_connectGesture && m_connectGesture->active())
@@ -148,7 +180,9 @@ void ToolSelect::onDeactivate()
     m_anchorDrag.reset();
     m_overlapCtl.reset();
 
+    clearPlacedPointSelection();
     m_selection.clear();
+    m_selectionConfirmed = false;
     if (m_scene && m_paramDoc)
         syncSelectionVisual();
     if (m_scene)
@@ -166,7 +200,8 @@ void ToolSelect::onDeactivate()
 
 void ToolSelect::setState(SelectState s)
 {
-    if (s == SelectState::Confirmed) s = SelectState::Selecting;
+    if (s == SelectState::Confirmed)
+        s = SelectState::Selecting;
     m_state = s;
 }
 
@@ -190,8 +225,49 @@ void ToolSelect::connectAngleCancelled()
     if (m_connectGesture) m_connectGesture->cancelAngle();
 }
 
+void ToolSelect::selectPlacedPoint(const QUuid& blockId, const QUuid& pointId)
+{
+    m_selection.clear();
+    m_selectionConfirmed = false;
+    syncSelectionVisual();
+    setState(SelectState::Selecting);
+    notifyEditTarget();
+
+    m_selectedPlacedBlockId = blockId;
+    m_selectedPlacedPointId = pointId;
+
+    if (m_scene && m_paramDoc) {
+        for (const auto& blk : m_paramDoc->blocks()) {
+            if (BlockItem* bi = m_scene->findBlockItem(blk.id)) {
+                bi->setSelectedPoint(blk.id == blockId ? pointId : QUuid());
+            }
+        }
+    }
+
+    reportPlacedPointTarget(blockId, pointId);
+}
+
+void ToolSelect::clearPlacedPointSelection()
+{
+    if (m_selectedPlacedPointId.isNull()) return;
+    m_selectedPlacedBlockId = QUuid();
+    m_selectedPlacedPointId = QUuid();
+
+    if (m_scene && m_paramDoc) {
+        for (const auto& blk : m_paramDoc->blocks()) {
+            if (BlockItem* bi = m_scene->findBlockItem(blk.id)) {
+                bi->setSelectedPoint(QUuid());
+            }
+        }
+    }
+    reportClearPlacedPoint();
+}
+
 void ToolSelect::clearSelectionAndIdle()
 {
+    hideHoverEndpointRing();
+    m_selectionConfirmed = false;
+    clearPlacedPointSelection();
     if (m_overlapCtl) m_overlapCtl->deactivate();
     m_selection.clear();
     syncSelectionVisual();
@@ -201,6 +277,7 @@ void ToolSelect::clearSelectionAndIdle()
 
 void ToolSelect::clearSelectionOnLayerChange()
 {
+    hideHoverEndpointRing();
     if (m_copyDrag && m_copyDrag->active())
         m_copyDrag->cancel();
     if (m_connectGesture && m_connectGesture->active())
@@ -220,33 +297,20 @@ void ToolSelect::selectBlocksExternally(const QList<QUuid>& blockIds)
     if (m_marqueeGesture) m_marqueeGesture->cancel();
 
     m_selection = QSet<QUuid>(blockIds.begin(), blockIds.end());
+    m_selectionConfirmed = false;
     syncSelectionVisual();
     setState(m_selection.isEmpty() ? SelectState::Idle : SelectState::Selecting);
     notifyEditTarget();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Selection mode (W toggle: 多选 ↔ 单选)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-void ToolSelect::toggleSelectionMode()
-{
-    const bool switchingToMulti = (m_selectionMode == SelectionMode::Single);
-    m_selectionMode = switchingToMulti ? SelectionMode::Multi
-                                       : SelectionMode::Single;
-    if (!switchingToMulti)
-        clearSelectionAndIdle();
-    announceModeChange();
-}
-
 ModeIndicator ToolSelect::modeIndicator() const
 {
-    return modeIndicatorFor(m_selectionMode, m_overlapCtl->index(),
-                            m_overlapCtl->candidates().size());
+    const int idx = m_overlapCtl ? m_overlapCtl->index() : -1;
+    const int cnt = m_overlapCtl ? m_overlapCtl->candidates().size() : 0;
+    return modeIndicatorFor(idx, cnt);
 }
 
-ModeIndicator ToolSelect::modeIndicatorFor(SelectionMode mode, int overlapIndex,
-                                           int overlapCount)
+ModeIndicator ToolSelect::modeIndicatorFor(int overlapIndex, int overlapCount)
 {
     if (overlapIndex >= 0) {
         ModeIndicator mi;
@@ -259,18 +323,11 @@ ModeIndicator ToolSelect::modeIndicatorFor(SelectionMode mode, int overlapIndex,
     }
 
     ModeIndicator mi;
-    if (mode == SelectionMode::Multi) {
-        mi.modeName = QString::fromUtf8("多选");
-        mi.detail   = QString::fromUtf8("点击加减选 | 框选 | 已选按住拖动 | 双击编辑 | Del删除 | 空白右键→智能笔");
-        mi.wAction  = QString::fromUtf8("W 切单选");
-        mi.toast    = QString::fromUtf8("多选模式：点击加减选 | 框选 | 已选按住拖动");
-    } else {
-        mi.modeName = QString::fromUtf8("单选");
-        mi.detail   = QString::fromUtf8("点击选中 | 按住拖动 | 端点按住连接 | 双击编辑 | Del删除 | 空白右键→智能笔");
-        mi.wAction  = QString::fromUtf8("W 切多选");
-        mi.toast    = QString::fromUtf8("单选模式：点击选中 | 按住拖动 | 端点按住连接");
-        mi.isDefault = true;
-    }
+    mi.modeName = QString::fromUtf8("选择");
+    mi.detail   = QString::fromUtf8("长按单线拖动 | 悬停端点拖动连接 | 空白框选 | 右键确定移动");
+    mi.wAction  = QString();
+    mi.toast    = QString();
+    mi.isDefault = true;
     return mi;
 }
 
@@ -321,9 +378,11 @@ void ToolSelect::setBlockHighlight(const QUuid& blockId, bool on)
 void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
 {
     if (!m_scene || !m_paramDoc) return;
+    hideHoverEndpointRing();
 
     const QPointF up = event->scenePos();
     const cad::geo::Vec2 pos(up.x(), up.y());
+    m_lastCursorPos = pos;
 
     if (m_connectGesture && m_connectGesture->active()) {
         if (m_state == SelectState::AngleInput) {
@@ -346,171 +405,85 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
 
     // ── Right button: 上下文菜单 / 空白切智能笔 ──
     if (event->button() == Qt::RightButton) {
-        const auto cands = m_overlapCtl->collect(pos);
-        QMenu menu;
-        QAction* actCancel = nullptr;
-        QAction* actComponent = nullptr;
-        QAction* actDetachAux = nullptr;
-        QMenu* layerMenu = nullptr;
-        QList<std::pair<QAction*, QUuid>> layerActions;
-        bool layerMoved = false;
-        QMenu* overlapMenu = nullptr;
-
-        // 检查右键点击位置是否有挂载了连接的辅助点
-        QList<QUuid> auxAttIds;
-        QString auxMountDesc;
-        if (m_connectGesture && m_paramDoc) {
-            const auto ptCands = m_connectGesture->hitPointCandidates(pos);
-            for (const auto& c : ptCands) {
-                const auto* blk = m_paramDoc->findBlock(c.blockId);
-                if (!blk) continue;
-                const auto* pt = blk->findPoint(c.pointId);
-                if (!pt || !pt->isAuxiliary) continue;
-
-                for (const auto& att : m_paramDoc->attachments()) {
-                    if (att.isPin || att.angleOnly) continue;
-                    if (att.toBlockId == c.blockId && att.toPointId == c.pointId) {
-                        auxAttIds.append(att.id);
-                        if (const auto* fb = m_paramDoc->findBlock(att.fromBlockId)) {
-                            const QUuid fs = fb->exitSegmentAtPoint(att.fromPointId);
-                            if (const auto* fsg = fb->findSegment(fs)) {
-                                QString t = cad::param::Serial::tag(fsg->serial);
-                                if (!fsg->name.isEmpty()) t += QStringLiteral("·") + fsg->name;
-                                const QString desc = QString::fromUtf8("挂载 %1").arg(t);
-                                if (auxMountDesc.isEmpty())
-                                    auxMountDesc = desc;
-                                else
-                                    auxMountDesc += QStringLiteral(", ") + desc;
-                            }
-                        }
-                    } else if (att.fromBlockId == c.blockId && att.fromPointId == c.pointId) {
-                        auxAttIds.append(att.id);
-                        if (const auto* tb = m_paramDoc->findBlock(att.toBlockId)) {
-                            QUuid tsId = att.toSegmentId;
-                            if (tsId.isNull()) tsId = tb->exitSegmentAtPoint(att.toPointId);
-                            if (const auto* tsg = tb->findSegment(tsId)) {
-                                QString t = cad::param::Serial::tag(tsg->serial);
-                                if (!tsg->name.isEmpty()) t += QStringLiteral("·") + tsg->name;
-                                const QString desc = QString::fromUtf8("跟随 %1").arg(t);
-                                if (auxMountDesc.isEmpty())
-                                    auxMountDesc = desc;
-                                else
-                                    auxMountDesc += QStringLiteral(", ") + desc;
-                            }
-                        }
-                    }
-                }
-                if (!auxAttIds.isEmpty()) break;
-            }
-        }
-
-        if (!auxAttIds.isEmpty()) {
-            actDetachAux = menu.addAction(QString::fromUtf8("拆开连接 (%1)").arg(auxMountDesc));
-            menu.addSeparator();
-        }
-
-        if (!m_selection.isEmpty()) {
-            if (m_selection.size() >= 2)
-                actComponent = menu.addAction(QString::fromUtf8("创建构件"));
-
-            layerMenu = menu.addMenu(QString::fromUtf8("移动到图层"));
-            const QUuid activeLayerId = m_paramDoc ? m_paramDoc->activeLayer() : QUuid();
-            if (m_paramDoc) {
-                for (const auto& layer : m_paramDoc->layersView().all()) {
-                    if (m_paramDoc->layersView().isAuxLayer(layer.id))
-                        continue;
-                    if (layer.id == activeLayerId)
-                        continue;
-                    auto* act = layerMenu->addAction(layer.name);
-                    const QUuid targetId = layer.id;
-                    QObject::connect(act, &QAction::triggered, [this, targetId, &layerMoved]() {
-                        if (!layerMoved) {
-                            layerMoved = true;
-                            deactivateOverlapContext();
-                            moveSelectionToLayer(targetId);
-                        }
-                    });
-                    layerActions.append({act, layer.id});
-                }
-
-                const QUuid auxId = m_paramDoc->layersView().auxLayerId();
-                if (!auxId.isNull() && auxId != activeLayerId) {
-                    if (!layerActions.isEmpty())
-                        layerMenu->addSeparator();
-                    auto* act = layerMenu->addAction(QString::fromUtf8("辅助层"));
-                    QObject::connect(act, &QAction::triggered, [this, auxId, &layerMoved]() {
-                        if (!layerMoved) {
-                            layerMoved = true;
-                            deactivateOverlapContext();
-                            moveSelectionToLayer(auxId);
-                        }
-                    });
-                    layerActions.append({act, auxId});
-                }
-            }
-            if (layerActions.isEmpty()) {
-                layerMenu->setEnabled(false);
-            }
-
-            actCancel = menu.addAction(QString::fromUtf8("取消选择"));
-        }
-        if (cands.size() >= 2) {
-            overlapMenu = menu.addMenu(QString::fromUtf8("重叠候选 (%1 条)").arg(cands.size()));
-            for (int i = 0; i < cands.size(); ++i) {
-                const auto& c = cands[i];
-                QString label = QString::fromUtf8("%1 %2").arg(c.roleText, c.name);
-                if (!c.layerName.isEmpty())
-                    label += QString::fromUtf8(" · %1").arg(c.layerName);
-                if (c.lengthMm > 0.0)
-                    label += QString::fromUtf8(" · %1").arg(
-                        cad::geo::Units::formatLength(c.lengthMm));
-                QAction* act = overlapMenu->addAction(label);
-                act->setProperty("overlapPick", i);
-            }
-        }
-        if (overlapMenu == nullptr && actCancel == nullptr && actComponent == nullptr && layerMenu == nullptr && actDetachAux == nullptr) {
-            if (m_selection.isEmpty() && hitBlock(pos).isNull())
-                requestToolSwitch(ToolType::SmartPen);
-            return;
-        }
-        QAction* chosen = menu.exec(QCursor::pos());
-        if (chosen && chosen == actDetachAux) {
-            deactivateOverlapContext();
-            if (m_undoStack) {
-                m_undoStack->beginMacro(QStringLiteral("拆开辅助点连接"));
-                for (const QUuid& id : auxAttIds) {
-                    m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(m_paramDoc, id));
-                }
-                m_undoStack->endMacro();
-            } else {
-                for (const auto& id : auxAttIds)
-                    m_paramDoc->removeAttachment(id);
-            }
-            showToast(QStringLiteral("已彻底拆开辅助点上的连接"));
-            m_scene->refreshAllBlockItems();
-            return;
-        }
-        if (chosen == actCancel) {
-            deactivateOverlapContext();
-            clearSelectionAndIdle();
-        } else if (chosen && chosen == actComponent && actComponent) {
-            deactivateOverlapContext();
-            createComponentFromSelection();
-        } else if (chosen && chosen->property("overlapPick").isValid()) {
-            pickOverlapCandidate(chosen->property("overlapPick").toInt());
-            deactivateOverlapContext();
-        } else if (chosen && !layerMoved) {
-            for (const auto& [act, targetLayerId] : layerActions) {
-                if (chosen == act) {
-                    deactivateOverlapContext();
-                    moveSelectionToLayer(targetLayerId);
-                    break;
-                }
-            }
-        }
+        showContextMenu(event);
         return;
     }
+
     if (event->button() != Qt::LeftButton) return;
+
+    // ── 检查是否点击了电池 HUD (展开态点击切换选中) ──
+    if (m_overlapCtl && m_overlapCtl->hasBattery()
+        && m_overlapCtl->batteryMode() == cad::canvas::OverlapBatteryHud::DisplayMode::Expanded) {
+        const double zoom = m_scene->currentZoom();
+        int hitIdx = m_overlapCtl->hitBatteryCandidateAtWorld(pos, zoom);
+        if (hitIdx >= 0 && hitIdx < m_overlapCtl->batteryCandidateCount()) {
+            const auto cand = m_overlapCtl->batteryCandidateAt(hitIdx);
+            m_overlapCtl->setBatterySelectedIndex(hitIdx);
+            if (cand.kind == OverlapDisambiguationController::Candidate::Kind::Point) {
+                if (cand.isPlaced) {
+                    m_selection.clear();
+                    syncSelectionVisual();
+                    selectPlacedPoint(cand.blockId, cand.pointId);
+                } else {
+                    clearPlacedPointSelection();
+                    m_selection = {cand.blockId};
+                    m_lastHitSegmentId = cand.segmentId;
+                    syncSelectionVisual();
+                    setState(SelectState::Selecting);
+                    notifyEditTarget();
+                }
+            } else {
+                clearPlacedPointSelection();
+                m_selection = {cand.blockId};
+                m_lastHitSegmentId = cand.segmentId;
+                syncSelectionVisual();
+                setState(SelectState::Selecting);
+                notifyEditTarget();
+            }
+            event->accept();
+            return;
+        }
+    }
+
+    // 点击其他区域，若电池组当前处于显示状态，则收起电池组
+    if (m_overlapCtl && m_overlapCtl->hasBattery()) {
+        m_overlapCtl->hideBattery();
+    }
+
+    // ── 记录点击位置处的重叠点，供快捷键 (W/B) 随时打开电池组 ──
+    {
+        double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+        if (zoom < 1e-9) zoom = 1.0;
+        const auto ptCands = m_overlapCtl ? m_overlapCtl->collectPoints(pos, zoom)
+                                          : QList<OverlapDisambiguationController::Candidate>();
+        if (ptCands.size() >= 2) {
+            m_clickedOverlapPos = pos;
+            m_clickedOverlapCands = ptCands;
+            showToast(QStringLiteral("此处有 %1 个重叠点，按 W 键打开电池组切换").arg(ptCands.size()));
+        } else {
+            m_clickedOverlapCands.clear();
+        }
+    }
+
+    // ── Placed point press: 单击选中放置点 ──
+    SnapEngine snapEngine;
+    double zoom = m_scene->currentZoom();
+    if (zoom < 1e-9) zoom = 1.0;
+    auto snap = snapEngine.findSnap(pos, m_paramDoc, zoom, 12.0, {}, nullptr, true);
+    if (snap) {
+        if (auto* blk = m_paramDoc->findBlock(snap->blockId)) {
+            if (auto* pt = blk->findPoint(snap->pointId)) {
+                if (pt->isPlaced) {
+                    deactivateOverlapContext();
+                    selectPlacedPoint(snap->blockId, snap->pointId);
+                    return;
+                }
+            }
+        }
+    }
+
+    // 点击其他元素或空白，清除放置点选择状态
+    clearPlacedPointSelection();
 
     // ── Ctrl+press → 快捷复制 ──
     if ((event->modifiers() & Qt::ControlModifier) && m_copyDrag) {
@@ -538,40 +511,36 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
         return;
     }
 
-    // ── 线身 press: 单选/多选分派 + 待定拖动 ──
+    // ── 线身 press: 统一多选模式 + 待定拖动 ──
     switch (m_state) {
+    case SelectState::ConfirmedReady: {
+        // 已通过右键菜单确认选中移动：在画布任意位置按住拖动即搬运整组
+        const QUuid blockHit = hitBlock(pos);
+        if (!blockHit.isNull() || !m_selection.isEmpty()) {
+            m_hoverCtl.beginPending(pos, blockHit, true);
+        } else {
+            setSelectionConfirmed(false);
+            clearSelectionAndIdle();
+        }
+        return;
+    }
     case SelectState::Idle:
     case SelectState::Selecting: {
         const QUuid blockHit = hitBlock(pos);
-        if (m_selectionMode == SelectionMode::Single) {
-            if (!blockHit.isNull()) {
-                const bool wasSelected = m_selection.contains(blockHit);
-                m_lastHitSegmentId = hitSegmentAt(pos);
-                m_selection = {blockHit};
-                syncSelectionVisual();
-                setState(SelectState::Selecting);
-                notifyEditTarget();
-                m_hoverCtl.beginPending(pos, blockHit, wasSelected);
-                const auto cands = m_overlapCtl->collect(pos);
-                if (cands.size() >= 2)
-                    m_overlapCtl->activate(cands, blockHit, pos);
-                else
-                    m_overlapCtl->deactivate();
-            } else if (!m_selection.isEmpty()) {
-                deactivateOverlapContext();
-                clearSelectionAndIdle();
-            }
-            return;
-        }
         if (!blockHit.isNull()) {
             deactivateOverlapContext();
             const bool wasSelected = m_selection.contains(blockHit);
-            if (wasSelected) {
-                m_hoverCtl.beginPending(pos, blockHit, true);
-            } else {
+            m_lastHitSegmentId = hitSegmentAt(pos);
+            if (!wasSelected) {
+                // 点击未选线段：加选到选择集
                 toggleBlock(blockHit);
-                m_hoverCtl.beginPending(pos, blockHit, false);
             }
+            m_hoverCtl.beginPending(pos, blockHit, wasSelected);
+            const auto cands = m_overlapCtl ? m_overlapCtl->collect(pos) : QList<OverlapCandidate>();
+            if (cands.size() >= 2)
+                m_overlapCtl->activate(cands, blockHit, pos);
+            else if (m_overlapCtl)
+                m_overlapCtl->deactivate();
             return;
         }
         deactivateOverlapContext();
@@ -593,6 +562,7 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
 
     const QPointF up = event->scenePos();
     const cad::geo::Vec2 pos(up.x(), up.y());
+    m_lastCursorPos = pos;
 
     if (m_connectGesture && m_connectGesture->active()) {
         m_connectGesture->move(pos);
@@ -608,29 +578,61 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
         double zoom = m_scene->currentZoom();
         if (pos.distanceTo(m_hoverCtl.pos()) > m_hoverCtl.thresholdUserUnits(zoom)) {
             const cad::geo::Vec2 startPos = m_hoverCtl.pos();
+            const QUuid pendingBlock = m_hoverCtl.blockId();
             m_hoverCtl.cancelPending();
-            if (m_overlapCtl) m_overlapCtl->hideHint();  // 拖动期间隐藏重叠 HUD
+            hideHoverEndpointRing();
+            if (m_overlapCtl) {
+                m_overlapCtl->hideBattery();
+            }
             m_dragCtl->setZoom(zoom);
-            m_dragCtl->begin(startPos, m_selection);
+            if (m_selectionConfirmed) {
+                // 已右键确认：拖动整组选择集
+                m_dragCtl->begin(startPos, m_selection);
+            } else {
+                // 未确认：单线长按拖动 (仅拖动当前按住的线段)
+                QSet<QUuid> singleSet;
+                if (!pendingBlock.isNull()) singleSet.insert(pendingBlock);
+                else singleSet = m_selection;
+                m_dragCtl->begin(startPos, singleSet);
+            }
         }
         return;
     }
 
-    // 无按钮悬停: 光标 + hover 目标 + 重叠提示
-    if (event->buttons() == Qt::NoButton
-        && !m_anchorDrag->active()
+    // 无按钮悬停: 端点圆环 + 光标 + hover 目标
+    if (event->buttons() != Qt::NoButton) {
+        hideHoverEndpointRing();
+    } else if (!m_anchorDrag->active()
         && m_state != SelectState::Dragging
         && m_state != SelectState::Marquee) {
+        updateHoverEndpointRing(pos);
+
         const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
+        const double zoom = m_scene->currentZoom();
+
+        // 1. 悬停在展开的电池 HUD 上时的交互
+        if (m_overlapCtl && m_overlapCtl->hasBattery()
+            && m_overlapCtl->batteryMode() == cad::canvas::OverlapBatteryHud::DisplayMode::Expanded) {
+            int hitIdx = m_overlapCtl->hitBatteryCandidateAtWorld(pos, zoom);
+            m_overlapCtl->setBatteryHoveredIndex(hitIdx);
+            if (hitIdx >= 0 && hitIdx < m_overlapCtl->batteryCandidateCount()) {
+                const auto cand = m_overlapCtl->batteryCandidateAt(hitIdx);
+                reportHoverTarget(cand.blockId, cand.segmentId);
+                return;
+            }
+            const double dist = pos.distanceTo(m_overlapCtl->batteryAnchor());
+            if (dist > (250.0 / (zoom > 1e-9 ? zoom : 1.0))) {
+                m_overlapCtl->hideBattery();
+            }
+        }
+
         const auto hits = blockHitsAtScene(*m_scene, *m_paramDoc, scenePt);
         const QUuid blockHit = hits.empty() ? QUuid() : hits.front().blockId;
         const bool ctrlHeld = (QGuiApplication::keyboardModifiers() & Qt::ControlModifier);
-        const bool isSel = m_selection.contains(blockHit);
 
-        const double zoom = m_scene->currentZoom();
-        // 悬停十字只对已选块生效 (提示可连接); 未选块即使端点悬停也只用抓手.
+        // 无论是否已选，端点悬停均显现连接十字；线身显示抓手
         const Qt::CursorShape cur = m_hoverCtl.cursorShapeFor(
-            m_paramDoc, isSel ? blockHit : QUuid(), pos, zoom, ctrlHeld);
+            m_paramDoc, blockHit, pos, zoom, ctrlHeld);
         // 同值短路只设 viewport: 光标状态存 ToolSelect 内部, 避免控制器持有 view
         if (blockHit.isNull())
             reportHoverTarget(QUuid(), QUuid());
@@ -642,14 +644,6 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
             if (m_scene && !m_scene->views().isEmpty())
                 m_scene->views().first()->viewport()->setCursor(cur);
         }
-
-        // 重叠提示: 无按钮悬停时跟随 (集群 ≥2 条才显示; 同值短路).
-        QList<OverlapDisambiguationController::Candidate> hoverCands;
-        for (const auto& h : hits) {
-            if (const auto* blk = m_paramDoc->blocksView().byId(h.blockId))
-                hoverCands.append(m_overlapCtl->makeCandidate(*blk, h.segmentId));
-        }
-        m_overlapCtl->refreshHint(pos, &hoverCands);
         return;
     }
 
@@ -672,6 +666,7 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
 void ToolSelect::mouseRelease(QGraphicsSceneMouseEvent* event)
 {
     if (!m_scene || !m_paramDoc) return;
+    hideHoverEndpointRing();
     if (event->button() != Qt::LeftButton) return;
 
     const QPointF up = event->scenePos();
@@ -697,79 +692,50 @@ void ToolSelect::mouseRelease(QGraphicsSceneMouseEvent* event)
         const QUuid pendingBlock = m_hoverCtl.blockId();
         const bool wasSelected = m_hoverCtl.wasSelected();
         m_hoverCtl.cancelPending();
-        if (m_selectionMode == SelectionMode::Multi
-            && wasSelected && !pendingBlock.isNull())
+        if (wasSelected && !pendingBlock.isNull())
             toggleBlock(pendingBlock);
         return;
     }
 
     switch (m_state) {
     case SelectState::Marquee: {
-        if (m_marqueeGesture)
-            m_selection = m_marqueeGesture->end(pos);
-        syncSelectionVisual();
-        setState(m_selection.isEmpty() ? SelectState::Idle
-                                       : SelectState::Selecting);
+        hideHoverEndpointRing();
+        if (m_marqueeGesture) {
+            const QSet<QUuid> boxed = m_marqueeGesture->end(pos);
+            const double moveDist = pos.distanceTo(m_marqueeGesture->startPos());
+            double zoom = m_scene->currentZoom();
+            if (zoom < 1e-9) zoom = 1.0;
+            // 若位移极小且没有框到任何东西，视为单纯单击空白处 -> 取消全部选中
+            if (moveDist < 4.0 / zoom && boxed.isEmpty()) {
+                clearSelectionAndIdle();
+            } else {
+                // 框选加选与反向减选 (XOR)
+                for (const QUuid& bid : boxed) {
+                    if (m_selection.contains(bid))
+                        m_selection.remove(bid);
+                    else
+                        m_selection.insert(bid);
+                }
+                syncSelectionVisual();
+                setState(m_selection.isEmpty() ? SelectState::Idle : SelectState::Selecting);
+                notifyEditTarget();
+            }
+        }
         break;
     }
     case SelectState::Dragging: {
-        // 纯单击 (位移≈0): end() 返回 true 表示已收尾为单击, 选择集保留.
+        hideHoverEndpointRing();
         const double zoom = m_scene->currentZoom();
         if (m_dragCtl->end(pos, zoom))
             return;
         m_scene->refreshAllBlockItems();
+        // 拖动提交后结束状态 (清空选择集回到 Idle)
+        m_selectionConfirmed = false;
         clearSelectionAndIdle();
         break;
     }
     default: break;
     }
-}
-
-void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
-{
-    if (!m_scene || !m_paramDoc) return;
-    if (event->button() != Qt::LeftButton) return;
-    if (m_state == SelectState::AngleInput) return;
-
-    const QPointF up = event->scenePos();
-    const cad::geo::Vec2 clickPos(up.x(), up.y());
-
-    const QUuid blockId = hitBlock(clickPos);
-    if (blockId.isNull()) return;
-    cad::param::Block* block = m_paramDoc->findBlock(blockId);
-    if (!block || block->segments.empty()) return;
-    double zoom = m_scene->currentZoom();
-    if (zoom < 1e-9) zoom = 1.0;
-    constexpr double kTolerancePx = 8.0;
-    const double tolerance = kTolerancePx / zoom;
-
-    QUuid bestSegId;
-    double bestDist = std::numeric_limits<double>::max();
-    for (const auto& seg : block->segments) {
-        const auto* sp = block->findPoint(seg.startPointId);
-        const auto* ep = block->findPoint(seg.endPointId);
-        if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
-
-        double d;
-        if (seg.isCurve()) {
-            const auto spans = block->spansForSegment(seg, /*skipUnresolvedPassPoints=*/true);
-            if (spans.empty()) continue;
-            auto proj = cad::geo::projectPointOnCurve(
-                block->transform.toLocal(clickPos), spans);
-            d = proj.valid ? proj.distance : std::numeric_limits<double>::max();
-        } else {
-            const cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-            const cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-            d = cad::geo::Vec2::distanceToSegment(clickPos, w1, w2);
-        }
-        if (d < bestDist) { bestDist = d; bestSegId = seg.id; }
-    }
-    if (bestSegId.isNull() || bestDist > tolerance) return;
-
-    QWidget* parentWidget = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    auto* dlg = new cad::ui::LinePropertyDialog(blockId, bestSegId, m_paramDoc,
-                                       m_scene, parentWidget);
-    dlg->show();
 }
 
 void ToolSelect::keyPress(QKeyEvent* event)
@@ -787,23 +753,94 @@ void ToolSelect::keyPress(QKeyEvent* event)
         return;
     }
 
-    if (event->key() == Qt::Key_Escape && m_overlapCtl->index() >= 0) {
-        m_overlapCtl->deactivate();
+    if (event->key() == Qt::Key_Escape && m_overlapCtl && m_overlapCtl->hasBattery()) {
+        m_overlapCtl->hideBattery();
         event->accept();
+        return;
+    } else if (event->key() == Qt::Key_Space || event->key() == Qt::Key_Alt) {
+        if (!m_clickedOverlapCands.isEmpty() && m_overlapCtl) {
+            if (m_overlapCtl->hasBattery()) {
+                m_overlapCtl->hideBattery();
+            } else {
+                m_overlapCtl->showBattery(m_clickedOverlapPos, m_clickedOverlapCands,
+                                          cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+                m_overlapCtl->setBatterySelectedIndex(0);
+            }
+            event->accept();
+            return;
+        }
     } else if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+        if (!m_selectedPlacedPointId.isNull() && !m_selectedPlacedBlockId.isNull()) {
+            const QUuid blkId = m_selectedPlacedBlockId;
+            const QUuid ptId = m_selectedPlacedPointId;
+            clearPlacedPointSelection();
+            QUndoStack* stack = m_undoStack ? m_undoStack : (m_paramDoc ? m_paramDoc->undoStack() : nullptr);
+            if (stack) {
+                stack->push(new cad::cmd::RemovePlacedPointCommand(m_paramDoc, blkId, ptId));
+            } else if (auto* blk = m_paramDoc->findBlock(blkId)) {
+                for (auto& seg : blk->segments) {
+                    seg.auxPointIds.erase(
+                        std::remove(seg.auxPointIds.begin(), seg.auxPointIds.end(), ptId),
+                        seg.auxPointIds.end());
+                }
+                auto& pts = blk->points;
+                pts.erase(std::remove_if(pts.begin(), pts.end(),
+                    [ptId](const cad::param::ParamPoint& p) { return p.id == ptId; }),
+                    pts.end());
+                blk->rebuildPointIndex();
+                m_paramDoc->resolveAll();
+            }
+            if (m_scene) m_scene->refreshAllBlockItems();
+            event->accept();
+            return;
+        }
         deleteSelectedBlocks();
-        event->accept();
-    } else if (event->key() == Qt::Key_W) {
-        if (m_overlapCtl->index() >= 0)
+    } else if (event->key() == Qt::Key_W || event->key() == Qt::Key_B) {
+        if (m_overlapCtl && m_overlapCtl->index() >= 0) {
             m_overlapCtl->cycle();
-        else
-            toggleSelectionMode();
+            event->accept();
+            return;
+        }
+        // 如果电池组已打开，快捷键切换收起
+        if (m_overlapCtl && m_overlapCtl->hasBattery()) {
+            m_overlapCtl->hideBattery();
+            event->accept();
+            return;
+        }
+        // 如果点击处有记录的重叠点，打开电池组
+        if (!m_clickedOverlapCands.isEmpty() && m_overlapCtl) {
+            m_overlapCtl->showBattery(m_clickedOverlapPos, m_clickedOverlapCands,
+                                      cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+            m_overlapCtl->setBatterySelectedIndex(0);
+            event->accept();
+            return;
+        }
+        // 若当前光标悬停处有重叠点，也可直接按快捷键打开
+        const double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+        const auto hoverPts = m_overlapCtl ? m_overlapCtl->collectPoints(m_lastCursorPos, zoom)
+                                           : QList<OverlapDisambiguationController::Candidate>();
+        if (hoverPts.size() >= 2 && m_overlapCtl) {
+            m_clickedOverlapPos = m_lastCursorPos;
+            m_clickedOverlapCands = hoverPts;
+            m_overlapCtl->showBattery(m_clickedOverlapPos, m_clickedOverlapCands,
+                                      cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+            m_overlapCtl->setBatterySelectedIndex(0);
+            event->accept();
+            return;
+        }
+        // 无重叠点时，忽略模式切换，仅接受按键
         event->accept();
+        return;
     } else if (event->key() == Qt::Key_D
                && !(m_connectGesture && m_connectGesture->active())) {
         quickDetachSelection();
         event->accept();
     } else if (event->key() == Qt::Key_Escape) {
+        if (!m_selectedPlacedPointId.isNull()) {
+            clearPlacedPointSelection();
+            event->accept();
+            return;
+        }
         if (m_state == SelectState::Dragging) {
             m_dragCtl->cancelDrag();
             m_scene->refreshAllBlockItems();
@@ -814,37 +851,6 @@ void ToolSelect::keyPress(QKeyEvent* event)
         }
         event->accept();
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Overlap disambiguation (tool-facing API, delegates to OverlapDisambiguationController)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const QList<ToolSelect::OverlapCandidate>& ToolSelect::overlapCandidates() const
-{
-    static const QList<ToolSelect::OverlapCandidate> empty;
-    if (!m_overlapCtl) return empty;
-    return m_overlapCtl->candidates();
-}
-
-int ToolSelect::overlapIndex() const
-{
-    return m_overlapCtl ? m_overlapCtl->index() : -1;
-}
-
-QString ToolSelect::overlapHintText() const
-{
-    return m_overlapCtl ? m_overlapCtl->hintText() : QString();
-}
-
-void ToolSelect::pickOverlapCandidate(int index)
-{
-    if (m_overlapCtl) m_overlapCtl->pick(index);
-}
-
-void ToolSelect::deactivateOverlapContext()
-{
-    if (m_overlapCtl) m_overlapCtl->deactivate();
 }
 
 } // namespace cad::tools

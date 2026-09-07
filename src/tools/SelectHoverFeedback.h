@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "geometry/Vec2.h"
 
@@ -46,6 +46,14 @@ public:
                                             const QUuid& blockId,
                                             const cad::geo::Vec2& pos,
                                             double worldRadius) const;
+
+    /// 在全图当前活动层查找 pos 附近 worldRadius 内的端点 (用于悬停圆环与准星连接).
+    [[nodiscard]] bool findEndpointNear(cad::param::ParamDocument* doc,
+                                        const cad::geo::Vec2& pos,
+                                        double worldRadius,
+                                        cad::geo::Vec2* outPos = nullptr,
+                                        QUuid* outBlockId = nullptr,
+                                        QUuid* outPointId = nullptr) const;
 
     [[nodiscard]] bool pending() const { return m_pending; }
     [[nodiscard]] bool wasSelected() const { return m_wasSelected; }

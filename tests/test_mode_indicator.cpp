@@ -110,15 +110,11 @@ void TestModeIndicator::staticHintMatchesRuntimeHintOnActivate()
 void TestModeIndicator::selectTogglePersistsInStatusBar()
 {
     Fixture f;   // 默认激活选择工具
-    QVERIFY2(f.last().contains(QString::fromUtf8("[单选]")), qPrintable(f.last()));
+    QVERIFY2(f.last().contains(QString::fromUtf8("[选择]")), qPrintable(f.last()));
 
+    // 选择工具已取消 W 键单选/多选切换，统一为常驻多选模式；按 W 键不再切换模式
     pressW(f.tm);
-    QVERIFY2(f.last().contains(QString::fromUtf8("[多选]")), qPrintable(f.last()));
-    // 二态给目标态而不是"W 切换单选/多选": 用户要知道的是"按下去会变成什么"。
-    QVERIFY2(f.last().contains(QString::fromUtf8("W 切单选")), qPrintable(f.last()));
-
-    pressW(f.tm);
-    QVERIFY2(f.last().contains(QString::fromUtf8("[单选]")), qPrintable(f.last()));
+    QVERIFY2(f.last().contains(QString::fromUtf8("[选择]")), qPrintable(f.last()));
 }
 
 void TestModeIndicator::measureCycleReportsPosition()
@@ -157,24 +153,24 @@ void TestModeIndicator::canvasBadgeShowsOnlyForNonDefaultMode()
     // L2 角标的经济学: 默认态零像素成本, 只有切到非常驻态才占地方 ——
     // 默认态不需要提示, 需要提示的是"我已经不在默认态了"。
     Fixture f;
-    QCOMPARE(f.scene.modeBadgeText(), QString());   // 单选 = 默认态
+    f.tm.switchTool(ToolType::Measure);
+    QCOMPARE(f.scene.modeBadgeText(), QString());   // 距离 = 默认态
 
     pressW(f.tm);
-    QCOMPARE(f.scene.modeBadgeText(), QString::fromUtf8("多选"));
+    QCOMPARE(f.scene.modeBadgeText(), QString::fromUtf8("水平"));
+
+    pressW(f.tm);
+    QCOMPARE(f.scene.modeBadgeText(), QString::fromUtf8("垂直"));
 
     pressW(f.tm);                                   // 回到默认态 → 撤下
     QCOMPARE(f.scene.modeBadgeText(), QString());
 
     // 角标归**场景**所有而非工具所有 —— 切工具时必须显式撤下, 否则上一个
-    // 工具的「多选」会一直挂在画布上 (Tool::deactivate 负责这件事)。
+    // 工具的「水平」会一直挂在画布上 (Tool::deactivate 负责这件事)。
     pressW(f.tm);
     QVERIFY(!f.scene.modeBadgeText().isEmpty());
-    f.tm.switchTool(ToolType::Measure);
+    f.tm.switchTool(ToolType::SmartPen);
     QCOMPARE(f.scene.modeBadgeText(), QString());
-
-    // 测量切到非常驻态也挂角标 (距离是默认态)。
-    pressW(f.tm);
-    QCOMPARE(f.scene.modeBadgeText(), QString::fromUtf8("水平"));
 }
 
 void TestModeIndicator::canvasBadgeFollowsViewportScroll()
@@ -187,9 +183,10 @@ void TestModeIndicator::canvasBadgeFollowsViewportScroll()
     Fixture f;
     f.scene.setSceneRect(-2000, -2000, 4000, 4000);   // 场景远大于视口 → 可滚动
     f.view.resize(400, 300);
+    f.tm.switchTool(ToolType::Measure);
 
     pressW(f.tm);
-    QVERIFY2(f.scene.modeBadgeText() == QString::fromUtf8("多选"),
+    QVERIFY2(f.scene.modeBadgeText() == QString::fromUtf8("水平"),
              qPrintable(f.scene.modeBadgeText()));
 
     QScrollBar* vsb = f.view.verticalScrollBar();

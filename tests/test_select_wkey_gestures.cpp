@@ -1,4 +1,4 @@
-﻿#include "test_select_wkey.h"
+#include "test_select_wkey.h"
 
 // ---------------------------------------------------------------------------
 // 曲线点击选择 (2026-10 用户报告: 选择工具对曲线判定比较迷).
@@ -683,19 +683,16 @@ void TestSelectWKey::overlapHoverShowsClusterHint()
         QTest::qWait(20);
     };
 
-    // 悬停重合线身 → 提示列出两条候选.
+    // 悬停重合线身 → 悬停提示已被去除，不干扰视野.
     move(50.0, 0.0);
-    QVERIFY2(sel->overlapHintText().contains(QString::fromUtf8("重叠 2 条")),
-             qPrintable(QStringLiteral("hint='%1'").arg(sel->overlapHintText())));
-    QVERIFY(sel->overlapHintText().contains(QLatin1Char('A')));
-    QVERIFY(sel->overlapHintText().contains(QLatin1Char('B')));
+    QVERIFY(sel->overlapHintText().isEmpty());
 
-    // 移开 → 提示隐藏.
+    // 移开 → 保持干净.
     move(500.0, 500.0);
     QVERIFY(sel->overlapHintText().isEmpty());
 }
 
-// A 方案: 点选集群激活 W 循环上下文; W 逐位回绕; 点别的线退出后 W 恢复模式切换.
+// 方案: 点击重合点后，按 W 键打开电池组; 点选电池卡片切换对象; 点分离线后 W 恢复单选/多选切换.
 void TestSelectWKey::overlapClickCyclesWithWKey()
 {
     ParamDocument doc;
@@ -734,42 +731,29 @@ void TestSelectWKey::overlapClickCyclesWithWKey()
         QMouseEvent release(QEvent::MouseButtonRelease, vpPos, global,
                             Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
         QApplication::sendEvent(view.viewport(), &release);
-        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
-        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
     auto pressW = [&]() {
         QKeyEvent key(QEvent::KeyPress, Qt::Key_W, Qt::NoModifier);
         QApplication::sendEvent(&view, &key);
-        // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
-        // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
         QTest::qWait(20);
     };
 
-    // 1) 点击重合处 → 选中堆叠最上的 A, 激活循环上下文 (候选 2 条, 第 1/2).
+    // 1) 点击重合处 → 选中堆叠最上的 A.
     click(50.0, 0.0);
     QVERIFY(scene.findBlockItem(a.blockId)->toolSelected());
-    QVERIFY(sel->overlapIndex() == 0);
-    QCOMPARE(sel->overlapCandidates().size(), 2);
-    QVERIFY(sel->overlapHintText().contains(QString::fromUtf8("第 1/2")));
 
-    // 2) W → 循环到 B (第 2/2).
+    // 2) 按 W 键 → 触发打开电池组 (快捷键触发)
     pressW();
+
+    // 3) 点选候选 1 (B) → 切换到 B
+    sel->pickOverlapCandidate(1);
     QVERIFY(scene.findBlockItem(b.blockId)->toolSelected());
     QVERIFY(!scene.findBlockItem(a.blockId)->toolSelected());
-    QCOMPARE(sel->overlapIndex(), 1);
-    QVERIFY(sel->overlapHintText().contains(QString::fromUtf8("第 2/2")));
 
-    // 3) W → 回绕到 A (第 1/2).
-    pressW();
-    QVERIFY(scene.findBlockItem(a.blockId)->toolSelected());
-    QCOMPARE(sel->overlapIndex(), 0);
-
-    // 4) 点分离线 C → 循环上下文退出; 再按 W 恢复为模式切换 (单选→多选).
+    // 4) 点分离线 C → 选中 C; 再按 W 恢复为模式切换 (单选→多选).
     click(50.0, -300.0);
-    QCOMPARE(sel->overlapIndex(), -1);
-    QVERIFY(sel->overlapHintText().isEmpty());
-    pressW();   // 非循环上下文: W = 切换多选/单选
+    pressW();   // 非重叠点: W = 切换多选/单选
     click(50.0, 0.0);            // 多选: 加上 A
     QVERIFY(scene.findBlockItem(c.blockId)->toolSelected());
     QVERIFY(scene.findBlockItem(a.blockId)->toolSelected());

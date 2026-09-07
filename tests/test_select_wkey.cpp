@@ -1,4 +1,4 @@
-﻿#include "test_select_wkey.h"
+#include "test_select_wkey.h"
 
 void TestSelectWKey::wTogglesMultiSelectionThroughFullEventChain()
 {
@@ -61,31 +61,33 @@ void TestSelectWKey::wTogglesMultiSelectionThroughFullEventChain()
             qInfo("  item: %s", it->type() == BlockItem::Type ? "BlockItem" : "other");
     }
 
-    // Default mode is Single: clicking B replaces the selection of A.
+    // 默认模式为常驻多选：单击 A 选中 A；单击 B 加选 B（A 与 B 同时选中）
     click(50.0, 0.0);
     QVERIFY(itemA->toolSelected());
     click(50.0, -50.0);
     QVERIFY(itemB->toolSelected());
-    QVERIFY(!itemA->toolSelected());   // Single replaced A
+    QVERIFY(itemA->toolSelected());   // 多选保留 A
 
-    // W toggles to Multi: the current selection SURVIVES the toggle, so the
-    // user can keep adding to it (regression: it used to be cleared, which
-    // made W look broken — picking one block then W then another lost the
-    // first one).
-    pressW();
-    QVERIFY(itemB->toolSelected());    // preserved across the toggle
-    click(50.0, 0.0);
-    QVERIFY(itemA->toolSelected());    // added
-    QVERIFY(itemB->toolSelected());    // B still selected
+    // 再次单击 B 则反选（从选择集中移除 B）
+    click(50.0, -50.0);
+    QVERIFY(!itemB->toolSelected());
+    QVERIFY(itemA->toolSelected());
 
-    // W again toggles back to Single: the multi-set is dropped (single-click
-    // replace semantics) and clicking B replaces the selection.
-    pressW();
+    // 单击空白处清空全部选择
+    click(300.0, 300.0);
     QVERIFY(!itemA->toolSelected());
-    QVERIFY(!itemB->toolSelected());   // Multi → Single clears the set
+    QVERIFY(!itemB->toolSelected());
+
+    // 再次单击 B 重新选中 B
     click(50.0, -50.0);
     QVERIFY(itemB->toolSelected());
-    QVERIFY(!itemA->toolSelected());   // Single replaced again
+
+    // 按 W 键不再切换模式（已取消单选/多选切换，保持常驻多选）
+    pressW();
+    QVERIFY(itemB->toolSelected());
+    click(50.0, 0.0);
+    QVERIFY(itemA->toolSelected());
+    QVERIFY(itemB->toolSelected());
 }
 
 // Ctrl+drag must copy from a SELECTED line (2026-09 取消确认基准: 选中即
@@ -606,10 +608,10 @@ void TestSelectWKey::clickSelectsWithoutDragging()
     QVERIFY(!scene.findBlockItem(b.blockId)->toolSelected());
     QVERIFY(doc.findBlock(a.blockId)->transform.origin.distanceTo(a0) < 1e-9);
 
-    // 单选: 再单击 B 线身 → 选择替换为 B.
+    // 多选体系: 再单击 B 线身 → 加选 B (A 与 B 均选中).
     click(50.0, -50.0);
     QVERIFY(scene.findBlockItem(b.blockId)->toolSelected());
-    QVERIFY(!scene.findBlockItem(a.blockId)->toolSelected());
+    QVERIFY(scene.findBlockItem(a.blockId)->toolSelected());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -696,6 +698,7 @@ void TestSelectWKey::singleModeOverlapPrefersSelectedSegmentPoint()
     QVERIFY(blkA->transform.origin.distanceTo(a0) < 1e-6);
 
     // ── 阶段2: 单选改选 B → 点同一重叠点 → 连接从 B 的端点发起 (B 跟随) ──
+    click(300.0, 300.0);   // 点击空白取消前序选择
     click(150.0, 0.0);
     QVERIFY(itemB->toolSelected());
     QVERIFY(!itemA->toolSelected());
@@ -787,6 +790,7 @@ void TestSelectWKey::singleModeOverlapWinsEvenWhenOtherPointCloser()
     QVERIFY(blkA->transform.origin.distanceTo(a0) < 1e-6);
 
     // 选 B → 光标精确落在 A 的终点 (100,0) → 仍从 B 起点发起 (B 跟随)
+    click(300.0, 300.0);   // 点击空白取消前序选择
     click(150.6, 0.4);
     QVERIFY(scene.findBlockItem(b.blockId)->toolSelected());
     const QPoint onA = vp(100.0, 0.0);
@@ -933,12 +937,13 @@ void TestSelectWKey::unselectedEndpointPressFallsBackToSelect()
     click(50.0, 0.0);
     QVERIFY(scene.findBlockItem(a.blockId)->toolSelected());
 
-    // 按未选线段 B 的端点附近 (抓取半径内, 端点候选被过滤为空) → 修复前崩溃;
-    // 现在 = 普通选中 B (逐端点取点会落在端点标记上 miss 线身, 取 95mm 处).
-    click(95.0, -50.0);
+    // 新交互：端点（或附近）按下直接发起连接手势（无需预先选线）；
+    // 释放手势后回到 Selecting 状态
+    sendMouse(QEvent::MouseButtonPress, vp(95.0, -50.0), Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(ts->state(), cad::tools::SelectState::Connecting);
+    sendMouse(QEvent::MouseButtonRelease, vp(95.0, -50.0), Qt::LeftButton, Qt::NoModifier);
+    QTest::qWait(20);
     QCOMPARE(ts->state(), cad::tools::SelectState::Selecting);
-    QVERIFY(scene.findBlockItem(b.blockId)->toolSelected());
-    QVERIFY(!scene.findBlockItem(a.blockId)->toolSelected());
 
     // 对照: 再按已选 B 的端点 → 正常发起连接手势 (无回归).
     sendMouse(QEvent::MouseButtonPress, vp(100.0, -50.0), Qt::LeftButton, Qt::NoModifier);
