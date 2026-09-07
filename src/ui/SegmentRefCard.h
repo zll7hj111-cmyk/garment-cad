@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 
@@ -82,19 +82,20 @@ private:
     QUuid m_blockId;
     QUuid m_segmentId;
 
-    // 两段式行: 对齐点【PointRefEdit】  方向：点1【PointRefEdit】→点2【PointRefEdit】 [独立]
+    // 两段式/自适应合并行: 对齐点【PointRefEdit】  方向/基准：[点1→点2 或 基准角度] [清除基准] [独立]
     PointRefEdit* m_alignPointEdit = nullptr;   ///< 对齐点 (本线端点, 可输入).
-    ElaText*      m_lblDirWord = nullptr;       ///< "方向：" 标签 (endTarget 时隐藏).
+    ElaText*      m_lblDirWord = nullptr;       ///< "方向：" 或 "基准：" 标签.
     PointRefEdit* m_angleRefPoint = nullptr;  ///< 点1.
+    ElaText*      m_lblArrow = nullptr;         ///< "→" 箭头指示 (两点模式下显示).
     PointRefEdit* m_angleRefPoint2 = nullptr; ///< 点2.
     QPushButton* m_btnIndependent = nullptr;  ///< [独立] checkable.
     QPushButton* m_btnLinkCurrent = nullptr;  ///< [链接当前线] (2026-09 用户拍板).
 
-    // 影子角度行 (拆开影子基准): 影子角度【QLineEdit】 [清除影子] —— 仅当
-    // 连接基准是影子块时显示; 挂载态与拆开态写目标不同 (Δ vs rotation)。
-    ElaText*     m_lblShadowAngle = nullptr;  ///< "影子角度" 标签.
-    ElaLineEdit* m_shadowAngleEdit = nullptr;   ///< 带符号折角输入 (objectName shadowAngleEdit).
-    QPushButton* m_btnClearShadow = nullptr;  ///< [清除影子] (objectName clearShadowBtn).
+    // 基准角度数值与清除按钮 (拆开基准态, 合并入单行显示):
+    // 仅当连接基准是影子块时显示; 挂载态与拆开态写目标不同 (Δ vs rotation)。
+    ElaText*     m_lblShadowAngle = nullptr;  ///< 兼容保留指针.
+    ElaLineEdit* m_shadowAngleEdit = nullptr;   ///< 带符号基准折角输入 (objectName shadowAngleEdit).
+    QPushButton* m_btnClearShadow = nullptr;  ///< [清除基准] (objectName clearShadowBtn).
 };
 
 } // namespace cad::ui

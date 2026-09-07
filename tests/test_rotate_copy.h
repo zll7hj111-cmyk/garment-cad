@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QtTest>
 #include <QApplication>
@@ -152,6 +152,7 @@ private slots:
 
     // ── 影子角度通道 (拆开影子基准 R6/R8, DETACH_SHADOW_DESIGN.md §7.2) ──
     void shadowChannel_formulaLockRotatesShadowKeepsP3();
+    void shadowChannel_noFormulaLockRotatesShadowKeepsFollowerAngle();
 
     // ── UI 层完整事件链 ──
     void ctrlDragRotateCopyCommits();

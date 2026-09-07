@@ -380,11 +380,11 @@ void LineEndpointSection::refreshEndpointConnRows()
                         if (att1) {
                             const QString t = hostLabel(m_paramDoc->findBlock(att1->toBlockId), att1->toSegmentId);
                             if (!t.isEmpty())
-                                parts << QString::fromUtf8("跟随 ") + t + QString::fromUtf8("（经影子）");
+                                parts << QString::fromUtf8("跟随 ") + t + QString::fromUtf8("（保持基准）");
                         } else if (master && !master->segments.empty()) {
                             const QString t = hostLabel(master, master->segments.front().id);
                             if (!t.isEmpty())
-                                parts << QString::fromUtf8("角度基准 ") + t + QString::fromUtf8("（影子）");
+                                parts << QString::fromUtf8("角度基准 ") + t + QString::fromUtf8("（独立基准）");
                         }
                     } else if (const auto* ls = ldr->findSegment(att.toSegmentId)) {
                         QString t = cad::param::Serial::tag(ls->serial);

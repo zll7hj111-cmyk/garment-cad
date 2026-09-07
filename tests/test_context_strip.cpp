@@ -16,6 +16,7 @@
 #include "app/ContextStrip.h"
 #include "ElaLineEdit.h"
 #include "ElaPushButton.h"
+#include "ElaText.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Segment.h"
@@ -150,6 +151,8 @@ private slots:
     void pinnedUnitToggleFlipsFollowerMode();
     // ── 长度与角度填入按钮 (剪贴板清空后粘贴并应用) ──
     void pasteButtonsPopulateAndApply();
+    // ── 拆开态双输入框与基准角编辑 ──
+    void shadowBasisDualAngleBoxesAndEditing();
 };
 
 void TestContextStrip::fillPopulatesFields()
@@ -1177,6 +1180,52 @@ void TestContextStrip::pasteButtonsPopulateAndApply()
     strip.setPinnedTarget(bridge.blockId, bridge.segId);
     QVERIFY(!strip.pasteLengthButton()->isEnabled());
     QVERIFY(!strip.pasteAngleButton()->isEnabled());
+}
+
+void TestContextStrip::shadowBasisDualAngleBoxesAndEditing()
+{
+    ParamDocument doc;
+    const LineRef leader = makeLine(doc);
+    const LineRef follower = makeLine(doc, /*lenMm=*/60.0);
+
+    Attachment att;
+    att.fromBlockId = follower.blockId;
+    att.fromPointId = follower.startId;
+    att.toBlockId   = leader.blockId;
+    att.toPointId   = leader.endId;
+    att.followerAngle = 45.0;
+    QVERIFY(doc.addAttachment(att));
+    doc.resolveAll();
+
+    ContextStrip strip(&doc);
+    QUndoStack stack;
+    strip.setUndoStack(&stack);
+    strip.setPinnedTarget(follower.blockId, follower.segId);
+
+    // 初始状态: 普通连接, 始终展示唯一角度输入框
+    QVERIFY(strip.angleEdit()->isVisible());
+    QCOMPARE(strip.angleEdit()->text(), QStringLiteral("45"));
+
+    // 点击「拆开」进入影子基准
+    auto* posBtn = strip.posDetachButton();
+    QVERIFY(posBtn && posBtn->isEnabled());
+    posBtn->click();
+
+    // 拆开后: 依然保持单一角度输入框, 角度约束恒定保真为 45°
+    QVERIFY(strip.angleEdit()->isVisible());
+    QCOMPARE(strip.angleEdit()->text(), QStringLiteral("45"));
+
+    const Attachment* a = nullptr;
+    for (const auto& x : doc.attachments()) {
+        if (x.fromBlockId == follower.blockId) { a = &x; break; }
+    }
+    QVERIFY(a);
+    QCOMPARE(a->followerAngle, 45.0);
+
+    // 重新连接: 依然保持单一角度输入框
+    posBtn->click();
+    QVERIFY(strip.angleEdit()->isVisible());
+    QCOMPARE(strip.angleEdit()->text(), QStringLiteral("45"));
 }
 
 QTEST_MAIN(TestContextStrip)

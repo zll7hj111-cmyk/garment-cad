@@ -239,7 +239,7 @@ void RotateSession::applyAngleDeg(cad::param::ParamDocument* doc,
     }
 
     if (m_connected) {
-        if (isAngleLocked(copyGesture) && m_shadow.active()) {
+        if (m_shadow.active()) {
             applyShadowAngleDeg(doc, deg, dragAngle0);
         } else if (auto* a = editableAttachment(doc)) {
             const double alpha = cad::geo::normalizeDeg360(deg);
@@ -377,6 +377,20 @@ double RotateSession::currentAngleDeg(const cad::param::ParamDocument* doc,
         return copyGesture->currentRelativeAngle();
 
     if (m_connected) {
+        if (m_shadow.active()) {
+            if (m_shadow.isMounted) {
+                if (const auto* att1 = doc->attachmentsView().byId(m_shadow.att1Id))
+                    return cad::geo::normalizeDeg180(att1->followerAngle);
+            } else {
+                if (const auto* sh = doc->findBlock(m_shadow.shadowId)) {
+                    const auto* att2 = editableAttachment(doc);
+                    const double world = sh->transform.rotation
+                        + (att2 ? sh->exitDirectionAtPoint(att2->toPointId, att2->toSegmentId) : 0.0);
+                    return cad::geo::normalizeDeg180(cad::geo::radToDeg(world));
+                }
+            }
+        }
+
         const auto* a = editableAttachment(doc);
         if (!a) return 0.0;
         if (a->rotationMode == cad::param::RotationMode::ArcLength) {
@@ -476,7 +490,7 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
     if (!doc || !undoStack) return false;
 
     if (m_connected) {
-        if (isAngleLocked(nullptr) && m_shadow.active()) {
+        if (m_shadow.active()) {
             if (m_shadow.isMounted) {
                 auto* att1 = doc->findAttachment(m_shadow.att1Id);
                 if (!att1) return false;
@@ -630,6 +644,23 @@ RotateSession::GizmoAngles RotateSession::calculateGizmoAngles(
 {
     GizmoAngles out{};
     if (m_connected) {
+        if (m_shadow.active() && !m_shadow.isMounted) {
+            const double curRad = deg * M_PI / 180.0;
+            if (isRotating) {
+                const double dragStartRad = dragAngle0 * M_PI / 180.0;
+                out.dashRad = dragStartRad;
+                out.arcStart = dragStartRad;
+                double span = curRad - out.arcStart;
+                while (span >  M_PI) span -= 2.0 * M_PI;
+                while (span < -M_PI) span += 2.0 * M_PI;
+                out.arcEnd = out.arcStart + span;
+            } else {
+                out.dashRad = curRad;
+                out.arcStart = curRad;
+                out.arcEnd = curRad;
+            }
+            return out;
+        }
         out.dashRad = m_refWorldRad + M_PI;
         const double aRad = cad::geo::normalizeDeg360(deg) * M_PI / 180.0;
         out.arcStart = m_refWorldRad + M_PI - aRad;
