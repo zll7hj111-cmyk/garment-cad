@@ -1,10 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include <QUuid>
 #include "geometry/Vec2.h"
-#include "canvas/ManagedItems.h"
 
-class QGraphicsEllipseItem;
 class CanvasScene;
 
 namespace cad::param {
@@ -57,8 +55,7 @@ public:
 private:
     QUuid m_aimBlockId;
     QUuid m_aimPointId;
-    QGraphicsEllipseItem* m_aimRing = nullptr;
-    ManagedItems m_managed;
+    CanvasScene* m_scene = nullptr;
 };
 
 } // namespace cad::tools

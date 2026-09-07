@@ -8,11 +8,6 @@
 #include <QPointer>
 #include <optional>
 
-class QGraphicsPathItem;
-class QGraphicsEllipseItem;
-
-#include "canvas/ManagedItems.h"
-
 namespace cad::param { class ParamDocument; struct ParamPoint; }
 
 // P2-4: these are QWidget components living in src/ui/ (cad::ui) now —
@@ -69,12 +64,6 @@ private:
     std::optional<SnapResult> m_hoverPoint;
     std::optional<SegmentSnapResult> m_hoverSeg;
     bool m_hoverBreakable = false;
-
-    // Graphics markers
-    QGraphicsEllipseItem* m_breakCircle = nullptr;  ///< Green circle on breakable point.
-    /// 临时图元统一登记 (deactivate 统一释放, TOOL_SYSTEM_AUDIT P1/L1)。
-    ManagedItems m_managed;
-    QGraphicsPathItem*    m_segMarker   = nullptr;  ///< X marker on segment body.
 
     // Non-modal quick-aux dialog
     QPointer<cad::ui::QuickAuxDialog> m_auxDialog;

@@ -12,6 +12,7 @@
 
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasStyle.h"
+#include "canvas/overlay/TransientOverlay.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "geometry/Units.h"
@@ -20,6 +21,8 @@
 #include "ui/QuickAuxDialog.h"
 
 namespace cad::tools {
+
+using cad::canvas::ScreenPx;
 
 ToolDescriptor ToolBreak::describe()
 {
@@ -54,7 +57,6 @@ void ToolBreak::onDeactivate()
     if (m_auxDialog)
         m_auxDialog->close();
     hideMarkers();
-    m_managed.clear();   // 统一释放 + 影子指针置空 (TOOL_SYSTEM_AUDIT P1/L1)
 }
 
 void ToolBreak::mousePress(QGraphicsSceneMouseEvent* event)
@@ -128,20 +130,9 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
 
         if (m_hoverBreakable) {
             // Show green circle at the breakable point.
-            if (!m_breakCircle) {
-                constexpr double r = 7.0;
-                m_breakCircle = new QGraphicsEllipseItem(-r, -r, r * 2.0, r * 2.0);
-                QPen pen(m_scene->style()->auxMarkerColor, 2.0);
-                pen.setCosmetic(true);
-                m_breakCircle->setPen(pen);
-                m_breakCircle->setBrush(Qt::NoBrush);
-                m_breakCircle->setZValue(102.0);
-                m_scene->addItem(m_breakCircle);
-                m_managed.own(m_breakCircle, &m_breakCircle);
+            if (overlays()) {
+                overlays()->showMarkerRing(snap->worldPos, m_scene->style()->auxMarkerColor, ScreenPx(7.0), 2.0);
             }
-            m_breakCircle->setPos(cad::geo::Coord::toScene(snap->worldPos));
-            m_breakCircle->setVisible(true);
-            if (m_segMarker) m_segMarker->setVisible(false);
 
             // Scissors cursor would require a custom cursor; use cross for now.
             if (!m_scene->views().isEmpty())
@@ -155,8 +146,8 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
         }
     }
 
-    // No breakable point: hide circle.
-    if (m_breakCircle) m_breakCircle->setVisible(false);
+    // No breakable point: hide markers.
+    hideMarkers();
 
     // Try segment body snap for X marker.
     auto segSnap = m_snapEngine.findSegmentSnap(
@@ -164,22 +155,9 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
     if (segSnap) {
         m_hoverSeg = segSnap;
 
-        if (!m_segMarker) {
-            constexpr double s = 4.0;
-            QPainterPath cross;
-            cross.moveTo(-s, -s); cross.lineTo(s, s);
-            cross.moveTo(-s, s);  cross.lineTo(s, -s);
-            m_segMarker = new QGraphicsPathItem(cross);
-            QPen pen(m_scene->style()->auxMarkerColor, 1.6);
-            pen.setCosmetic(true);
-            m_segMarker->setPen(pen);
-            m_segMarker->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-            m_segMarker->setZValue(102.0);
-            m_scene->addItem(m_segMarker);
-            m_managed.own(m_segMarker, &m_segMarker);
+        if (overlays()) {
+            overlays()->showMarkerCross(segSnap->worldPos, m_scene->style()->auxMarkerColor, ScreenPx(4.0));
         }
-        m_segMarker->setPos(cad::geo::Coord::toScene(segSnap->worldPos));
-        m_segMarker->setVisible(true);
 
         if (!m_scene->views().isEmpty())
             m_scene->views().first()->setCursor(Qt::CrossCursor);
@@ -197,8 +175,9 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
 
 void ToolBreak::hideMarkers()
 {
-    if (m_breakCircle) m_breakCircle->setVisible(false);
-    if (m_segMarker) m_segMarker->setVisible(false);
+    if (overlays()) {
+        overlays()->clear(cad::canvas::OverlayTier::Hover);
+    }
 }
 
 // ---------------------------------------------------------------------------

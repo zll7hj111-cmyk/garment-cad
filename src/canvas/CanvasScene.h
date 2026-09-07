@@ -1,5 +1,6 @@
-﻿#pragma once
+#pragma once
 
+#include <memory>
 #include <QGraphicsScene>
 #include <QHash>
 #include <QSet>
@@ -13,6 +14,7 @@ class QGraphicsRectItem;
 class QTimer;
 
 namespace cad::param { class ParamDocument; }
+namespace cad::canvas { class TransientOverlay; }
 
 class BlockItem;
 
@@ -36,6 +38,9 @@ public:
 
     /// Access the animation engine.
     [[nodiscard]] CanvasAnimator* animator() { return &m_animator; }
+
+    /// Access the transient visual overlay pipeline.
+    [[nodiscard]] cad::canvas::TransientOverlay* overlay() const { return m_overlay.get(); }
 
     /// Replace the active theme (triggers full scene repaint).
     void setStyle(const CanvasStyle& s);
@@ -188,4 +193,7 @@ private:
     QList<QGraphicsItem*> m_measureHighlightOverlay;
     QUuid m_measureHighlightBlock;
     QUuid m_activeMeasureId;
+
+    // Transient visual overlay pipeline (hover, gestures, gizmos).
+    std::unique_ptr<cad::canvas::TransientOverlay> m_overlay;
 };

@@ -1,10 +1,9 @@
-﻿#include "tools/RotateAimSnap.h"
+#include "tools/RotateAimSnap.h"
 
 #include <cmath>
-#include <QGraphicsEllipseItem>
-#include <QPen>
 
 #include "canvas/CanvasScene.h"
+#include "canvas/overlay/TransientOverlay.h"
 #include "geometry/Angle.h"
 #include "geometry/Units.h"
 #include "parametric/ParamDocument.h"
@@ -128,37 +127,26 @@ void RotateAimSnap::checkSnap(cad::param::ParamDocument* doc,
 
     m_aimBlockId = bestBlockId;
     m_aimPointId = bestPointId;
+    m_scene = scene;
 
-    if (!m_aimRing) {
-        constexpr double r = 8.0;
-        m_aimRing = new QGraphicsEllipseItem(-r, -r, r * 2.0, r * 2.0);
-        QPen pen(QColor(255, 152, 0));  // amber
-        pen.setWidthF(2.0);
-        pen.setCosmetic(true);
-        m_aimRing->setPen(pen);
-        m_aimRing->setBrush(Qt::NoBrush);
-        m_aimRing->setZValue(105.0);
-        scene->addItem(m_aimRing);
-        m_managed.own(m_aimRing, &m_aimRing);
+    if (m_scene && m_scene->overlay()) {
+        m_scene->overlay()->showSnapAim(bestPos);
     }
-    m_aimRing->setPos(cad::geo::Coord::toScene(bestPos));
-    m_aimRing->setVisible(true);
 }
 
 void RotateAimSnap::clear()
 {
     m_aimBlockId = QUuid();
     m_aimPointId = QUuid();
-    if (m_aimRing) {
-        m_aimRing->setVisible(false);
+    if (m_scene && m_scene->overlay()) {
+        m_scene->overlay()->clear(cad::canvas::OverlayTier::Hover);
     }
 }
 
 void RotateAimSnap::teardown()
 {
     clear();
-    m_managed.clear();
-    m_aimRing = nullptr;
+    m_scene = nullptr;
 }
 
 } // namespace cad::tools

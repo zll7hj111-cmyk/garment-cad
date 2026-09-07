@@ -1,4 +1,4 @@
-﻿#include "CanvasScene.h"
+#include "CanvasScene.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsRectItem>
@@ -23,11 +23,13 @@
 #include "parametric/Block.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/PerfProbe.h"
+#include "canvas/overlay/TransientOverlay.h"
 
 CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
     : QGraphicsScene(parent)
     , m_paramDoc(paramDoc)
     , m_animator(&m_style, this)
+    , m_overlay(std::make_unique<cad::canvas::TransientOverlay>(this))
 {
     // Add origin crosshair
     auto* crosshair = new OriginCrosshair();
@@ -69,6 +71,7 @@ CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
 CanvasScene::~CanvasScene()
 {
     clearMeasureHighlight();
+    m_overlay.reset();
 }
 
 double CanvasScene::currentZoom() const

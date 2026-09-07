@@ -1,17 +1,21 @@
-﻿#pragma once
+#pragma once
 
 #include <QString>   // ToolHost::setHintOverride / Tool::reportHintOverride (M5)
+#include <QUuid>
 
 class QGraphicsSceneMouseEvent;
 class QKeyEvent;
 class QUndoStack;
-class QUuid;
 class CanvasScene;
 class HudItem;
 
 namespace cad::param {
 class ParamDocument;
 enum class RotationMode;
+}
+
+namespace cad::canvas {
+class TransientOverlay;
 }
 
 namespace cad::tools {
@@ -75,6 +79,15 @@ public:
     virtual void setRotateAnchorState(bool active, bool anchorIsEnd, bool canToggle,
                                       const QString& reason)
     { (void)active; (void)anchorIsEnd; (void)canToggle; (void)reason; }
+
+    /// 放置点专属状态上报
+    virtual void setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId)
+    { (void)blockId; (void)pointId; }
+    virtual void setPlacePointSession(bool active, const QString& baseSegName)
+    { (void)active; (void)baseSegName; }
+    virtual void updatePlacePointSession(double distCm, double angleDeg, bool distLocked, bool angleLocked)
+    { (void)distCm; (void)angleDeg; (void)distLocked; (void)angleLocked; }
+    virtual void focusNextPlacedPointField() {}
 };
 
 /// 工具内部"模式"的显示描述 (2026-08-29: W 键模式切换的持久化显示标识)。
@@ -119,6 +132,7 @@ struct ToolContext
     cad::param::ParamDocument* paramDoc = nullptr;
     QUndoStack* undoStack = nullptr;
     ToolHost* host = nullptr;
+    cad::canvas::TransientOverlay* overlays = nullptr;
 };
 
 /// Abstract base class for all interactive tools.
@@ -126,6 +140,9 @@ class Tool
 {
 public:
     virtual ~Tool() = default;
+
+    /// Access the transient visual overlay pipeline.
+    [[nodiscard]] cad::canvas::TransientOverlay* overlays() const { return m_overlays; }
 
     /// 非虚生命周期入口 (TOOL_SYSTEM_AUDIT H4/P2): 绑定上下文 → onActivate 钩子。
     /// 派生类禁止覆盖 activate/deactivate —— 只实现 onActivate/onDeactivate,
@@ -176,6 +193,11 @@ public:
     virtual void onReverseRequested(const QUuid& blockId, const QUuid& segmentId)
     { (void)blockId; (void)segmentId; }
 
+    // ── 放置点输入与会话转发 ──
+    virtual void placePointDistInput(double distCm, bool locked) { (void)distCm; (void)locked; }
+    virtual void placePointAngleInput(double angleDeg, bool locked) { (void)angleDeg; (void)locked; }
+    virtual void placePointCommitted() {}
+
     /// Tool display name.
     [[nodiscard]] virtual const char* name() const = 0;
 
@@ -205,6 +227,32 @@ protected:
     void reportPinnedTarget(const QUuid& blockId, const QUuid& segmentId)
     {
         if (m_host) m_host->setPinnedTarget(blockId, segmentId);
+    }
+
+    /// 放置点专属状态上报
+    void reportPlacedPointTarget(const QUuid& blockId, const QUuid& pointId)
+    {
+        if (m_host) m_host->setPlacedPointTarget(blockId, pointId);
+    }
+    void reportClearPlacedPoint()
+    {
+        if (m_host) m_host->setPlacedPointTarget(QUuid(), QUuid());
+    }
+    void reportPlacePointSession(bool active, const QString& baseSegName)
+    {
+        if (m_host) m_host->setPlacePointSession(active, baseSegName);
+    }
+    void reportPlacePointValues(double distCm, double angleDeg, bool distLocked, bool angleLocked)
+    {
+        if (m_host) m_host->updatePlacePointSession(distCm, angleDeg, distLocked, angleLocked);
+    }
+    void reportPlacePointSessionUpdate(double distCm, double angleDeg, bool distLocked, bool angleLocked)
+    {
+        reportPlacePointValues(distCm, angleDeg, distLocked, angleLocked);
+    }
+    void reportPlacePointFocusNextField()
+    {
+        if (m_host) m_host->focusNextPlacedPointField();
     }
 
     /// 上报连接角度会话 (二期): 四个参数全 null = 会话结束。
@@ -255,6 +303,7 @@ protected:
     cad::param::ParamDocument* m_paramDoc = nullptr;
     ToolHost* m_host = nullptr;
     HudItem* m_hud = nullptr;  ///< Persistent cursor-following HUD label (canvas/HudItem.h, global ns).
+    cad::canvas::TransientOverlay* m_overlays = nullptr;
 };
 
 } // namespace cad::tools

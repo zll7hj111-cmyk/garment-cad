@@ -7,6 +7,7 @@
 #include "ToolSelect.h"   // dynamic_cast: 活动层切换清选集
 #include "ToolRotate.h"   // dynamic_cast: 继承选择集
 #include "canvas/CanvasScene.h"
+#include "canvas/overlay/TransientOverlay.h"
 #include "parametric/Attachment.h"   // RotationMode (forwardConnectAngleMode)
 #include "parametric/ParamDocument.h"
 
@@ -93,6 +94,9 @@ void ToolManager::switchTool(ToolType type)
     if (m_activeTool)
         m_activeTool->deactivate();
 
+    if (m_scene && m_scene->overlay())
+        m_scene->overlay()->clearAll();
+
     Tool* next = ensureTool(type);
     m_activeType = type;
     m_activeTool = next;
@@ -133,6 +137,7 @@ void ToolManager::activateTool(Tool& tool)
     ctx.paramDoc = m_paramDoc;
     ctx.undoStack = m_undoStack;
     ctx.host = this;
+    ctx.overlays = m_scene ? m_scene->overlay() : nullptr;
     tool.activate(ctx);
 }
 
@@ -179,6 +184,26 @@ void ToolManager::setRotateAnchorState(bool active, bool anchorIsEnd,
     emit rotateAnchorStateChanged(active, anchorIsEnd, canToggle, reason);
 }
 
+void ToolManager::setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId)
+{
+    emit placedPointTargetChanged(blockId, pointId);
+}
+
+void ToolManager::setPlacePointSession(bool active, const QString& baseSegName)
+{
+    emit placePointSessionChanged(active, baseSegName);
+}
+
+void ToolManager::updatePlacePointSession(double distCm, double angleDeg, bool distLocked, bool angleLocked)
+{
+    emit placePointSessionUpdated(distCm, angleDeg, distLocked, angleLocked);
+}
+
+void ToolManager::focusNextPlacedPointField()
+{
+    emit placePointFocusNextField();
+}
+
 void ToolManager::forwardConnectAngleText(const QString& text)
 {
     if (m_activeTool) m_activeTool->connectAngleTextChanged(text);
@@ -199,6 +224,21 @@ void ToolManager::forwardConnectAngleCancel()
     if (m_activeTool) m_activeTool->connectAngleCancelled();
 }
 
+void ToolManager::forwardPlacePointDist(double distCm, bool locked)
+{
+    if (m_activeTool) m_activeTool->placePointDistInput(distCm, locked);
+}
+
+void ToolManager::forwardPlacePointAngle(double angleDeg, bool locked)
+{
+    if (m_activeTool) m_activeTool->placePointAngleInput(angleDeg, locked);
+}
+
+void ToolManager::forwardPlacePointCommit()
+{
+    if (m_activeTool) m_activeTool->placePointCommitted();
+}
+
 void ToolManager::forwardReverseRequest(const QUuid& blockId, const QUuid& segmentId)
 {
     // 旋转会话换向 (2026-12): 条带换向点击 → 激活工具 (ToolRotate 切锚心)。
@@ -207,6 +247,9 @@ void ToolManager::forwardReverseRequest(const QUuid& blockId, const QUuid& segme
 
 void ToolManager::dispatchMousePress(QGraphicsSceneMouseEvent* event)
 {
+    if (m_scene && m_scene->overlay()) {
+        m_scene->overlay()->clear(cad::canvas::OverlayTier::Hover);
+    }
     if (m_activeTool) {
         m_activeTool->mousePress(event);
     }

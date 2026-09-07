@@ -2,6 +2,7 @@
 
 #include "canvas/CanvasScene.h"
 #include "canvas/HudItem.h"
+#include "canvas/overlay/TransientOverlay.h"
 
 namespace cad::tools {
 
@@ -11,6 +12,7 @@ void Tool::activate(const ToolContext& ctx)
     m_paramDoc = ctx.paramDoc;
     m_undoStack = ctx.undoStack;
     m_host = ctx.host;
+    m_overlays = ctx.overlays ? ctx.overlays : (ctx.scene ? ctx.scene->overlay() : nullptr);
     onActivate(*m_scene, m_paramDoc);
 }
 
@@ -23,12 +25,17 @@ void Tool::activate(CanvasScene& scene, cad::param::ParamDocument* paramDoc)
     ctx.paramDoc = paramDoc;
     ctx.undoStack = m_undoStack;
     ctx.host = m_host;
+    ctx.overlays = scene.overlay();
     activate(ctx);
 }
 
 void Tool::deactivate()
 {
     onDeactivate();
+    if (m_overlays) {
+        m_overlays->clear(cad::canvas::OverlayTier::Hover);
+        m_overlays->clear(cad::canvas::OverlayTier::Session);
+    }
     // 角标归场景所有, 不随工具销毁 —— 切工具时必须显式撤下, 否则上一个
     // 工具的「多选」会挂在画布上不走 (m_scene 下面一行就空了)。
     if (m_scene) m_scene->setModeBadge(QString());
@@ -36,6 +43,7 @@ void Tool::deactivate()
     m_scene = nullptr;
     m_paramDoc = nullptr;
     m_host = nullptr;
+    m_overlays = nullptr;
 }
 
 HudItem* Tool::ensureHud()

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QObject>
 #include <QMetaObject>
@@ -62,6 +62,10 @@ public:
     void setConnectAngleValidity(bool valid) override;
     void setRotateAnchorState(bool active, bool anchorIsEnd, bool canToggle,
                               const QString& reason) override;
+    void setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId) override;
+    void setPlacePointSession(bool active, const QString& baseSegName) override;
+    void updatePlacePointSession(double distCm, double angleDeg, bool distLocked, bool angleLocked) override;
+    void focusNextPlacedPointField() override;
 
     // ── 连接角度会话输入转发 (二期): MainWindow 接条带信号后调用, 转给激活
     //    工具 (选择工具 → ConnectGesture)。无激活工具时 no-op。 ──
@@ -69,6 +73,11 @@ public:
     void forwardConnectAngleMode(cad::param::RotationMode mode);
     void forwardConnectAngleCommit();
     void forwardConnectAngleCancel();
+
+    // ── 放置点输入与确认转发 ──
+    void forwardPlacePointDist(double distCm, bool locked);
+    void forwardPlacePointAngle(double angleDeg, bool locked);
+    void forwardPlacePointCommit();
 
     // ── 旋转会话换向转发 (2026-12): 条带换向点击 (旋转会话内) → 激活工具
     //    (ToolRotate 切锚心)。无激活工具时 no-op。 ──
@@ -97,6 +106,12 @@ signals:
     /// 两者 id 均为 null = 清除。
     void hoverTargetChanged(const QUuid& blockId, const QUuid& segmentId);
     void pinnedTargetChanged(const QUuid& blockId, const QUuid& segmentId);
+
+    /// 放置点专属目标与会话信号
+    void placedPointTargetChanged(const QUuid& blockId, const QUuid& pointId);
+    void placePointSessionChanged(bool active, const QString& baseSegName);
+    void placePointSessionUpdated(double distCm, double angleDeg, bool distLocked, bool angleLocked);
+    void placePointFocusNextField();
 
     /// 连接角度会话 (CONTEXT_STRIP_DESIGN.md 二期): 非空 attachmentId =
     /// 会话开始 (条带进入连接角度编辑), 全 null = 会话结束。宿主编排
