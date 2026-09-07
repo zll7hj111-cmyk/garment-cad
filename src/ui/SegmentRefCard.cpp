@@ -19,6 +19,7 @@
 #include "parametric/Attachment.h"
 #include "parametric/AttachmentGraph.h"
 #include "parametric/Serial.h"
+#include "parametric/FollowerAngle.h"
 #include "geometry/Angle.h"
 #include "geometry/Units.h"
 #include "canvas/CanvasScene.h"
@@ -86,18 +87,15 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_angleRefPoint = new PointRefEdit(m_doc, this);
     m_angleRefPoint->setObjectName(QStringLiteral("angleRefPointEdit"));
     m_angleRefPoint->setFixedWidth(kRefEditW);
-    m_angleRefPoint->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("方向点1"),
-        QStringLiteral("输入 P#/L#/名称。与点2 的连线方向 = 角度基准；只填点1 = 该点出口方向；都留空 = 自动跟随所连的线。")));
+    m_angleRefPoint->setVisible(false);
     row->addWidget(m_angleRefPoint);
     m_lblArrow = mkSentence(QString::fromUtf8("→"));
+    m_lblArrow->setVisible(false);
     row->addWidget(m_lblArrow);
     m_angleRefPoint2 = new PointRefEdit(m_doc, this);
     m_angleRefPoint2->setObjectName(QStringLiteral("angleRefPoint2Edit"));
     m_angleRefPoint2->setFixedWidth(kRefEditW);
-    m_angleRefPoint2->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("方向点2"),
-        QStringLiteral("与点1的连线方向作为角度基准（可为任意块上的任意点）。自动跟随态回显宿主线段另一端。")));
+    m_angleRefPoint2->setVisible(false);
     row->addWidget(m_angleRefPoint2);
 
     // ── 单行自适应：拆开基准态下的基准角度与清除基准按钮（默认隐藏，自适应切换）──
@@ -115,6 +113,17 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_btnClearShadow->setCursor(Qt::PointingHandCursor);
     m_btnClearShadow->setVisible(false);
     row->addWidget(m_btnClearShadow);
+
+    m_btnResetBenchmark = new QPushButton(QString::fromUtf8("重设基准"), this);
+    m_btnResetBenchmark->setObjectName(QStringLiteral("resetBenchmarkBtn"));
+    m_btnResetBenchmark->setFixedHeight(kFieldH);
+    m_btnResetBenchmark->setStyleSheet(cad::ui::chipButtonStyle());
+    m_btnResetBenchmark->setCursor(Qt::PointingHandCursor);
+    m_btnResetBenchmark->setToolTip(cad::ui::TooltipFormatter::action(
+        QStringLiteral("重设基准"),
+        QStringLiteral("以当前实际姿态重新反算基准角度。")));
+    m_btnResetBenchmark->setVisible(false);
+    row->addWidget(m_btnResetBenchmark);
 
     row->addStretch();
 
@@ -142,6 +151,7 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
     m_btnLinkCurrent->setToolTip(cad::ui::TooltipFormatter::action(
         QStringLiteral("链接当前线"),
         QStringLiteral("清空自定义基准，角度跟随所连线段的方向。")));
+    m_btnLinkCurrent->setVisible(false);
     row->addWidget(m_btnLinkCurrent);
     lay->addLayout(row);
 
@@ -155,6 +165,8 @@ SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
             this, &SegmentRefCard::onIndependentToggled);
     connect(m_btnLinkCurrent, &QPushButton::clicked,
             this, &SegmentRefCard::onLinkCurrentLineClicked);
+    connect(m_btnResetBenchmark, &QPushButton::clicked,
+            this, &SegmentRefCard::onResetBenchmarkClicked);
     connect(m_shadowAngleEdit, &QLineEdit::returnPressed,
             this, &SegmentRefCard::onShadowAngleEdited);
     connect(m_btnClearShadow, &QPushButton::clicked,
@@ -228,60 +240,34 @@ void SegmentRefCard::refresh()
         if (m_btnClearShadow) m_btnClearShadow->setVisible(true);
         if (m_btnIndependent) m_btnIndependent->setVisible(true);
     } else {
-        // 普通两点/自由态：显示「方向：点1 → 点2」
-        if (m_lblDirWord) {
-            m_lblDirWord->setVisible(true);
-            m_lblDirWord->setText(QString::fromUtf8("方向："));
-        }
-        if (m_angleRefPoint) m_angleRefPoint->setVisible(true);
-        if (m_lblArrow) m_lblArrow->setVisible(true);
-        if (m_angleRefPoint2) m_angleRefPoint2->setVisible(true);
+        // 母线直线基准（用户拍板 2026-09）: 彻底移除点1->点2双输入框，显示母线基准
+        if (m_angleRefPoint) m_angleRefPoint->setVisible(false);
+        if (m_lblArrow) m_lblArrow->setVisible(false);
+        if (m_angleRefPoint2) m_angleRefPoint2->setVisible(false);
         if (m_shadowAngleEdit) m_shadowAngleEdit->setVisible(false);
         if (m_btnClearShadow) m_btnClearShadow->setVisible(false);
+        if (m_btnLinkCurrent) m_btnLinkCurrent->setVisible(false);
         if (m_btnIndependent) m_btnIndependent->setVisible(true);
-        if (m_btnLinkCurrent) m_btnLinkCurrent->setVisible(att && !att->angleRefBlockId.isNull());
-    }
 
-    // 预填自动落库 (用户 2026-12): 自由态先选好引用点, 连入后第一次 refresh
-    // 自动写为角度基准 —— 一次生效 (落库后 angleRefBlockId 非空即停)。
-    // 2026-09 设计修正: 自动态回填的点1/点2 (autoEcho) 不算用户意图 ——
-    // 必须跳过, 否则每次 refresh 都把自动回显值当预填提交 (自动态被误固化
-    // 为自定义)。
-    // 影子基准 (拆开影子基准) 跳过: 基准 = 影子 (angleRef 恒空), 自动落库
-    // 会把影子点固化为自定义基准, 破坏"影子可挂载"语义 (R2/R3)。
-    if (att && att->angleRefBlockId.isNull() && !att->angleIndependent
-        && !shadowBasis) {
-        const bool has1 = m_angleRefPoint->resolvedBlockId().isNull() ? false
-            : !m_angleRefPoint->resolvedPointId().isNull()
-              && !m_angleRefPoint->isAutoEcho();
-        const bool has2 = !m_angleRefPoint2->resolvedBlockId().isNull()
-            && !m_angleRefPoint2->resolvedPointId().isNull()
-            && !m_angleRefPoint2->isAutoEcho()
-            && m_angleRefPoint2->resolvedBlockId() != att->fromBlockId;
-        const QUuid rb = m_angleRefPoint->resolvedBlockId();
-        const QUuid rp = m_angleRefPoint->resolvedPointId();
-        const QUuid r2b = m_angleRefPoint2->resolvedBlockId();
-        const QUuid r2p = m_angleRefPoint2->resolvedPointId();
-        const QUuid b1 = has1 ? rb : att->toBlockId;
-        const QUuid p1 = has1 ? rp : att->toPointId;
-        if (has2 && !(r2b == b1 && r2p == p1)) {
-            const auto* refBlk = m_doc->findBlock(b1);
-            const QUuid s1 = refBlk ? refBlk->exitSegmentAtPoint(p1) : QUuid();
-            if (auto* stack = m_doc->undoStack())
-                stack->push(new cad::cmd::SetAttachmentAngleRefCommand(
-                    m_doc, att->id, b1, s1, p1, r2b, r2p));
-            else
-                m_doc->setAttachmentAngleRef(att->id, b1, s1, p1, r2b, r2p);
-        } else if (has1
-                   && (rb != att->toBlockId || rp != att->toPointId)) {
-            const auto* refBlk = m_doc->findBlock(rb);
-            const QUuid rs = refBlk ? refBlk->exitSegmentAtPoint(rp) : QUuid();
-            if (!rs.isNull()) {
-                if (auto* stack = m_doc->undoStack())
-                    stack->push(new cad::cmd::SetAttachmentAngleRefCommand(
-                        m_doc, att->id, rb, rs, rp));
-                else
-                    m_doc->setAttachmentAngleRef(att->id, rb, rs, rp);
+        if (m_lblDirWord) {
+            m_lblDirWord->setVisible(true);
+            if (att && !att->angleIndependent) {
+                const double refDeg = cad::geo::normalizeDeg180(
+                    cad::geo::radToDeg(cad::param::effectiveAngleRefWorld(m_doc, *att)));
+                QString text = QString::fromUtf8("母线基准：%1°").arg(cad::geo::Units::formatDegValue(refDeg));
+                if (block && block->preservedBenchmarkAngle.has_value()) {
+                    text += QString::fromUtf8(" (保持原基准 %1°)").arg(
+                        cad::geo::Units::formatDegValue(*block->preservedBenchmarkAngle));
+                    if (m_btnResetBenchmark) m_btnResetBenchmark->setVisible(true);
+                } else {
+                    if (m_btnResetBenchmark) m_btnResetBenchmark->setVisible(false);
+                }
+                m_lblDirWord->setText(text);
+                m_lblDirWord->setFixedWidth(block && block->preservedBenchmarkAngle.has_value() ? 240 : 130);
+            } else {
+                m_lblDirWord->setText(QString::fromUtf8("自由线 (世界角)"));
+                m_lblDirWord->setFixedWidth(110);
+                if (m_btnResetBenchmark) m_btnResetBenchmark->setVisible(false);
             }
         }
     }
@@ -742,6 +728,34 @@ void SegmentRefCard::onClearShadowClicked()
         stack->push(new cad::cmd::RemoveShadowCommand(m_doc, toBlk->id));
     else
         m_doc->removeShadow(toBlk->id);
+    refresh();
+    emit changed();
+}
+
+void SegmentRefCard::onResetBenchmarkClicked()
+{
+    if (!m_doc) return;
+    auto* blk = m_doc->findBlock(m_blockId);
+    if (!blk) return;
+    blk->preservedBenchmarkAngle.reset();
+    const auto* att = findFollowerAttachment();
+    if (att) {
+        const auto* toBlk = m_doc->findBlock(att->toBlockId);
+        if (toBlk) {
+            const double refWorld = cad::param::effectiveAngleRefWorld(m_doc, *att);
+            const double localDir = blk->directionAtPoint(att->fromPointId);
+            const double angleDeg = cad::param::backSolveFollowerAngle(
+                blk->transform.rotation, localDir, refWorld);
+            if (auto* stack = m_doc->undoStack()) {
+                stack->push(new cad::cmd::SetFollowerAngleCommand(m_doc, att->id, angleDeg));
+            } else {
+                if (auto* mutAtt = m_doc->findAttachment(att->id)) {
+                    mutAtt->followerAngle = angleDeg;
+                }
+                m_doc->resolveAll();
+            }
+        }
+    }
     refresh();
     emit changed();
 }

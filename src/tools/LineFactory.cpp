@@ -8,6 +8,8 @@
 
 #include "parametric/ParamDocument.h"
 
+#include "parametric/FollowerAngle.h"
+
 #include "parametric/Block.h"
 
 #include "parametric/MeasureVariable.h"
@@ -297,6 +299,8 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
 
     att.toSegmentId = toSegmentId;
 
+    refWorldRad = cad::param::effectiveAngleRefWorld(m_paramDoc, att);
+
     // Follower angle = 180° − (new line's world angle − leader segment world
 
     // direction)（闭合基准, 用户拍板 2026-08 定稿：angle 0° = 折叠重叠，
@@ -527,9 +531,7 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
 
         // angle = 180° − (world angle − leader world direction)。
 
-        const double refWorldRad = leader->transform.rotation
-
-            + leader->exitDirectionAtPoint(startPointId, att.toSegmentId);
+        const double refWorldRad = cad::param::effectiveAngleRefWorld(m_paramDoc, att);
 
         att.followerAngle = cad::geo::normalizeDeg180(180.0
 

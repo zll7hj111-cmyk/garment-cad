@@ -1380,18 +1380,18 @@ void TestAttachmentCommands::chordLength_openingDistanceSolvingAndSwitching()
     att.fromBlockId = bId;
     att.fromPointId = bStart;
     att.toBlockId = aId;
-    att.toPointId = aStart;
+    att.toPointId = aEnd;
     att.toSegmentId = aSeg;
     att.rotationMode = RotationMode::ChordLength;
     att.chordLength = 30.0; // 30 mm opening
     QVERIFY(doc.addAttachment(att));
     doc.resolveAll();
 
-    // In closed state, B folds onto A: angle 0°, B's end is at (100, 0).
+    // In closed state, B folds onto A: angle 0°, B's end is at aStart (0, 0).
     // With chord = 30.0mm on radius R = 100.0mm:
     // theta = 2 * asin(30 / 200) = 2 * asin(0.15) ≈ 17.254°
     const Vec2 bEndWorld = doc.findBlock(bId)->worldPos(bEnd);
-    const Vec2 closedEndWorld = doc.findBlock(aId)->worldPos(aEnd);
+    const Vec2 closedEndWorld = doc.findBlock(aId)->worldPos(aStart);
     const double physicalChord = bEndWorld.distanceTo(closedEndWorld);
     QVERIFY2(std::abs(physicalChord - 30.0) < 1e-4,
              qPrintable(QString("端点直线开度应为 30mm, 实际=%1").arg(physicalChord)));
@@ -1423,8 +1423,8 @@ void TestAttachmentCommands::chordLength_openingDistanceSolvingAndSwitching()
     mutAtt->chordLength = 250.0;
     doc.resolveAll();
     const Vec2 straightPos = doc.findBlock(bId)->worldPos(bEnd);
-    // 180° continuation from (0,0) along opposite direction: (-100, 0)
-    QVERIFY2(straightPos.distanceTo(Vec2{-100.0, 0.0}) < 1e-4, "超出直径应平滑钳制为 180° 直行");
+    // 180° continuation from (100,0) along segment direction: (200, 0)
+    QVERIFY2(straightPos.distanceTo(Vec2{200.0, 0.0}) < 1e-4, "超出直径应平滑钳制为 180° 直行");
     QVERIFY(std::isfinite(straightPos.x) && std::isfinite(straightPos.y));
 
     // 3. Negative chordLength: reverse opening (opposite side)

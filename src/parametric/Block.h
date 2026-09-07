@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QList>
 #include <vector>
+#include <optional>
 
 #include "geometry/Vec2.h"
 #include "geometry/CurveMath.h"
@@ -152,6 +153,9 @@ public:
     QUuid shadowLastHostBlockId;
     QUuid shadowLastHostPointId;
     QUuid shadowLastHostSegmentId;
+
+    /// 断开时保留的基准角度 (断开记忆，重连时保持)
+    std::optional<double> preservedBenchmarkAngle;
 
     /// Resolve all internal point positions based on constraint chain.
     /// @param params       Variable name→value map (cm) for formula evaluation.

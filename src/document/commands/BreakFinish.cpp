@@ -1,9 +1,10 @@
-﻿#include "document/commands/BreakExecution.h"
+#include "document/commands/BreakExecution.h"
 
 #include <algorithm>
 #include <cmath>
 
 #include "parametric/ParamDocument.h"
+#include "parametric/FollowerAngle.h"
 #include "parametric/LinkedVariable.h"
 #include "parametric/ParamDocumentRaw.h"
 #include "geometry/Units.h"
@@ -246,7 +247,11 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
     att.toBlockId = frontBlockId;
     att.toPointId = frontAuxPtId;
     att.toSegmentId = frontSegId;
-    att.followerAngle = st.isCurve ? (180.0 - st.backEndLocalAngle) : 180.0;
+    const double refWorld = cad::param::effectiveAngleRefWorld(&doc, att);
+    const auto* backBlk = doc.findBlock(newBlockId);
+    const double localDir = backBlk ? backBlk->directionAtPoint(bpStartId) : 0.0;
+    const double rot = backBlk ? backBlk->transform.rotation : 0.0;
+    att.followerAngle = cad::param::backSolveFollowerAngle(rot, localDir, refWorld);
     doc.addAttachment(std::move(att));
 }
 

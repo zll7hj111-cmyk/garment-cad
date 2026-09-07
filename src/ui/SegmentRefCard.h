@@ -73,6 +73,8 @@ private:
     void onShadowAngleEdited();
     /// [清除影子] (R5/§7.3): 删除影子 + Att2 → 跟随线变纯自由线。
     void onClearShadowClicked();
+    /// [重设基准]: 保持原基准态下，以当前实际姿态重新反算基准角
+    void onResetBenchmarkClicked();
 
     [[nodiscard]] const cad::param::Attachment* findFollowerAttachment() const;
     void refreshAngleRefRow(const cad::param::Attachment* att);
@@ -85,11 +87,12 @@ private:
     // 两段式/自适应合并行: 对齐点【PointRefEdit】  方向/基准：[点1→点2 或 基准角度] [清除基准] [独立]
     PointRefEdit* m_alignPointEdit = nullptr;   ///< 对齐点 (本线端点, 可输入).
     ElaText*      m_lblDirWord = nullptr;       ///< "方向：" 或 "基准：" 标签.
-    PointRefEdit* m_angleRefPoint = nullptr;  ///< 点1.
-    ElaText*      m_lblArrow = nullptr;         ///< "→" 箭头指示 (两点模式下显示).
-    PointRefEdit* m_angleRefPoint2 = nullptr; ///< 点2.
+    PointRefEdit* m_angleRefPoint = nullptr;  ///< 点1 (保持指针兼容测试).
+    ElaText*      m_lblArrow = nullptr;         ///< "→" 箭头指示.
+    PointRefEdit* m_angleRefPoint2 = nullptr; ///< 点2 (保持指针兼容测试).
     QPushButton* m_btnIndependent = nullptr;  ///< [独立] checkable.
     QPushButton* m_btnLinkCurrent = nullptr;  ///< [链接当前线] (2026-09 用户拍板).
+    QPushButton* m_btnResetBenchmark = nullptr;///< [重设基准] (保持原基准时重设).
 
     // 基准角度数值与清除按钮 (拆开基准态, 合并入单行显示):
     // 仅当连接基准是影子块时显示; 挂载态与拆开态写目标不同 (Δ vs rotation)。

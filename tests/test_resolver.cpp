@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QHash>
 #include <QString>
 #include <cmath>
@@ -532,8 +532,8 @@ void TestResolver::explicitLeaderSegmentDisambiguates()
         QVERIFY(std::abs(fWorld.y) < 1e-6);
     }
 
-    // Case 2: explicit s2 — B is s2's START point, so the exit direction is
-    // flipped (C->B extended): straight ahead means downward, F at (100, -50).
+    // Case 2: explicit s2 — leader benchmark is always startPointId->endPointId
+    // (B->C upward, 90 deg): straight ahead means upward, F at (100, +50).
     {
         att.toSegmentId = s2Id;
         std::vector<Block> blocks{leader, followerBlock};
@@ -541,7 +541,7 @@ void TestResolver::explicitLeaderSegmentDisambiguates()
         Resolver::resolveAll(blocks, atts);
         Vec2 fWorld = blocks[1].worldPos(idF);
         QVERIFY(std::abs(fWorld.x - 100.0) < 1e-6);
-        QVERIFY(std::abs(fWorld.y + 50.0) < 1e-6);
+        QVERIFY(std::abs(fWorld.y - 50.0) < 1e-6);
     }
 }
 

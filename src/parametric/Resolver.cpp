@@ -661,8 +661,23 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     const double leaderRefWorld = to.transform.rotation
                     + to.exitDirectionAtPoint(att.toPointId, att.toSegmentId);
     double refWorld = leaderRefWorld;
+
+    // 母线基准方向（用户拍板 2026-09）: 直接自动取母线端点1到端点2的世界直线向量
+    // 无视曲线控制点/弯曲切线，无视吸附端点进出方向
+    const Segment* toSeg = to.findSegment(att.toSegmentId);
+    if (toSeg) {
+        const ParamPoint* sp = to.findPoint(toSeg->startPointId);
+        const ParamPoint* ep = to.findPoint(toSeg->endPointId);
+        if (sp && ep && sp->resolved && ep->resolved) {
+            const geo::Vec2 w1 = to.transform.toWorld(sp->resolvedPos);
+            const geo::Vec2 w2 = to.transform.toWorld(ep->resolvedPos);
+            if (w1.distanceTo(w2) > 1e-6) {
+                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+            }
+        }
+    }
+
     if (!att.angleRefBlockId.isNull() && angleRef) {
-        // 2026-xx §6.4: 角度基准两点化 —— 点1→点2 的连线方向优先。
         if (!att.angleRef2BlockId.isNull() && !att.angleRef2PointId.isNull()) {
             const Block* ref2 = angleRef2;
             const ParamPoint* p1 = angleRef->findPoint(att.angleRefPointId);
@@ -670,27 +685,17 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
             if (p1 && p2 && p1->resolved && p2->resolved) {
                 const geo::Vec2 w1 = angleRef->transform.toWorld(p1->resolvedPos);
                 const geo::Vec2 w2 = ref2->transform.toWorld(p2->resolvedPos);
-                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+                if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
             }
         } else {
             const Segment* refSeg = angleRef->findSegment(att.angleRefSegmentId);
             if (refSeg) {
-                if (!att.angleRefPointId.isNull()) {
-                    // 使用用户选择的角度基准点的出口方向（与位置连接同构）。
-                    const ParamPoint* rp = angleRef->findPoint(att.angleRefPointId);
-                    if (rp && rp->resolved) {
-                        refWorld = angleRef->transform.rotation
-                                 + angleRef->exitDirectionAtPoint(
-                                       att.angleRefPointId, att.angleRefSegmentId);
-                    }
-                } else {
-                    const ParamPoint* rsp = angleRef->findPoint(refSeg->startPointId);
-                    const ParamPoint* rep = angleRef->findPoint(refSeg->endPointId);
-                    if (rsp && rep && rsp->resolved && rep->resolved) {
-                        // 旧档/未选点：保持历史行为，用 start->end 世界方向。
-                        refWorld = angleRef->transform.rotation
-                                 + angleRef->directionAtPoint(refSeg->startPointId);
-                    }
+                const ParamPoint* rsp = angleRef->findPoint(refSeg->startPointId);
+                const ParamPoint* rep = angleRef->findPoint(refSeg->endPointId);
+                if (rsp && rep && rsp->resolved && rep->resolved) {
+                    const geo::Vec2 w1 = angleRef->transform.toWorld(rsp->resolvedPos);
+                    const geo::Vec2 w2 = angleRef->transform.toWorld(rep->resolvedPos);
+                    if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
                 }
             }
         }

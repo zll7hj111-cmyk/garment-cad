@@ -595,6 +595,7 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
                 else singleSet = m_selection;
                 m_dragCtl->begin(startPos, singleSet);
             }
+            setState(SelectState::Dragging);
         }
         return;
     }

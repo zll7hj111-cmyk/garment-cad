@@ -1,4 +1,4 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <QUuid>
 #include <QUndoStack>
 #include <cmath>
@@ -529,14 +529,14 @@ void TestReverseSegmentCommands::reverseSegment_connectedAsLeader_exitStable()
     stack.push(new cad::cmd::ReverseSegmentCommand(&doc, lId, lSeg));
     doc.resolveAll();
 
-    // leader 换向: 端点出方向不变 (离体语义) → follower 姿态/位置不变。
+    // leader 换向: 端点1与端点2互换 → 母线基准方向翻转 180°。
+    // 子线严格保持相对母线的基准角度，因此子线世界角随母线基准翻转 180°。
     const auto* fb = doc.findBlock(fId);
     QVERIFY(fb->worldPos(fStart).distanceTo(fsBefore) < 1e-6);
-    QVERIFY(fb->worldPos(fEnd).distanceTo(feBefore) < 1e-6);
+    QVERIFY(fb->worldPos(fEnd).distanceTo(Vec2(40.0, 0.0)) < 1e-6);
     const auto* att2 = doc.findAttachment(att.id);
     QVERIFY(att2);
-    QVERIFY(std::abs(att2->followerAngle - 180.0) < 1e-9);   // 无翻转 → 不补偿
-    QVERIFY(att2->angleRefPointId.isNull());                 // 无回填 (出方向稳定)
+    QVERIFY(std::abs(att2->followerAngle - 180.0) < 1e-9);
 
     stack.undo();
     doc.resolveAll();
@@ -544,8 +544,7 @@ void TestReverseSegmentCommands::reverseSegment_connectedAsLeader_exitStable()
 }
 
 // ---------------------------------------------------------------------------
-// v2: 旧档独立角度基准 (angleRefSegment=本段, 空 angleRefPointId) 换向 —
-// 回填基准点 = 旧终点 (出方向 = 原 start→end), 跟随者零跳变。
+// 独立角度基准换向 — 基准段换向改变端点1→端点2向量，跟随者严格保持相对基准角度。
 // ---------------------------------------------------------------------------
 
 void TestReverseSegmentCommands::reverseSegment_legacyAngleRefBackfilled()
@@ -555,15 +554,15 @@ void TestReverseSegmentCommands::reverseSegment_legacyAngleRefBackfilled()
     auto [lId, lStart, lEnd, lSeg] = makeLine(doc, 100.0);
     auto [fId, fStart, fEnd, fSeg] = makeLine(doc, 60.0, Vec2(100.0, 0.0));
     doc.resolveAll();
-    // follower 位置钉在独立 leader A 上, 角度基准 = L 段 (旧档: 无基准点)。
+    // follower 位置钉在独立 leader A 上, 角度基准 = L 段。
     Attachment att;
     att.fromBlockId = fId;
     att.fromPointId = fStart;
     att.toBlockId = aId;
     att.toPointId = aEnd;
     att.angleRefBlockId = lId;
-    att.angleRefSegmentId = lSeg;    // 角度基准 = L 的 start→end (旧档语义)
-    att.followerAngle = 0.0;         // 与 L 方向折叠平行
+    att.angleRefSegmentId = lSeg;
+    att.followerAngle = 0.0;
     QVERIFY(doc.addAttachment(att));
     doc.resolveAll();
 
@@ -574,14 +573,13 @@ void TestReverseSegmentCommands::reverseSegment_legacyAngleRefBackfilled()
     stack.push(new cad::cmd::ReverseSegmentCommand(&doc, lId, lSeg));
     doc.resolveAll();
 
-    // 回填基准点吸收基准翻转 → 跟随者姿态/位置零跳变, 跟随角不变。
+    // 基准翻转 180° → 跟随角保持 0°，跟随者世界方向随基准翻转。
     const auto* fb = doc.findBlock(fId);
     QVERIFY(fb->worldPos(fStart).distanceTo(fsBefore) < 1e-6);
-    QVERIFY(fb->worldPos(fEnd).distanceTo(feBefore) < 1e-6);
+    QVERIFY(fb->worldPos(fEnd).distanceTo(Vec2(340.0, 0.0)) < 1e-6);
     const auto* att2 = doc.findAttachment(att.id);
     QVERIFY(att2);
     QVERIFY(std::abs(att2->followerAngle - 0.0) < 1e-9);
-    QCOMPARE(att2->angleRefPointId, lEnd);   // 回填旧终点
 
     stack.undo();
     doc.resolveAll();

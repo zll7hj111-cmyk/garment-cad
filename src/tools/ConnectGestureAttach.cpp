@@ -1,4 +1,4 @@
-﻿#include "ConnectGesture.h"
+#include "ConnectGesture.h"
 
 #include <cmath>
 #include <utility>
@@ -106,15 +106,29 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
 
     att.fromBlockId = m_connectFromBlock;
 
-    // Orientation-preserving follower angle: the Resolver drives
-    //   rotation = refWorld + angle·π/180 − localDir
-    // so choosing angle = (rotation + localDir − refWorld)·180/π keeps
-    // the block's CURRENT world direction — zero visual jump on attach.
-    const double refWorld = toBlk->transform.rotation
-        + toBlk->exitDirectionAtPoint(toPointId, att.toSegmentId);
-    const double localDir = fromBlk->directionAtPoint(m_connectFromPoint);
-    const double angleDeg = cad::param::backSolveFollowerAngle(
-        fromBlk->transform.rotation, localDir, refWorld);
+    // 母线直线基准（用户拍板 2026-09: 直接自动取母线端点1到端点2的直线向量，无视曲线弯曲与进出）
+    double refWorld = toBlk->transform.rotation;
+    if (const auto* toSeg = toBlk->findSegment(att.toSegmentId)) {
+        const auto* sp = toBlk->findPoint(toSeg->startPointId);
+        const auto* ep = toBlk->findPoint(toSeg->endPointId);
+        if (sp && ep && sp->resolved && ep->resolved) {
+            const geo::Vec2 w1 = toBlk->transform.toWorld(sp->resolvedPos);
+            const geo::Vec2 w2 = toBlk->transform.toWorld(ep->resolvedPos);
+            if (w1.distanceTo(w2) > 1e-6)
+                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+        }
+    }
+
+    // 保持原基准角度（用户拍板 2026-09）:
+    // 连接新线段时不会重新建立/反算基准，而是保持原基准
+    double angleDeg = 0.0;
+    if (fromBlk->preservedBenchmarkAngle.has_value()) {
+        angleDeg = *fromBlk->preservedBenchmarkAngle;
+    } else {
+        const double localDir = fromBlk->directionAtPoint(m_connectFromPoint);
+        angleDeg = cad::param::backSolveFollowerAngle(
+            fromBlk->transform.rotation, localDir, refWorld);
+    }
     att.followerAngle = angleDeg;
 
     if (cad::param::checkAttachment(m_paramDoc->attachments(), att)

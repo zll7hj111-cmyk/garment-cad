@@ -1004,16 +1004,13 @@ void TestAuxLayer::lockedDragMovesWholePair()
     sendMouse(QEvent::MouseButtonRelease, vp(100.0, 0.0), Qt::LeftButton,
               Qt::NoModifier);
 
-    QCOMPARE(doc.attachments().size(), size_t(1));  // welded, never torn
-    QVERIFY2(std::abs(doc.findBlock(w.blockId)->transform.origin.x
-                      - (w0.x + 100.0)) < 1e-6,
-             "leader must be dragged along with the locked follower");
+    // 连接脆弱化（用户拍板 2026-09）: 仅拖动选中对象，未选中的母线不连带移动，连接直接断开
+    QCOMPARE(doc.attachments().size(), size_t(0));
+    QVERIFY2(std::abs(doc.findBlock(w.blockId)->transform.origin.x - w0.x) < 1e-6,
+             "unselected leader stays in place");
     QVERIFY2(std::abs(doc.findBlock(aux.blockId)->transform.origin.x
                       - (a0.x + 100.0)) < 1e-6,
              "follower moves by the drag delta");
-    // Still welded: the follower start stays glued to the leader start.
-    QVERIFY(doc.findBlock(aux.blockId)->worldPos(aux.startId)
-                .distanceTo(doc.findBlock(w.blockId)->worldPos(w.startId)) < 1e-6);
 }
 
 void TestAuxLayer::dragLeaderKeepsFollower()
@@ -1074,16 +1071,12 @@ void TestAuxLayer::dragLeaderKeepsFollower()
     sendMouse(QEvent::MouseMove, vp(195.0, 0.0), Qt::NoButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(195.0, 0.0), Qt::LeftButton,
               Qt::NoModifier);
-
-    // 方向感知拆除: dragging the LEADER keeps the connection alive and
-    // the follower tracks (old behaviour tore it apart → follower dropped).
-    // The connection is 拖动保护 locked by default, which also welds —
-    // the follower is dragged along and re-settled onto the leader start.
-    QCOMPARE(doc.attachments().size(), size_t(1));
-    QVERIFY(doc.findBlock(w2.blockId)->worldPos(w2.startId)
-                .distanceTo(doc.findBlock(w1.blockId)->worldPos(w1.startId)) < 1e-6);
+    // 连接脆弱化（用户拍板 2026-09）: 仅拖动选中的母线，未选中的子线不跟随移动，连接直接断开
+    QCOMPARE(doc.attachments().size(), size_t(0));
     QVERIFY2(std::abs(doc.findBlock(w1.blockId)->transform.origin.x - 120.0) < 1e-6,
              "leader moved by +120");
+    QVERIFY2(std::abs(doc.findBlock(w2.blockId)->transform.origin.x - 0.0) < 1e-6,
+             "unselected follower stays in place");
 }
 
 QTEST_MAIN(TestAuxLayer)

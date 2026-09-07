@@ -1,4 +1,4 @@
-﻿#include "SelectDragController.h"
+#include "SelectDragController.h"
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -19,12 +19,8 @@ void SelectDragController::begin(const cad::geo::Vec2& pos,
     m_startPos = pos;
     m_detachedAttachments.clear();
 
-    // Drag set = the confirmed selection (expanded by protected connections),
-    // then expanded to full rigid components (dragging any member moves the
-    // whole component — 刚体组件整体拖动).
-    const QSet<QUuid> dragSet =
-        m_paramDoc->componentsView().closure(
-            m_paramDoc->attachmentsView().lockedClosure(selection));
+    // 拖动集合严格等于当前选中对象集合（用户拍板 2026-09: 取消全部默认跟随，不通过 lockedClosure 扩充未选对象）
+    const QSet<QUuid> dragSet = selection;
     m_blockIds = dragSet.values();
     m_origins.clear();
     for (const QUuid& id : m_blockIds) {
@@ -32,19 +28,8 @@ void SelectDragController::begin(const cad::geo::Vec2& pos,
             m_origins.insert(id, b->transform.origin);
     }
 
-    // Auto-disconnect (方向感知拆除): only when the FOLLOWER itself is
-    // dragged away from its leader (fromIn && !toIn) is a connection torn
-    // apart — 拖跟随线 = 拆散 (门开着); dragging the LEADER keeps the
-    // follower attached so it follows (跟随线跟随, 不拆). 拖动保护
-    // (isLocked) attachments are welded: never detached by a drag.
-    // 注: **新建连接默认焊接** (用户拍板 2026-08 复旧) — 拖动保护默认勾选,
-    // 拖跟随线即整对移动不拆; 拆散 = D 键快拆 / 面板取消「拖动保护」, 或把
-    // 多线打包成组件 (componentClosure 整体移动)。已拆开 (angleOnly) 的连接
-    // 位置本就自由, 无需再拆。滑轨连接 (slideMode != None) 位置只留一轴
-    // 自由度, 拖动必须保持滑轨约束 (抽屉式滑动) —— 也不拆, 由 Resolver
-    // 每帧锁轴。
-    // 组件级连接 (整组跟随外部线): 拖动组件任一部分 → 拆散外部跟随线
-    // (与"拖 follower 拆散"语义一致 — 组件整体被拖走, 不再跟随外部线).
+    // 连接关系脆弱化（用户拍板 2026-09）:
+    // 当未选中对象和选中对象有连接时，拖动不跟随，而是直接断开。
     for (const auto& att : m_paramDoc->attachments()) {
         if (att.fromComponentId.isNull()) continue;
         const cad::param::Component* c = m_paramDoc->componentsView().byId(att.fromComponentId);
@@ -58,12 +43,17 @@ void SelectDragController::begin(const cad::geo::Vec2& pos,
         }
     }
     for (const auto& att : m_paramDoc->attachments()) {
-        if (att.isLocked || att.angleOnly
-            || att.slideMode != cad::param::SlideMode::None) continue;
         const bool fromIn = dragSet.contains(att.fromBlockId);
         const bool toIn   = dragSet.contains(att.toBlockId);
-        if (fromIn && !toIn)
-            m_detachedAttachments.append(att.id);
+        // 只要一端在选集中、另一端不在选集中（无论是母线被拖走还是子线被拖走），直接脆弱化断开
+        if ((fromIn && !toIn) || (!fromIn && toIn)) {
+            if (!m_detachedAttachments.contains(att.id)) {
+                m_detachedAttachments.append(att.id);
+            }
+            if (auto* childBlk = m_paramDoc->findBlock(att.fromBlockId)) {
+                childBlk->preservedBenchmarkAngle = att.followerAngle;
+            }
+        }
     }
 
     // 滑轨模式 (抽屉式滑动, 用户拍板 2026-08): slide attachments are kept
@@ -129,27 +119,23 @@ bool SelectDragController::tryReattachOnDragEnd(const cad::geo::Vec2& pos)
     const QUuid segId = leader ? leader->exitSegmentAtPoint(snap->pointId) : QUuid();
     if (segId.isNull()) return false;
 
+    const auto* curTo = m_paramDoc->blocksView().byId(att->toBlockId);
+    if (!curTo || !curTo->isShadow) {
+        return false;
+    }
+
     // 影子基准拓扑 (拆开影子基准, DETACH_SHADOW_DESIGN.md §7.4): 被拖拆的
     // 连接以影子为基准 (挂载态跟随线拖离影子) —— 挂回本体 = ⑤ 删影子+活引用;
     // 挂到其他线 = ③ 影子挂载链 (Att1 反算保向 + Att2 重新焊接)。
-    if (const auto* curTo = m_paramDoc->blocksView().byId(att->toBlockId);
-        curTo && curTo->isShadow) {
-        const bool toMaster = (snap->blockId == curTo->shadowMasterBlockId);
-        m_undoStack->beginMacro(QStringLiteral("重新挂接"));
-        if (toMaster) {
-            m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
-                m_paramDoc, att->id, /*angleOnly=*/false, snap->pointId, segId));
-        } else {
-            m_undoStack->push(new cad::cmd::ShadowMountCommand(
-                m_paramDoc, curTo->id, snap->blockId, snap->pointId, segId));
-        }
-        m_undoStack->endMacro();
-        return true;
-    }
-
+    const bool toMaster = (snap->blockId == curTo->shadowMasterBlockId);
     m_undoStack->beginMacro(QStringLiteral("重新挂接"));
-    m_undoStack->push(new cad::cmd::ReattachAttachmentCommand(
-        m_paramDoc, att->id, snap->blockId, snap->pointId, segId));
+    if (toMaster) {
+        m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+            m_paramDoc, att->id, /*angleOnly=*/false, snap->pointId, segId));
+    } else {
+        m_undoStack->push(new cad::cmd::ShadowMountCommand(
+            m_paramDoc, curTo->id, snap->blockId, snap->pointId, segId));
+    }
     m_undoStack->endMacro();
     return true;
 }
@@ -175,15 +161,8 @@ bool SelectDragController::end(const cad::geo::Vec2& pos, double zoom)
         m_undoStack->beginMacro(QStringLiteral(
             "\xe7\xa7\xbb\xe5\x8a\xa8 %1 \xe4\xb8\xaa\xe5\xaf\xb9\xe8\xb1\xa1").arg(m_blockIds.size()));
         for (const QUuid& attId : m_detachedAttachments) {
-            const cad::param::Attachment* att = m_paramDoc->attachmentsView().byId(attId);
-            if (att && !att->isPin && att->fromComponentId.isNull())
-                // 拆开保留角度 (用户拍板 2026-08): 只解除位置吸附, 角度跟随
-                // 保留; 桥 pin / 组件级连接 无角度语义, 仍走彻底删除.
-                m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
-                    m_paramDoc, attId, /*angleOnly=*/true));
-            else
-                m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(
-                    m_paramDoc, attId));
+            m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(
+                m_paramDoc, attId));
         }
         // 滑轨模式 (抽屉式滑动): 拖动沿滑轨走了 —— 自由轴坐标 old→new 与
         // 移动一起入栈 (undo 整体回到拖前滑轨位置).

@@ -1,4 +1,4 @@
-﻿#include "document/commands/BreakAnalysis.h"
+#include "document/commands/BreakAnalysis.h"
 
 #include <algorithm>
 #include <cmath>
@@ -171,9 +171,11 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
             st.worldAngleRad = block->transform.rotation
                              + std::atan2(st.curveTanAtBreak.y, st.curveTanAtBreak.x);
 
-        const double refOldRad =
-            block->transform.rotation + block->exitDirectionAtPoint(auxPtId, segId);
-        st.refDeltaRad = st.worldAngleRad - refOldRad;
+        const cad::geo::Vec2 origChord = endPt->resolvedPos - startPt->resolvedPos;
+        const double refBefore = block->transform.rotation + std::atan2(origChord.y, origChord.x);
+        const cad::geo::Vec2 frontChord = auxPt->resolvedPos - startPt->resolvedPos;
+        const double refAfter = block->transform.rotation + std::atan2(frontChord.y, frontChord.x);
+        st.refDeltaRad = cad::geo::normalizeRad(refAfter - refBefore);
         st.breakArc = split.s;
         st.auxArcValid = true;
 

@@ -1,4 +1,4 @@
-﻿#include "ParamDocument.h"
+#include "ParamDocument.h"
 
 #include <algorithm>
 #include <cmath>
@@ -628,6 +628,20 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
     double refWorld = to->transform.rotation
                     + to->exitDirectionAtPoint(att.toPointId, att.toSegmentId);
 
+    // 母线基准方向（用户拍板 2026-09）: 直接自动取母线端点1到端点2的世界直线向量
+    const Segment* toSeg = to->findSegment(att.toSegmentId);
+    if (toSeg) {
+        const ParamPoint* sp = to->findPoint(toSeg->startPointId);
+        const ParamPoint* ep = to->findPoint(toSeg->endPointId);
+        if (sp && ep && sp->resolved && ep->resolved) {
+            const geo::Vec2 w1 = to->transform.toWorld(sp->resolvedPos);
+            const geo::Vec2 w2 = to->transform.toWorld(ep->resolvedPos);
+            if (w1.distanceTo(w2) > 1e-6) {
+                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+            }
+        }
+    }
+
     if (!att.angleRefBlockId.isNull()) {
         const Block* ref = doc->findBlock(att.angleRefBlockId);
         if (ref) {
@@ -639,14 +653,7 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
                 if (p1 && p2 && p1->resolved && p2->resolved) {
                     const geo::Vec2 w1 = ref->transform.toWorld(p1->resolvedPos);
                     const geo::Vec2 w2 = ref2->transform.toWorld(p2->resolvedPos);
-                    refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
-                }
-            } else if (!att.angleRefPointId.isNull()) {
-                const ParamPoint* rp = ref->findPoint(att.angleRefPointId);
-                if (rp && rp->resolved) {
-                    refWorld = ref->transform.rotation
-                             + ref->exitDirectionAtPoint(
-                                   att.angleRefPointId, att.angleRefSegmentId);
+                    if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
                 }
             } else if (!att.angleRefSegmentId.isNull()) {
                 const Segment* refSeg = ref->findSegment(att.angleRefSegmentId);
@@ -654,9 +661,9 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
                     const ParamPoint* rsp = ref->findPoint(refSeg->startPointId);
                     const ParamPoint* rep = ref->findPoint(refSeg->endPointId);
                     if (rsp && rep && rsp->resolved && rep->resolved) {
-                        // 旧档/未选点: 保持历史行为, 用 start->end 世界方向。
-                        refWorld = ref->transform.rotation
-                                 + ref->directionAtPoint(refSeg->startPointId);
+                        const geo::Vec2 w1 = ref->transform.toWorld(rsp->resolvedPos);
+                        const geo::Vec2 w2 = ref->transform.toWorld(rep->resolvedPos);
+                        if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
                     }
                 }
             }

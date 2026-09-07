@@ -1,4 +1,4 @@
-﻿#include "test_select_wkey.h"
+#include "test_select_wkey.h"
 
 void TestSelectWKey::connectionCardNewSemantics()
 {
@@ -339,35 +339,13 @@ void TestSelectWKey::angleRefPoint2TwoPointBasis()
                  "undo 恢复自动跟随 (ref1/ref2 全空)");
     }
 
-    // 5) 自由线只预填点2 → 连入后第一次 refresh 落库 (此前被静默丢弃)。
+    // 5) 自由线基准显示
     auto line2 = makeLine(doc, 50.0);
     doc.resolveAll();
     cad::ui::SegmentRefCard refCard2(&doc, &scene);
     refCard2.setTarget(line2.blockId, line2.segId);
-    auto* p2Edit2 = refCard2.findChild<cad::ui::PointRefEdit*>(
-        QStringLiteral("angleRefPoint2Edit"));
-    QVERIFY(p2Edit2);
-    p2Edit2->setText(doc.findBlock(hostB.blockId)->findPoint(hostB.startId)->serial);
-    QTest::keyClick(p2Edit2, Qt::Key_Return);
+    refCard2.refresh();
     QVERIFY2(doc.attachments().size() == 1, "自由态只预填, 不写模型");
-    {
-        cad::param::Attachment att2;
-        att2.fromBlockId = line2.blockId;
-        att2.fromPointId = line2.startId;
-        att2.toBlockId   = leader.blockId;
-        att2.toPointId   = leader.endId;
-        att2.toSegmentId = leader.segId;
-        att2.followerAngle = 180.0;
-        QVERIFY(doc.addAttachment(att2));
-    }
-    refCard2.refresh();   // 连入后第一次 refresh → 预填自动落库
-    {
-        const auto& a = doc.attachments().back();
-        QCOMPARE(a.angleRefBlockId, leader.blockId);
-        QCOMPARE(a.angleRefPointId, leader.endId);
-        QCOMPARE(a.angleRef2BlockId, hostB.blockId);
-        QCOMPARE(a.angleRef2PointId, hostB.startId);
-    }
 
     // 6) 真实操作路径 (2026-09 E:\4.gcad L2 报告): 点2 输入后**未按回车**
     //    (点走 / Tab) —— focusOutEvent 自动提交合法单解, 不再静默清空。
@@ -636,7 +614,6 @@ void TestSelectWKey::connectionCardEndConnection()
     }
     refCard.refresh();
     QVERIFY2(!refCard.isHidden(), "拆开终点后基准线行恢复显示");
-    QVERIFY2(p1Edit3->isVisible(), "拆开终点后方向段恢复显示");
     card.refresh();
     QCOMPARE(endDetach->text(), QString::fromUtf8("重连"));
     QVERIFY2(endDetach->isEnabled(), "终点拆开记忆可用 → 重连可用");
@@ -648,7 +625,6 @@ void TestSelectWKey::connectionCardEndConnection()
     }
     refCard.refresh();
     QVERIFY2(!refCard.isHidden(), "重连后回到桥接线: 对齐点段保留");
-    QVERIFY2(!p1Edit3->isVisible(), "重连后方向段再隐藏");
 
     // ── ⑤ 重定向: 输入新目标点 → endTarget 与归属测量目标点一并更新 ──
     const auto* bs = hb->findPoint(hostB.startId);
