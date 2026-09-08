@@ -8,6 +8,7 @@
 #include "parametric/Serial.h"
 #include "geometry/Angle.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -79,7 +80,7 @@ ConnectEndCommand::ConnectEndCommand(cad::param::ParamDocument* doc,
     , m_offsetDeg(offsetDeg)
     , m_bridgeLand(bridgeLand)
 {
-    setText(QStringLiteral("终点连接"));
+    setText(cad::cmd::texts::kEndConnect);
     if (const auto* b = doc->findBlock(blockId)) {
         m_oldBlock = b->endTargetBlockId;
         m_oldPoint = b->endTargetPointId;
@@ -201,7 +202,7 @@ AddAuxPointCommand::AddAuxPointCommand(cad::param::ParamDocument* doc,
     , m_segmentId(segmentId)
     , m_pt(std::move(pt))
 {
-    setText(QStringLiteral("新建辅助点"));
+    setText(cad::cmd::texts::kNewAuxPoint);
 }
 
 void AddAuxPointCommand::redo()
@@ -322,7 +323,7 @@ RemovePlacedPointCommand::RemovePlacedPointCommand(cad::param::ParamDocument* do
     , m_doc(doc)
     , m_blockId(blockId)
 {
-    setText(QStringLiteral("删除放置点"));
+    setText(cad::cmd::texts::kDeletePlacedPoint);
     if (!m_doc) return;
     auto* blk = m_doc->findBlock(blockId);
     if (!blk) return;

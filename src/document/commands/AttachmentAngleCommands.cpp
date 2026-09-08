@@ -3,6 +3,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/FollowerAngle.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -155,7 +156,7 @@ ReattachAttachmentCommand::ReattachAttachmentCommand(
     , m_newToPointId(newToPointId)
     , m_newToSegmentId(newToSegmentId)
 {
-    setText(QStringLiteral("重新挂接"));
+    setText(cad::cmd::texts::kReattach);
     for (const auto& a : doc->attachments()) {
         if (a.id == attId) {
             m_oldAtt = a;

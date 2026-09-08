@@ -9,6 +9,7 @@
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
 #include "geometry/CurveSplitter.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::cmd {
 
@@ -38,7 +39,7 @@ bool canBreak(const cad::param::Block& block,
         if (pt.hostSegmentId != seg.id)
             return false;
         // Must have no perpendicular offset (point lies exactly on the segment).
-        if (std::abs(pt.interpOffsetDist) > 1e-9)
+        if (std::abs(pt.interpOffsetDist) > cad::geo::kGeomEps)
             return false;
         if (!pt.interpOffsetDistFormula.isEmpty())
             return false;
@@ -70,7 +71,7 @@ BreakMode determineBreakMode(const cad::param::Block& block,
                 && ref && ref->isAuxiliary
                 && !pt.interpFromEnd
                 && pt.interpPercentFormula.isEmpty()
-                && std::abs(pt.interpPercent) < 1e-9)
+                && std::abs(pt.interpPercent) < cad::geo::kGeomEps)
                 return BreakMode::RefChain;
             // Unsafe offset shape: the position is not expressible as a
             // linear split — freeze.
@@ -103,11 +104,11 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     if (!startPt || !endPt || !startPt->resolved || !endPt->resolved) return false;
 
     st.segLenMm = startPt->resolvedPos.distanceTo(endPt->resolvedPos);
-    if (st.segLenMm < 1e-9) return false;  // degenerate segment
+    if (st.segLenMm < cad::geo::kGeomEps) return false;  // degenerate segment
 
     // Local direction angle of the original segment (degrees).
     const cad::geo::Vec2 localDir = endPt->resolvedPos - startPt->resolvedPos;
-    st.localAngleDeg = std::atan2(localDir.y, localDir.x) * 180.0 / M_PI;
+    st.localAngleDeg = cad::geo::radToDeg(std::atan2(localDir.y, localDir.x));
 
     // World direction for the new block's rotation.
     st.worldAngleRad = block->transform.rotation
@@ -129,7 +130,7 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     st.curveFrontDist = startPt->resolvedPos.distanceTo(auxPt->resolvedPos);
     st.curveBackDist = auxPt->resolvedPos.distanceTo(endPt->resolvedPos);
     const cad::geo::Vec2 sb = auxPt->resolvedPos - startPt->resolvedPos;
-    st.curveBreakPolarAngleDeg = std::atan2(sb.y, sb.x) * 180.0 / M_PI;
+    st.curveBreakPolarAngleDeg = cad::geo::radToDeg(std::atan2(sb.y, sb.x));
     // Build the full curve (all points: start + passPoints + end), keeping
     // the point IDs in parallel so we can freeze each point's tangent.
     std::vector<QUuid> cIds;
@@ -167,7 +168,7 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     auto split = cad::geo::splitCurveAtPoint(auxPt->resolvedPos, spans);
     if (split.valid) {
         st.curveTanAtBreak = split.tangentAtBreak;
-        if (st.curveTanAtBreak.lengthSquared() > 1e-12)
+        if (st.curveTanAtBreak.lengthSquared() > cad::geo::kGeomEpsTight)
             st.worldAngleRad = block->transform.rotation
                              + std::atan2(st.curveTanAtBreak.y, st.curveTanAtBreak.x);
 
@@ -217,7 +218,7 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
             st.frontPassIds.push_back(ppId);
         } else {
             cad::param::ParamPoint moved = *pp;
-            if (backChordLen > 1e-9) {
+            if (backChordLen > cad::geo::kGeomEps) {
                 const cad::geo::Vec2 bUnit = backChord / backChordLen;
                 const cad::geo::Vec2 bNormal{-bUnit.y, bUnit.x};
                 const cad::geo::Vec2 rel = pp->resolvedPos - auxPt->resolvedPos;
@@ -235,12 +236,12 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     }
 
     // Compute back endpoint angle in back-local coords.
-    if (backChordLen > 1e-9 && st.curveTanAtBreak.lengthSquared() > 1e-12) {
+    if (backChordLen > cad::geo::kGeomEps && st.curveTanAtBreak.lengthSquared() > cad::geo::kGeomEpsTight) {
         const cad::geo::Vec2 localRel = endPt->resolvedPos - auxPt->resolvedPos;
         const double localRelAngle = std::atan2(localRel.y, localRel.x);
         const double relAngleFromTan = localRelAngle
             - std::atan2(st.curveTanAtBreak.y, st.curveTanAtBreak.x);
-        st.backEndLocalAngle = relAngleFromTan * 180.0 / M_PI;
+        st.backEndLocalAngle = cad::geo::radToDeg(relAngleFromTan);
     }
     return true;
 }

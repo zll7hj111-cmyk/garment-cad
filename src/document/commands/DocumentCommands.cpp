@@ -6,6 +6,8 @@
 #include <cmath>
 
 #include "parametric/ParamDocument.h"
+#include "geometry/Epsilon.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -93,7 +95,7 @@ BakeMeasureCopyCommand::BakeMeasureCopyCommand(cad::param::ParamDocument* doc,
     : QUndoCommand(parent)
     , m_doc(doc)
 {
-    setText(QStringLiteral("烘焙到操作层"));
+    setText(cad::cmd::texts::kBakeToOperationLayer);
 
     if (!doc) return;
     // The target must be an existing WORKING layer (baking into the aux
@@ -116,7 +118,7 @@ BakeMeasureCopyCommand::BakeMeasureCopyCommand(cad::param::ParamDocument* doc,
     const cad::geo::Vec2 startWorld = src->transform.toWorld(pSp->resolvedPos);
     const cad::geo::Vec2 endWorld   = src->transform.toWorld(pEp->resolvedPos);
     const cad::geo::Vec2 delta = endWorld - startWorld;
-    if (delta.lengthSquared() < 1e-10) return;
+    if (delta.lengthSquared() < cad::geo::kGeomEpsUltra) return;
 
     // Free line on the target layer, same block-building pattern as
     // ToolSmartPen::createBridgeLine — but with NO attachment, NO endTarget

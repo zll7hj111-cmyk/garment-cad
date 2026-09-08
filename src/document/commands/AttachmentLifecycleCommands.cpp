@@ -5,6 +5,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/FollowerAngle.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -42,7 +43,7 @@ RemoveAttachmentCommand::RemoveAttachmentCommand(cad::param::ParamDocument* doc,
     : QUndoCommand(parent)
     , m_doc(doc)
 {
-    setText(QStringLiteral("断开连接"));
+    setText(cad::cmd::texts::kDisconnect);
 
     for (const auto& a : doc->attachments()) {
         if (a.id == attId) { m_att = a; break; }
@@ -199,8 +200,7 @@ void SetAttachmentAngleOnlyCommand::redo()
             cad::param::RawModelAccess::addBlockRaw(*m_doc, m_shadow);
         if (auto* a = m_doc->findAttachment(m_attId))
             *a = m_newAtt;
-        m_doc->resolveAll();
-        emit m_doc->structureChanged();
+        m_doc->commitRawChange();
         return;
     }
     case Mode::ReDetach: {
@@ -229,16 +229,14 @@ void SetAttachmentAngleOnlyCommand::redo()
             a->isLocked = true;
             a->slideMode = cad::param::SlideMode::None;
         }
-        m_doc->resolveAll();
-        emit m_doc->structureChanged();
+        m_doc->commitRawChange();
         return;
     }
     case Mode::ReconnectMaster: {
         if (auto* a = m_doc->findAttachment(m_attId))
             *a = m_newAtt;
         m_doc->removeBlock(m_shadow.id);
-        m_doc->resolveAll();
-        emit m_doc->structureChanged();
+        m_doc->commitRawChange();
         return;
     }
     case Mode::Legacy:
@@ -264,8 +262,7 @@ void SetAttachmentAngleOnlyCommand::undo()
         if (auto* a = m_doc->findAttachment(m_attId))
             *a = m_oldAtt;
         m_doc->removeBlock(m_shadow.id);
-        m_doc->resolveAll();
-        emit m_doc->structureChanged();
+        m_doc->commitRawChange();
         return;
     }
     case Mode::ReDetach: {
@@ -278,8 +275,7 @@ void SetAttachmentAngleOnlyCommand::undo()
         }
         if (m_hasAtt1)
             cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_oldAtt1);
-        m_doc->resolveAll();
-        emit m_doc->structureChanged();
+        m_doc->commitRawChange();
         return;
     }
     case Mode::ReconnectMounted: {
@@ -287,8 +283,7 @@ void SetAttachmentAngleOnlyCommand::undo()
             m_doc->removeAttachment(m_newAtt1.id);
         if (auto* a = m_doc->findAttachment(m_attId))
             *a = m_oldAtt;
-        m_doc->resolveAll();
-        emit m_doc->structureChanged();
+        m_doc->commitRawChange();
         return;
     }
     case Mode::ReconnectMaster: {
@@ -298,8 +293,7 @@ void SetAttachmentAngleOnlyCommand::undo()
             cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_oldAtt1);
         if (auto* a = m_doc->findAttachment(m_attId))
             *a = m_oldAtt;
-        m_doc->resolveAll();
-        emit m_doc->structureChanged();
+        m_doc->commitRawChange();
         return;
     }
     case Mode::Legacy:

@@ -82,14 +82,18 @@ private:
         double interpOffsetDist = 0.0;
     };
 
-    /// v2: 连接补偿快照 (跟随角 +180·k / 旧档角度基准点回填 oldEnd)。
+    /// v2: 连接补偿快照 (跟随角 +180·k / 旧档角度基准点回填 oldEnd / 宿主母线两点固化)。
     struct AttachmentSnapshot {
         QUuid attId;
         bool compensateAngle = false;  ///< k 为奇数且角度被驱动 → followerAngle +180
         bool backfill = false;         ///< 旧档空角度基准点 → 回填旧终点 id
+        bool isLeaderBackfill = false; ///< 宿主母线换向 → 固化两点基准 (保方向不翻转)
         double followerAngle = 0.0;
         QString followerAngleFormula;
-        QUuid angleRefPointId;         ///< 原值 (可能为空, undo 恢复空 = 旧档语义)
+        QUuid angleRefBlockId;
+        QUuid angleRefPointId;         ///< 原值 (可能为空, undo 恢复)
+        QUuid angleRef2BlockId;
+        QUuid angleRef2PointId;
     };
 
     void applyState(bool reversed);

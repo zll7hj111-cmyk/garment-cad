@@ -7,6 +7,8 @@
 #include "parametric/Serial.h"
 #include "parametric/ParamDocumentRaw.h"
 
+#include "document/commands/CascadeSnapshot.h"
+
 namespace cad::cmd {
 
 // ─── AddBlockCommand ───
@@ -98,26 +100,7 @@ RemoveBlockCommand::RemoveBlockCommand(cad::param::ParamDocument* doc,
     // Linked variables sourced from the cascade set are auto-deleted with the
     // block, and their exact-match consumers (length-linked copies) get baked
     // to plain numbers (长度固化为数值). Snapshot both for undo.
-    for (const QUuid& srcId : cascade) {
-        for (const auto& lv : doc->linkedVars())
-            if (lv.sourceBlockId == srcId)
-                m_linked.push_back(lv);
-        for (const QUuid& cid : doc->linkedConsumerBlocks(srcId)) {
-            if (cascade.contains(cid)) continue;   // removed & restored anyway
-            const bool taken = std::any_of(
-                m_bakedConsumers.begin(), m_bakedConsumers.end(),
-                [&cid](const cad::param::Block& b) { return b.id == cid; });
-            if (taken) continue;
-            if (const auto* cb = doc->findBlock(cid))
-                m_bakedConsumers.push_back(*cb);
-        }
-        // Measure variables referencing the cascade set (as an endpoint OR as
-        // their owner bridge line) are auto-deleted by removeBlock(); snapshot
-        // for undo restore.
-        for (const auto& mv : doc->measureVars())
-            if (mv.blockA == srcId || mv.blockB == srcId || mv.ownerBlockId == srcId)
-                m_measures.push_back(mv);
-    }
+    collectCascadeDependents(*doc, cascade, m_linked, m_bakedConsumers, m_measures);
 }
 
 void RemoveBlockCommand::redo()

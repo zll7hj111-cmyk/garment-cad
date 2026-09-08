@@ -2,6 +2,7 @@
 
 #include "parametric/ParamDocument.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -25,7 +26,7 @@ RemoveVariableCommand::RemoveVariableCommand(cad::param::ParamDocument* doc,
                                              QUndoCommand* parent)
     : QUndoCommand(parent), m_doc(doc)
 {
-    setText(QStringLiteral("删除变量"));
+    setText(cad::cmd::texts::kDeleteVariable);
     if (auto* v = doc->findVariable(varId))
         m_var = *v;
 }
@@ -156,7 +157,7 @@ AddFormulaGroupCommand::AddFormulaGroupCommand(cad::param::ParamDocument* doc,
                                                QUndoCommand* parent)
     : QUndoCommand(parent), m_doc(doc), m_group(std::move(group))
 {
-    setText(QStringLiteral("新建分组"));
+    setText(cad::cmd::texts::kNewGroup);
 }
 
 void AddFormulaGroupCommand::redo() { m_doc->addFormulaGroup(m_group); }
@@ -169,7 +170,7 @@ RemoveFormulaGroupCommand::RemoveFormulaGroupCommand(cad::param::ParamDocument* 
                                                      QUndoCommand* parent)
     : QUndoCommand(parent), m_doc(doc)
 {
-    setText(QStringLiteral("解散分组"));
+    setText(cad::cmd::texts::kDissolveGroup);
     const auto& groups = doc->formulaGroups();
     for (int i = 0; i < static_cast<int>(groups.size()); ++i) {
         if (groups[i].id == groupId) {
@@ -257,7 +258,7 @@ AddLinkedCommand::AddLinkedCommand(cad::param::ParamDocument* doc,
                                    QUndoCommand* parent)
     : QUndoCommand(parent), m_doc(doc), m_lv(std::move(lv))
 {
-    setText(QStringLiteral("发布关联参数"));
+    setText(cad::cmd::texts::kPublishLinkedVar);
 }
 
 void AddLinkedCommand::redo() { m_doc->addLinked(m_lv); }
@@ -270,7 +271,7 @@ RemoveLinkedCommand::RemoveLinkedCommand(cad::param::ParamDocument* doc,
                                          QUndoCommand* parent)
     : QUndoCommand(parent), m_doc(doc)
 {
-    setText(QStringLiteral("删除关联参数"));
+    setText(cad::cmd::texts::kDeleteLinkedVar);
     if (auto* lv = doc->findLinked(linkedId))
         m_lv = *lv;
 }
@@ -326,7 +327,7 @@ RemoveMeasureCommand::RemoveMeasureCommand(cad::param::ParamDocument* doc,
                                            QUndoCommand* parent)
     : QUndoCommand(parent), m_doc(doc)
 {
-    setText(QStringLiteral("删除测量变量"));
+    setText(cad::cmd::texts::kDeleteMeasureVar);
     if (auto* mv = doc->findMeasure(measureId))
         m_mv = *mv;
 }
@@ -356,7 +357,7 @@ RemoveAngleMeasureCommand::RemoveAngleMeasureCommand(cad::param::ParamDocument* 
                                                      QUndoCommand* parent)
     : QUndoCommand(parent), m_doc(doc)
 {
-    setText(QStringLiteral("删除角度测量变量"));
+    setText(cad::cmd::texts::kDeleteAngleMeasureVar);
     if (auto* am = doc->findAngleMeasure(angleId))
         m_am = *am;
 }

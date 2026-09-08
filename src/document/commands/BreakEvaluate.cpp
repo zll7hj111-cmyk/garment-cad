@@ -9,6 +9,7 @@
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
 #include "geometry/CurveSplitter.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::cmd {
 
@@ -59,7 +60,7 @@ void evaluateBreakPosition(cad::param::ParamDocument& doc, const QUuid& blockId,
         const cad::geo::Vec2 refRel = refPt->resolvedPos - startPt->resolvedPos;
         double offsetMm = auxPt->interpConstant;
         cad::param::ConditionEngine::evaluateLengthMm(auxPt->interpConstantFormula, params, conditioned, offsetMm, &ctx);
-        if (offsetMm < -1e-9 || refRel.dot(unit) > st.breakAlong + 1e-6) {
+        if (offsetMm < -cad::geo::kGeomEps || refRel.dot(unit) > st.breakAlong + cad::geo::kGeomEpsLoose) {
             st.polarRefId = QUuid();  // marker: no anchor, numeric freeze below
         } else {
             st.polarRefId = refPt->id;
@@ -95,7 +96,7 @@ void evaluateBreakPosition(cad::param::ParamDocument& doc, const QUuid& blockId,
         QString constantText;
         bool hasConstant = false;
         if (auxPt->interpConstantFormula.isEmpty()) {
-            if (std::abs(constantMm) > 1e-9) {
+            if (std::abs(constantMm) > cad::geo::kGeomEps) {
                 hasConstant = true;
                 constantText = QString::number(
                     cad::geo::Units::mmToCm(constantMm), 'g', 15);
@@ -168,7 +169,7 @@ void redistributeAuxPoints(cad::param::ParamDocument& doc, const QUuid& blockId,
                 cad::param::ParamPoint moved = *otherAux;
                 const double relAlong = haveAlong ? (otherAlong - st.breakArc) : 0.0;
                 const double backLenMm = st.curveBackDist;
-                moved.interpPercent = (backLenMm > 1e-9)
+                moved.interpPercent = (backLenMm > cad::geo::kGeomEps)
                     ? std::clamp(relAlong / backLenMm, -100.0, 100.0) : 0.0;
                 moved.interpPercentFormula.clear();  // numeric
                 moved.interpConstant = 0.0;
@@ -190,7 +191,7 @@ void redistributeAuxPoints(cad::param::ParamDocument& doc, const QUuid& blockId,
         } else {
             cad::param::ParamPoint moved = *otherAux;
             const double relAlong = otherAlong - st.breakAlong;
-            moved.interpPercent = (st.backDistMm > 1e-9)
+            moved.interpPercent = (st.backDistMm > cad::geo::kGeomEps)
                 ? relAlong / st.backDistMm : 0.0;
             moved.interpPercentFormula.clear();  // numeric for V1
             moved.interpConstant = 0.0;

@@ -11,7 +11,9 @@
 #include <QColor>
 #include <QStringList>
 
+#include "document/SchemaKeys.h"
 #include "parametric/ParamDocument.h"
+#include "parametric/LayerRegistry.h"
 #include "parametric/Block.h"
 #include "parametric/ParamPoint.h"
 #include "parametric/Segment.h"
@@ -337,8 +339,8 @@ Segment segmentFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     s.extendEndMm = o["extendEndMm"].toDouble(0.0);
     s.extendEndFormula = o["extendEndFormula"].toString();
     s.lineStyle = lineStyleFrom(o["lineStyle"].toString(), &recStyle);
-    s.color = QColor(o["color"].toString("#1e1e1e"));  // color-allow: 磁盘旧档缺省线色回退（数据契约，非样式）
-    s.weight = o["weight"].toDouble(1.2);
+    s.color = QColor(o["color"].toString(QLatin1String(kDefaultSegmentColorHex)));  // 磁盘旧档缺省线色回退（数据契约，非样式）
+    s.weight = o["weight"].toDouble(kDefaultSegmentWeight);
     s.visible = o["visible"].toBool(true);
     s.showName = o["showName"].toBool();
     s.showLength = o["showLength"].toBool();
@@ -378,7 +380,7 @@ QJsonObject blockJson(const Block& b) {
         {"shadowLastHostBlockId", uuidStr(b.shadowLastHostBlockId)},
         {"shadowLastHostPointId", uuidStr(b.shadowLastHostPointId)},
         {"shadowLastHostSegmentId", uuidStr(b.shadowLastHostSegmentId)},
-        {"layer", uuidStr(b.layer)},
+        {schema::kLayer, uuidStr(b.layer)},
         {"endTargetBlockId", uuidStr(b.endTargetBlockId)},
         {"endTargetPointId", uuidStr(b.endTargetPointId)},
         {"endTargetOffset", b.endTargetOffset},
@@ -407,7 +409,7 @@ Block blockFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     // a v0 (pre-id) shape and are rewritten by FormatMigration::migrateV0ToV1
     // before this function ever runs — anything non-string here is corruption
     // and degrades to a null id (caller: first working layer).
-    b.layer = uuidFrom(o["layer"].toString());   // Missing/empty = null id.
+    b.layer = uuidFrom(o[schema::kLayer].toString());   // Missing/empty = null id.
     b.endTargetBlockId = uuidFrom(o["endTargetBlockId"].toString());
     b.endTargetPointId = uuidFrom(o["endTargetPointId"].toString());
     b.endTargetOffset = o["endTargetOffset"].toDouble();
@@ -605,22 +607,22 @@ FormulaGroup formulaGroupFrom(const QJsonObject& o) {
 // ─── Layer ───
 QJsonObject layerJson(const Layer& l) {
     return {
-        {"id", uuidStr(l.id)},
-        {"name", l.name},
-        {"visible", l.visible},
-        {"type", l.type == LayerType::Auxiliary ? "auxiliary" : "working"},
+        {schema::kId, uuidStr(l.id)},
+        {schema::kName, l.name},
+        {schema::kVisible, l.visible},
+        {schema::kType, l.type == LayerType::Auxiliary ? schema::kTypeAuxiliary : schema::kTypeWorking},
     };
 }
 Layer layerFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     Layer l;
     // Files without per-layer ids (pre-id format) keep the generated id —
     // block layer references are remapped index→id by the caller.
-    const QUuid fileId = uuidFrom(o["id"].toString());
+    const QUuid fileId = uuidFrom(o[schema::kId].toString());
     if (!fileId.isNull())
         l.id = fileId;
-    l.name = o["name"].toString();
-    l.visible = o["visible"].toBool(true);
-    const QString typeStr = o["type"].toString();
+    l.name = o[schema::kName].toString();
+    l.visible = o[schema::kVisible].toBool(true);
+    const QString typeStr = o[schema::kType].toString();
     l.type = (typeStr == QLatin1String("auxiliary"))
                  ? LayerType::Auxiliary : LayerType::Working;
     // Unknown layer types silently become WORKING layers (sealed aux semantics
@@ -755,16 +757,15 @@ QJsonObject DocumentSerializer::serialize(const ParamDocument& doc)
 
     // Blocks
     QJsonArray blocksArr;
-    for (const auto& b : doc.blocks())
-        blocksArr.append(blockJson(b));
-    docObj["blocks"] = blocksArr;
+    for (const auto& b : doc.blocks()) blocksArr.append(blockJson(b));
+    docObj[schema::kBlocks] = blocksArr;
 
     // Canvas layers
     QJsonArray layersArr;
     for (const auto& l : doc.layers())
         layersArr.append(layerJson(l));
-    docObj["layers"] = layersArr;
-    docObj["activeLayer"] = uuidStr(doc.activeLayer());
+    docObj[schema::kLayers] = layersArr;
+    docObj[schema::kActiveLayer] = uuidStr(doc.activeLayer());
 
     // Free points
     QJsonArray fpArr;
@@ -774,9 +775,8 @@ QJsonObject DocumentSerializer::serialize(const ParamDocument& doc)
 
     // Attachments
     QJsonArray attArr;
-    for (const auto& a : doc.attachments())
-        attArr.append(attachmentJson(a));
-    docObj["attachments"] = attArr;
+    for (const auto& a : doc.attachments()) attArr.append(attachmentJson(a));
+    docObj[schema::kAttachments] = attArr;
 
     // Components (组件: rigid work groups)
     QJsonArray compArr;
@@ -793,7 +793,7 @@ QJsonObject DocumentSerializer::serialize(const ParamDocument& doc)
     QJsonArray varsArr;
     for (const auto& v : doc.variables())
         varsArr.append(variableJson(v));
-    varObj["variables"] = varsArr;
+    varObj[schema::kVariables] = varsArr;
 
     QJsonArray formulasArr;
     for (const auto& f : doc.formulas())
@@ -820,7 +820,7 @@ QJsonObject DocumentSerializer::serialize(const ParamDocument& doc)
         angleArr.append(angleMeasureJson(am));
     varObj["angleMeasures"] = angleArr;
 
-    return {{"document", docObj}, {"variables", varObj}};
+    return {{schema::kDocument, docObj}, {schema::kVariables, varObj}};
 }
 
 void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root,
@@ -828,8 +828,8 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
 {
     doc.clear();
 
-    const QJsonObject docObj = root["document"].toObject();
-    const QJsonObject varObj = root["variables"].toObject();
+    const QJsonObject docObj = root[schema::kDocument].toObject();
+    const QJsonObject varObj = root[schema::kVariables].toObject();
 
     // Serial counters
     doc.setSerialCounters(
@@ -849,13 +849,13 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
     // direct API callers that never went through DocumentFile): missing or
     // nonsensical structure degrades to the documented safe default instead
     // of being silently reinterpreted as history.
-    if (docObj.contains(QStringLiteral("layers"))) {
+    if (docObj.contains(schema::kLayers)) {
         std::vector<Layer> restored;
-        for (const auto& v : docObj["layers"].toArray())
+        for (const auto& v : docObj[schema::kLayers].toArray())
             restored.push_back(layerFrom(v.toObject(), warnings));
         if (restored.empty()) {
             Layer fallback;
-            fallback.name = QStringLiteral("图层 1");
+            fallback.name = cad::param::LayerRegistry::kDefaultWorkingLayerName;
             restored.push_back(std::move(fallback));
         }
         // Model invariant (NOT history): exactly one auxiliary layer, at index
@@ -874,7 +874,7 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
             if (l.type == LayerType::Auxiliary) { hasAux = true; break; }
         if (!hasAux) {
             Layer aux;
-            aux.name = QStringLiteral("辅助层");
+            aux.name = cad::param::LayerRegistry::kDefaultAuxLayerName;
             aux.type = LayerType::Auxiliary;
             restored.insert(restored.begin(), std::move(aux));
         }
@@ -885,13 +885,13 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
     // Active layer: a stable id string. Anything unresolvable (missing field,
     // stale id) falls back to the first working layer — never the auxiliary
     // one, which is not a drafting target.
-    const QUuid activeId = uuidFrom(docObj["activeLayer"].toString());
+    const QUuid activeId = uuidFrom(docObj[schema::kActiveLayer].toString());
     doc.setActiveLayer(doc.layersView().layerIndex(activeId) >= 0 ? activeId
                                                      : doc.layersView().firstWorkingLayerId());
 
     // Blocks (raw, no resolve). Layer references are stable id strings; the
     // "unknown or missing" validation right below owns every other case.
-    for (const auto& v : docObj["blocks"].toArray())
+    for (const auto& v : docObj[schema::kBlocks].toArray())
         cad::param::RawModelAccess::addBlockRaw(doc, blockFrom(v.toObject(), warnings));
 
     // Validate block layer refs: unknown ids (corrupt file / stale legacy
@@ -941,7 +941,7 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
         cad::param::RawModelAccess::addFreePointRaw(doc, pointFrom(v.toObject(), warnings));
 
     // Attachments (raw, no resolve)
-    for (const auto& v : docObj["attachments"].toArray())
+    for (const auto& v : docObj[schema::kAttachments].toArray())
         cad::param::RawModelAccess::addAttachmentRaw(doc, attachmentFrom(v.toObject()));
 
     // Components (raw restore — offsets trusted verbatim; blocks already added)
@@ -949,7 +949,7 @@ void DocumentSerializer::deserialize(ParamDocument& doc, const QJsonObject& root
         cad::param::RawModelAccess::restoreComponentRaw(doc, componentFrom(v.toObject()));
 
     // Variables
-    for (const auto& v : varObj["variables"].toArray())
+    for (const auto& v : varObj[schema::kVariables].toArray())
         cad::param::RawModelAccess::restoreVariableRaw(doc, variableFrom(v.toObject()));
 
     // Formula groups (restore before formulas so membership can be validated)

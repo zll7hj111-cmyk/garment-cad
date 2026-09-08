@@ -10,6 +10,7 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::cmd {
 
@@ -121,10 +122,10 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
             pp.hostSegmentId = st.backSegId;
             const cad::geo::Vec2 tI = backLocalTan(pp.id, true);
             const cad::geo::Vec2 tO = backLocalTan(pp.id, false);
-            if (tI.lengthSquared() > 1e-12 || tO.lengthSquared() > 1e-12) {
+            if (tI.lengthSquared() > cad::geo::kGeomEpsTight || tO.lengthSquared() > cad::geo::kGeomEpsTight) {
                 pp.autoTangent = false;
-                pp.tangentIn = tI.lengthSquared() > 1e-12 ? tI : tO;
-                pp.tangentOut = tO.lengthSquared() > 1e-12 ? tO : tI;
+                pp.tangentIn = tI.lengthSquared() > cad::geo::kGeomEpsTight ? tI : tO;
+                pp.tangentOut = tO.lengthSquared() > cad::geo::kGeomEpsTight ? tO : tI;
                 pp.tangentLocked = true;
             }
             backSeg.passPointIds.push_back(pp.id);
@@ -146,7 +147,7 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
             const cad::geo::Vec2 midTan = cad::geo::evalBezierDerivative(bSpan, 0.5) / 2.0;
             const cad::geo::Vec2 mChord = be->resolvedPos - bs->resolvedPos;
             const double mLen = mChord.length();
-            if (mLen > 1e-9) {
+            if (mLen > cad::geo::kGeomEps) {
                 const cad::geo::Vec2 mUnit = mChord / mLen;
                 const cad::geo::Vec2 mNormal{-mUnit.y, mUnit.x};
                 const cad::geo::Vec2 mRel = midPos - bs->resolvedPos;
@@ -201,13 +202,13 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
     kept.reserve(removedAttachments.size());
     for (cad::param::Attachment att : removedAttachments) {
         if (att.toPointId == frontAuxPtId) {
-            if (std::abs(st.refDeltaRad) > 1e-9) {
+            if (std::abs(st.refDeltaRad) > cad::geo::kGeomEps) {
                 if (att.rotationMode == cad::param::RotationMode::ArcLength) {
                     if (att.arcLengthFormula.isEmpty()) {
                         if (const auto* fb = doc.findBlock(att.fromBlockId)) {
                             const double radius =
                                 fb->segmentLengthAtPoint(att.fromPointId);
-                            if (radius > 1e-9)
+                            if (radius > cad::geo::kGeomEps)
                                 att.arcLength += st.refDeltaRad * radius;
                         }
                     }
@@ -216,15 +217,15 @@ void finalizeBreak(cad::param::ParamDocument& doc, BreakState& st,
                         if (const auto* fb = doc.findBlock(att.fromBlockId)) {
                             const double radius =
                                 fb->segmentLengthAtPoint(att.fromPointId);
-                            if (radius > 1e-9) {
+                            if (radius > cad::geo::kGeomEps) {
                                 double deg = cad::geo::chordMmToDeg(att.chordLength, radius);
-                                deg = cad::geo::normalizeDeg180(deg + st.refDeltaRad * 180.0 / M_PI);
+                                deg = cad::geo::normalizeDeg180(deg + cad::geo::radToDeg(st.refDeltaRad));
                                 att.chordLength = cad::geo::degToChordMm(deg, radius);
                             }
                         }
                     }
                 } else if (att.followerAngleFormula.isEmpty()) {
-                    double ang = att.followerAngle + st.refDeltaRad * 180.0 / M_PI;
+                    double ang = att.followerAngle + cad::geo::radToDeg(st.refDeltaRad);
                     ang = cad::geo::normalizeDeg360(ang);
                     att.followerAngle = ang;
                 }

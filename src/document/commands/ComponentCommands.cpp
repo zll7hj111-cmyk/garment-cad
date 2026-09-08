@@ -9,6 +9,9 @@
 #include "geometry/Angle.h"
 #include "parametric/ParamDocumentRaw.h"
 
+#include "document/commands/CascadeSnapshot.h"
+#include "document/CommandTexts.h"
+
 namespace cad::cmd {
 
 // ─── MakeComponentCommand ───
@@ -55,7 +58,7 @@ DissolveComponentCommand::DissolveComponentCommand(cad::param::ParamDocument* do
     : QUndoCommand(parent)
     , m_doc(doc)
 {
-    setText(QStringLiteral("解散组件"));
+    setText(cad::cmd::texts::kDissolveComponent);
     if (const auto* c = doc->componentsView().byId(componentId))
         m_component = *c;
 }
@@ -78,7 +81,7 @@ DeleteComponentCommand::DeleteComponentCommand(cad::param::ParamDocument* doc,
     : QUndoCommand(parent)
     , m_doc(doc)
 {
-    setText(QStringLiteral("删除组件"));
+    setText(cad::cmd::texts::kDeleteComponent);
     const cad::param::Component* c = doc->componentsView().byId(componentId);
     if (!c) return;
     m_component = *c;
@@ -114,23 +117,7 @@ DeleteComponentCommand::DeleteComponentCommand(cad::param::ParamDocument* doc,
 
     // Linked variables sourced from any cascade block, their baked consumers,
     // and measure variables referencing the cascade set.
-    for (const QUuid& srcId : cascade) {
-        for (const auto& lv : doc->linkedVars())
-            if (lv.sourceBlockId == srcId)
-                m_linked.push_back(lv);
-        for (const QUuid& cid : doc->linkedConsumerBlocks(srcId)) {
-            if (cascade.contains(cid)) continue;
-            const bool taken = std::any_of(
-                m_bakedConsumers.begin(), m_bakedConsumers.end(),
-                [&cid](const cad::param::Block& b) { return b.id == cid; });
-            if (taken) continue;
-            if (const auto* cb = doc->blocksView().byId(cid))
-                m_bakedConsumers.push_back(*cb);
-        }
-        for (const auto& mv : doc->measureVars())
-            if (mv.blockA == srcId || mv.blockB == srcId || mv.ownerBlockId == srcId)
-                m_measures.push_back(mv);
-    }
+    collectCascadeDependents(*doc, cascade, m_linked, m_bakedConsumers, m_measures);
 }
 
 void DeleteComponentCommand::redo()

@@ -6,6 +6,9 @@
 
 #include <algorithm>
 
+#include "document/SchemaKeys.h"
+#include "parametric/LayerRegistry.h"
+
 namespace cad::doc {
 namespace {
 
@@ -32,27 +35,27 @@ QJsonArray v0DefaultLayers()
 {
     QJsonArray layers;
     QJsonObject working;
-    working["id"]       = uuidStr(QUuid::createUuid());
-    working["name"]     = QStringLiteral("图层 1");
-    working["visible"]  = true;
-    working["type"]     = QStringLiteral("working");
+    working[schema::kId]       = uuidStr(QUuid::createUuid());
+    working[schema::kName]     = cad::param::LayerRegistry::kDefaultWorkingLayerName;
+    working[schema::kVisible]  = true;
+    working[schema::kType]     = schema::kTypeWorking;
     layers.append(working);
     return layers;
 }
 
-QJsonObject auxLayerObject(const QString& name = QStringLiteral("辅助层"))
+QJsonObject auxLayerObject(const QString& name = cad::param::LayerRegistry::kDefaultAuxLayerName)
 {
     QJsonObject aux;
-    aux["id"]      = uuidStr(QUuid::createUuid());
-    aux["name"]    = name;
-    aux["visible"] = true;
-    aux["type"]    = QStringLiteral("auxiliary");
+    aux[schema::kId]      = uuidStr(QUuid::createUuid());
+    aux[schema::kName]    = name;
+    aux[schema::kVisible] = true;
+    aux[schema::kType]    = schema::kTypeAuxiliary;
     return aux;
 }
 
 bool isAuxiliary(const QJsonObject& layer)
 {
-    return layer["type"].toString() == QLatin1String("auxiliary");
+    return layer[schema::kType].toString() == schema::kTypeAuxiliary;
 }
 
 } // namespace
@@ -103,20 +106,20 @@ bool FormatMigration::migrate(int fromVersion, QJsonObject& root,
 
 QJsonObject FormatMigration::migrateV0ToV1(QJsonObject root, QStringList* warnings)
 {
-    QJsonObject docObj = root["document"].toObject();
+    QJsonObject docObj = root[schema::kDocument].toObject();
 
     // ── 1. Establish the layer array ───────────────────────────────────────
     // v0 had no auxiliary layer and no per-layer ids; a file without a
     // "layers" array means exactly that (one implicit working layer).
-    QJsonArray layers = docObj["layers"].toArray();
+    QJsonArray layers = docObj[schema::kLayers].toArray();
     if (layers.isEmpty())
         layers = v0DefaultLayers();
 
     // Give every layer a stable id (v0 files never had one).
     for (int i = 0; i < layers.size(); ++i) {
         QJsonObject l = layers[i].toObject();
-        if (l["id"].toString().isEmpty())
-            l["id"] = uuidStr(QUuid::createUuid());
+        if (l[schema::kId].toString().isEmpty())
+            l[schema::kId] = uuidStr(QUuid::createUuid());
         layers[i] = l;
     }
 
@@ -137,39 +140,39 @@ QJsonObject FormatMigration::migrateV0ToV1(QJsonObject root, QStringList* warnin
     const int layerCount = layers.size();
     auto idAt = [&layers, layerCount](int index) {
         const int clamped = std::clamp(index, 0, layerCount - 1);
-        return layers[clamped].toObject()["id"].toString();
+        return layers[clamped].toObject()[schema::kId].toString();
     };
 
     // ── 3. Blocks: integer layer index → stable id string ──────────────────
     // A block with NO "layer" key at all is left alone: the serializer's
     // "missing layer field" defaulting (first working layer) still applies and
     // must keep applying — inventing a 0 here would silently move it.
-    QJsonArray blocks = docObj["blocks"].toArray();
+    QJsonArray blocks = docObj[schema::kBlocks].toArray();
     int remapped = 0;
     for (int i = 0; i < blocks.size(); ++i) {
         QJsonObject b = blocks[i].toObject();
-        if (!b.contains(QStringLiteral("layer")))
+        if (!b.contains(schema::kLayer))
             continue;
-        const QJsonValue layerVal = b["layer"];
+        const QJsonValue layerVal = b[schema::kLayer];
         if (layerVal.isString())
             continue;                       // already v1-shaped
-        b["layer"] = idAt(layerVal.toInt(0) + shift);
+        b[schema::kLayer] = idAt(layerVal.toInt(0) + shift);
         blocks[i] = b;
         ++remapped;
     }
-    docObj["blocks"] = blocks;
+    docObj[schema::kBlocks] = blocks;
 
     // ── 4. Active layer: integer index → stable id ─────────────────────────
     // The historical reader used `toInt(1) + shift` (default = first working
     // layer), so keep that exact expression.
-    const QJsonValue activeVal = docObj["activeLayer"];
+    const QJsonValue activeVal = docObj[schema::kActiveLayer];
     if (!activeVal.isString())
-        docObj["activeLayer"] = idAt(activeVal.toInt(1) + shift);
+        docObj[schema::kActiveLayer] = idAt(activeVal.toInt(1) + shift);
     // A string value is already v1-shaped and is left alone — including the
     // empty string, whose meaning ("no active layer") the serializer owns.
 
-    docObj["layers"] = layers;
-    root["document"] = docObj;
+    docObj[schema::kLayers] = layers;
+    root[schema::kDocument] = docObj;
 
     if (warnings && (remapped > 0 || !hasAux)) {
         warnings->append(
@@ -182,12 +185,12 @@ QJsonObject FormatMigration::migrateV0ToV1(QJsonObject root, QStringList* warnin
 
 QJsonObject FormatMigration::migrateV1ToV2(QJsonObject root, QStringList* warnings)
 {
-    QJsonObject docObj = root["document"].toObject();
+    QJsonObject docObj = root[schema::kDocument].toObject();
 
     // ── v11 影子偏移账本 (baselineOffsetDeg, 度) 已随影子偏转功能删除 ─────
     // 此步只清理残留键: 影子锚点换算 (锚 = 宿主旋转 − 旧偏移) 与读取端
     // 锚点字段均已随功能删除, 旧偏移对当前语义无任何影响, 直接丢弃。
-    QJsonArray atts = docObj["attachments"].toArray();
+    QJsonArray atts = docObj[schema::kAttachments].toArray();
     int removed = 0;
     for (int i = 0; i < atts.size(); ++i) {
         QJsonObject a = atts[i].toObject();
@@ -198,8 +201,8 @@ QJsonObject FormatMigration::migrateV1ToV2(QJsonObject root, QStringList* warnin
         }
     }
     if (removed > 0)
-        docObj["attachments"] = atts;
-    root["document"] = docObj;
+        docObj[schema::kAttachments] = atts;
+    root[schema::kDocument] = docObj;
 
     if (warnings && removed > 0) {
         warnings->append(
@@ -212,7 +215,7 @@ QJsonObject FormatMigration::migrateV1ToV2(QJsonObject root, QStringList* warnin
 
 QJsonObject FormatMigration::migrateV2ToV3(QJsonObject root, QStringList* warnings)
 {
-    QJsonObject docObj = root["document"].toObject();
+    QJsonObject docObj = root[schema::kDocument].toObject();
 
     // ── 影子偏转残留键清理 (防回潮) ────────────────────────────────────────
     // shadowAnchorRotDeg (v13 旧制) / noFollowRotate (v14 旧制) 已随功能删除
@@ -223,7 +226,7 @@ QJsonObject FormatMigration::migrateV2ToV3(QJsonObject root, QStringList* warnin
         "shadowAnchorRotDeg",
         "noFollowRotate",
     };
-    QJsonArray atts = docObj["attachments"].toArray();
+    QJsonArray atts = docObj[schema::kAttachments].toArray();
     int removed = 0;
     for (int i = 0; i < atts.size(); ++i) {
         QJsonObject a = atts[i].toObject();
@@ -240,8 +243,8 @@ QJsonObject FormatMigration::migrateV2ToV3(QJsonObject root, QStringList* warnin
         }
     }
     if (removed > 0)
-        docObj["attachments"] = atts;
-    root["document"] = docObj;
+        docObj[schema::kAttachments] = atts;
+    root[schema::kDocument] = docObj;
 
     if (warnings && removed > 0) {
         warnings->append(

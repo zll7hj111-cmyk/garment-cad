@@ -2,6 +2,7 @@
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -147,7 +148,7 @@ MoveBlocksToLayerCommand::MoveBlocksToLayerCommand(cad::param::ParamDocument* do
         }
     }
     if (targetName.isEmpty())
-        targetName = QStringLiteral("其他图层");
+        targetName = cad::cmd::texts::kOtherLayers;
 
     setText(QStringLiteral("移动 %1 条线段到「%2」").arg(blockIds.size()).arg(targetName));
 

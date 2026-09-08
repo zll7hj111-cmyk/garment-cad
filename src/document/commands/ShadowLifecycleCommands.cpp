@@ -2,6 +2,7 @@
 
 #include "parametric/ParamDocument.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -17,7 +18,7 @@ ShadowMountCommand::ShadowMountCommand(cad::param::ParamDocument* doc,
     , m_doc(doc)
     , m_shadowId(shadowId)
 {
-    setText(QStringLiteral("影子挂载"));
+    setText(cad::cmd::texts::kShadowMount);
 
     cad::param::Attachment att1;
     if (!doc->buildShadowMount(shadowId, toBlockId, toPointId, toSegmentId, att1))
@@ -54,8 +55,7 @@ void ShadowMountCommand::redo()
         s->shadowLastHostPointId = m_att1.toPointId;
         s->shadowLastHostSegmentId = m_att1.toSegmentId;
     }
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
+    m_doc->commitRawChange();
 }
 
 void ShadowMountCommand::undo()
@@ -70,8 +70,7 @@ void ShadowMountCommand::undo()
         s->shadowLastHostPointId = m_oldLastHostPointId;
         s->shadowLastHostSegmentId = m_oldLastHostSegmentId;
     }
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
+    m_doc->commitRawChange();
 }
 
 // ─── RemoveShadowCommand ───
@@ -100,8 +99,7 @@ void RemoveShadowCommand::redo()
 {
     if (!m_valid) return;
     m_doc->removeBlock(m_shadowId);
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
+    m_doc->commitRawChange();
 }
 
 void RemoveShadowCommand::undo()
@@ -112,8 +110,7 @@ void RemoveShadowCommand::undo()
     for (const auto& att : m_atts)
         if (!m_doc->findAttachment(att.id))
             cad::param::RawModelAccess::addAttachmentRaw(*m_doc, att);
-    m_doc->resolveAll();
-    emit m_doc->structureChanged();
+    m_doc->commitRawChange();
 }
 
 } // namespace cad::cmd

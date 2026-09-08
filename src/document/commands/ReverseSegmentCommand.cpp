@@ -93,11 +93,12 @@ bool ReverseSegmentCommand::canReverse(cad::param::ParamDocument* doc,
     // 参数化表达, 冻结常数会在段长变化后失真)。
     for (const auto& att : doc->attachments()) {
         if (att.isPin) continue;
-        if (att.fromBlockId != blockId &&
+        const bool isLeader = (att.toBlockId == blockId &&
+            (att.toSegmentId == segmentId || (att.toSegmentId.isNull() && block->exitSegmentAtPoint(att.toPointId) == segmentId)));
+        if (att.fromBlockId != blockId && !isLeader &&
             !(att.angleRefBlockId == blockId && att.angleRefSegmentId == segmentId))
             continue;
-        if (att.fromBlockId == blockId &&
-            att.slideMode != cad::param::SlideMode::None)
+        if (att.slideMode != cad::param::SlideMode::None)
             return fail(QString::fromUtf8("滑轨模式连接暂不支持换向"));
         const auto flip = attachmentFlip(*block, segmentId,
                                          seg->startPointId, seg->endPointId, att);
@@ -147,18 +148,11 @@ ReverseSegmentCommand::ReverseSegmentCommand(cad::param::ParamDocument* doc,
     if (!block || !seg) return;
 
     auto capture = [](const cad::param::ParamPoint* p, PointSnapshot& s) {
-        s.constraint     = p->constraint;
-        s.freePos        = p->freePos;
-        s.refPointId     = p->refPointId;
-        s.distance       = p->distance;
-        s.angle          = p->angle;
-        s.refSegmentId   = p->refSegmentId;
-        s.distanceFormula = p->distanceFormula;
-        s.angleFormula   = p->angleFormula;
-        s.interpFromEnd  = p->interpFromEnd;
-        s.tangentIn      = p->tangentIn;
-        s.tangentOut     = p->tangentOut;
-        s.autoTangent    = p->autoTangent;
+        s.constraint = p->constraint; s.freePos = p->freePos; s.refPointId = p->refPointId;
+        s.distance = p->distance; s.angle = p->angle; s.refSegmentId = p->refSegmentId;
+        s.distanceFormula = p->distanceFormula; s.angleFormula = p->angleFormula;
+        s.interpFromEnd = p->interpFromEnd; s.tangentIn = p->tangentIn;
+        s.tangentOut = p->tangentOut; s.autoTangent = p->autoTangent;
     };
     m_oldStartId = seg->startPointId;
     m_oldEndId   = seg->endPointId;
@@ -238,23 +232,23 @@ ReverseSegmentCommand::ReverseSegmentCommand(cad::param::ParamDocument* doc,
     }
     for (const auto& att : doc->attachments()) {
         if (att.isPin) continue;
-        // 本块是 follower (跟随侧 localDir 翻转) 或 本段是其独立角度基准
-        // (旧档空基准点回填) 都要快照。
-        if (att.fromBlockId != blockId &&
-            !(att.angleRefBlockId == blockId && att.angleRefSegmentId == segmentId))
+        const bool isLeader = (att.toBlockId == blockId &&
+            (att.toSegmentId == segmentId || (att.toSegmentId.isNull() && block->exitSegmentAtPoint(att.toPointId) == segmentId)));
+        const bool isAngleRef = (att.angleRefBlockId == blockId && att.angleRefSegmentId == segmentId);
+        if (att.fromBlockId != blockId && !isLeader && !isAngleRef) continue;
+        if ((isLeader && att.angleRefBlockId.isNull()) || (isAngleRef && att.angleRef2PointId.isNull())) {
+            m_attComp.push_back({att.id, false, false, true, 0.0, {},
+                                 att.angleRefBlockId, att.angleRefPointId,
+                                 att.angleRef2BlockId, att.angleRef2PointId});
             continue;
-        const auto flip = attachmentFlip(*block, segmentId,
-                                         m_oldStartId, m_oldEndId, att);
+        }
+        const auto flip = attachmentFlip(*block, segmentId, m_oldStartId, m_oldEndId, att);
         const bool compensate = (flip.k % 2) != 0 && !att.angleIndependent;
         if (!compensate && !flip.needsBackfill) continue;
-        AttachmentSnapshot s;
-        s.attId = att.id;
-        s.compensateAngle = compensate;
-        s.backfill = flip.needsBackfill;
-        s.followerAngle = att.followerAngle;
-        s.followerAngleFormula = att.followerAngleFormula;
-        s.angleRefPointId = att.angleRefPointId;
-        m_attComp.push_back(std::move(s));
+        m_attComp.push_back({att.id, compensate, flip.needsBackfill, false,
+                             att.followerAngle, att.followerAngleFormula,
+                             att.angleRefBlockId, att.angleRefPointId,
+                             att.angleRef2BlockId, att.angleRef2PointId});
     }
 }
 
@@ -267,25 +261,15 @@ void ReverseSegmentCommand::applyState(bool reversed)
     if (!block || !seg || !sp || !ep) return;
 
     auto restore = [](cad::param::ParamPoint* p, const PointSnapshot& s) {
-        p->constraint      = s.constraint;
-        p->freePos         = s.freePos;
-        p->refPointId      = s.refPointId;
-        p->distance        = s.distance;
-        p->angle           = s.angle;
-        p->refSegmentId    = s.refSegmentId;
-        p->distanceFormula = s.distanceFormula;
-        p->angleFormula    = s.angleFormula;
-        p->interpFromEnd   = s.interpFromEnd;
-        p->tangentIn       = s.tangentIn;
-        p->tangentOut      = s.tangentOut;
+        p->constraint = s.constraint; p->freePos = s.freePos; p->refPointId = s.refPointId;
+        p->distance = s.distance; p->angle = s.angle; p->refSegmentId = s.refSegmentId;
+        p->distanceFormula = s.distanceFormula; p->angleFormula = s.angleFormula;
+        p->interpFromEnd = s.interpFromEnd; p->tangentIn = s.tangentIn; p->tangentOut = s.tangentOut;
     };
     // v2: 角度数值 +180 / 公式包一层 (formula + 180), 保世界方向。
     auto bumpAngle = [](double& angle, QString& formula) {
-        if (formula.isEmpty()) {
-            angle = cad::geo::normalizeDeg360(angle + 180.0);
-        } else {
-            formula = QStringLiteral("(%1)+180").arg(formula);
-        }
+        if (formula.isEmpty()) { angle = cad::geo::normalizeDeg360(angle + 180.0); }
+        else { formula = QStringLiteral("(%1)+180").arg(formula); }
     };
 
     if (!reversed) {
@@ -325,6 +309,13 @@ void ReverseSegmentCommand::applyState(bool reversed)
         for (const auto& ac : m_attComp) {
             auto* att = m_doc->findAttachment(ac.attId);
             if (!att) continue;
+            if (ac.isLeaderBackfill) {
+                att->angleRefBlockId = ac.angleRefBlockId;
+                att->angleRefPointId = ac.angleRefPointId;
+                att->angleRef2BlockId = ac.angleRef2BlockId;
+                att->angleRef2PointId = ac.angleRef2PointId;
+                continue;
+            }
             att->followerAngle = ac.followerAngle;
             att->followerAngleFormula = ac.followerAngleFormula;
             att->angleRefPointId = ac.angleRefPointId;
@@ -398,8 +389,8 @@ void ReverseSegmentCommand::applyState(bool reversed)
         ep->constraint = cad::param::PointConstraint::Free;
         if (drivenWasEnd) {
             ep->freePos = m_oldStart.freePos +
-                cad::geo::Vec2{driven.distance * std::cos(driven.angle * M_PI / 180.0),
-                               driven.distance * std::sin(driven.angle * M_PI / 180.0)};
+                cad::geo::Vec2{driven.distance * std::cos(cad::geo::degToRad(driven.angle)),
+                               driven.distance * std::sin(cad::geo::degToRad(driven.angle))};
         }
         // 曲线切线已在上方曲线块冻结 (缓存同解镜像), 直线切线恒零无需处理。
 
@@ -421,13 +412,18 @@ void ReverseSegmentCommand::applyState(bool reversed)
         for (const auto& ac : m_attComp) {
             auto* att = m_doc->findAttachment(ac.attId);
             if (!att) continue;
+            if (ac.isLeaderBackfill) {
+                att->angleRefBlockId = m_blockId;
+                att->angleRefPointId = m_oldStartId;
+                att->angleRef2BlockId = m_blockId;
+                att->angleRef2PointId = m_oldEndId;
+                continue;
+            }
             if (ac.compensateAngle) {
                 if (att->followerAngleFormula.isEmpty()) {
-                    att->followerAngle = cad::geo::normalizeDeg360(
-                        ac.followerAngle + 180.0);
+                    att->followerAngle = cad::geo::normalizeDeg360(ac.followerAngle + 180.0);
                 } else {
-                    att->followerAngleFormula =
-                        QStringLiteral("(%1)+180").arg(ac.followerAngleFormula);
+                    att->followerAngleFormula = QStringLiteral("(%1)+180").arg(ac.followerAngleFormula);
                 }
             }
             if (ac.backfill) att->angleRefPointId = m_oldEndId;

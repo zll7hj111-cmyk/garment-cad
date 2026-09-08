@@ -6,6 +6,49 @@ project(WildWindPattern
     LANGUAGES CXX
 )
 
+# ── MSVC /showIncludes prefix repair (header-dependency correctness) ──────────
+# CMake detects the /showIncludes prefix with execute_process(ENCODING AUTO),
+# which decodes compiler output with the active console code page and falls back
+# to ANSI when no console is attached.  cl.exe writes that note as UTF-8, so on
+# a zh-CN Windows (ANSI = CP936) the prefix stored in rules.ninja becomes
+# mojibake that can never match the compiler output.  Ninja then records NO
+# header dependencies: editing a header leaves every dependent object stale, and
+# an incremental build can link objects compiled against different class
+# layouts (observed as 0xC0000409 / 0xC0000374 heap corruption once
+# CanvasStyle.h grew).  Re-detect the prefix from the compiler's raw output and
+# adopt it only when those exact bytes occur in that output.
+if(MSVC AND CMAKE_GENERATOR MATCHES "^Ninja")
+    set(_gcad_si_dir "${CMAKE_BINARY_DIR}/CMakeFiles/gcad-showincludes-probe")
+    file(MAKE_DIRECTORY "${_gcad_si_dir}")
+    file(WRITE "${_gcad_si_dir}/foo.h" "\n")
+    file(WRITE "${_gcad_si_dir}/main.c" "#include \"foo.h\"\nint main(){}\n")
+    if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX)
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" /nologo /showIncludes /c main.c
+            WORKING_DIRECTORY "${_gcad_si_dir}"
+            OUTPUT_FILE "${_gcad_si_dir}/probe.txt"
+            ERROR_FILE "${_gcad_si_dir}/probe.err"
+            RESULT_VARIABLE _gcad_si_res)
+        if(_gcad_si_res EQUAL 0)
+            file(READ "${_gcad_si_dir}/probe.txt" _gcad_si_text)
+            file(READ "${_gcad_si_dir}/probe.txt" _gcad_si_hex HEX)
+            if(_gcad_si_text MATCHES "(^|\n)([^:\n][^:\n]+:[^:\n]*[^: \n][^: \n]:?[ \t]+)([A-Za-z]:\\\\|/)")
+                set(_gcad_si_prefix "${CMAKE_MATCH_2}")
+                string(HEX "${_gcad_si_prefix}" _gcad_si_prefix_hex)
+                string(TOLOWER "${_gcad_si_hex}" _gcad_si_hex)
+                string(TOLOWER "${_gcad_si_prefix_hex}" _gcad_si_prefix_hex)
+                if(_gcad_si_hex MATCHES "${_gcad_si_prefix_hex}")
+                    if(NOT "${_gcad_si_prefix}" STREQUAL "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}")
+                        message(STATUS "MSVC /showIncludes prefix repaired: \"${_gcad_si_prefix}\"")
+                    endif()
+                    set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "${_gcad_si_prefix}")
+                    set(CMAKE_CL_SHOWINCLUDES_PREFIX "${_gcad_si_prefix}")
+                endif()
+            endif()
+        endif()
+    endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -110,6 +153,7 @@ add_library(gcad_geometry STATIC
     src/geometry/Vec2.h
     src/geometry/Units.h
     src/geometry/Angle.h
+    src/geometry/Epsilon.h
     src/geometry/CurveMath.h
     src/geometry/CurveMath.cpp
     src/geometry/CurveSplitter.h
@@ -126,6 +170,7 @@ target_link_libraries(gcad_geometry PUBLIC Qt6::Core Qt6::Gui)
 add_library(gcad_parametric STATIC
     src/parametric/ParamPoint.h
     src/parametric/Segment.h
+    src/parametric/DefaultAppearance.h
     src/parametric/Block.h
     src/parametric/Block.cpp
     src/parametric/BlockResolve.cpp
@@ -145,6 +190,8 @@ add_library(gcad_parametric STATIC
     src/parametric/Attachment.h
     src/parametric/AttachmentGraph.h
     src/parametric/FollowerAngle.h
+    src/parametric/ResolveDiagnostics.h
+    src/parametric/CrossSelectionPolicy.h
     src/parametric/Resolver.h
     src/parametric/Resolver.cpp
     src/parametric/ResolverAttachment.cpp
@@ -197,6 +244,7 @@ add_library(gcad_canvas STATIC
     src/canvas/CanvasScene.h
     src/canvas/CanvasScene.cpp
     src/canvas/CanvasStyle.h
+    src/canvas/CanvasFonts.h
     src/canvas/CanvasStyle.cpp
     src/canvas/CanvasAnimator.h
     src/canvas/CanvasAnimator.cpp
@@ -228,6 +276,8 @@ target_link_libraries(gcad_canvas PUBLIC
 add_library(gcad_document STATIC
     src/document/DocumentSerializer.h
     src/document/DocumentSerializer.cpp
+    src/document/SchemaKeys.h
+    src/document/CommandTexts.h
     src/document/DocumentFile.h
     src/document/DocumentFile.cpp
     src/document/FormatMigration.h
@@ -248,6 +298,8 @@ add_library(gcad_document STATIC
     src/document/commands/CommandIds.h
     src/document/commands/ComponentCommands.h
     src/document/commands/ComponentCommands.cpp
+    src/document/commands/CascadeSnapshot.h
+    src/document/commands/CascadeSnapshot.cpp
     src/document/commands/LayerCommands.h
     src/document/commands/LayerCommands.cpp
     src/document/commands/AttachmentCommands.h
@@ -991,20 +1043,17 @@ target_link_libraries(test_transient_overlay PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
 add_test(NAME test_transient_overlay COMMAND test_transient_overlay)
 
-# ── PDB 膨胀治理（2026-08）：全链测试关增量链接 ────────────────────────────
-# 这些测试把整个项目 + ElaWidgetTools 链接进一个 exe，Debug /Zi 符号下 PDB
-# 达 ~1GB；/INCREMENTAL 让 PDB 跨重链只增不减（实测 12GB 总量，大头在此）。
-# 关掉增量后 PDB 每次链接重写一次、大小封顶，调试能力完整保留；代价仅是
-# 重链为全量链接（慢几秒）。主程序 WildWindPattern 保留增量（日常调试迭代）。
-foreach(_t IN ITEMS
-        test_realdoc_full test_nav_smoke test_aux_layer test_smartpen_aux
-        test_measure test_context_strip test_tool_intersection
-        test_select_wkey test_curve_edit
-        test_rotate_copy_semantics test_rotate_copy_shadow test_rotate_copy_endtarget
-        test_dialog_tabs_switch test_dialog_tabs_angle_conn test_dialog_tabs_aux
-        test_rotate_anchor test_rotate_d15_gate test_rotate_strip
-        test_rotate_copy_flow test_rotate_pivot_multi
-        test_component test_ortho_offset test_place_point test_overlap_battery
-        test_transient_overlay)
-    target_link_options(${_t} PRIVATE /INCREMENTAL:NO)
+# ── PDB 膨胀治理 + 链接映像完整性（2026-08 起，2026-12 泛化）──────────────
+# 全部 test_* 目标关闭增量链接，两个理由：
+# ① 这些测试把整个项目 + ElaWidgetTools 链接进一个 exe，Debug /Zi 符号下 PDB
+#    曾因 /INCREMENTAL 跨重链只增不减累积到 ~1GB/个（实测 12GB 总量）；
+# ② .ilk 陈旧时增量链接可能产出半更新映像（2026-12 实测 test_resolver_points.exe
+#    的 InitializeSListHead IAT 槽为 0 → 启动即 AV，重链接即恢复；见 TROUBLESHOOTING.md）。
+# 主程序 WildWindPattern 保留增量（日常调试迭代速度，见 AGENTS.md 构建命令）。
+# 名单不再硬编码：按目标名 ^test_ 全量覆盖（新增测试自动生效）。
+get_property(_gcad_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_t IN LISTS _gcad_targets)
+    if(_t MATCHES "^test_")
+        target_link_options(${_t} PRIVATE /INCREMENTAL:NO)
+    endif()
 endforeach()

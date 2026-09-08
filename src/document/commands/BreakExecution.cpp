@@ -9,6 +9,7 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::cmd {
 
@@ -71,8 +72,8 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
         const auto osf = st.frozenTanOut.constFind(auxPtId);
         if (oso != st.subTanOutOverride.constEnd()) auxPt->tangentOut = oso.value();
         else if (osf != st.frozenTanOut.constEnd()) auxPt->tangentOut = osf.value();
-        else if (auxPt->tangentIn.lengthSquared() > 1e-12) auxPt->tangentOut = auxPt->tangentIn;
-        else if (auxPt->tangentOut.lengthSquared() > 1e-12) auxPt->tangentIn = auxPt->tangentOut;
+        else if (auxPt->tangentIn.lengthSquared() > cad::geo::kGeomEpsTight) auxPt->tangentOut = auxPt->tangentIn;
+        else if (auxPt->tangentOut.lengthSquared() > cad::geo::kGeomEpsTight) auxPt->tangentIn = auxPt->tangentOut;
     }
 
     seg = block->findSegment(segId);  // re-acquire
@@ -101,7 +102,7 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
         if (sp && newEnd && sp->resolved && newEnd->resolved) {
             const cad::geo::Vec2 fChord = newEnd->resolvedPos - sp->resolvedPos;
             const double fLen = fChord.length();
-            if (fLen > 1e-9) {
+            if (fLen > cad::geo::kGeomEps) {
                 const cad::geo::Vec2 fUnit = fChord / fLen;
                 const cad::geo::Vec2 fNormal{-fUnit.y, fUnit.x};
                 for (const auto& ppId : st.frontPassIds) {
@@ -130,11 +131,11 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
             p->autoTangent = false;
             const cad::geo::Vec2 tI = frozenTanFor(pid, true);
             const cad::geo::Vec2 tO = frozenTanFor(pid, false);
-            if (tI.lengthSquared() > 1e-12) p->tangentIn = tI;
-            if (tO.lengthSquared() > 1e-12) p->tangentOut = tO;
-            if (p->tangentIn.lengthSquared() < 1e-12 && p->tangentOut.lengthSquared() > 1e-12)
+            if (tI.lengthSquared() > cad::geo::kGeomEpsTight) p->tangentIn = tI;
+            if (tO.lengthSquared() > cad::geo::kGeomEpsTight) p->tangentOut = tO;
+            if (p->tangentIn.lengthSquared() < cad::geo::kGeomEpsTight && p->tangentOut.lengthSquared() > cad::geo::kGeomEpsTight)
                 p->tangentIn = p->tangentOut;
-            if (p->tangentOut.lengthSquared() < 1e-12 && p->tangentIn.lengthSquared() > 1e-12)
+            if (p->tangentOut.lengthSquared() < cad::geo::kGeomEpsTight && p->tangentIn.lengthSquared() > cad::geo::kGeomEpsTight)
                 p->tangentOut = p->tangentIn;
             p->tangentLocked = true;
         };
@@ -152,7 +153,7 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
             const cad::geo::Vec2 midTan = cad::geo::evalBezierDerivative(fSpan, 0.5) / 2.0;
             const cad::geo::Vec2 mChord = newEnd->resolvedPos - sp->resolvedPos;
             const double mLen = mChord.length();
-            if (mLen > 1e-9) {
+            if (mLen > cad::geo::kGeomEps) {
                 const cad::geo::Vec2 mUnit = mChord / mLen;
                 const cad::geo::Vec2 mNormal{-mUnit.y, mUnit.x};
                 const cad::geo::Vec2 mRel = midPos - sp->resolvedPos;

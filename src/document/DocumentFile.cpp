@@ -13,6 +13,7 @@
 
 #include "document/DocumentSerializer.h"
 #include "document/FormatMigration.h"
+#include "document/SchemaKeys.h"
 #include "parametric/ParamDocument.h"
 
 namespace cad::doc {
@@ -20,6 +21,9 @@ namespace cad::doc {
 namespace {
 
 constexpr const char* kAppVersion = "0.1.0";
+
+/// Error text reused by both rename-failure branches (审计 N4 尾项).
+const QString kSaveFailedFmt = QStringLiteral("无法保存文件: %1");
 
 /// Build the manifest.json content.
 QByteArray buildManifest()
@@ -73,8 +77,8 @@ bool DocumentFile::save(const QString& path, const cad::param::ParamDocument& do
 {
     // Serialize document to JSON
     const QJsonObject root = cad::param::DocumentSerializer::serialize(doc);
-    const QJsonObject docObj = root["document"].toObject();
-    const QJsonObject varObj = root["variables"].toObject();
+    const QJsonObject docObj = root[schema::kDocument].toObject();
+    const QJsonObject varObj = root[schema::kVariables].toObject();
 
     const QByteArray manifestData = buildManifest();
     const QByteArray documentData = QJsonDocument(docObj).toJson(QJsonDocument::Indented);
@@ -111,14 +115,14 @@ bool DocumentFile::save(const QString& path, const cad::param::ParamDocument& do
     QFile::remove(bakPath);
     if (QFile::exists(path) && !QFile::rename(path, bakPath)) {
         QFile::remove(tmpPath);
-        if (error) *error = QStringLiteral("无法保存文件: %1").arg(path);
+        if (error) *error = kSaveFailedFmt.arg(path);
         return false;
     }
     if (!QFile::rename(tmpPath, path)) {
         // Roll the backup back so the user keeps their previous file.
         QFile::rename(bakPath, path);
         QFile::remove(tmpPath);
-        if (error) *error = QStringLiteral("无法保存文件: %1").arg(path);
+        if (error) *error = kSaveFailedFmt.arg(path);
         return false;
     }
     QFile::remove(bakPath);
@@ -191,7 +195,7 @@ bool DocumentFile::load(const QString& path, cad::param::ParamDocument& doc,
         }
     }
 
-    QJsonObject root{{"document", docObj}, {"variables", varObj}};
+    QJsonObject root{{schema::kDocument, docObj}, {schema::kVariables, varObj}};
     QString migrationError;
     if (!cad::doc::FormatMigration::migrate(version, root, warnings, &migrationError)) {
         if (error) *error = migrationError;

@@ -4,6 +4,7 @@
 
 #include "parametric/ParamDocument.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "document/CommandTexts.h"
 
 namespace cad::cmd {
 
@@ -48,8 +49,7 @@ void AddCurvePointCommand::redo()
     // Curve structure changed WITHOUT any point necessarily moving — bump the
     // epoch explicitly so Block::resolve's stale-cache gate rebuilds the curve
     // cache (and the canvas rebuilds) in the resolveAll below.
-    block->touchGeometry();
-    m_doc->resolveAll();
+    m_doc->touchAndResolve(m_blockId);
 }
 
 void AddCurvePointCommand::undo()
@@ -67,8 +67,7 @@ void AddCurvePointCommand::undo()
         [this](const cad::param::ParamPoint& p) { return p.id == m_pt.id; }),
         pts.end());
     block->rebuildPointIndex();
-    block->touchGeometry();
-    m_doc->resolveAll();
+    m_doc->touchAndResolve(m_blockId);
 }
 
 // ─── RemoveCurvePointCommand ───
@@ -116,8 +115,7 @@ void RemoveCurvePointCommand::redo()
         [this](const cad::param::ParamPoint& p) { return p.id == m_pointId; }),
         pts.end());
     block->rebuildPointIndex();
-    block->touchGeometry();
-    m_doc->resolveAll();
+    m_doc->touchAndResolve(m_blockId);
 }
 
 void RemoveCurvePointCommand::undo()
@@ -131,8 +129,7 @@ void RemoveCurvePointCommand::undo()
     const int idx = std::clamp(m_index, 0, static_cast<int>(ids.size()));
     ids.insert(ids.begin() + idx, m_pointId);
     seg->type = m_oldType;
-    block->touchGeometry();
-    m_doc->resolveAll();
+    m_doc->touchAndResolve(m_blockId);
 }
 
 // ─── MoveCurveAnchorCommand ───
@@ -220,8 +217,7 @@ void SetCurveTangentCommand::redo()
     pt->tangentOut = m_newTanOut;
     pt->autoTangent = m_newAuto;
     pt->tangentLocked = m_newLocked;  // Alt+drag may break the lock persistently
-    block->touchGeometry();
-    m_doc->resolveAll();
+    m_doc->touchAndResolve(m_blockId);
 }
 
 void SetCurveTangentCommand::undo()
@@ -233,8 +229,7 @@ void SetCurveTangentCommand::undo()
     pt->tangentOut = m_oldTanOut;
     pt->autoTangent = m_oldAuto;
     pt->tangentLocked = m_oldLocked;  // restore the pre-drag lock state
-    block->touchGeometry();
-    m_doc->resolveAll();
+    m_doc->touchAndResolve(m_blockId);
 }
 
 // ─── ReleaseCurveFollowCommand ───
@@ -293,7 +288,7 @@ ConvertCurveToLineCommand::ConvertCurveToLineCommand(
     , m_segmentId(segmentId)
     , m_oldType(cad::param::SegmentType::Bezier)
 {
-    setText(QStringLiteral("转为直线"));
+    setText(cad::cmd::texts::kToLine);
     // Snapshot every pass-point (and the segment type) now — undo must be able
     // to re-create them exactly after redo removed them.
     if (const auto* b = doc->findBlock(blockId)) {
@@ -323,8 +318,8 @@ void ConvertCurveToLineCommand::redo()
             pts.end());
     }
     block->rebuildPointIndex();
-    block->touchGeometry();  // curve structure changed, no point moved
-    m_doc->resolveAll();
+    // curve structure changed, no point moved
+    m_doc->touchAndResolve(m_blockId);
 }
 
 void ConvertCurveToLineCommand::undo()
@@ -338,8 +333,7 @@ void ConvertCurveToLineCommand::undo()
     seg->passPointIds = m_passIds;
     seg->type = m_oldType;
     block->rebuildPointIndex();
-    block->touchGeometry();
-    m_doc->resolveAll();
+    m_doc->touchAndResolve(m_blockId);
 }
 
 } // namespace cad::cmd
