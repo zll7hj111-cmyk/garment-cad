@@ -12,6 +12,8 @@
 #include "Theme.h"
 #include "TooltipFormatter.h"
 #include "ui/NoteButton.h"
+#include "ui/NumericFieldSpecs.h"
+#include "document/CommandTexts.h"
 
 namespace {
 
@@ -96,8 +98,7 @@ void VariableCard::setupUi(const cad::param::Variable& var)
     // 数值输入框 (cm)
     m_valueSpin = new CompactSpinBox(this);
     m_valueSpin->setRange(-99999.0, 99999.0);
-    m_valueSpin->setDecimals(2);
-    m_valueSpin->setSingleStep(0.5);
+    cad::ui::applyNumericSpec(m_valueSpin, cad::ui::kLengthCmSpec);
     m_valueSpin->setValue(cad::geo::Units::mmToCm(var.value));
     m_valueSpin->setFixedWidth(74);
     m_valueSpin->setFixedHeight(22);
@@ -116,7 +117,7 @@ void VariableCard::setupUi(const cad::param::Variable& var)
     rowLayout->addWidget(m_noteBtn, 0);
 
     // 悬停删除按钮
-    appendDeleteButton(rowLayout, QStringLiteral("删除变量"));
+    appendDeleteButton(rowLayout, cad::cmd::texts::kDeleteVariable);
 
     // === Connections ===
     connect(m_deleteBtn, &QToolButton::clicked, this,

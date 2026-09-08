@@ -31,6 +31,8 @@
 #include "document/commands/VariableCommands.h"
 #include "document/commands/BlockCommands.h"
 #include "geometry/Angle.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -39,16 +41,6 @@ namespace {
 constexpr int kLabelW = 64;
 constexpr int kFieldH = 30;
 
-const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
-                                                    const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (!att.isPin && att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
 
 } // namespace
 
@@ -122,12 +114,12 @@ LineGeometrySection::LineGeometrySection(cad::param::ParamDocument* paramDoc,
         row->addWidget(m_btnLenAuto);
         row->addWidget(m_btnLenSpec);
 
-        auto* btnPasteLen = new QPushButton(QStringLiteral("填入"), this);
+        auto* btnPasteLen = new QPushButton(cad::ui::str::kFillIn, this);
         btnPasteLen->setFixedSize(48, kFieldH);
         btnPasteLen->setStyleSheet(chips);
         btnPasteLen->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("填入剪贴板"),
-            QStringLiteral("清空输入框并粘贴剪切板内容")));
+            cad::ui::str::kPasteClipboard,
+            cad::ui::str::kPasteClearsInputTip));
         connect(btnPasteLen, &QPushButton::clicked, this, [this] {
             const QString clean = QString(QApplication::clipboard()->text())
                                       .remove(QLatin1Char('\r'))
@@ -142,7 +134,7 @@ LineGeometrySection::LineGeometrySection(cad::param::ParamDocument* paramDoc,
         m_btnPublishLen->setFixedHeight(kFieldH);
         m_btnPublishLen->setStyleSheet(chips);
         m_btnPublishLen->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("发布关联参数"),
+            cad::cmd::texts::kPublishLinkedVar,
             QStringLiteral("将本线段的长度发布为关联参数（只读），其他公式可直接引用其引用名（L+编号）")));
         m_btnPublishLen->setCursor(Qt::PointingHandCursor);
         connect(m_btnPublishLen, &QPushButton::clicked, this, &LineGeometrySection::onPublishLength);
@@ -269,7 +261,7 @@ LineGeometrySection::LineGeometrySection(cad::param::ParamDocument* paramDoc,
         m_btnConvert->setStyleSheet(chips);
         m_btnConvert->setCursor(Qt::PointingHandCursor);
         m_btnConvert->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("转为直线"),
+            cad::cmd::texts::kToLine,
             QStringLiteral("移除本线段的所有曲线控制点，变为普通两点直线")));
         connect(m_btnConvert, &QPushButton::clicked, this, &LineGeometrySection::onConvertToLine);
         tensionLayout->addWidget(m_btnConvert);
@@ -306,8 +298,7 @@ void LineGeometrySection::populateFromModel(const cad::param::Block& block,
             double lenMm = (ep->constraint == cad::param::PointConstraint::OrthoOffset)
                 ? ep->distance
                 : sp->resolvedPos.distanceTo(ep->resolvedPos);
-            double lenCm = cad::geo::Units::mmToCm(lenMm);
-            m_editLength->setText(cad::geo::Units::formatNumberTrimmed(lenCm));
+            m_editLength->setText(cad::geo::Units::formatCm(lenMm));
         }
     }
 
@@ -324,7 +315,7 @@ void LineGeometrySection::populateFromModel(const cad::param::Block& block,
     if (isCurve) {
         double arcMm = block.segmentBaseLength(seg.id);
         m_lblArcLength->setText(cad::geo::Units::formatLength(arcMm));
-        m_editTension->setText(QString::number(seg.tension, 'f', 2));
+        m_editTension->setText(cad::geo::Units::formatNumberTrimmed(seg.tension));
     }
 
     const bool alreadyPublished = (m_paramDoc && m_paramDoc->findLinkedBySource(block.id, seg.id) != nullptr);
@@ -389,7 +380,7 @@ void LineGeometrySection::refreshLengthMode()
     if (!m_btnLenAuto || !m_btnLenSpec || !m_paramDoc) return;
     const auto* block = m_paramDoc->findBlock(m_blockId);
     if (!block) return;
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+    const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
     const bool hasAtt = att != nullptr;
     const bool hasEnd = !block->endTargetPointId.isNull();
     const bool bridge = hasAtt && hasEnd;
@@ -416,8 +407,10 @@ void LineGeometrySection::applyBridgeReadOnly()
         m_editLength->setEnabled(false);
         m_editLength->setToolTip(cad::ui::TooltipFormatter::plain(
             QString::fromUtf8("桥接线长度由两端吸附点位置决定，无法直接修改")));
+        // 输入框一律无单位后缀 (审计 UI-P0-4): 桥接线分支此前写 formatLength
+        // ("12.5 cm"), 与常规分支 ("12.5") 两种文本进同一解析路径。
         const double lenMm = block->segmentEffectiveLength(seg->id);
-        m_editLength->setText(cad::geo::Units::formatLength(lenMm));
+        m_editLength->setText(cad::geo::Units::formatCm(lenMm));
     }
     if (m_lblFx) m_lblFx->setVisible(false);
     if (m_btnPublishLen) m_btnPublishLen->setEnabled(false);
@@ -427,7 +420,7 @@ void LineGeometrySection::refreshSlideRow()
 {
     if (!m_slideRow || !m_paramDoc) return;
     const auto* block = m_paramDoc->findBlock(m_blockId);
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+    const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
     const bool hasAtt = att != nullptr;
     const bool hasEnd = block && !block->endTargetPointId.isNull();
     const bool bridge = hasAtt && hasEnd;
@@ -451,12 +444,12 @@ void LineGeometrySection::refreshSlideRow()
         m_editSlideAlong->setText(hasSlide
             ? (!att->slideAlongFormula.isEmpty()
                    ? att->slideAlongFormula
-                   : cad::geo::Units::formatCmTrimmed(att->slideAlongMm))
+                   : cad::geo::Units::formatCm(att->slideAlongMm))
             : QString());
         m_editSlidePerp->setText(hasSlide
             ? (!att->slidePerpFormula.isEmpty()
                    ? att->slidePerpFormula
-                   : cad::geo::Units::formatCmTrimmed(att->slidePerpMm))
+                   : cad::geo::Units::formatCm(att->slidePerpMm))
             : QString());
     }
     m_lblSlideBadge->setVisible(false);
@@ -488,7 +481,7 @@ void LineGeometrySection::onLengthModeChanged(bool autoMode)
     if (!m_paramDoc) return;
     auto* block = m_paramDoc->findBlock(m_blockId);
     if (!block) return;
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+    const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
     const bool bridge = att != nullptr && !block->endTargetPointId.isNull();
     if (bridge) {
         refreshLengthMode();
@@ -502,7 +495,7 @@ void LineGeometrySection::onLengthModeChanged(bool autoMode)
 void LineGeometrySection::onSlideModeChanged(int index)
 {
     if (!m_paramDoc) return;
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+    const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
     if (!att || att->angleOnly || att->angleIndependent) {
         refreshSlideRow();
         return;
@@ -525,24 +518,21 @@ void LineGeometrySection::onSlideModeChanged(int index)
 void LineGeometrySection::onSlideOffsetEdited()
 {
     if (!m_paramDoc) return;
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+    const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
     if (!att || att->angleOnly || att->angleIndependent) {
         refreshSlideRow();
         return;
     }
 
-    const QString aRaw = m_editSlideAlong->text().trimmed();
-    const QString pRaw = m_editSlidePerp->text().trimmed();
-    bool okA = false, okP = false;
-    const double alongCm = aRaw.isEmpty() ? 0.0 : aRaw.toDouble(&okA);
-    const double perpCm  = pRaw.isEmpty() ? 0.0 : pRaw.toDouble(&okP);
-    const bool aFormula = !aRaw.isEmpty() && !okA;
-    const bool pFormula = !pRaw.isEmpty() && !okP;
-    const double along = cad::geo::Units::cmToMm(alongCm);
-    const double perp  = cad::geo::Units::cmToMm(perpCm);
-
-    const bool hasAlong = !aRaw.isEmpty();
-    const bool hasPerp  = !pRaw.isEmpty();
+    // 数值/公式判读统一走 parseNumberOrFormula (UI-P1-9)。
+    const auto alongParsed = cad::geo::parseNumberOrFormula(m_editSlideAlong->text());
+    const auto perpParsed  = cad::geo::parseNumberOrFormula(m_editSlidePerp->text());
+    const bool hasAlong = alongParsed.isNumber || !alongParsed.formula.isEmpty();
+    const bool hasPerp  = perpParsed.isNumber  || !perpParsed.formula.isEmpty();
+    const bool aFormula = !alongParsed.isNumber && !alongParsed.formula.isEmpty();
+    const bool pFormula = !perpParsed.isNumber  && !perpParsed.formula.isEmpty();
+    const double along = cad::geo::Units::cmToMm(alongParsed.value);
+    const double perp  = cad::geo::Units::cmToMm(perpParsed.value);
 
     cad::param::SlideMode mode = cad::param::SlideMode::None;
     if (hasAlong || hasPerp) {
@@ -555,8 +545,8 @@ void LineGeometrySection::onSlideOffsetEdited()
                 ? att->slideMode : cad::param::SlideMode::AlongLeader;
     }
 
-    const QString alongFormula = aFormula ? aRaw : QString();
-    const QString perpFormula  = pFormula ? pRaw : QString();
+    const QString alongFormula = aFormula ? alongParsed.formula : QString();
+    const QString perpFormula  = pFormula ? perpParsed.formula : QString();
     if (auto* stack = m_paramDoc->undoStack()) {
         stack->push(new cad::cmd::SetAttachmentSlideOffsetsCommand(
             m_paramDoc, att->id, mode, along, alongFormula, perp, perpFormula));

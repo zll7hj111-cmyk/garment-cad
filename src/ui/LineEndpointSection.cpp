@@ -27,6 +27,7 @@
 #include "document/commands/EndpointCommands.h"
 #include "document/commands/ReverseSegmentCommand.h"
 #include "document/commands/SegmentPropertyCommands.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -74,7 +75,7 @@ LineEndpointSection::LineEndpointSection(cad::param::ParamDocument* paramDoc,
     m_btnDirectionArrow->setStyleSheet(chips);
     m_btnDirectionArrow->setCursor(Qt::PointingHandCursor);
     m_btnDirectionArrow->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("调换进/出"),
+        cad::ui::str::kSwapInOut,
         QStringLiteral("↓ = 上进下出，↑ = 下进上出（点位置固定，几何不变）")));
     connect(m_btnDirectionArrow, &QPushButton::clicked,
             this, &LineEndpointSection::onDirectionArrowClickedInternal);
@@ -199,7 +200,7 @@ QWidget* LineEndpointSection::buildEndpoint(bool isStart)
         refConn->setFixedWidth(150);
         refConn->setFixedHeight(kFieldH);
         refConn->setToolTip(cad::ui::TooltipFormatter::action(
-            isStart ? QStringLiteral("起点连接") : QStringLiteral("终点指向"),
+            isStart ? cad::ui::str::kStartConnect : QStringLiteral("终点指向"),
             isStart ? QStringLiteral("输入目标点 P# 或线段 L#/名称，回车建立/重定向跟随连接（吸附；本端为进/起点时可用）")
                     : QStringLiteral("输入目标点 P# 或线段 L#/名称，回车建立/重定向终点指向（本端为出/终点时可用）")));
         connect(refConn, &PointRefEdit::pointResolved, this,
@@ -433,7 +434,7 @@ void LineEndpointSection::refreshEndpointConnRows()
 
     // Follower attachment on top slot
     if (m_refStartConnect) {
-        const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+        const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
         const QSignalBlocker sb1(m_refStartConnect);
         if (att && m_topIsStart && !att->angleOnly) {
             const auto* toBlk = m_paramDoc->findBlock(att->toBlockId);
@@ -525,7 +526,7 @@ void LineEndpointSection::refreshEndpointExtends()
                                        : seg->extendEndFormula;
         const double mm = roleIsStart ? seg->extendStartMm : seg->extendEndMm;
         return !f.isEmpty() ? f
-             : (mm > 0.0 ? cad::geo::Units::formatCmTrimmed(mm) : QString());
+             : (mm > 0.0 ? cad::geo::Units::formatCm(mm) : QString());
     };
     m_editStartExtend->setText(extendText(topIsStart));
     m_editEndExtend->setText(extendText(!topIsStart));
@@ -649,7 +650,7 @@ void LineEndpointSection::refreshDirectionArrow()
     m_btnDirectionArrow->setText(m_topIsStart ? QString::fromUtf8("↓") : QString::fromUtf8("↑"));
     m_btnDirectionArrow->setToolTip(ok
         ? cad::ui::TooltipFormatter::action(
-            QStringLiteral("调换进/出"),
+            cad::ui::str::kSwapInOut,
             QStringLiteral("↓ = 上进下出；↑ = 下进上出。点击调换进/出（点固定，几何不变）"))
         : cad::ui::TooltipFormatter::plain(why));
 }

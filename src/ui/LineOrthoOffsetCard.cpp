@@ -1,7 +1,6 @@
 ﻿#include "ui/LineOrthoOffsetCard.h"
 
 #include <cmath>
-#include <numbers>
 #include <algorithm>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -21,6 +20,7 @@
 #include "ui/Theme.h"
 #include "ui/FormScaffold.h"
 #include "ui/TooltipFormatter.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::ui {
 
@@ -129,8 +129,7 @@ void LineOrthoOffsetCard::populate(const cad::param::Block& block, const cad::pa
             m_lblOrthoFx->setVisible(true);
         } else {
             m_lblOrthoFx->setVisible(false);
-            double distCm = cad::geo::Units::mmToCm(std::abs(ep->orthoOffsetDist));
-            m_editOrthoDist->setText(cad::geo::Units::formatNumberTrimmed(distCm));
+            m_editOrthoDist->setText(cad::geo::Units::formatCm(std::abs(ep->orthoOffsetDist)));
         }
 
         if (ep->orthoOffsetDist < 0.0 || ep->orthoOffsetDistFormula.startsWith(QLatin1Char('-'))) {
@@ -163,7 +162,7 @@ void LineOrthoOffsetCard::refreshHypotLabel(const cad::param::Block& block, cons
 {
     const auto* ep = block.findPoint(seg.endPointId);
     if (ep && ep->constraint == cad::param::PointConstraint::OrthoOffset &&
-        (std::abs(ep->orthoOffsetDist) > 1e-6 || !ep->orthoOffsetDistFormula.isEmpty())) {
+        (std::abs(ep->orthoOffsetDist) > cad::geo::kGeomEpsLoose || !ep->orthoOffsetDistFormula.isEmpty())) {
         const double baseMm = ep->distance;
         const double offsetMm = std::abs(ep->orthoOffsetDist);
         const double hypotMm = std::sqrt(baseMm * baseMm + offsetMm * offsetMm);
@@ -196,14 +195,14 @@ void LineOrthoOffsetCard::apply(cad::param::Block* block, cad::param::Segment* s
             if (sp && sp->resolved && ep->resolved) {
                 cad::geo::Vec2 delta = ep->resolvedPos - sp->resolvedPos;
                 double curLen = delta.length();
-                double curAngleDeg = std::atan2(delta.y, delta.x) * 180.0 / std::numbers::pi;
+                double curAngleDeg = cad::geo::radToDeg(std::atan2(delta.y, delta.x));
                 if (!ep->refSegmentId.isNull()) {
                     if (const auto* rseg = block->findSegment(ep->refSegmentId)) {
                         const auto* rsp = block->findPoint(rseg->startPointId);
                         const auto* rep = block->findPoint(rseg->endPointId);
                         if (rsp && rep && rsp->resolved && rep->resolved) {
                             cad::geo::Vec2 rdir = rep->resolvedPos - rsp->resolvedPos;
-                            double rdeg = std::atan2(rdir.y, rdir.x) * 180.0 / std::numbers::pi;
+                            double rdeg = cad::geo::radToDeg(std::atan2(rdir.y, rdir.x));
                             curAngleDeg = cad::geo::normalizeDeg180(curAngleDeg - rdeg);
                         }
                     }

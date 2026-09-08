@@ -13,6 +13,7 @@
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QPainter>
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -212,7 +213,7 @@ void CopyChip::updateDisplay()
     }
     m_label->setText(showPlaceholder ? m_placeholder : m_text);
     m_label->setToolTip(showPlaceholder
-        ? cad::ui::TooltipFormatter::action(QStringLiteral("编辑项目"), QStringLiteral("双击设置名称"))
+        ? cad::ui::TooltipFormatter::action(QStringLiteral("编辑项目"), cad::ui::str::kDoubleClickRename)
         : cad::ui::TooltipFormatter::action(QStringLiteral("名称 / 代号"), QStringLiteral("单击复制 · 双击编辑")));
 }
 

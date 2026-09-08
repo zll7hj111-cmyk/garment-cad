@@ -19,6 +19,7 @@
 #include <QStyleOption>
 #include <QPainter>
 #include <QTimer>
+#include "document/CommandTexts.h"
 
 namespace {
 const QColor kCaretColor(0x5D, 0x6D, 0x7E);
@@ -68,10 +69,11 @@ FormulaGroupHeader::FormulaGroupHeader(const QUuid& groupId, const QString& name
 
     m_dissolveBtn = new ElaToolButton(this);
     m_dissolveBtn->setIcon(cad::ui::IconHelper::icon2State(
-        QStringLiteral("x"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
+        QStringLiteral("x"), cad::ui::Theme::tokens().text3,
+        cad::ui::Theme::tokens().onAccent));
     m_dissolveBtn->setIconSize(QSize(11, 11));
     m_dissolveBtn->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("解散分组"),
+        cad::cmd::texts::kDissolveGroup,
         QStringLiteral("移除分组容器，组内成员公式将回到未分组列表")));
     m_dissolveBtn->setFixedSize(18, 18);
     m_dissolveBtn->setCursor(Qt::PointingHandCursor);

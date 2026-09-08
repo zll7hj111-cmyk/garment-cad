@@ -176,7 +176,7 @@ void LayerPanel::setupUi()
     emptyTitle->setObjectName(QStringLiteral("emptyTitle"));
     emptyTitle->setAlignment(Qt::AlignCenter);
     emptyTitle->setStyleSheet(QStringLiteral(
-        "font-size: 14px; font-weight: 600; color: %1; background: transparent;")
+        "font-size: 13px; font-weight: 600; color: %1; background: transparent;")
         .arg(tk.text1.name()));
     emptyLay->addWidget(emptyTitle);
 
@@ -236,7 +236,7 @@ void LayerPanel::applyTheme()
         }
         if (auto* title = m_emptyHint->findChild<ElaText*>(QStringLiteral("emptyTitle"))) {
             title->setStyleSheet(QStringLiteral(
-                "font-size: 14px; font-weight: 600; color: %1; background: transparent;")
+                "font-size: 13px; font-weight: 600; color: %1; background: transparent;")
                 .arg(tk.text1.name()));
         }
         if (auto* sub = m_emptyHint->findChild<ElaText*>(QStringLiteral("emptySub"))) {

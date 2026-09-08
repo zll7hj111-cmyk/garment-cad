@@ -12,6 +12,8 @@
 #include "CopyChip.h"
 #include "geometry/Units.h"
 #include "parametric/PerfProbe.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 AngleMeasureCard::AngleMeasureCard(const cad::param::AngleMeasureVariable& am,
                                    const QString& sourceLabel,
@@ -103,10 +105,10 @@ void AngleMeasureCard::setupUi(const cad::param::AngleMeasureVariable& am,
     spec.objectName      = QStringLiteral("AngleMeasureCard");
     spec.indexObjectName = QStringLiteral("angleIndex");
     spec.indexTooltip    = QStringLiteral("角度测量序号（视图行号）");
-    spec.namePlaceholder = QStringLiteral("名称");
+    spec.namePlaceholder = cad::ui::str::kName;
     spec.nameText        = am.name;
-    spec.deleteTooltip   = QStringLiteral("删除角度测量变量");
-    spec.lockTooltip     = QStringLiteral("自动测量，不可编辑");
+    spec.deleteTooltip   = cad::cmd::texts::kDeleteAngleMeasureVar;
+    spec.lockTooltip     = cad::ui::str::kAutoMeasureReadOnly;
     spec.sourceTooltip   = QStringLiteral("测量来源：两条线段及所在图层（只读）");
     spec.sourceLabel     = sourceLabel;
     spec.commentText     = am.comment;

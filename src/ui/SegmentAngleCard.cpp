@@ -23,6 +23,7 @@
 #include "ui/Theme.h"
 #include "ui/TooltipFormatter.h"
 #include "ui/FormScaffold.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::ui {
 
@@ -41,7 +42,7 @@ std::optional<double> worldDegOfSegment(const cad::param::Block* block,
     const cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
     const cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
     return cad::geo::normalizeDeg360(
-        std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI);
+        cad::geo::radToDeg(std::atan2(w2.y - w1.y, w2.x - w1.x)));
 }
 
 /// 计算自由线段的世界角度或正交偏置线段的中心基准轴角度.
@@ -51,7 +52,7 @@ std::optional<double> worldOrNominalDegOfSegment(const cad::param::Block* block,
     if (!block || !seg) return std::nullopt;
     const auto* ep = block->findPoint(seg->endPointId);
     if (ep && ep->constraint == cad::param::PointConstraint::OrthoOffset) {
-        const double rotDeg = block->transform.rotation * 180.0 / M_PI;
+        const double rotDeg = cad::geo::radToDeg(block->transform.rotation);
         return cad::geo::normalizeDeg360(ep->angle + rotDeg);
     }
     return worldDegOfSegment(block, seg);
@@ -77,7 +78,10 @@ QString evaluatedFollowValueText(const cad::param::Block* block,
     auto r = cad::param::ConditionEngine::evaluate(
         driven->angleFormula, doc->parameters(), {});
     if (!r.ok) return {};
-    const double rotDeg = block ? block->transform.rotation * 180.0 / M_PI : 0.0;
+    // 回显域规则 (审计 UI-P0-2 复核): 本分支显示的是**独立线段的绝对世界
+    // 方向** (点角公式 + 块旋转), 属世界域 → 0..360; 附件分支显示的是**跟随
+    // 折角**, 属折角域 → (−180,180]。两者是不同物理量, 各自与所属输入框同域。
+    const double rotDeg = block ? cad::geo::radToDeg(block->transform.rotation) : 0.0;
     const double deg = cad::geo::normalizeDeg360(r.value + rotDeg);
     return QString::fromUtf8("= %1°").arg(cad::geo::Units::formatDegValue(deg));
 }
@@ -121,7 +125,8 @@ ModeValue getAttachmentModeValue(const cad::param::Attachment& att)
     }
 }
 
-/// 计算附件在当前模式下表达的实际角度（度制，0~360° 归一化）.
+/// 计算附件在当前模式下表达的实际角度（度制; 角度模式返回折角显示域
+/// (−180,180], 弧长/开度返回 0..360 等效角）.
 double attachmentEffectiveAngleDeg(const cad::param::Attachment& att,
                                    const cad::param::ParamDocument* doc,
                                    double radius)
@@ -131,7 +136,7 @@ double attachmentEffectiveAngleDeg(const cad::param::Attachment& att,
         if (doc)
             (void)cad::param::ConditionEngine::evaluateLengthMm(
                 att.arcLengthFormula, doc->parameters(), doc->conditions(), arcMm);
-        const double alphaDeg = (radius > 1e-9) ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
+        const double alphaDeg = (radius > cad::geo::kGeomEps) ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
         return cad::geo::normalizeDeg360(alphaDeg);
     }
     if (att.rotationMode == cad::param::RotationMode::ChordLength) {
@@ -139,7 +144,7 @@ double attachmentEffectiveAngleDeg(const cad::param::Attachment& att,
         if (doc)
             (void)cad::param::ConditionEngine::evaluateLengthMm(
                 att.chordLengthFormula, doc->parameters(), doc->conditions(), chordMm);
-        const double alphaDeg = (radius > 1e-9) ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
+        const double alphaDeg = (radius > cad::geo::kGeomEps) ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
         return cad::geo::normalizeDeg360(alphaDeg);
     }
     double constDeg = att.followerAngle;
@@ -148,7 +153,8 @@ double attachmentEffectiveAngleDeg(const cad::param::Attachment& att,
             att.followerAngleFormula, doc->parameters(), doc->conditions());
         if (r.ok) constDeg = r.value;
     }
-    return constDeg;
+    // 显示域统一折角 (2026-12 审计 P0-2): 周期安全, 与输入框同域。
+    return cad::param::followerAngleToDisplay(constDeg);
 }
 
 /// 格式化附件跟随值（用于卡片回显，若无公式则返回空）.
@@ -157,32 +163,40 @@ QString formatAttachmentFormulaFollowValue(const cad::param::Attachment& att,
                                            double radius)
 {
     if (!doc || getAttachmentModeValue(att).formula.isEmpty()) return {};
-    const double foldDeg = cad::geo::normalizeDeg180(attachmentEffectiveAngleDeg(att, doc, radius));
+    // 2026-12 审计 P0-2 收口: 弧长/开度直接求值并原样显示 (cm), 不再经
+    // degToArcMm(foldDeg) 往返（等效角 >180° 时往返会显示成负值）;
+    // 角度走折角显示域。
     if (att.rotationMode == cad::param::RotationMode::ArcLength) {
-        return QString::fromUtf8("= %1 cm").arg(cad::geo::Units::formatNumberTrimmed(
-            cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius))));
+        double arcMm = att.arcLength;
+        (void)cad::param::ConditionEngine::evaluateLengthMm(
+            att.arcLengthFormula, doc->parameters(), doc->conditions(), arcMm);
+        return QString::fromUtf8("= %1").arg(
+            cad::geo::Units::formatLength(arcMm));
     }
     if (att.rotationMode == cad::param::RotationMode::ChordLength) {
-        return QString::fromUtf8("= %1 cm").arg(cad::geo::Units::formatNumberTrimmed(
-            cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius))));
+        double chordMm = att.chordLength;
+        (void)cad::param::ConditionEngine::evaluateLengthMm(
+            att.chordLengthFormula, doc->parameters(), doc->conditions(), chordMm);
+        return QString::fromUtf8("= %1").arg(
+            cad::geo::Units::formatLength(chordMm));
     }
+    const double foldDeg = cad::param::followerAngleToDisplay(
+        attachmentEffectiveAngleDeg(att, doc, radius));
     return QString::fromUtf8("= %1°").arg(cad::geo::Units::formatDegValue(foldDeg));
 }
 
 /// 格式化附件数值输入框显示内容（无公式时使用）.
+/// 2026-12 审计 P0-2 收口: 弧长/开度按存储值原样显示（cm）——此前经
+/// arcMmToDeg→normalizeDeg180→degToArcMm 往返，等效角 >180°（弧长 > πr）
+/// 时输入框会显示成负值，与用户输入/存储值不同数。
 QString formatAttachmentDisplayValue(cad::param::RotationMode mode, double value, double radius)
 {
-    if (mode == cad::param::RotationMode::ArcLength) {
-        const double alphaDeg = (radius > 1e-9) ? cad::geo::arcMmToDeg(value, radius) : 0.0;
-        return cad::geo::Units::formatNumberTrimmed(
-            cad::geo::Units::mmToCm(cad::geo::degToArcMm(cad::geo::normalizeDeg180(alphaDeg), radius)));
+    Q_UNUSED(radius);
+    if (mode == cad::param::RotationMode::ArcLength
+        || mode == cad::param::RotationMode::ChordLength) {
+        return cad::geo::Units::formatCm(value);
     }
-    if (mode == cad::param::RotationMode::ChordLength) {
-        const double alphaDeg = (radius > 1e-9) ? cad::geo::chordMmToDeg(value, radius) : 0.0;
-        return cad::geo::Units::formatNumberTrimmed(
-            cad::geo::Units::mmToCm(cad::geo::degToChordMm(cad::geo::normalizeDeg180(alphaDeg), radius)));
-    }
-    return cad::geo::Units::formatDegValue(cad::geo::normalizeDeg180(value));
+    return cad::geo::Units::formatDegValue(cad::param::followerAngleToDisplay(value));
 }
 
 } // namespace
@@ -270,13 +284,7 @@ void SegmentAngleCard::setTarget(const QUuid& blockId, const QUuid& segmentId)
 
 const cad::param::Attachment* SegmentAngleCard::findFollowerAttachment() const
 {
-    if (!m_doc) return nullptr;
-    for (const auto& att : m_doc->attachments()) {
-        if (att.isPin) continue;
-        if (att.fromBlockId == m_blockId)
-            return &att;
-    }
-    return nullptr;
+    return m_doc ? m_doc->findFollowerAttachmentOf(m_blockId) : nullptr;
 }
 
 void SegmentAngleCard::refresh()
@@ -380,7 +388,7 @@ void SegmentAngleCard::applyAngle()
     auto* seg = block->findSegment(m_segmentId);
     if (!seg) return;
 
-    const auto parsed = cad::geo::parseNumberOrFormula(m_editAngle->text());
+    const auto parsed = cad::geo::parseAngleText(m_editAngle->text());
     if (parsed.formula.isEmpty()) return;
 
     double targetDeg = parsed.value;
@@ -415,7 +423,7 @@ void SegmentAngleCard::applyAngle()
             QString newChordFormula = att->chordLengthFormula;
             if (att->rotationMode == cad::param::RotationMode::ArcLength) {
                 const double radius = block->segmentLengthAtPoint(att->fromPointId);
-                const double foldDeg = (radius > 1e-9)
+                const double foldDeg = (radius > cad::geo::kGeomEps)
                     ? cad::geo::arcMmToDeg(cad::geo::Units::cmToMm(targetDeg), radius) : 0.0;
                 const double alphaDeg = cad::geo::normalizeDeg360(foldDeg);
                 newArc = cad::geo::degToArcMm(alphaDeg, radius);
@@ -423,13 +431,13 @@ void SegmentAngleCard::applyAngle()
             } else if (att->rotationMode == cad::param::RotationMode::ChordLength) {
                 const double radius = block->segmentLengthAtPoint(att->fromPointId);
                 double chordMm = cad::geo::Units::cmToMm(targetDeg);
-                if (radius > 1e-9) {
+                if (radius > cad::geo::kGeomEps) {
                     chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
                 }
                 newChord = chordMm;
                 newChordFormula = parsed.isNumber ? QString() : parsed.formula;
             } else {
-                newAngle = cad::geo::normalizeDeg360(targetDeg);
+                newAngle = cad::param::followerAngleToStorage(targetDeg);
                 newAngleFormula = parsed.isNumber ? QString() : parsed.formula;
             }
             if (auto* stack = m_doc->undoStack()) {
@@ -461,10 +469,10 @@ void SegmentAngleCard::applyAngle()
             st.endRefPointId = seg->startPointId;
             st.endDistance = sp->resolvedPos.distanceTo(ep->resolvedPos);
         }
-        const double rotDeg = block->transform.rotation * 180.0 / M_PI;
+        const double rotDeg = cad::geo::radToDeg(block->transform.rotation);
         st.endAngle = targetDeg - rotDeg;
         st.endAngleFormula = (!parsed.isNumber)
-            ? ((std::abs(rotDeg) > 1e-9)
+            ? ((std::abs(rotDeg) > cad::geo::kGeomEps)
                 ? QStringLiteral("(%1)-%2").arg(parsed.formula).arg(rotDeg, 0, 'g', 12)
                 : parsed.formula)
             : QString();
@@ -494,8 +502,7 @@ void SegmentAngleCard::onAngleDirty()
 {
     m_editAngle->setStyleSheet(QString());
     const QString text = m_editAngle->text().trimmed();
-    bool isNumber = false;
-    text.toDouble(&isNumber);
+    const bool isNumber = cad::geo::parseAngleText(text).isNumber;
     m_lblFxAngle->setVisible(!isNumber && !text.isEmpty());
     emit angleEdited();
 }
@@ -555,13 +562,12 @@ void SegmentAngleCard::updateWorldAngleLabel(const cad::param::Attachment& att)
     // 有效基准方向 = 与 Resolver 同构 (自定义角度基准/两点连线全部生效,
     // 2026-09 审核 F1) —— 此前只取位置宿主出方向, 设了自定义基准后读数与
     // 线实际方向不符。
-    const double refWorldDeg = cad::param::effectiveAngleRefWorld(m_doc, att)
-        * 180.0 / M_PI;
+    const double refWorldDeg = cad::geo::radToDeg(cad::param::effectiveAngleRefWorld(m_doc, att));
     const auto* block = m_doc->blocksView().byId(m_blockId);
     const double radius = block ? block->segmentLengthAtPoint(att.fromPointId) : 0.0;
     const double constDeg = attachmentEffectiveAngleDeg(att, m_doc, radius);
     const double absDeg = cad::geo::normalizeDeg360(refWorldDeg + 180.0 - constDeg);
-    const QString text = QString::fromUtf8("= 绝对角度 %1°")
+    const QString text = QString::fromUtf8("= 世界角度 %1°")
                              .arg(cad::geo::Units::formatDegValue(absDeg));
     if (m_lblWorldAngle->text() != text)
         m_lblWorldAngle->setText(text);

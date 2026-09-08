@@ -11,7 +11,9 @@ enum class ThemeMode { Light, Dark };
 /// Single source of truth for the UI look: the QSS generator and the
 /// application palette are both derived from these tokens. Canvas-side
 /// tokens live in CanvasStyle and are kept in sync with these by hand
-/// (same accent / semantic families).
+/// (same accent / semantic families) — that contract is enforced by
+/// tests/test_theme_sync.cpp (2026-12 审计 P0-3 / G3); 改这里的令牌必须同步
+/// src/canvas/CanvasStyle.cpp，否则守卫测试红。
 ///
 /// Design language: Anthropic / Claude "Warm Editorial Minimalism" (数字手艺人工作台):
 /// 温润象牙制版图纸面 (#FAF9F5 / #141413) + 炭墨深字 (#141413 / #ECE9E2) +
@@ -133,6 +135,10 @@ public:
     [[nodiscard]] static QString purpleBadgeStyle();
     /// Dim secondary value (tertiary text family, e.g. placeholder readouts).
     [[nodiscard]] static QString dimValueStyle();
+
+    /// QSS rgba() string from a theme token + alpha fraction (审计 P0-1:
+    /// 消灭散落的 `rgba(220,38,38,32)` 类字面量，alpha 0.125 → 32)。
+    [[nodiscard]] static QString rgbaCss(const QColor& c, double alpha);
 
 private:
     static ThemeTokens s_tokens;

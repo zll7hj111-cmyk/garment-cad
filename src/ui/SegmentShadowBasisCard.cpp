@@ -11,11 +11,13 @@
 #include "parametric/Attachment.h"
 #include "geometry/Angle.h"
 #include "geometry/Units.h"
+#include "parametric/FollowerAngle.h"
 #include "ui/FormScaffold.h"
 #include "ui/TooltipFormatter.h"
 #include "ui/Theme.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -23,17 +25,6 @@ namespace {
 constexpr int kFieldH = 30;
 constexpr int kRefEditW = 88;
 
-const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
-                                                     const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (att.isPin) continue;
-        if (att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
 } // namespace
 
 SegmentShadowBasisCard::SegmentShadowBasisCard(cad::param::ParamDocument* doc, QWidget* parent)
@@ -77,7 +68,7 @@ void SegmentShadowBasisCard::setTarget(const QUuid& blockId, const QUuid& segmen
 void SegmentShadowBasisCard::refresh()
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     const auto* toBlkChk = att ? m_doc->findBlock(att->toBlockId) : nullptr;
     if (!toBlkChk || !toBlkChk->isShadow) return;
 
@@ -112,10 +103,10 @@ void SegmentShadowBasisCard::refresh()
     if (m_btnClearShadow) {
         m_btnClearShadow->setToolTip(shadowMounted
             ? cad::ui::TooltipFormatter::action(
-                QStringLiteral("清除基准"),
+                cad::ui::str::kClearBasis,
                 QStringLiteral("清除基准线与其挂载连接，本线变为纯自由线。"))
             : cad::ui::TooltipFormatter::action(
-                QStringLiteral("清除基准"),
+                cad::ui::str::kClearBasis,
                 QStringLiteral("清除基准线，本线变纯自由线 (角度/位置全自由)。")));
     }
 }
@@ -123,14 +114,14 @@ void SegmentShadowBasisCard::refresh()
 void SegmentShadowBasisCard::onShadowAngleEdited()
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     const auto* toBlk = att ? m_doc->findBlock(att->toBlockId) : nullptr;
     if (!att || !toBlk || !toBlk->isShadow) { refresh(); return; }
 
-    bool ok = false;
-    const double inputDeg = m_shadowAngleEdit->text().remove(QChar(0x00B0))
-                                .trimmed().toDouble(&ok);
-    if (!ok) { refresh(); return; }
+    // 解析统一走 parseAngleText (审计 UI-P0-7): 允许 "°" 后缀。
+    const auto parsed = cad::geo::parseAngleText(m_shadowAngleEdit->text());
+    if (!parsed.isNumber) { refresh(); return; }
+    const double inputDeg = parsed.value;
 
     const cad::param::Attachment* att1 = nullptr;
     for (const auto& a : m_doc->attachments()) {
@@ -143,9 +134,9 @@ void SegmentShadowBasisCard::onShadowAngleEdited()
     if (att1) {
         if (auto* stack = m_doc->undoStack())
             stack->push(new cad::cmd::SetFollowerAngleCommand(
-                m_doc, att1->id, cad::geo::normalizeDeg180(inputDeg)));
+                m_doc, att1->id, cad::param::followerAngleToStorage(inputDeg)));
         else if (auto* mut = m_doc->findAttachment(att1->id)) {
-            mut->followerAngle = cad::geo::normalizeDeg180(inputDeg);
+            mut->followerAngle = cad::param::followerAngleToStorage(inputDeg);
             m_doc->resolveAll();
         }
     } else {
@@ -182,7 +173,7 @@ void SegmentShadowBasisCard::onShadowAngleEdited()
 void SegmentShadowBasisCard::onClearShadowClicked()
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     const auto* toBlk = att ? m_doc->findBlock(att->toBlockId) : nullptr;
     if (!att || !toBlk || !toBlk->isShadow) { refresh(); return; }
     if (auto* stack = m_doc->undoStack())

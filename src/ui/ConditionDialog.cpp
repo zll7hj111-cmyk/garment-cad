@@ -14,6 +14,8 @@
 #include "ElaText.h"
 #include <QFrame>
 #include "ui/ElaDialogButtons.h"
+#include "ui/NumericFieldSpecs.h"
+#include "ui/UiStrings.h"
 
 namespace {
 
@@ -21,9 +23,7 @@ ElaDoubleSpinBox* makeSpin(QWidget* parent, double value = 0.0)
 {
     auto* s = new ElaDoubleSpinBox(parent);
     s->setRange(-99999.0, 99999.0);
-    s->setDecimals(2);
-    s->setSuffix(QStringLiteral(" cm"));
-    s->setSingleStep(0.5);
+    cad::ui::applyNumericSpec(s, cad::ui::kLengthCmSpec);
     s->setValue(value);
     s->setFixedWidth(86);
     s->setButtonSymbols(QAbstractSpinBox::NoButtons);
@@ -173,7 +173,7 @@ ConditionDialog::Row* ConditionDialog::buildRow(const cad::param::Condition& con
     row->watch->setToolTip(cad::ui::TooltipFormatter::action(
         QStringLiteral("监视变量"),
         QStringLiteral("被条件规则监视的变量（表达式中引用的基准尺寸）")));
-    lay->addWidget(makeText(row->widget, QStringLiteral("变量")));
+    lay->addWidget(makeText(row->widget, cad::ui::str::kVariable));
     lay->addWidget(row->watch, 0);
 
     // Lower bound.

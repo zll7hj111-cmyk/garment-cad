@@ -3,7 +3,6 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
-#include <QDoubleValidator>
 
 #include "ElaLineEdit.h"
 #include "ElaText.h"
@@ -13,6 +12,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Serial.h"
+#include "geometry/Units.h"
 #include "canvas/CanvasScene.h"
 #include "document/commands/EndpointCommands.h"
 
@@ -186,11 +186,11 @@ void PlacedPointDialog::populateFromModel()
     }
 
     // Offset distance: internal mm -> UI cm
-    m_editOffsetDist->setText(QString::number(pt->interpOffsetDist / 10.0, 'f', 2));
+    m_editOffsetDist->setText(cad::geo::Units::formatCm(pt->interpOffsetDist));
     m_editOffsetDistFormula->setText(pt->interpOffsetDistFormula);
 
     // Offset angle: degrees
-    m_editOffsetAngle->setText(QString::number(pt->interpOffsetAngle, 'f', 1));
+    m_editOffsetAngle->setText(cad::geo::Units::formatDegValue(pt->interpOffsetAngle));
     m_editOffsetAngleFormula->setText(pt->interpOffsetAngleFormula);
 }
 
@@ -198,13 +198,13 @@ void PlacedPointDialog::applyToPoint(cad::param::ParamPoint& pt) const
 {
     pt.name = m_editName->text().trimmed();
 
-    bool ok = false;
-    double distCm = m_editOffsetDist->text().toDouble(&ok);
-    if (ok) pt.interpOffsetDist = distCm * 10.0;
+    // 数值框判读走统一入口 (UI-P1-9); 公式走各自独立公式框。
+    const auto dist = cad::geo::parseNumberOrFormula(m_editOffsetDist->text());
+    if (dist.isNumber) pt.interpOffsetDist = cad::geo::Units::cmToMm(dist.value);
     pt.interpOffsetDistFormula = m_editOffsetDistFormula->text().trimmed();
 
-    double angleDeg = m_editOffsetAngle->text().toDouble(&ok);
-    if (ok) pt.interpOffsetAngle = angleDeg;
+    const auto angle = cad::geo::parseAngleText(m_editOffsetAngle->text());
+    if (angle.isNumber) pt.interpOffsetAngle = angle.value;
     pt.interpOffsetAngleFormula = m_editOffsetAngleFormula->text().trimmed();
 }
 

@@ -18,6 +18,7 @@
 #include "ui/Theme.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -26,17 +27,6 @@ constexpr int kFieldH = 30;
 constexpr int kBtnW = 48;
 constexpr int kRefEditW = 88;
 
-const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
-                                                     const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (att.isPin) continue;
-        if (att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
 } // namespace
 
 SegmentAngleRefCard::SegmentAngleRefCard(cad::param::ParamDocument* doc, QWidget* parent)
@@ -102,8 +92,8 @@ SegmentAngleRefCard::SegmentAngleRefCard(cad::param::ParamDocument* doc, QWidget
     m_btnLinkCurrent->setStyleSheet(cad::ui::chipButtonStyle());
     m_btnLinkCurrent->setCursor(Qt::PointingHandCursor);
     m_btnLinkCurrent->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("链接当前线"),
-        QStringLiteral("清空自定义基准，角度跟随所连线段的方向。")));
+        cad::ui::str::kLinkCurrentLine,
+        cad::ui::str::kClearCustomBasisTip));
     m_btnLinkCurrent->setVisible(false);
     row->addWidget(m_btnLinkCurrent);
 
@@ -137,7 +127,7 @@ void SegmentAngleRefCard::refresh()
 {
     if (!m_doc) return;
     const auto* block = m_doc->findBlock(m_blockId);
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
 
     if (m_shadowBasisMode) {
         if (m_lblDirWord) m_lblDirWord->setVisible(false);
@@ -159,16 +149,10 @@ void SegmentAngleRefCard::refresh()
             if (att && !att->angleIndependent) {
                 const double refDeg = cad::geo::normalizeDeg180(
                     cad::geo::radToDeg(cad::param::effectiveAngleRefWorld(m_doc, *att)));
-                QString text = QString::fromUtf8("母线基准：%1°").arg(cad::geo::Units::formatDegValue(refDeg));
-                if (block && block->preservedBenchmarkAngle.has_value()) {
-                    text += QString::fromUtf8(" (保持原基准 %1°)").arg(
-                        cad::geo::Units::formatDegValue(*block->preservedBenchmarkAngle));
-                    if (m_btnResetBenchmark) m_btnResetBenchmark->setVisible(true);
-                } else {
-                    if (m_btnResetBenchmark) m_btnResetBenchmark->setVisible(false);
-                }
+                const QString text = QString::fromUtf8("母线基准：%1°").arg(cad::geo::Units::formatDegValue(refDeg));
                 m_lblDirWord->setText(text);
-                m_lblDirWord->setFixedWidth(block && block->preservedBenchmarkAngle.has_value() ? 240 : 130);
+                m_lblDirWord->setFixedWidth(130);
+                if (m_btnResetBenchmark) m_btnResetBenchmark->setVisible(false);
             } else {
                 m_lblDirWord->setText(QString::fromUtf8("自由线 (世界角)"));
                 m_lblDirWord->setFixedWidth(110);
@@ -197,10 +181,10 @@ void SegmentAngleRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
     } else {
         m_btnIndependent->setToolTip(hasAtt
             ? cad::ui::TooltipFormatter::action(
-                QStringLiteral("独立角度"),
+                cad::ui::str::kIndependentAngle,
                 QStringLiteral("角度改用世界角度（不跟任何线）；输入框随之清空。"))
             : cad::ui::TooltipFormatter::action(
-                QStringLiteral("独立角度"),
+                cad::ui::str::kIndependentAngle,
                 QStringLiteral("需要先建立连接（自由线的角度本就是世界角度）。")));
     }
 
@@ -213,11 +197,11 @@ void SegmentAngleRefCard::refreshAngleRefRow(const cad::param::Attachment* att)
         m_btnLinkCurrent->setEnabled(hasAtt && !att->angleRefBlockId.isNull());
         m_btnLinkCurrent->setToolTip(independent
             ? cad::ui::TooltipFormatter::action(
-                QStringLiteral("链接当前线"),
+                cad::ui::str::kLinkCurrentLine,
                 QStringLiteral("清空自定义基准并退出独立角，角度跟随所连线段的方向。"))
             : cad::ui::TooltipFormatter::action(
-                QStringLiteral("链接当前线"),
-                QStringLiteral("清空自定义基准，角度跟随所连线段的方向。")));
+                cad::ui::str::kLinkCurrentLine,
+                cad::ui::str::kClearCustomBasisTip));
     }
 
     if (!att) return;
@@ -263,7 +247,7 @@ void SegmentAngleRefCard::onAngleRefPointResolved(const QUuid& blockId,
                                                   const QUuid& pointId)
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     if (!att) {
         m_angleRefPoint->setPoint(blockId, pointId);
         refreshAngleRefRow(nullptr);
@@ -293,7 +277,7 @@ void SegmentAngleRefCard::onAngleRefPoint2Resolved(const QUuid& blockId,
                                                    const QUuid& pointId)
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     if (!att) {
         m_angleRefPoint2->setPoint(blockId, pointId);
         refreshAngleRefRow(nullptr);
@@ -346,7 +330,7 @@ void SegmentAngleRefCard::onAngleRefPoint2Resolved(const QUuid& blockId,
 void SegmentAngleRefCard::onIndependentToggled(bool checked)
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     if (!att) { refresh(); return; }
     if (auto* stack = m_doc->undoStack())
         stack->push(new cad::cmd::SetAttachmentAngleIndependentCommand(
@@ -360,7 +344,7 @@ void SegmentAngleRefCard::onIndependentToggled(bool checked)
 void SegmentAngleRefCard::onLinkCurrentLineClicked()
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     if (!att || att->angleRefBlockId.isNull()) {
         refresh();
         return;
@@ -382,7 +366,7 @@ void SegmentAngleRefCard::onResetBenchmarkClicked()
     auto* blk = m_doc->findBlock(m_blockId);
     if (!blk) return;
     blk->preservedBenchmarkAngle.reset();
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     if (att) {
         const auto* toBlk = m_doc->findBlock(att->toBlockId);
         if (toBlk) {

@@ -13,16 +13,6 @@ namespace cad::ui {
 // undo 语义: 离散语义操作各自入栈 (与会话回放范式一致), 无 undo 栈
 // (测试直改路径) 逐处回退门面直写。
 
-const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
-                                                    const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (!att.isPin && att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
 
 void LineEndpointSection::onStartConnectResolved(const QUuid& blockId, const QUuid& pointId)
 {
@@ -32,7 +22,7 @@ void LineEndpointSection::onStartConnectResolved(const QUuid& blockId, const QUu
     if (!block || !seg) return;
     if (!m_topIsStart) { refreshEndpointConnRows(); return; }
 
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+    const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
     if (att) {
         auto* mut = m_paramDoc->findAttachment(att->id);
         if (!mut) return;
@@ -131,7 +121,7 @@ void LineEndpointSection::onStartConnectResolved(const QUuid& blockId, const QUu
 void LineEndpointSection::onStartDetachClicked()
 {
     if (!m_paramDoc) return;
-    const auto* att = findFollowerAttachment(m_paramDoc, m_blockId);
+    const auto* att = m_paramDoc->findFollowerAttachmentOf(m_blockId);
     if (!att || !m_topIsStart) { refreshEndpointConnRows(); return; }
     const auto* leaderBlk = m_paramDoc->findBlock(att->toBlockId);
     const auto* leaderPt = leaderBlk ? leaderBlk->findPoint(att->toPointId) : nullptr;

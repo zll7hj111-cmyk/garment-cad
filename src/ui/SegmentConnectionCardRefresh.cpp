@@ -14,6 +14,8 @@
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
 #include "geometry/Units.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -66,8 +68,8 @@ void SegmentConnectionCard::refreshUnifiedState(const cad::param::Attachment* at
         }
     }
     m_refConnPoint->setToolTip(hasAtt
-        ? cad::ui::TooltipFormatter::action(QStringLiteral("连接点"), QStringLiteral("输入目标点 P 编号回车重定向到该点（角度反算无跳变）"))
-        : cad::ui::TooltipFormatter::action(QStringLiteral("连接点"), QStringLiteral("输入目标点 P 编号回车建立连接")));
+        ? cad::ui::TooltipFormatter::action(cad::ui::str::kConnectionPoint, QStringLiteral("输入目标点 P 编号回车重定向到该点（角度反算无跳变）"))
+        : cad::ui::TooltipFormatter::action(cad::ui::str::kConnectionPoint, QStringLiteral("输入目标点 P 编号回车建立连接")));
 
     // ── 拆开/重连 双面按钮 (位置维度, 2026-xx 用户拍板): 拆开 = 位置自由
     // (angleOnly, 角度仍跟随基准线); 重连 = 位置重新吸附回原宿主 + 重新焊接。
@@ -88,11 +90,11 @@ void SegmentConnectionCard::refreshUnifiedState(const cad::param::Attachment* at
     m_btnDetach->setEnabled(canReconnect);
     if (hasAtt && att->angleOnly) {
         m_btnDetach->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("重新连接位置"),
+            cad::ui::str::kReconnectPosition,
             QStringLiteral("位置重新吸附回原宿主点并重新焊接，角度基准保留")));
     } else {
         m_btnDetach->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("拆开位置连接"),
+            cad::ui::str::kDetachPositionLink,
             QStringLiteral("解除位置吸附（角度仍跟随基准线，快拆与 D 键同语义）；配合基准点「拆开」可让位置与角度都自由（自由线）")));
     }
 
@@ -126,8 +128,8 @@ void SegmentConnectionCard::refreshEndRow(const cad::param::Block* block)
             m_refEndPoint->clearPoint();
     }
     m_refEndPoint->setToolTip(hasEnd
-        ? cad::ui::TooltipFormatter::action(QStringLiteral("终点连接点"), QStringLiteral("输入目标点 P 编号回车重定向终点指向（角度反算无跳变）"))
-        : cad::ui::TooltipFormatter::action(QStringLiteral("终点连接点"), QStringLiteral("输入目标点 P 编号回车建立终点连接")));
+        ? cad::ui::TooltipFormatter::action(cad::ui::str::kEndConnectPoint, QStringLiteral("输入目标点 P 编号回车重定向终点指向（角度反算无跳变）"))
+        : cad::ui::TooltipFormatter::action(cad::ui::str::kEndConnectPoint, QStringLiteral("输入目标点 P 编号回车建立终点连接")));
 
     // 偏移(°).
     {
@@ -152,7 +154,7 @@ void SegmentConnectionCard::refreshEndRow(const cad::param::Block* block)
                 QStringLiteral("重新连接终点"),
                 QStringLiteral("恢复到最近一次的目标点"))
             : cad::ui::TooltipFormatter::action(
-                QStringLiteral("终点连接"),
+                cad::cmd::texts::kEndConnect,
                 QStringLiteral("暂无终点连接：输入目标点 P# 建立"))));
 }
 

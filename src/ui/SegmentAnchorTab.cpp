@@ -20,6 +20,8 @@
 #include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
 #include "document/commands/BlockCommands.h"  // SetCurveTangentCommand / ReleaseCurveFollowCommand (P0-3)
+#include "geometry/Epsilon.h"
+#include "ui/NumericFieldSpecs.h"
 
 namespace cad::ui {
 
@@ -72,15 +74,13 @@ void SegmentAnchorTab::build(ElaTabWidget* tabs)
     m_spinTanAngleIn = new ElaDoubleSpinBox(this);
     m_spinTanAngleIn->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_spinTanAngleIn->setRange(-360.0, 360.0);
-    m_spinTanAngleIn->setDecimals(1);
-    m_spinTanAngleIn->setSuffix(QString::fromUtf8("°"));
+    cad::ui::applyNumericSpec(m_spinTanAngleIn, cad::ui::kAngleDegSpec);
     inRow->addWidget(m_spinTanAngleIn, 1);
     inRow->addWidget(new ElaText(QString::fromUtf8("长度:"), 13, this));
     m_spinTanLenIn = new ElaDoubleSpinBox(this);
     m_spinTanLenIn->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_spinTanLenIn->setRange(0.0, 999.0);
-    m_spinTanLenIn->setDecimals(2);
-    m_spinTanLenIn->setSuffix(QStringLiteral(" cm"));
+    cad::ui::applyNumericSpec(m_spinTanLenIn, cad::ui::kLengthCmSpec);
     inRow->addWidget(m_spinTanLenIn, 1);
     layout->addLayout(inRow);
 
@@ -90,15 +90,13 @@ void SegmentAnchorTab::build(ElaTabWidget* tabs)
     m_spinTanAngleOut = new ElaDoubleSpinBox(this);
     m_spinTanAngleOut->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_spinTanAngleOut->setRange(-360.0, 360.0);
-    m_spinTanAngleOut->setDecimals(1);
-    m_spinTanAngleOut->setSuffix(QString::fromUtf8("°"));
+    cad::ui::applyNumericSpec(m_spinTanAngleOut, cad::ui::kAngleDegSpec);
     outRow->addWidget(m_spinTanAngleOut, 1);
     outRow->addWidget(new ElaText(QString::fromUtf8("长度:"), 13, this));
     m_spinTanLenOut = new ElaDoubleSpinBox(this);
     m_spinTanLenOut->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_spinTanLenOut->setRange(0.0, 999.0);
-    m_spinTanLenOut->setDecimals(2);
-    m_spinTanLenOut->setSuffix(QStringLiteral(" cm"));
+    cad::ui::applyNumericSpec(m_spinTanLenOut, cad::ui::kLengthCmSpec);
     outRow->addWidget(m_spinTanLenOut, 1);
     layout->addLayout(outRow);
 
@@ -227,16 +225,16 @@ void SegmentAnchorTab::build(ElaTabWidget* tabs)
         const auto* ep = block->findPoint(seg->endPointId);
         if (!sp || !ep || !sp->resolved || !ep->resolved) return;
         const cad::geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
-        const double chordAngle = std::atan2(chord.y, chord.x) * 180.0 / M_PI;
+        const double chordAngle = cad::geo::radToDeg(std::atan2(chord.y, chord.x));
         // Tangent-in: angle relative to chord, length in cm→mm.
         const double angIn = m_spinTanAngleIn->value() + chordAngle;
         const double lenIn = cad::geo::Units::cmToMm(m_spinTanLenIn->value());
-        const double radIn = angIn * M_PI / 180.0;
+        const double radIn = cad::geo::degToRad(angIn);
         const cad::geo::Vec2 newIn(std::cos(radIn) * lenIn, std::sin(radIn) * lenIn);
         // Tangent-out.
         const double angOut = m_spinTanAngleOut->value() + chordAngle;
         const double lenOut = cad::geo::Units::cmToMm(m_spinTanLenOut->value());
-        const double radOut = angOut * M_PI / 180.0;
+        const double radOut = cad::geo::degToRad(angOut);
         const cad::geo::Vec2 newOut(std::cos(radOut) * lenOut, std::sin(radOut) * lenOut);
         // Editing switches to manual mode.
         pushTangent(row, newIn, newOut, false, pt->tangentLocked);
@@ -312,7 +310,7 @@ void SegmentAnchorTab::refreshFields(int row)
     double chordAngle = 0.0;
     if (sp && ep && sp->resolved && ep->resolved) {
         const cad::geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
-        chordAngle = std::atan2(chord.y, chord.x) * 180.0 / M_PI;
+        chordAngle = cad::geo::radToDeg(std::atan2(chord.y, chord.x));
     }
 
     // Get effective tangents: stored manual values, or C2 auto-solved values.
@@ -345,14 +343,14 @@ void SegmentAnchorTab::refreshFields(int row)
     }
 
     // Always show values and keep editable (editing switches to manual).
-    const double angIn = std::atan2(tanIn.y, tanIn.x) * 180.0 / M_PI;
+    const double angIn = cad::geo::radToDeg(std::atan2(tanIn.y, tanIn.x));
     double relAngIn = cad::geo::normalizeDeg180(angIn - chordAngle);
-    m_spinTanAngleIn->setValue(tanIn.lengthSquared() > 1e-12 ? relAngIn : 0.0);
+    m_spinTanAngleIn->setValue(tanIn.lengthSquared() > cad::geo::kGeomEpsTight ? relAngIn : 0.0);
     m_spinTanLenIn->setValue(cad::geo::Units::mmToCm(tanIn.length()));
 
-    const double angOut = std::atan2(tanOut.y, tanOut.x) * 180.0 / M_PI;
+    const double angOut = cad::geo::radToDeg(std::atan2(tanOut.y, tanOut.x));
     double relAngOut = cad::geo::normalizeDeg180(angOut - chordAngle);
-    m_spinTanAngleOut->setValue(tanOut.lengthSquared() > 1e-12 ? relAngOut : 0.0);
+    m_spinTanAngleOut->setValue(tanOut.lengthSquared() > cad::geo::kGeomEpsTight ? relAngOut : 0.0);
     m_spinTanLenOut->setValue(cad::geo::Units::mmToCm(tanOut.length()));
 
     m_spinTanAngleIn->setEnabled(true);

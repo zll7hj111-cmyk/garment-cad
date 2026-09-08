@@ -14,6 +14,7 @@
 #include <QFontMetrics>
 #include <QSignalBlocker>
 #include <QRegularExpression>
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -231,7 +232,7 @@ void CompoundChip::setName(const QString& name)
                 "font-size: %1px; color: %2; background: transparent; padding-left: 5px;")
                 .arg(QString::number(cad::ui::ThemeTokens::FontMd),
                      cad::ui::Theme::tokens().text3.name()));
-            m_nameLabel->setToolTip(QStringLiteral("双击设置名称"));
+            m_nameLabel->setToolTip(cad::ui::str::kDoubleClickRename);
         } else {
             m_nameLabel->setText(m_name);
             m_nameLabel->setPlaceholder(false);

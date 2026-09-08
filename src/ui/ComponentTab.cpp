@@ -14,6 +14,7 @@
 
 #include "document/commands/AttachmentCommands.h"
 #include "geometry/Angle.h"
+#include "geometry/Units.h"
 
 #include "ElaScrollArea.h"
 #include "ElaText.h"
@@ -22,10 +23,13 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Component.h"
 #include "parametric/ConditionEngine.h"
+#include "parametric/FollowerAngle.h"
 #include "document/commands/ComponentCommands.h"
 #include "ui/Theme.h"
 #include "ui/TooltipFormatter.h"
 #include "ui/FormScaffold.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -168,7 +172,7 @@ void ComponentTab::rebuild()
         // 行1: 序号 + 名称(可编辑) + 成员数.
         auto* r1 = new QHBoxLayout();
         r1->setSpacing(6);
-        auto* idx = new QLabel(QStringLiteral("组件 %1").arg(index + 1), body);
+        auto* idx = new QLabel(cad::ui::str::kComponentFmt.arg(index + 1), body);
         idx->setObjectName(QStringLiteral("componentIndex"));
         auto* name = new ElaLineEdit(body);
         name->setText(c.name);
@@ -192,7 +196,7 @@ void ComponentTab::rebuild()
             QStringLiteral("组原始角度"),
             QStringLiteral("组的基准角度（「回正」的目标），可填数值或公式")));
         origEdit->setText(c.defaultAngleFormula.isEmpty()
-            ? QString::number(cad::geo::normalizeDeg360(c.defaultAngleDeg), 'f', 1)
+            ? cad::geo::Units::formatDegValue(cad::geo::normalizeDeg360(c.defaultAngleDeg))
             : c.defaultAngleFormula);
         auto* origFx = new ElaText(
             QStringLiteral("<i style='color:%1;'>fx</i>").arg(tok.text2.name()), 13, body);
@@ -204,7 +208,7 @@ void ComponentTab::rebuild()
         if (!c.defaultAngleFormula.isEmpty()) {
             auto rr = cad::param::ConditionEngine::evaluate(
                 c.defaultAngleFormula, m_doc->parameters(), m_doc->conditions());
-            if (rr.ok) origVal->setText(QStringLiteral("= %1°").arg(rr.value, 0, 'f', 1));
+            if (rr.ok) origVal->setText(QStringLiteral("= %1°").arg(cad::geo::Units::formatDegValue(rr.value)));
         }
         r2->addWidget(origLabel);
         r2->addWidget(origEdit, 1);
@@ -222,7 +226,7 @@ void ComponentTab::rebuild()
         dockEdit->setEnabled(false);
         dockEdit->setToolTip(cad::ui::TooltipFormatter::action(
             QStringLiteral("对接跟随角"),
-            QStringLiteral("组对接外部基准线的跟随角度（0°=折叠、180°=沿外部线直行），可填数值或公式")));
+            QStringLiteral("组对接外部基准线的跟随角度（0°=折叠、±90°=垂直、±180°=沿外部线直行），可填数值或公式")));
         auto* dockFx = new ElaText(
             QStringLiteral("<i style='color:%1;'>fx</i>").arg(tok.text2.name()), 13, body);
         dockFx->setFixedWidth(18);
@@ -236,15 +240,19 @@ void ComponentTab::rebuild()
             if (a.fromComponentId == c.id) {
                 compAttId = a.id;
                 dockEdit->setEnabled(true);
+                // 2026-12 审计 P0-2: 显示统一折角域 (此前此处 360 域,
+                // 与角度卡的 −90° 同角不同数)。
                 if (a.followerAngleFormula.isEmpty()) {
-                    dockEdit->setText(QString::number(
-                        cad::geo::normalizeDeg360(a.followerAngle), 'f', 1));
+                    dockEdit->setText(cad::geo::Units::formatDegValue(
+                        cad::param::followerAngleToDisplay(a.followerAngle)));
                 } else {
                     dockEdit->setText(a.followerAngleFormula);
                     dockFx->setVisible(true);
                     auto rr = cad::param::ConditionEngine::evaluate(
                         a.followerAngleFormula, m_doc->parameters(), m_doc->conditions());
-                    if (rr.ok) dockVal->setText(QStringLiteral("= %1°").arg(rr.value, 0, 'f', 1));
+                    if (rr.ok) dockVal->setText(QStringLiteral("= %1°").arg(
+                        cad::geo::Units::formatDegValue(
+                            cad::param::followerAngleToDisplay(rr.value))));
                 }
                 break;
             }
@@ -273,14 +281,14 @@ void ComponentTab::rebuild()
             QStringLiteral("组件回正"),
             QStringLiteral("回到初始状态（断开对接 + 转回原始角 + 清除公式）")));
         detachBtn->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("断开连接"),
+            cad::cmd::texts::kDisconnect,
             QStringLiteral("断开组对接外部线的连接约束")));
         detachBtn->setVisible(!compAttId.isNull());
         dissolveBtn->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("解散组件"),
+            cad::cmd::texts::kDissolveComponent,
             QStringLiteral("解散组结构，组内图元保持当前绝对位置释放为独立图元")));
         delBtn->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("删除组件"),
+            cad::cmd::texts::kDeleteComponent,
             QStringLiteral("彻底删除当前组件及其所包含的全部图元")));
         v->addLayout(r3);
 
@@ -312,8 +320,9 @@ void ComponentTab::rebuild()
                     const auto* comp = m_doc->componentsView().byId(compId);
                     if (!comp) return;
                     const QString text = origEdit->text().trimmed();
-                    bool isNum = false;
-                    const double num = text.toDouble(&isNum);
+                    const auto parsed = cad::geo::parseAngleText(text);
+                    const bool isNum = parsed.isNumber;
+                    const double num = parsed.value;
                     const QString formula = isNum ? QString() : text;
                     const double deg = isNum ? cad::geo::normalizeDeg360(num)
                                              : comp->defaultAngleDeg;
@@ -333,11 +342,13 @@ void ComponentTab::rebuild()
                     const auto* att = m_doc->findAttachment(compAttId);
                     if (!att) return;
                     const QString text = dockEdit->text().trimmed();
-                    bool isNum = false;
-                    const double num = text.toDouble(&isNum);
+                    const auto parsed = cad::geo::parseAngleText(text);
+                    const bool isNum = parsed.isNumber;
+                    const double num = parsed.value;
                     const QString formula = isNum ? QString() : text;
-                    const double deg = isNum ? cad::geo::normalizeDeg360(num)
-                                             : att->followerAngle;
+                    const double deg = isNum
+                        ? cad::param::followerAngleToStorage(num)
+                        : att->followerAngle;
                     m_undoStack->push(new cad::cmd::SetFollowerAngleCommand(
                         m_doc, compAttId, deg, formula));
                 });
@@ -361,7 +372,7 @@ void ComponentTab::rebuild()
             const auto* comp = m_doc->componentsView().byId(compId);
             if (!comp) return;
             const auto ret = QMessageBox::question(
-                this, QStringLiteral("删除组件"),
+                this, cad::cmd::texts::kDeleteComponent,
                 QStringLiteral("删除组件「%1」将连同 %2 条成员线段一起删除，是否继续？")
                     .arg(comp->name).arg(static_cast<int>(comp->memberBlockIds.size())));
             if (ret != QMessageBox::Yes) return;

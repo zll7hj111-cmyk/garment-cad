@@ -11,6 +11,9 @@
 #include "parametric/Serial.h"
 #include "ui/ElaDialogButtons.h"
 #include "ui/FormScaffold.h"
+#include "geometry/Epsilon.h"
+#include "geometry/Units.h"
+#include "document/CommandTexts.h"
 
 namespace cad::ui {
 
@@ -26,7 +29,7 @@ QuickAuxDialog::QuickAuxDialog(const cad::param::ParamPoint& pt,
     // look up / copy formulas while this dialog stays open (the smart pen
     // tool ignores canvas clicks until the dialog is answered).
     setModal(false);
-    setWindowTitle(QStringLiteral("新建辅助点"));
+    setWindowTitle(cad::cmd::texts::kNewAuxPoint);
 
     // ElaAppBar's default close path is `close(); processEvents();
     // windowHandle->close();` — with the old self-deleteLater it destroyed the
@@ -71,10 +74,9 @@ QuickAuxDialog::QuickAuxDialog(const cad::param::ParamPoint& pt,
     // click's X marker by swapping t ↔ 1−t, but only while the field still
     // holds the untouched prefill (a user-typed value/formula is preserved).
     connect(m_form, &AuxPointForm::directionChanged, this, [this](bool fromEnd) {
-        bool isNum = false;
-        const double cur = m_form->percentText().trimmed().toDouble(&isNum);
+        const auto parsed = cad::geo::parseNumberOrFormula(m_form->percentText());
         const double expect = fromEnd ? m_prefillT : (1.0 - m_prefillT);
-        if (isNum && std::abs(cur - expect) < 1e-9)
+        if (parsed.isNumber && std::abs(parsed.value - expect) < cad::geo::kGeomEps)
             m_form->setPercentText(QString::number(fromEnd ? (1.0 - m_prefillT)
                                                            : m_prefillT, 'g', 6));
     });

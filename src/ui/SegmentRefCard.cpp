@@ -14,17 +14,6 @@
 namespace cad::ui {
 
 namespace {
-const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
-                                                     const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (att.isPin) continue;
-        if (att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
 } // namespace
 
 SegmentRefCard::SegmentRefCard(cad::param::ParamDocument* doc,
@@ -80,7 +69,7 @@ void SegmentRefCard::refresh()
 {
     if (!m_doc) return;
     const auto* block = m_doc->findBlock(m_blockId);
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
 
     setVisible(true);
 

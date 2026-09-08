@@ -21,6 +21,7 @@
 #include "MeasureTab.h"
 
 #include "parametric/ParamDocument.h"
+#include "document/CommandTexts.h"
 
 namespace cad::ui {
 
@@ -156,7 +157,7 @@ void VariablePanel::setupUi()
         QStringLiteral("tree-structure"), cad::ui::Theme::tokens().text1));
     m_addGroupBtn->setIconSize(QSize(14, 14));
     m_addGroupBtn->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("新建分组"),
+        cad::cmd::texts::kNewGroup,
         QStringLiteral("为公式变量创建逻辑分类分组，便于折叠和结构化管理")));
     m_addGroupBtn->setFixedSize(26, 26);
     m_addGroupBtn->setCursor(Qt::PointingHandCursor);
@@ -165,7 +166,8 @@ void VariablePanel::setupUi()
     metaLayout->addWidget(m_addGroupBtn);
 
     m_addBtn = new ElaPushButton(QStringLiteral("添加"), metaRow);
-    m_addBtn->setIcon(cad::ui::IconHelper::iconByName(QStringLiteral("plus"), Qt::white));
+    m_addBtn->setIcon(cad::ui::IconHelper::iconByName(
+        QStringLiteral("plus"), cad::ui::Theme::tokens().onAccent));
     m_addBtn->setIconSize(QSize(12, 12));
     m_addBtn->setCursor(Qt::PointingHandCursor);
     m_addBtn->setToolTip(cad::ui::TooltipFormatter::action(

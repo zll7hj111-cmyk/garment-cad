@@ -18,6 +18,8 @@
 #include "parametric/Attachment.h"
 #include "geometry/Units.h"
 #include "ui/Theme.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -70,7 +72,7 @@ void SegmentConnectionCard::buildConnRow(QVBoxLayout* lay)
     auto* startCap = new ElaText(QString::fromUtf8("起点连接"), 12, m_connRow);
     startCap->setStyleSheet(QStringLiteral("font-size:12px; font-weight:600;"));
     startCap->setToolTip(cad::ui::TooltipFormatter::status(
-        QStringLiteral("起点连接"),
+        cad::ui::str::kStartConnect,
         QStringLiteral("本线作为跟随线吸附到基准线段（位置 + 角度跟随）"),
         false));
     connV->addWidget(startCap);
@@ -132,7 +134,7 @@ void SegmentConnectionCard::buildEndRow(QVBoxLayout* lay)
     auto* endCap = new ElaText(QString::fromUtf8("终点连接"), 12, m_endRow);
     endCap->setStyleSheet(QStringLiteral("font-size:12px; font-weight:600;"));
     endCap->setToolTip(cad::ui::TooltipFormatter::status(
-        QStringLiteral("终点连接"),
+        cad::cmd::texts::kEndConnect,
         QStringLiteral("终点指向目标线段上的目标点（旋转指向）；两端都连上即为桥接线"),
         false));
     endV->addWidget(endCap);
@@ -164,7 +166,7 @@ void SegmentConnectionCard::buildEndRow(QVBoxLayout* lay)
     m_refEndPoint->setFixedWidth(140);
     m_refEndPoint->setFixedHeight(kFieldH);
     m_refEndPoint->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("终点连接点"),
+        cad::ui::str::kEndConnectPoint,
         QStringLiteral("输入目标点 P 编号回车建立终点连接（终点指向该点）；已有指向则重定向")));
     row2->addWidget(m_refEndPoint);
     auto* lblOff = new ElaText(QString::fromUtf8("偏移(°)"), 11, m_endRow);

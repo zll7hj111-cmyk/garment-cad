@@ -8,6 +8,7 @@
 #include "ElaPushButton.h"
 #include <QSignalBlocker>
 
+#include "geometry/Units.h"
 #include "parametric/ParamPoint.h"
 #include "ui/FormScaffold.h"
 #include "ui/TooltipFormatter.h"
@@ -78,15 +79,13 @@ void IntersectionForm::onWorldAngleToggled(bool checked)
 {
     // Convert the current numeric text so the actual ray direction is unchanged.
     // Formulas are always segment-relative and are left untouched.
-    QString text = m_editAngle->text().trimmed();
-    bool isNum = false;
-    const double val = text.toDouble(&isNum);
-    if (!isNum) {
+    const auto parsed = cad::geo::parseAngleText(m_editAngle->text());
+    if (!parsed.isNumber) {
         emit edited();
         return;
     }
-    const double converted = checked ? (val + m_segWorldDir)   // relative → world
-                                     : (val - m_segWorldDir);  // world → relative
+    const double converted = checked ? (parsed.value + m_segWorldDir)   // relative → world
+                                     : (parsed.value - m_segWorldDir);  // world → relative
     m_editAngle->setText(QString::number(converted, 'g', 6));
     emit edited();
 }
@@ -115,14 +114,12 @@ void IntersectionForm::applyTo(cad::param::ParamPoint& pt) const
     // Angle (degrees). The checkbox selects the stored frame:
     //   checked = absolute world angle; unchecked = segment-relative.
     pt.interUseWorldAngle = m_chkWorldAngle->isChecked();
-    QString angleText = m_editAngle->text().trimmed();
-    bool isNum = false;
-    double numVal = angleText.toDouble(&isNum);
-    if (isNum) {
-        pt.interAngle = numVal;
+    const auto angle = cad::geo::parseAngleText(m_editAngle->text());
+    if (angle.isNumber) {
+        pt.interAngle = angle.value;
         pt.interAngleFormula.clear();
-    } else if (!angleText.isEmpty()) {
-        pt.interAngleFormula = angleText;  // formulas follow the selected frame
+    } else if (!angle.formula.isEmpty()) {
+        pt.interAngleFormula = angle.formula;  // formulas follow the selected frame
     }
 
     pt.showName = m_chkShowName->isChecked();

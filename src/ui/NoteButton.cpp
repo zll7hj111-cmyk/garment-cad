@@ -14,6 +14,7 @@
 
 #include "ui/Theme.h"
 #include "ui/TooltipFormatter.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 namespace {
@@ -33,8 +34,8 @@ NoteButton::NoteButton(QWidget* parent)
     setFixedSize(kBtnSize, kBtnSize);
     setCursor(Qt::PointingHandCursor);
     setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("附加注释"),
-        QStringLiteral("点击打开便签，添加详细工艺或测量说明")));
+        cad::ui::str::kAddNote,
+        cad::ui::str::kNoteButtonTip));
     connect(this, &QPushButton::clicked, this, [this] { openEditor(); });
 }
 
@@ -61,7 +62,7 @@ void NoteButton::refreshVisual()
     const bool has = !m_note.trimmed().isEmpty();
     setToolTip(has
         ? cad::ui::TooltipFormatter::status(QStringLiteral("注释内容"), m_note, false)
-        : cad::ui::TooltipFormatter::action(QStringLiteral("附加注释"), QStringLiteral("点击打开便签，添加详细工艺或测量说明")));
+        : cad::ui::TooltipFormatter::action(cad::ui::str::kAddNote, cad::ui::str::kNoteButtonTip));
     update();
 }
 

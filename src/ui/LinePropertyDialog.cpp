@@ -31,6 +31,8 @@
 #include "ui/LineEndpointSection.h"
 #include "ui/LineAppearanceSection.h"
 #include "ui/LineGeometrySection.h"
+#include "geometry/Epsilon.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -223,7 +225,7 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
         m_lblSegId = new ElaText(QString(), 11, page);
         m_lblSegId->setStyleSheet(dimMono);
         m_lblSegId->setToolTip(cad::ui::TooltipFormatter::status(
-            QStringLiteral("线段编号"),
+            cad::ui::str::kSegmentNumber,
             QStringLiteral("线段完整编号（全局唯一，随机前缀+类型序号）"),
             false));
         row->addWidget(m_lblSegId);
@@ -339,7 +341,7 @@ void LinePropertyDialog::populateFromModel()
     m_noteSeg->setNote(seg->annotation);  ///< setNote 不发 noteEdited (非用户编辑).
     const auto* epRole = block->findPoint(seg->endPointId);
     const bool isOrthoRole = epRole && epRole->constraint == cad::param::PointConstraint::OrthoOffset &&
-        (std::abs(epRole->orthoOffsetDist) > 1e-6 || !epRole->orthoOffsetDistFormula.isEmpty());
+        (std::abs(epRole->orthoOffsetDist) > cad::geo::kGeomEpsLoose || !epRole->orthoOffsetDistFormula.isEmpty());
     refreshRoleItems(isOrthoRole);
     m_cmbRole->setCurrentIndex(static_cast<int>(seg->role));
 
@@ -510,7 +512,7 @@ void LinePropertyDialog::onLiveUpdate()
             if (const auto* seg = blk->findSegment(m_segmentId)) {
                 if (const auto* ep = blk->findPoint(seg->endPointId)) {
                     const bool isOrtho = ep->constraint == cad::param::PointConstraint::OrthoOffset &&
-                        (std::abs(ep->orthoOffsetDist) > 1e-6 || !ep->orthoOffsetDistFormula.isEmpty());
+                        (std::abs(ep->orthoOffsetDist) > cad::geo::kGeomEpsLoose || !ep->orthoOffsetDistFormula.isEmpty());
                     refreshRoleItems(isOrtho);
                 }
             }

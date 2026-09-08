@@ -11,23 +11,13 @@
 #include "ui/TooltipFormatter.h"
 #include "ui/Theme.h"
 #include "document/commands/AttachmentCommands.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
 namespace {
 constexpr int kAlignEditW = 56; ///< 对齐点输入框宽 (本线端点, 短 tag).
 
-const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
-                                                     const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (att.isPin) continue;
-        if (att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
 } // namespace
 
 SegmentAlignPointCard::SegmentAlignPointCard(cad::param::ParamDocument* doc, QWidget* parent)
@@ -41,7 +31,7 @@ SegmentAlignPointCard::SegmentAlignPointCard(cad::param::ParamDocument* doc, QWi
     auto* lblAlign = new ElaText(QString::fromUtf8("对齐点"), 11, this);
     lblAlign->setFixedWidth(40);
     lblAlign->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("对齐点"),
+        cad::ui::str::kAlignPoint,
         QStringLiteral("本线段的哪个端点钉在目标点上（输入本线端点 P#；与调换进/出无关）")));
     row->addWidget(lblAlign);
 
@@ -50,7 +40,7 @@ SegmentAlignPointCard::SegmentAlignPointCard(cad::param::ParamDocument* doc, QWi
     m_alignPointEdit->setFixedWidth(kAlignEditW);
     m_alignPointEdit->setPlaceholderText(QStringLiteral("P#"));
     m_alignPointEdit->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("对齐点"),
+        cad::ui::str::kAlignPoint,
         QStringLiteral("本线段的哪个端点钉在目标点上。只接受本线端点（P#）；与调换进/出无关。")));
     row->addWidget(m_alignPointEdit);
 
@@ -73,7 +63,7 @@ void SegmentAlignPointCard::refresh()
     m_alignPointEdit->setAutoEcho(false);
     const auto* block = m_doc->findBlock(m_blockId);
     const auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     const bool isBridge = block && block->isBridge;
     const bool hasEndTarget = block && !block->endTargetPointId.isNull();
     const bool isAngleOnly = att && att->angleOnly;
@@ -102,7 +92,7 @@ void SegmentAlignPointCard::refresh()
 void SegmentAlignPointCard::onAlignPointResolved(const QUuid& blockId, const QUuid& pointId)
 {
     if (!m_doc) return;
-    const auto* att = findFollowerAttachment(m_doc, m_blockId);
+    const auto* att = m_doc->findFollowerAttachmentOf(m_blockId);
     if (!att) {
         emit rejectRequested(QString::fromUtf8("请先建立连接，再设置对齐点"));
         return;
@@ -131,8 +121,9 @@ void SegmentAlignPointCard::flashRed(int ms)
     const QString saved = m_alignPointEdit->styleSheet();
     m_alignPointEdit->setStyleSheet(QStringLiteral(
         "QLineEdit { border: 1px solid %1; border-radius: 3px;"
-        " background: rgba(220,38,38,32); }")
-        .arg(cad::ui::Theme::tokens().danger.name()));
+        " background: %2; }")
+        .arg(cad::ui::Theme::tokens().danger.name(),
+             cad::ui::Theme::rgbaCss(cad::ui::Theme::tokens().danger, 0.125)));
     QTimer::singleShot(ms, this, [this, saved] {
         if (m_alignPointEdit) m_alignPointEdit->setStyleSheet(saved);
     });

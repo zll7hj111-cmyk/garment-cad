@@ -11,6 +11,8 @@
 #include "CopyChip.h"
 #include "geometry/Units.h"
 #include "parametric/PerfProbe.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 LinkedCard::LinkedCard(const cad::param::LinkedVariable& lv,
                        const QString& sourceLabel,
@@ -47,7 +49,7 @@ void LinkedCard::refreshValue(double valueMm, bool dangling)
         m_danglingStyled = dangling;
         setValueLabelDangling(dangling, QStringLiteral("源线段已被删除"));
     }
-    m_valueLabel->setText(dangling ? QStringLiteral("—") : cad::geo::Units::formatCmTrimmed(valueMm));
+    m_valueLabel->setText(dangling ? QStringLiteral("—") : cad::geo::Units::formatCm(valueMm));
 }
 
 void LinkedCard::syncFromModel(const cad::param::LinkedVariable& lv,
@@ -78,10 +80,10 @@ void LinkedCard::setupUi(const cad::param::LinkedVariable& lv,
     spec.objectName      = QStringLiteral("LinkedCard");
     spec.indexObjectName = QStringLiteral("linkedIndex");
     spec.indexTooltip    = QStringLiteral("关联参数序号（视图行号）");
-    spec.namePlaceholder = QStringLiteral("名称");
+    spec.namePlaceholder = cad::ui::str::kName;
     spec.nameText        = lv.name;
-    spec.deleteTooltip   = QStringLiteral("删除关联参数");
-    spec.lockTooltip     = QStringLiteral("自动测量，不可编辑");
+    spec.deleteTooltip   = cad::cmd::texts::kDeleteLinkedVar;
+    spec.lockTooltip     = cad::ui::str::kAutoMeasureReadOnly;
     spec.sourceTooltip   = QStringLiteral("测量来源（只读）");
     spec.sourceLabel     = sourceLabel;
     spec.commentText     = lv.comment;

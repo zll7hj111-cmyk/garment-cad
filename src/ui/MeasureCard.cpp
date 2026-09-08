@@ -12,6 +12,8 @@
 #include "CopyChip.h"
 #include "geometry/Units.h"
 #include "parametric/PerfProbe.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 MeasureCard::MeasureCard(const cad::param::MeasureVariable& mv,
                          const QString& sourceLabel,
@@ -66,7 +68,7 @@ void MeasureCard::refreshValue(double valueMm, bool dangling)
     if (dangling) {
         m_valueLabel->setText(QStringLiteral("—"));
     } else {
-        QString text = cad::geo::Units::formatCmTrimmed(valueMm);
+        QString text = cad::geo::Units::formatCm(valueMm);
         switch (m_kind) {
             case cad::param::MeasureKind::Horizontal:
                 text.prepend(QStringLiteral("水平 "));
@@ -127,10 +129,10 @@ void MeasureCard::setupUi(const cad::param::MeasureVariable& mv,
     spec.objectName      = QStringLiteral("MeasureCard");
     spec.indexObjectName = QStringLiteral("measureIndex");
     spec.indexTooltip    = QStringLiteral("测量序号（视图行号）");
-    spec.namePlaceholder = QStringLiteral("名称");
+    spec.namePlaceholder = cad::ui::str::kName;
     spec.nameText        = mv.name;
-    spec.deleteTooltip   = QStringLiteral("删除测量变量");
-    spec.lockTooltip     = QStringLiteral("自动测量，不可编辑");
+    spec.deleteTooltip   = cad::cmd::texts::kDeleteMeasureVar;
+    spec.lockTooltip     = cad::ui::str::kAutoMeasureReadOnly;
     spec.sourceTooltip   = QStringLiteral("测量来源：两个点及所在图层（只读）");
     spec.sourceLabel     = sourceLabel;
     spec.commentText     = mv.comment;

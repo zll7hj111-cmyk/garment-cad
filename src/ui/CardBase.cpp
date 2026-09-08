@@ -87,7 +87,7 @@ protected:
         tri << QPointF(7.0, 1.5) << QPointF(13.0, 12.0) << QPointF(1.0, 12.0);
         p.drawPolygon(tri);
         // 感叹号
-        p.setPen(QPen(Qt::white, 1.3));
+        p.setPen(QPen(t.onAccent, 1.3));
         p.drawLine(QPointF(7.0, 5.0), QPointF(7.0, 8.5));
         p.drawPoint(QPointF(7.0, 10.5));
     }
@@ -212,7 +212,8 @@ void CardBase::appendDeleteButton(QHBoxLayout* header, const QString& tooltip)
 
     m_deleteBtn = new ElaToolButton(this);
     m_deleteBtn->setIcon(cad::ui::IconHelper::icon2State(
-        QStringLiteral("trash"), QColor(0xB0, 0xB0, 0xB0), Qt::white));
+        QStringLiteral("trash"), cad::ui::Theme::tokens().text3,
+        cad::ui::Theme::tokens().onAccent));
     m_deleteBtn->setIconSize(QSize(12, 12));
     m_deleteBtn->setToolTip(tooltip.isEmpty() ? QString()
         : (tooltip.startsWith(QLatin1String("<div")) ? tooltip
@@ -313,15 +314,16 @@ void CardBase::setValueLabelDangling(bool dangling, const QString& tooltip)
 {
     if (dangling) {
         // §6.2 dangling 行: 值区 danger 字 + danger 8% 浅底 + ⚠ badge 显性化。
-        QColor wash = cad::ui::Theme::tokens().danger;
-        wash.setAlphaF(0.08);
+        const auto& tk = cad::ui::Theme::tokens();
+        // 审计 UI-P0-8: 失效态与正常态必须同族同字号, 只换色/底色 ——
+        // 旧实现丢等宽族且 FontSm(11) vs FontLg(15), 引用失效瞬间行宽跳动。
         m_valueLabel->setStyleSheet(
-            QStringLiteral("font-size: %1px; font-weight: 600; color: %2;"
-                           " background-color: rgba(%3,%4,%5,%6);")
-                .arg(QString::number(cad::ui::ThemeTokens::FontSm),
-                     cad::ui::Theme::tokens().danger.name(),
-                     QString::number(wash.red()), QString::number(wash.green()),
-                     QString::number(wash.blue()), QString::number(wash.alpha())));
+            QStringLiteral("%1font-size: %2px; font-weight: 600; color: %3;"
+                           " background-color: %4;")
+                .arg(cad::ui::ThemeTokens::kMonospaceFamily,
+                     QString::number(cad::ui::ThemeTokens::FontLg),
+                     tk.danger.name(),
+                     cad::ui::Theme::rgbaCss(tk.danger, 0.08)));
         const QString formattedTip = cad::ui::TooltipFormatter::status(
             QStringLiteral("引用失效"),
             tooltip.isEmpty() ? QStringLiteral("所引用的实体已被删除或不可用") : tooltip,

@@ -16,6 +16,7 @@
 #include "parametric/Serial.h"
 #include "ui/FormScaffold.h"
 #include "ui/TooltipFormatter.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -66,10 +67,10 @@ AuxPointForm::AuxPointForm(QWidget* parent)
     // formula from the variable panel and pastes it here — clear first to
     // guarantee clean content.
     auto makePasteBtn = [this](QLineEdit* edit) {
-        auto* btn = new ElaPushButton(QStringLiteral("填入"), this);
+        auto* btn = new ElaPushButton(cad::ui::str::kFillIn, this);
         btn->setToolTip(cad::ui::TooltipFormatter::action(
-            QStringLiteral("填入剪贴板"),
-            QStringLiteral("清空输入框并粘贴剪切板内容")));
+            cad::ui::str::kPasteClipboard,
+            cad::ui::str::kPasteClearsInputTip));
         connect(btn, &QPushButton::clicked, this, [this, edit] {
             const QString clean = QString(QApplication::clipboard()->text())
                                       .remove(QLatin1Char('\r'))
@@ -187,26 +188,22 @@ void AuxPointForm::loadFrom(const cad::param::ParamPoint& pt)
 
 void AuxPointForm::applyTo(cad::param::ParamPoint& pt) const
 {
-    // Percent
-    QString percentText = m_editPercent->text().trimmed();
-    bool isNum = false;
-    double numVal = percentText.toDouble(&isNum);
-    if (isNum) {
-        pt.interpPercent = numVal;
+    // Percent (unitless) / constant (user inputs cm → store mm) —— 数值与公式
+    // 判读统一走 parseNumberOrFormula (2026-12 审计 UI-P1-9), 不再两段式 toDouble。
+    const auto percent = cad::geo::parseNumberOrFormula(m_editPercent->text());
+    if (percent.isNumber) {
+        pt.interpPercent = percent.value;
         pt.interpPercentFormula.clear();
-    } else if (!percentText.isEmpty()) {
-        pt.interpPercentFormula = percentText;
+    } else if (!percent.formula.isEmpty()) {
+        pt.interpPercentFormula = percent.formula;
     }
 
-    // Constant (user inputs cm → store mm)
-    QString constText = m_editConstant->text().trimmed();
-    isNum = false;
-    numVal = constText.toDouble(&isNum);
-    if (isNum) {
-        pt.interpConstant = cad::geo::Units::cmToMm(numVal);
+    const auto constant = cad::geo::parseNumberOrFormula(m_editConstant->text());
+    if (constant.isNumber) {
+        pt.interpConstant = cad::geo::Units::cmToMm(constant.value);
         pt.interpConstantFormula.clear();
-    } else if (!constText.isEmpty()) {
-        pt.interpConstantFormula = constText;
+    } else if (!constant.formula.isEmpty()) {
+        pt.interpConstantFormula = constant.formula;
     }
 
     // 纯线上辅助点：偏移角度与偏移距离置零

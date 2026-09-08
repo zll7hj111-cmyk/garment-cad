@@ -13,6 +13,7 @@
 #include "ui/Theme.h"
 #include "ui/IconHelper.h"
 #include "ui/TooltipFormatter.h"
+#include "ui/UiStrings.h"
 
 namespace cad::ui {
 
@@ -91,7 +92,7 @@ SegmentRow::SegmentRow(const QUuid& blockId, const cad::param::Segment& seg,
 
     m_tagLbl = new ElaText(cad::param::Serial::tag(seg.serial), 10, this);
     m_tagLbl->setToolTip(cad::ui::TooltipFormatter::status(
-        QStringLiteral("线段编号"), seg.serial, false));
+        cad::ui::str::kSegmentNumber, seg.serial, false));
     m_tagLbl->setStyleSheet(QStringLiteral(
         "font-family: 'Consolas','Courier New',monospace; font-size: 10px;"
         "color: %1; background: %2; border: 1px solid %3; border-radius: 2px; padding: 1px 4px;")
@@ -236,7 +237,7 @@ LayerCard::LayerCard(int index, const QUuid& layerId, const QString& name, bool 
     if (isActive) {
         m_activeBadge = new ElaText(QString::fromUtf8("活动"), 11, m_headerWidget);
         m_activeBadge->setToolTip(cad::ui::TooltipFormatter::status(
-            QStringLiteral("当前活动图层"),
+            cad::ui::str::kActiveLayer,
             QStringLiteral("所有新绘制的线段与图元均保存于此图层"),
             false));
         m_activeBadge->setStyleSheet(QStringLiteral(
@@ -251,8 +252,8 @@ LayerCard::LayerCard(int index, const QUuid& layerId, const QString& name, bool 
     // Segment count pill
     m_countPill = new ElaText(QString::number(segCount), 11, m_headerWidget);
     m_countPill->setToolTip(cad::ui::TooltipFormatter::status(
-        QStringLiteral("线段统计"),
-        QStringLiteral("当前图层包含 %1 条线段").arg(segCount),
+        cad::ui::str::kSegmentStats,
+        cad::ui::str::kLayerSegmentCountFmt.arg(segCount),
         false));
     m_countPill->setStyleSheet(QStringLiteral(
         "color: %1; background-color: %2; border: 1px solid %3; border-radius: 3px;"
@@ -355,8 +356,8 @@ void LayerCard::setSegCount(int n)
 {
     m_countPill->setText(QString::number(n));
     m_countPill->setToolTip(cad::ui::TooltipFormatter::status(
-        QStringLiteral("线段统计"),
-        QStringLiteral("当前图层包含 %1 条线段").arg(n),
+        cad::ui::str::kSegmentStats,
+        cad::ui::str::kLayerSegmentCountFmt.arg(n),
         false));
     updateEmptyRowVisibility();
 }

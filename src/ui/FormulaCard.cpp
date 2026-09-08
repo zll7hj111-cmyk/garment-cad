@@ -18,6 +18,7 @@
 #include <QApplication>
 #include <QDrag>
 #include <QMimeData>
+#include "ui/UiStrings.h"
 
 FormulaCard::FormulaCard(const cad::param::FormulaVariable& formula,
                          bool alternate, QWidget* parent)
@@ -80,18 +81,18 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
 
         if (m_statusBadge) {
             if (hasActual) {
-                m_statusBadge->setText(QStringLiteral("实际覆盖"));
+                m_statusBadge->setText(cad::ui::str::kManualOverride);
                 m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.warning, "QLabel"));
                 m_statusBadge->setToolTip(cad::ui::TooltipFormatter::status(
-                    QStringLiteral("实际覆盖中"),
-                    QStringLiteral("当前填入了实际覆盖值，公式计算已被覆盖值临时接管"),
+                    cad::ui::str::kOverrideInProgress,
+                    cad::ui::str::kOverrideActiveTip,
                     false));
             } else {
-                m_statusBadge->setText(QStringLiteral("求值正常"));
+                m_statusBadge->setText(cad::ui::str::kEvalOk);
                 m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.success, "QLabel"));
                 m_statusBadge->setToolTip(cad::ui::TooltipFormatter::status(
-                    QStringLiteral("状态正常"),
-                    QStringLiteral("公式求值成功，当前结果处于有效同步状态"),
+                    cad::ui::str::kStatusOk,
+                    cad::ui::str::kFormulaSyncedTip,
                     false));
             }
         }
@@ -110,11 +111,11 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
                 false));
 
             if (m_statusBadge) {
-                m_statusBadge->setText(QStringLiteral("待输入"));
+                m_statusBadge->setText(cad::ui::str::kPendingInput);
                 m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.text3, "QLabel"));
                 m_statusBadge->setToolTip(cad::ui::TooltipFormatter::status(
-                    QStringLiteral("待输入"),
-                    QStringLiteral("公式表达式为空，请输入公式后自动求值"),
+                    cad::ui::str::kPendingInput,
+                    cad::ui::str::kFormulaEmptyHint,
                     false));
             }
         } else {
@@ -126,7 +127,7 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
             m_valueLabel->setText(QStringLiteral("! 错误"));
             m_valueLabel->setToolTip(cad::ui::TooltipFormatter::status(
                 QStringLiteral("公式求值失败"),
-                error.isEmpty() ? QStringLiteral("表达式无效或引用的变量不存在") : error,
+                error.isEmpty() ? cad::ui::str::kInvalidExpression : error,
                 true));
 
             if (m_statusBadge) {
@@ -134,7 +135,7 @@ void FormulaCard::setResult(bool ok, double valueCm, const QString& error)
                 m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.danger, "QLabel"));
                 m_statusBadge->setToolTip(cad::ui::TooltipFormatter::status(
                     QStringLiteral("公式错误"),
-                    error.isEmpty() ? QStringLiteral("表达式无效或引用的变量不存在") : error,
+                    error.isEmpty() ? cad::ui::str::kInvalidExpression : error,
                     true));
             }
         }
@@ -252,11 +253,11 @@ void FormulaCard::updateExprEnabled()
                  tokens.warning.name(),
                  tokens.warning.name()));
         if (m_statusBadge) {
-            m_statusBadge->setText(QStringLiteral("实际覆盖"));
+            m_statusBadge->setText(cad::ui::str::kManualOverride);
             m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.warning, "QLabel"));
             m_statusBadge->setToolTip(cad::ui::TooltipFormatter::status(
-                QStringLiteral("实际覆盖中"),
-                QStringLiteral("当前填入了实际覆盖值，公式计算已被覆盖值临时接管"),
+                cad::ui::str::kOverrideInProgress,
+                cad::ui::str::kOverrideActiveTip,
                 false));
         }
     } else {
@@ -268,18 +269,18 @@ void FormulaCard::updateExprEnabled()
         if (m_statusBadge) {
             const bool isEmpty = m_exprEdit && m_exprEdit->text().trimmed().isEmpty();
             if (isEmpty) {
-                m_statusBadge->setText(QStringLiteral("待输入"));
+                m_statusBadge->setText(cad::ui::str::kPendingInput);
                 m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.text3, "QLabel"));
                 m_statusBadge->setToolTip(cad::ui::TooltipFormatter::status(
-                    QStringLiteral("待输入"),
-                    QStringLiteral("公式表达式为空，请输入公式后自动求值"),
+                    cad::ui::str::kPendingInput,
+                    cad::ui::str::kFormulaEmptyHint,
                     false));
             } else {
-                m_statusBadge->setText(QStringLiteral("求值正常"));
+                m_statusBadge->setText(cad::ui::str::kEvalOk);
                 m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.success, "QLabel"));
                 m_statusBadge->setToolTip(cad::ui::TooltipFormatter::status(
-                    QStringLiteral("状态正常"),
-                    QStringLiteral("公式求值成功，当前结果处于有效同步状态"),
+                    cad::ui::str::kStatusOk,
+                    cad::ui::str::kFormulaSyncedTip,
                     false));
             }
         }
@@ -350,9 +351,10 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
     m_indexLabel->setFixedWidth(18);
     m_indexLabel->setCursor(Qt::OpenHandCursor);
     m_indexLabel->setStyleSheet(
-        "QLabel { font-size: 10px; font-weight: bold;"
-        "  background: transparent; border-radius: 3px; }"
-        "QLabel:hover { background: rgba(0,0,0,0.06); }");
+        QStringLiteral("QLabel { font-size: 10px; font-weight: bold;"
+                       "  background: transparent; border-radius: 3px; }"
+                       "QLabel:hover { background: %1; }")
+            .arg(cad::ui::Theme::tokens().accentTint.name()));
     m_indexLabel->installEventFilter(this);
     topRow->addWidget(m_indexLabel, 0);
 
@@ -367,7 +369,7 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
 
     // 求值状态微标 [求值正常 / 实际覆盖 / 求值错误 / 待输入]
     const bool isInitEmpty = formula.expression.trimmed().isEmpty();
-    m_statusBadge = new ElaText(isInitEmpty ? QStringLiteral("待输入") : QStringLiteral("求值正常"), 10, this);
+    m_statusBadge = new ElaText(isInitEmpty ? cad::ui::str::kPendingInput : cad::ui::str::kEvalOk, 10, this);
     m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(isInitEmpty ? tokens.text3 : tokens.success, "QLabel"));
     topRow->addWidget(m_statusBadge, 0);
 
@@ -433,7 +435,7 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
     m_actualEdit = new ElaLineEdit(this);
     if (formula.actualValueCm.has_value())
         m_actualEdit->setText(cad::geo::Units::formatNumberTrimmed(*formula.actualValueCm));
-    m_actualEdit->setPlaceholderText(QStringLiteral("实际覆盖"));
+    m_actualEdit->setPlaceholderText(cad::ui::str::kManualOverride);
     m_actualEdit->setFixedHeight(20);
     m_actualEdit->setFixedWidth(56);
     m_actualEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -488,7 +490,7 @@ void FormulaCard::setupUi(const cad::param::FormulaVariable& formula)
     connect(m_exprEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
         if (text.trimmed().isEmpty() && m_statusBadge) {
             const auto& tokens = cad::ui::Theme::tokens();
-            m_statusBadge->setText(QStringLiteral("待输入"));
+            m_statusBadge->setText(cad::ui::str::kPendingInput);
             m_statusBadge->setStyleSheet(cad::ui::Theme::badgeStyle(tokens.text3, "QLabel"));
             if (m_valueLabel) {
                 m_valueLabel->setText(QStringLiteral("—"));

@@ -22,10 +22,6 @@ namespace cad::ui {
 class NoteButton;
 class PointRefEdit;
 
-/// 跟随线连接查找 (非 pin、fromBlockId 匹配; 自由线返回 nullptr) ——
-/// 连接行刷新与编辑 handler 共用 (定义于 LineEndpointSectionConn.cpp)。
-[[nodiscard]] const cad::param::Attachment* findFollowerAttachment(
-    const cad::param::ParamDocument* doc, const QUuid& blockId);
 
 /// Endpoint micro-cards section for LinePropertyDialog (D1 / §6.1 / §6.2).
 /// Manages:

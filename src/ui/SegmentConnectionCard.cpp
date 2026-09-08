@@ -49,13 +49,7 @@ void SegmentConnectionCard::refresh()
 
 const cad::param::Attachment* SegmentConnectionCard::findFollowerAttachment() const
 {
-    if (!m_doc) return nullptr;
-    for (const auto& att : m_doc->attachments()) {
-        if (att.isPin) continue;
-        if (att.fromBlockId == m_blockId)
-            return &att;
-    }
-    return nullptr;
+    return m_doc ? m_doc->findFollowerAttachmentOf(m_blockId) : nullptr;
 }
 
 void SegmentConnectionCard::refreshCard()

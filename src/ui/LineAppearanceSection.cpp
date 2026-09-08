@@ -18,6 +18,7 @@
 #include "ui/Theme.h"
 #include "ui/FormScaffold.h"
 #include "ui/TooltipFormatter.h"
+#include "ui/NumericFieldSpecs.h"
 
 namespace cad::ui {
 
@@ -115,8 +116,7 @@ LineAppearanceSection::LineAppearanceSection(cad::param::ParamDocument* paramDoc
         m_spinWeight->setFixedHeight(kFieldH);
         m_spinWeight->setStyleSheet(QStringLiteral("font-size: 11px;"));
         m_spinWeight->setRange(0.5, 10.0);
-        m_spinWeight->setSingleStep(0.2);
-        m_spinWeight->setDecimals(1);
+        cad::ui::applyNumericSpec(m_spinWeight, cad::ui::kWeightPxSpec);
         m_spinWeight->setToolTip(cad::ui::TooltipFormatter::action(
             QStringLiteral("线宽 (px)"),
             QStringLiteral("自定义线段渲染线宽（像素）")));

@@ -309,6 +309,13 @@ QLabel#qtooltip_label {
 // hex pairs. Replaces the copy-pasted #0F766E/#E6F4F2 and #8e44ad/#f3e8ff
 // literals in SegmentConnectionCardBuild / SegmentAuxTab.
 
+QString Theme::rgbaCss(const QColor& c, double alpha)
+{
+    const int a = static_cast<int>(alpha * 255.0 + 0.5);
+    return QStringLiteral("rgba(%1,%2,%3,%4)")
+        .arg(c.red()).arg(c.green()).arg(c.blue()).arg(qBound(0, a, 255));
+}
+
 QString Theme::badgeStyle(const QColor& fg)
 {
     QColor wash = fg;

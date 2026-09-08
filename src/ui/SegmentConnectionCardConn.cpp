@@ -21,6 +21,7 @@
 #include "ui/LayerFeedback.h"
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::ui {
 
@@ -278,12 +279,12 @@ void SegmentConnectionCard::onEndOffsetEdited()
     auto* block = m_doc->findBlock(m_blockId);
     if (!block || block->endTargetPointId.isNull()) { refreshEndRow(block); return; }
 
-    const QString raw = m_editEndOffset->text().trimmed();
-    bool isNum = false;
-    const double val = raw.toDouble(&isNum);
-    if (!isNum && !raw.isEmpty()) { refreshEndRow(block); return; }  // 仅数值
-    const double offset = isNum ? val : 0.0;
-    if (std::abs(offset - block->endTargetOffset) < 1e-9) { refreshEndRow(block); return; }
+    // 2026-12 审计 UI-P0-7: 显示侧带 "°" (formatDegTrimmed), 输入侧必须能
+    // 原样回读 —— 旧实现裸 toDouble 把 "5°" 判为公式并静默回滚。
+    const auto parsed = cad::geo::parseAngleText(m_editEndOffset->text());
+    if (!parsed.isNumber && !parsed.formula.isEmpty()) { refreshEndRow(block); return; }  // 仅数值
+    const double offset = parsed.isNumber ? parsed.value : 0.0;
+    if (std::abs(offset - block->endTargetOffset) < cad::geo::kGeomEps) { refreshEndRow(block); return; }
 
     if (auto* stack = m_doc->undoStack()) {
         stack->push(new cad::cmd::SetEndTargetCommand(

@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QString>
+#include "ui/UiStrings.h"
 
 class ElaLineEdit;
 class QTimer;
@@ -78,7 +79,7 @@ private:
     QString m_refName;
     QString m_name;
     QString m_refPlaceholder = QStringLiteral("代码");
-    QString m_namePlaceholder = QStringLiteral("名称");
+    QString m_namePlaceholder = cad::ui::str::kName;
 
     bool m_refEditable = true;
     bool m_refCopyEnabled = true;

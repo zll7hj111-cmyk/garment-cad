@@ -274,8 +274,8 @@ void PointRefEdit::flashError()
     const auto& tk = cad::ui::Theme::tokens();
     setStyleSheet(QStringLiteral(
         "QLineEdit { color: %1; border: 1.5px solid %1; border-radius: 15px;"
-        "  padding: 2px 10px; background: rgba(220,38,38,32); }")
-        .arg(tk.danger.name()));
+        "  padding: 2px 10px; background: %2; }")
+        .arg(tk.danger.name(), cad::ui::Theme::rgbaCss(tk.danger, 0.125)));
     setToolTip(cad::ui::TooltipFormatter::status(
         QStringLiteral("定位失败"),
         QStringLiteral("未找到该点（已自动排除本线段所属 Block 内部点）"),

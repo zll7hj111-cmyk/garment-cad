@@ -7,6 +7,20 @@
 
 namespace cad::ui {
 
+/// 生成上下文属性条（ContextStrip）键帽徽标 HTML。
+/// 与 TooltipFormatter::keycapHtml 分属两套视觉（strip 用 surface2/borderStrong/text2
+/// 配色、圆角 2px、padding 1px 4px），但语义同为"按键提示"，故收口到同一头文件。
+/// 注意：类静态成员不能用命名空间级 using 声明引入（MSVC C2885），故这里是自由函数。
+[[nodiscard]] inline QString kbdBadge(const QString& key)
+{
+    const auto& t = Theme::tokens();
+    return QStringLiteral(
+        "<span style=\"background:%1; border:1px solid %2; border-radius:2px; "
+        "padding:1px 4px; font-family:'Consolas',monospace; font-size:10px; "
+        "font-weight:600; color:%3;\">%4</span>")
+        .arg(t.surface2.name(), t.borderStrong.name(), t.text2.name(), key);
+}
+
 /// 全局统一的富文本 Tooltip 格式化工具 (Endfield 2.0 纸黄色工程图纸面规范)。
 /// 生成符合 Qt 富文本子集标准的卡片排版，实现标题、键帽、功能说明与禁用原因的高对比度分层。
 class TooltipFormatter

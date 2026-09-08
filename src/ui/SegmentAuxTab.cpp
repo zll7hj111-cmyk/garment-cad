@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <QUndoStack>
+#include "geometry/Angle.h"
 
 #include "ElaTabWidget.h"
 #include <QVBoxLayout>
@@ -200,7 +201,7 @@ void SegmentAuxTab::populateFields()
             if (sp && ep && sp->resolved && ep->resolved) {
                 cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
                 cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-                segWorldDir = std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI;
+                segWorldDir = cad::geo::radToDeg(std::atan2(w2.y - w1.y, w2.x - w1.x));
             }
         }
         m_ixForm->setSegmentWorldDir(segWorldDir);

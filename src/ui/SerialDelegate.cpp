@@ -5,6 +5,7 @@
 #include <QFontMetrics>
 
 #include "parametric/Serial.h"
+#include "ui/Theme.h"
 
 namespace cad::ui {
 
@@ -42,7 +43,7 @@ void SerialDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option
 
     // Gray random prefix.
     painter->setFont(f);
-    painter->setPen(QColor(0x9a, 0x9a, 0x9a));
+    painter->setPen(cad::ui::Theme::tokens().text3);
     const QFontMetrics fm(f);
     painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, pfx);
     const int w = fm.horizontalAdvance(pfx);
@@ -51,7 +52,7 @@ void SerialDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option
     QFont bf = f;
     bf.setBold(true);
     painter->setFont(bf);
-    painter->setPen(QColor(0xd4, 0x00, 0x00));
+    painter->setPen(cad::ui::Theme::tokens().danger);
     QRect tagRect = textRect;
     tagRect.setLeft(textRect.left() + w);
     painter->drawText(tagRect, Qt::AlignLeft | Qt::AlignVCenter, tg);
