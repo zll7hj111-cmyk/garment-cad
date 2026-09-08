@@ -932,11 +932,11 @@ void TestContextStrip::rotateAnchorStateFlipsBasisAndRoutesReverse()
     });
 
     // 旋转会话激活, 锚在终点 → 基准读数 终点→起点, 换向按钮可点;
-    // 角度字段跟随锚心基准: 自由线锚在终点 = 模型方向 +180° (水平线 0 → 180)。
+    // 角度字段恒为线段世界方向 (2026-09 统一 D1/D3): 不再因锚心在终点而 +180°。
     strip.setRotateAnchorState(true, /*anchorIsEnd=*/true, /*canToggle=*/true, QString());
     QCOMPARE(strip.basisText(), anchorEnd);
     QVERIFY(strip.reverseButton()->isEnabled());
-    QCOMPARE(strip.angleEdit()->text(), QStringLiteral("180"));
+    QCOMPARE(strip.angleEdit()->text(), QStringLiteral("0"));
     QCOMPARE(stack.count(), 0);
 
     // 点击换向 → 转发 reverseRequested (含目标 id), 不 push 命令。
@@ -946,7 +946,7 @@ void TestContextStrip::rotateAnchorStateFlipsBasisAndRoutesReverse()
     QCOMPARE(routedSeg, l.segId);
     QCOMPARE(stack.count(), 0);
 
-    // 锚切回起点 → 读数回到 起点→终点, 角度回到模型世界角 0°。
+    // 锚切回起点 → 读数回到 起点→终点, 角度仍为世界方向 0° (与锚心无关)。
     strip.setRotateAnchorState(true, /*anchorIsEnd=*/false, /*canToggle=*/true, QString());
     QCOMPARE(strip.basisText(), fwd);
     QCOMPARE(strip.angleEdit()->text(), QStringLiteral("0"));
@@ -1266,9 +1266,10 @@ void TestContextStrip::freeLineBaseAngleDisplaysWorldAngle()
     ContextStrip strip(&doc);
     strip.setPinnedTarget(bid, b->segments.front().id);
 
-    // 自由线基准显示真实世界角度归一化到 [-180, 180): 270° -> -90°，且只读不可编辑
+    // 自由线基准显示真实世界角度, 统一到 [0, 360) (2026-09 统一 D3):
+    // 270° -> 270 (不再折叠成 -90), 且只读不可编辑
     QVERIFY(strip.baseAngleEdit());
-    QCOMPARE(strip.baseAngleEdit()->text(), QStringLiteral("-90"));
+    QCOMPARE(strip.baseAngleEdit()->text(), QStringLiteral("270"));
     QVERIFY(strip.baseAngleEdit()->isReadOnly());
 }
 

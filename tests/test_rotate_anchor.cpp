@@ -211,9 +211,10 @@ void TestRotateAnchor::stripReverseTogglesAnchor()
     QCOMPARE(doc.attachments().size(), size_t(attBefore));  // 挂接不释放
 }
 
-// 锚心切换全链路同步条带 (2026-12): 旋转工具选中线段 → 条带进入旋转会话
-// (基准读数锚心端在前, 角度字段显示锚心基准角); 点条带换向 / 点另一端端点
-// 切锚心 → 工具锚心 + 条带基准 + 角度字段 + 状态栏锚心提示全部翻转。
+// 锚心切换全链路同步条带 (2026-12; 2026-09 统一 D1/D2 后更新): 旋转工具选中
+// 线段 → 条带进入旋转会话 (基准读数锚心端在前, 角度字段恒为线段世界方向);
+// 点条带换向 / 点另一端端点 → 枢轴移到另一端 + 工具锚心 + 条带基准 + 状态栏
+// 锚心提示全部跟随 (角度字段**不再**随锚心 +180°, 见 D1)。
 // 回归价值: 覆盖"selectTarget 上报时序"与"锚心切换同步条带"两条真实链路
 // (旧 bug: 换向走了 ReverseSegmentCommand, 环形显示/gizmo 不动)。
 void TestRotateAnchor::anchorSwitchSyncsStrip()
@@ -261,7 +262,7 @@ void TestRotateAnchor::anchorSwitchSyncsStrip()
     const QString rev = QString::fromUtf8("%1 → %2").arg(eTag, sTag);
 
     // 1) 点近起点半段 → 锚 = 起点; 条带进入旋转会话: 基准读数锚心端在前,
-    //    换向按钮可点, 角度字段 = 锚心基准角 (0°, 无偏移)。
+    //    换向按钮可点, 角度字段 = 线段世界方向 0°。
     sendMouse(QEvent::MouseButtonPress, vp(20.0, 0.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(20.0, 0.0), Qt::LeftButton, Qt::NoModifier);
     QCOMPARE(tool->anchorPointId(), a.startId);
@@ -271,11 +272,12 @@ void TestRotateAnchor::anchorSwitchSyncsStrip()
     QVERIFY(bridge.hint.contains(QStringLiteral("锚心")));
     QVERIFY(bridge.hint.contains(sTag));
 
-    // 2) 点条带「换向」→ 锚切到终点 (pivot 环移动): 基准翻转, 角度 +180°。
+    // 2) 点条带「换向」→ 枢轴移到终点 (锚心切到终点): 基准翻转, 角度字段
+    //    仍为线段世界方向 0° (D1: 不再 +180°)。
     bridge.strip.reverseButton()->click();
     QCOMPARE(tool->anchorPointId(), a.endId);
     QCOMPARE(bridge.strip.basisText(), rev);
-    QCOMPARE(bridge.strip.angleEdit()->text(), QStringLiteral("180"));
+    QCOMPARE(bridge.strip.angleEdit()->text(), QStringLiteral("0"));
     QVERIFY(bridge.hint.contains(eTag));
     QCOMPARE(stack.count(), 0);   // 换向 = 切锚心, 不 push 命令
 

@@ -55,6 +55,29 @@ inline double normalizeRad(double rad)
     return a;
 }
 
+// ─── 角度显示角色（2026-09 旋转/角度统一 — 显示与输入的单一映射入口）──────────
+//
+// 同一个角度数在不同物理量下的显示域不同，角色决定域：
+//   · WorldDirection — 世界方向角（线段朝向 / 基准方向）→ [0, 360)
+//   · FoldPose       — 折角（连接线跟随角，开平基准）→ (−180, 180]
+//   · DeltaAmount    — 增量（本次转了多少）→ 带符号不折叠，≈0 视为无增量
+//
+// 显示 / 输入口一律经 toDisplayDeg 取域；禁止各自调 normalizeDeg180/360
+// （2026-09 统一前有 4 处各自选域，同一姿态在条带与属性卡显示两个数字）。
+enum class AngleDisplayRole { WorldDirection, FoldPose, DeltaAmount };
+
+/// 按角色把角度（度）换算到显示域。弦长反算属数学必需，仍走折角域，
+/// 不经此函数（见 degToChordMm / chordMmToDeg）。
+inline double toDisplayDeg(double deg, AngleDisplayRole role)
+{
+    switch (role) {
+    case AngleDisplayRole::WorldDirection: return normalizeDeg360(deg);
+    case AngleDisplayRole::FoldPose:       return normalizeDeg180(deg);
+    case AngleDisplayRole::DeltaAmount:    return std::isfinite(deg) ? deg : 0.0;
+    }
+    return deg;
+}
+
 // ─── Arc length ↔ angle conversion (闭合基准, 2026-08 定稿) ────────────────────
 
 /// Convert an arc length (mm) on a circle of the given radius (mm) to the

@@ -68,19 +68,22 @@ void ContextStrip::refreshFields()
         double baseDeg = 0.0;
         if (att && !att->angleIndependent) {
             const double refWorldRad = cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
-            baseDeg = cad::geo::normalizeDeg180(cad::geo::radToDeg(refWorldRad));
+            baseDeg = cad::geo::radToDeg(refWorldRad);
         } else if (m_rotateAnchor.active) {
-            baseDeg = cad::geo::normalizeDeg180(m_rotateAnchor.baseAngleDeg);
+            baseDeg = m_rotateAnchor.baseAngleDeg;
         } else {
             const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId);
             const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId);
             if (sp && ep && sp->resolved && ep->resolved) {
                 const cad::geo::Vec2 wd = block->transform.toWorld(ep->resolvedPos)
                                         - block->transform.toWorld(sp->resolvedPos);
-                baseDeg = cad::geo::normalizeDeg180(cad::geo::radToDeg(wd.angle()));
+                baseDeg = cad::geo::radToDeg(wd.angle());
             }
         }
-        m_baseAngleEdit->setText(cad::geo::Units::formatDegValue(baseDeg));
+        // 2026-09 拍板 D3：基准角 = 世界方向 ⇒ 统一 [0,360) 显示域
+        // （旧式 normalizeDeg180 让 270° 显示成 −90°）。
+        m_baseAngleEdit->setText(cad::geo::Units::formatDegValue(
+            cad::geo::toDisplayDeg(baseDeg, cad::geo::AngleDisplayRole::WorldDirection)));
     }
 
     if (!m_angleEdit->hasFocus()) {
@@ -105,9 +108,11 @@ void ContextStrip::refreshFields()
                 m_angleEdit->setText(driven->angleFormula);
             } else {
                 const double rotDeg = cad::geo::radToDeg(block->transform.rotation);
-                double worldDeg = cad::geo::normalizeDeg360(ep->angle + rotDeg);
-                if (m_rotateAnchor.active && m_rotateAnchor.anchorIsEnd)
-                    worldDeg = cad::geo::normalizeDeg360(worldDeg + 180.0);
+                // 2026-09 拍板 D1/D3：线段姿态 = 世界方向（start→end），
+                // 统一 [0,360)；不再按「锚心在终点」加 180°。
+                const double worldDeg = cad::geo::toDisplayDeg(
+                    cad::geo::normalizeDeg360(ep->angle + rotDeg),
+                    cad::geo::AngleDisplayRole::WorldDirection);
                 m_angleEdit->setText(cad::geo::Units::formatDegValue(worldDeg));
             }
         } else {

@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QPointF>
+#include "geometry/Angle.h"
 #include "tools/RotateDragMath.h"
 
 class CanvasScene;
@@ -28,6 +29,8 @@ struct RotateHintSnapshot {
     bool isAngleLocked = false;
     double baseAngleDeg = 0.0;
     double currentAngleDeg = 0.0;
+    /// 角度字段的显示域（2026-09 统一 M3）：由物理量决定，禁止各自选域。
+    cad::geo::AngleDisplayRole poseRole = cad::geo::AngleDisplayRole::WorldDirection;
 };
 
 /// 约束模式标签

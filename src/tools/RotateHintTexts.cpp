@@ -35,9 +35,11 @@ QString buildStatusHint(const RotateHintSnapshot& snap)
     }
     if (snap.state == RotateState::Rotating) {
         return QString::fromUtf8("旋转中 · 基准: %1° · 角度: %2° · %3 · 松手提交 · Esc 回位")
-            .arg(cad::geo::Units::formatDegValue(snap.baseAngleDeg),
-                 // 2026-12 审计 P0-4: 姿态角一律显示域 (−180,180], 与徽标/角度卡一致
-                 cad::geo::Units::formatDegValue(cad::param::followerAngleToDisplay(snap.currentAngleDeg)),
+            .arg(cad::geo::Units::formatDegValue(
+                     cad::geo::toDisplayDeg(snap.baseAngleDeg, cad::geo::AngleDisplayRole::WorldDirection)),
+                 // 2026-09 统一 M3: 姿态角按物理量取显示域（连接段=折角, 自由段=世界向）
+                 cad::geo::Units::formatDegValue(
+                     cad::geo::toDisplayDeg(snap.currentAngleDeg, snap.poseRole)),
                  modeStr);
     }
     if (snap.state == RotateState::Ready) {

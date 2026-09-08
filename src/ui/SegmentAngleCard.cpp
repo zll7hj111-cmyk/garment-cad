@@ -470,6 +470,8 @@ void SegmentAngleCard::applyAngle()
             st.endDistance = sp->resolvedPos.distanceTo(ep->resolvedPos);
         }
         const double rotDeg = cad::geo::radToDeg(block->transform.rotation);
+        // 本地极角保持带符号（等价角，resolve 周期性无差异）；2026-09 D3 的
+        // [0,360) 域只约束「世界方向」显示，读侧 normalizeDeg360 已覆盖。
         st.endAngle = targetDeg - rotDeg;
         st.endAngleFormula = (!parsed.isNumber)
             ? ((std::abs(rotDeg) > cad::geo::kGeomEps)
