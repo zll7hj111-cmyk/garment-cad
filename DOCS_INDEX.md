@@ -37,7 +37,8 @@
 | `PANEL_REDESIGN_DESIGN.md` | 面板重设计（v3 表单 / 端点组 / 栅格化） | ✅ 已落地（2026-08-31，§3 结构全部实施） |
 | `EXTEND_LINE_DESIGN.md` | 端点延长线（权威文档） | ✅ 已落地（2026-08-26 源码批次，见 git log） |
 | `DETACH_SHADOW_DESIGN.md` | 拆开影子线段（拆开 = 复制隐藏影子基准线 + 可挂载新线形成跟随链；翻案「拆开保留角度」活引用语义） | ✅ 已落地（2026-09-03，头部含实现摘要与差异说明） |
-| `ROTATE_REDESIGN_DESIGN.md` | 旋转工具重设计（D15 确认门 / 影子偏转 §2.6） | ✅ 已落地（2026-08-27）；选集旋转 2026-08-29 已删、**2026-09-04 重新设计回归**（MarqueeGesture 框选 + adoptSelection + RotateBlocksCommand）；§2.5/§2.6 判定表仍可复用 |
+| `ROTATE_REDESIGN_DESIGN.md` | 旋转工具重设计（D15 确认门 / 影子偏转 §2.6） | ✅ 已落地（2026-08-27）；选集旋转 2026-08-29 已删、**2026-09-04 重新设计回归**（MarqueeGesture 框选 + adoptSelection + RotateBlocksCommand）；§2.5/§2.6 判定表仍可复用；**2026-09 角度/gizmo 口径以 `ROTATE_ANGLE_UNIFY_DESIGN.md` 为准** |
+| `ROTATE_ANGLE_UNIFY_DESIGN.md` | 旋转工具 / 角度模块统一设计（2026-09 六点反馈诊断：黄圈基准、单选 vs 框选 9 处差异、灰虚线 0°、任意枢轴刚体化、角度域 U1-U6、历史包袱清单 + S1-S5 方案 + §8 落地记录） | ✅ **已落地**（2026-09 拍板 D1-D5 后一次性实施 S1-S5；代码/测试/文档同步，全量 ctest 64/64 绿） |
 | `DESIGN.md` | 打版工作台视觉设计（piece 调色板 / 字号与圆角 token / 暗色适配） | ⚠️ 部分过时：2026-08-09 视觉稿。**视觉语言与 Rules 仍有效**（字号 / 圆角已按 `src/ui/Theme.h` 订正）；默认主题已拍板为 Light，AngleHud 已随 CONTEXT_STRIP 二期删除 |
 | `PRODUCT.md` | 产品定位与平台约束（用户画像 / 定位 / 能力与约束 / 产品原则） | ⚠️ 部分过时：**产品定位与原则仍有效**；已订正单位体系（内部 mm / 显示 cm）与删除影响九项计数；原始 critique 产物未入库 |
 | `PERF_AUDIT_REPORT.md` | 性能审计报告（重复计算 + 可维护性）：5 项重复计算 + 4 项维护性提升，带 file:line、影响面矩阵与优先级 | ⚠️ 部分实施（2026-12）：**① 分段弧长缓存 + A `runResolvePass` 收口已实现**；②③④⑤ C/D 待实施 |
