@@ -8,6 +8,7 @@
 #include "parametric/Attachment.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
+#include "geometry/CurveMath.h"
 
 using namespace cad::param;
 using cad::geo::Vec2;
@@ -61,6 +62,14 @@ private slots:
     /// Step-6 pass (shared fixpoint).
     void aimChainThroughInterpolatedResolves();
 
+    /// PAR-P0-3 regression: CURVE host, same-block pass — the hit must land on
+    /// the curve, not on the chord.
+    void curveHostSameBlock();
+
+    /// PAR-P0-3 regression: CURVE host, CROSS-block pass — this pass had no
+    /// curve branch at all, so the hit landed on the chord.
+    void curveHostCrossBlock();
+
 private:
     /// Helper: create a block with a horizontal segment from (0,0) to (100,0) mm.
     static Block makeHorizontalSegment()
@@ -86,6 +95,47 @@ private:
         seg.endPointId = p2.id;
         b.addSegment(seg);
 
+        return b;
+    }
+
+    /// Helper: block with a Bézier segment (0,0)→(100,0) through a CurveAnchor
+    /// at the chord midpoint offset by @p bulge mm. The chord is the X axis, so
+    /// "hit on the chord" (y = 0) and "hit on the curve" (|y| = bulge) are
+    /// trivially distinguishable.
+    static Block makeHorizontalCurve(double bulge)
+    {
+        Block b;
+        ParamPoint p1;
+        p1.constraint = PointConstraint::Free;
+        p1.freePos = Vec2(0.0, 0.0);
+        p1.resolved = true;
+        p1.resolvedPos = p1.freePos;
+
+        ParamPoint p2;
+        p2.constraint = PointConstraint::Free;
+        p2.freePos = Vec2(100.0, 0.0);
+        p2.resolved = true;
+        p2.resolvedPos = p2.freePos;
+
+        b.addPoint(p1);
+        b.addPoint(p2);
+
+        Segment seg;
+        seg.startPointId = p1.id;
+        seg.endPointId = p2.id;
+        seg.type = SegmentType::Bezier;
+
+        ParamPoint pp;
+        pp.constraint = PointConstraint::CurveAnchor;
+        pp.hostSegmentId = seg.id;
+        pp.interpPercent = 0.5;
+        pp.interpOffsetDist = bulge;
+        pp.autoTangent = true;
+        const QUuid ppId = pp.id;
+        b.addPoint(std::move(pp));
+        seg.passPointIds = {ppId};
+
+        b.addSegment(std::move(seg));
         return b;
     }
 };
@@ -590,6 +640,88 @@ void TestIntersection::aimChainThroughInterpolatedResolves()
              "chained aim intersection must resolve after the 6b pass");
     QVERIFY(std::abs(rIx2->resolvedPos.x - 65.0) < 1e-6);
     QVERIFY(std::abs(rIx2->resolvedPos.y - 0.0) < 1e-6);
+}
+
+void TestIntersection::curveHostSameBlock()
+{
+    Block b = makeHorizontalCurve(40.0);
+    const QUuid segId = b.segments[0].id;
+
+    // Origin below the curve; chord direction is +X so 90° = straight up.
+    ParamPoint a;
+    a.constraint = PointConstraint::Free;
+    a.freePos = Vec2(50.0, -80.0);
+    b.addPoint(a);
+
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.refPointA = a.id;
+    ix.hostSegmentId = segId;
+    ix.interAngle = 90.0;
+    ix.interBidirectional = false;
+    b.addPoint(ix);
+    const QUuid ixId = ix.id;
+
+    b.resolve();
+
+    const ParamPoint* r = b.findPoint(ixId);
+    QVERIFY(r && r->resolved);
+
+    // Expected hit: the same ray against the resolved curve spans. Comparing
+    // against rayCurveIntersect (not a hand-written y) keeps this test honest
+    // about the shared helper doing the work.
+    const auto spans = b.spansForSegment(b.segments[0], true, true);
+    QVERIFY(!spans.empty());
+    const auto expected = cad::geo::rayCurveIntersect(
+        Vec2(50.0, -80.0), Vec2(0.0, 1.0), spans, false);
+    QVERIFY(!expected.empty());
+    QVERIFY((r->resolvedPos - expected[0].point).length() < 1e-6);
+    // The chord hit would be (50, 0); the curve passes through (50, ±40).
+    QVERIFY(std::abs(r->resolvedPos.y) > 5.0);
+}
+
+void TestIntersection::curveHostCrossBlock()
+{
+    // Same curve host, but the ray origin lives in ANOTHER block: the
+    // intersection resolves in the Resolver's cross-block pass — the pass that
+    // used to have no curve branch (PAR-P0-3), so the hit landed on the chord.
+    Block b1 = makeHorizontalCurve(40.0);
+    const QUuid segId = b1.segments[0].id;
+
+    Block b2;
+    ParamPoint a;
+    a.constraint = PointConstraint::Free;
+    a.freePos = Vec2(50.0, -80.0);
+    b2.addPoint(a);
+    const QUuid originId = a.id;
+
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.refPointA = originId;   // on b2 (different block!)
+    ix.hostSegmentId = segId;  // on b1
+    ix.interAngle = 90.0;
+    ix.interBidirectional = false;
+    ix.isAuxiliary = true;
+    b1.addPoint(ix);
+    const QUuid ixId = ix.id;
+
+    std::vector<Block> blocks;
+    blocks.push_back(b1);
+    blocks.push_back(b2);
+    std::vector<Attachment> attachments;
+    Resolver::resolveAll(blocks, attachments);
+
+    const Block& rb1 = blocks[0];
+    const ParamPoint* r = rb1.findPoint(ixId);
+    QVERIFY2(r && r->resolved, "cross-block curve intersection must resolve");
+
+    const auto spans = rb1.spansForSegment(rb1.segments[0], true, true);
+    QVERIFY(!spans.empty());
+    const auto expected = cad::geo::rayCurveIntersect(
+        Vec2(50.0, -80.0), Vec2(0.0, 1.0), spans, false);
+    QVERIFY(!expected.empty());
+    QVERIFY((r->resolvedPos - expected[0].point).length() < 1e-6);
+    QVERIFY(std::abs(r->resolvedPos.y) > 5.0);   // chord hit would be y = 0
 }
 
 QTEST_GUILESS_MAIN(TestIntersection)

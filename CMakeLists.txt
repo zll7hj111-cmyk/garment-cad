@@ -390,6 +390,8 @@ add_library(gcad_ui STATIC
     src/ui/ElaMsgBox.h
     src/ui/ElaDialogButtons.h
     src/ui/FormScaffold.h
+    src/ui/NumericFieldSpecs.h
+    src/ui/UiStrings.h
     src/ui/DeleteImpactConfirm.h
     src/ui/DeleteImpactConfirm.cpp
     # ── P2-4: 线段属性对话框及其卡片 （原在 src/tools/，QWidget 归位 ui/）──
@@ -469,6 +471,7 @@ add_library(gcad_tools STATIC
     src/tools/MarqueeGesture.cpp
     src/tools/SelectState.h
     src/tools/ConnectGesture.h
+    src/tools/InteractionTolerances.h
     src/tools/ConnectGesture.cpp
     src/tools/ConnectGestureAttach.cpp
     src/tools/ConnectGestureAngleSession.cpp
@@ -592,8 +595,12 @@ add_test(NAME check_bool_flags
 add_test(NAME check_test_split
          COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
                  python ${CMAKE_SOURCE_DIR}/tools/check_test_split.py)
+add_test(NAME check_inline_units
+         COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+                 python ${CMAKE_SOURCE_DIR}/tools/check_inline_units.py)
 set_tests_properties(check_layering check_test_fixtures check_hardcoded_colors
                      check_file_size check_header_classification check_bool_flags check_test_split
+                     check_inline_units
     PROPERTIES RUN_SERIAL TRUE)
 
 # ── Test: Tool hint completeness (TOOL_SYSTEM_AUDIT H3) ──
@@ -601,6 +608,17 @@ add_executable(test_tool_hints tests/test_tool_hints.cpp)
 target_include_directories(test_tool_hints PRIVATE ${GCAD_SRC})
 target_link_libraries(test_tool_hints PRIVATE gcad_tools gcad_ui Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 add_test(NAME test_tool_hints COMMAND test_tool_hints)
+
+# ── Test: Theme ↔ CanvasStyle 令牌同步守卫（2026-12 审计 P0-3 / 工单 G3）──
+# 两张令牌表分属 ui 与 canvas 两层，无法共享同一类型，历史上只靠注释维持；
+# 本测试把「Kept in sync ... by hand」变成可执行断言（同语义令牌逐通道相等，
+# 含 alpha），有意分歧在测试内显式锁定。任一侧改动未跟随即在此失败。
+add_executable(test_theme_sync tests/test_theme_sync.cpp)
+target_include_directories(test_theme_sync PRIVATE ${GCAD_SRC})
+target_link_libraries(test_theme_sync PRIVATE
+    gcad_canvas gcad_ui gcad_parametric
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+add_test(NAME test_theme_sync COMMAND test_theme_sync)
 
 # ── Test: W 键模式切换的持久化显示标识 (2026-08-29) ──
 # 锁四条契约: 状态栏持久层存在 / 静态与运行期文案同源 / 三态带位置 /
@@ -906,6 +924,17 @@ target_link_libraries(test_rotate_strip PRIVATE
     gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
     Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
 add_test(NAME test_rotate_strip COMMAND test_rotate_strip)
+
+# ── Test: 旋转手势角度域守卫（2026-12 审计 P0-4）──
+# 写侧唯一入口 writeFollowerAngleForMode（Angle 存 [0,360) / ArcLength 用 360 域 /
+# ChordLength 用折角域），读侧唯一入口 formatRotationBadge（旋转量不折叠、姿态角
+# 一律折角域）。锁死「同一姿态两个数字」（连接段 −90.0° vs 自由段 270.0°）回归。
+add_executable(test_rotate_angle_domain tests/test_rotate_angle_domain.cpp)
+target_include_directories(test_rotate_angle_domain PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_angle_domain PRIVATE
+    gcad_tools gcad_parametric gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+add_test(NAME test_rotate_angle_domain COMMAND test_rotate_angle_domain)
 
 add_executable(test_rotate_d15_gate
     tests/test_rotate_d15_gate.cpp

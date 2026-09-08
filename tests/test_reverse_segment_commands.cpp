@@ -529,11 +529,10 @@ void TestReverseSegmentCommands::reverseSegment_connectedAsLeader_exitStable()
     stack.push(new cad::cmd::ReverseSegmentCommand(&doc, lId, lSeg));
     doc.resolveAll();
 
-    // leader 换向: 端点1与端点2互换 → 母线基准方向翻转 180°。
-    // 子线严格保持相对母线的基准角度，因此子线世界角随母线基准翻转 180°。
+    // leader 换向: 固化两点基准，子线基准方向与世界姿态零跳变。
     const auto* fb = doc.findBlock(fId);
     QVERIFY(fb->worldPos(fStart).distanceTo(fsBefore) < 1e-6);
-    QVERIFY(fb->worldPos(fEnd).distanceTo(Vec2(40.0, 0.0)) < 1e-6);
+    QVERIFY(fb->worldPos(fEnd).distanceTo(feBefore) < 1e-6);
     const auto* att2 = doc.findAttachment(att.id);
     QVERIFY(att2);
     QVERIFY(std::abs(att2->followerAngle - 180.0) < 1e-9);
@@ -573,10 +572,10 @@ void TestReverseSegmentCommands::reverseSegment_legacyAngleRefBackfilled()
     stack.push(new cad::cmd::ReverseSegmentCommand(&doc, lId, lSeg));
     doc.resolveAll();
 
-    // 基准翻转 180° → 跟随角保持 0°，跟随者世界方向随基准翻转。
+    // 基准两点固化保持不变 → 跟随角保持 0°，跟随者世界方向零跳变。
     const auto* fb = doc.findBlock(fId);
     QVERIFY(fb->worldPos(fStart).distanceTo(fsBefore) < 1e-6);
-    QVERIFY(fb->worldPos(fEnd).distanceTo(Vec2(340.0, 0.0)) < 1e-6);
+    QVERIFY(fb->worldPos(fEnd).distanceTo(feBefore) < 1e-6);
     const auto* att2 = doc.findAttachment(att.id);
     QVERIFY(att2);
     QVERIFY(std::abs(att2->followerAngle - 0.0) < 1e-9);

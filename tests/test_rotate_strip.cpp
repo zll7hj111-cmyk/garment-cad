@@ -250,8 +250,9 @@ void TestRotateStrip::arcLengthModeOverflowNormalized()
 
     // 条带锁定到该线段 (旋转工具不再持有 HUD —— 读数与输入都落这里)。
     QVERIFY(!bridge.strip.blockId().isNull());
-    // ArcLength mode: 条带显示带符号折角弧长 (cm; 3 turns ≡ 0° 折叠 → 0)。
-    QCOMPARE(bridge.strip.angleEdit()->text(), QStringLiteral("0"));
+    // ArcLength mode: 条带按存储值原样显示弧长 (cm) —— 3 圈 = 1130.97mm
+    // → "113.1"（2026-12 审计 P0-2: 不再折叠往返成 0，输入框与存储同数）。
+    QCOMPARE(bridge.strip.angleEdit()->text(), QStringLiteral("113.1"));
 
     // 点 ° 切回角度模式: 角度必须归一化到折叠后的 0°
     // (弧长 3 圈 ≡ 角度 0° 折叠, 恒等映射 2026-08)。
@@ -271,9 +272,11 @@ void TestRotateStrip::arcLengthModeOverflowNormalized()
         return false;
     }), "输入 270 后 followerAngle 应更新为 270（条带输入未应用到存储）");
 
-    // 单位切换往返刷新条带：显示带符号折角 −90（v3 定稿，符号 = 折向）。
+    // 单位切换往返刷新条带：弧长按存储值显示 270° 等效弧长 = 282.74mm
+    // → "28.27"（2026-12 审计 P0-2: 旧实现经 arc→deg→fold→arc 往返显示
+    // "−9.4"，与存储值不同数）。
     QTest::mouseClick(bridge.strip.unitArcButton(), Qt::LeftButton);   // → 弧长
-    QCOMPARE(bridge.strip.angleEdit()->text(), QStringLiteral("-9.4"));
+    QCOMPARE(bridge.strip.angleEdit()->text(), QStringLiteral("28.27"));
     QTest::mouseClick(bridge.strip.unitAngleButton(), Qt::LeftButton); // → 角度
     QCOMPARE(bridge.strip.angleEdit()->text(), QStringLiteral("-90"));
 }

@@ -1040,13 +1040,29 @@ void TestSelectWKey::quickDetachAuxPointMountWithDKey()
     doc.resolveAll();
     scene.refreshAllBlockItems();
 
-    // 选中宿主线 L1
-    sel->selectBlocksExternally({l1.blockId});
-    QCOMPARE(sel->selection().size(), 1);
+    view.resize(900, 600);
+    view.setInputDispatcher(&tm);
 
-    // 发送键盘 'D' 键
-    QKeyEvent dKey(QEvent::KeyPress, Qt::Key_D, Qt::NoModifier, QStringLiteral("d"));
-    sel->keyPress(&dKey);
+    auto vp = [&](double x, double y) {
+        return view.mapFromScene(QPointF(x, -y));
+    };
+    auto drag = [&](double x0, double y0, double x1, double y1) {
+        const QPoint vp0 = vp(x0, y0);
+        const QPoint vp1 = vp(x1, y1);
+        QMouseEvent press(QEvent::MouseButtonPress, vp0, view.viewport()->mapToGlobal(vp0),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &press);
+        QMouseEvent move(QEvent::MouseMove, vp1, view.viewport()->mapToGlobal(vp1),
+                         Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, vp1, view.viewport()->mapToGlobal(vp1),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &release);
+        QTest::qWait(20);
+    };
+
+    // 拖动跟随线 L2 拆散辅助点挂载
+    drag(50.0, 25.0, 50.0, 75.0);
     doc.resolveAll();
 
     // 验证辅助点上的连接已被彻底释放（数据上完全移除连接）
@@ -1070,12 +1086,12 @@ void TestSelectWKey::quickDetachAuxPointMountWithDKey()
     doc.resolveAll();
 
     // 验证 undo 恢复原辅助点挂载
-    stack.undo();
+    doc.undoStack()->undo();
     doc.resolveAll();
     QVERIFY(doc.findAttachment(att.id) != nullptr);
 
     // 验证 redo 再次彻底释放
-    stack.redo();
+    doc.undoStack()->redo();
     doc.resolveAll();
     QVERIFY(doc.findAttachment(att.id) == nullptr);
 }

@@ -1005,7 +1005,14 @@ void TestAuxLayer::lockedDragMovesWholePair()
               Qt::NoModifier);
 
     // 连接脆弱化（用户拍板 2026-09）: 仅拖动选中对象，未选中的母线不连带移动，连接直接断开
-    QCOMPARE(doc.attachments().size(), size_t(0));
+    // 拆开保留角度（DECISIONS.md:22 最终方案 + 2026-09 拖动脆弱化）: 拖动集合严格等于
+    // 当前选中对象，未选中的母线不连带移动；跨选集连接不删除，而是转为 angleOnly 并挂到
+    // 影子基准（DETACH_SHADOW_DESIGN.md §7.4）——位置吸附解除、角度跟随保留。
+    const auto atts1 = doc.attachments();
+    QCOMPARE(atts1.size(), size_t(1));
+    QVERIFY2(atts1.front().angleOnly, "跨选集连接应降级为 angleOnly");
+    QVERIFY2(!atts1.front().isLocked, "位置焊接应解除");
+
     QVERIFY2(std::abs(doc.findBlock(w.blockId)->transform.origin.x - w0.x) < 1e-6,
              "unselected leader stays in place");
     QVERIFY2(std::abs(doc.findBlock(aux.blockId)->transform.origin.x
@@ -1072,7 +1079,14 @@ void TestAuxLayer::dragLeaderKeepsFollower()
     sendMouse(QEvent::MouseButtonRelease, vp(195.0, 0.0), Qt::LeftButton,
               Qt::NoModifier);
     // 连接脆弱化（用户拍板 2026-09）: 仅拖动选中的母线，未选中的子线不跟随移动，连接直接断开
-    QCOMPARE(doc.attachments().size(), size_t(0));
+    // 拆开保留角度（DECISIONS.md:22 最终方案 + 2026-09 拖动脆弱化）: 拖动集合严格等于
+    // 当前选中对象，未选中的母线不连带移动；跨选集连接不删除，而是转为 angleOnly 并挂到
+    // 影子基准（DETACH_SHADOW_DESIGN.md §7.4）——位置吸附解除、角度跟随保留。
+    const auto atts2 = doc.attachments();
+    QCOMPARE(atts2.size(), size_t(1));
+    QVERIFY2(atts2.front().angleOnly, "跨选集连接应降级为 angleOnly");
+    QVERIFY2(!atts2.front().isLocked, "位置焊接应解除");
+
     QVERIFY2(std::abs(doc.findBlock(w1.blockId)->transform.origin.x - 120.0) < 1e-6,
              "leader moved by +120");
     QVERIFY2(std::abs(doc.findBlock(w2.blockId)->transform.origin.x - 0.0) < 1e-6,

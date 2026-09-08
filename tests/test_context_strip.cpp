@@ -153,6 +153,8 @@ private slots:
     void pasteButtonsPopulateAndApply();
     // ── 拆开态双输入框与基准角编辑 ──
     void shadowBasisDualAngleBoxesAndEditing();
+    // ── 自由线基准角度显示世界角度 ──
+    void freeLineBaseAngleDisplaysWorldAngle();
 };
 
 void TestContextStrip::fillPopulatesFields()
@@ -1235,6 +1237,39 @@ void TestContextStrip::shadowBasisDualAngleBoxesAndEditing()
     posBtn->click();
     QVERIFY(strip.angleEdit()->isVisible());
     QCOMPARE(strip.angleEdit()->text(), QStringLiteral("45"));
+}
+
+void TestContextStrip::freeLineBaseAngleDisplaysWorldAngle()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(cad::test::layerIdAt(doc, 1));
+    Block block;
+    block.transform.origin = cad::geo::Vec2::zero();
+    ParamPoint sp;
+    sp.constraint = PointConstraint::Free;
+    sp.freePos = cad::geo::Vec2::zero();
+    ParamPoint ep;
+    ep.constraint = PointConstraint::Polar;
+    ep.refPointId = sp.id;
+    ep.distance = 100.0;
+    ep.angle = 270.0;
+    Segment seg;
+    seg.startPointId = sp.id;
+    seg.endPointId = ep.id;
+    block.addPoint(std::move(sp));
+    block.addPoint(std::move(ep));
+    block.addSegment(std::move(seg));
+    const QUuid bid = doc.addBlock(std::move(block));
+    doc.resolveAll();
+    const auto* b = doc.findBlock(bid);
+
+    ContextStrip strip(&doc);
+    strip.setPinnedTarget(bid, b->segments.front().id);
+
+    // 自由线基准显示真实世界角度归一化到 [-180, 180): 270° -> -90°，且只读不可编辑
+    QVERIFY(strip.baseAngleEdit());
+    QCOMPARE(strip.baseAngleEdit()->text(), QStringLiteral("-90"));
+    QVERIFY(strip.baseAngleEdit()->isReadOnly());
 }
 
 QTEST_MAIN(TestContextStrip)

@@ -197,19 +197,29 @@ void TestSelectWKey::quickDetachKeyD()
     click(mid.x, mid.y);
     QVERIFY(scene.findBlockItem(b.blockId)->toolSelected());
 
-    // 2) D 键快拆: 解除位置吸附、保留角度跟随 (angleOnly)。
-    QKeyEvent keyD(QEvent::KeyPress, Qt::Key_D, Qt::NoModifier);
-    QApplication::sendEvent(&view, &keyD);
-    // sendEvent 同步送达并完成处理(工具链路无定时器/排队连接), 后续断言
-    // 不依赖异步工作; 事件间无统一可观测条件, 暂留 qWait 仅作事件排空。
-    QTest::qWait(20);
+    // 2) 拖动拆开: 按住 B 拖离 A 自动解除位置吸附、保留角度跟随并生成影子基准。
+    auto drag = [&](double x0, double y0, double x1, double y1) {
+        const QPoint vp0 = vp(x0, y0);
+        const QPoint vp1 = vp(x1, y1);
+        QMouseEvent press(QEvent::MouseButtonPress, vp0, view.viewport()->mapToGlobal(vp0),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &press);
+        QMouseEvent move(QEvent::MouseMove, vp1, view.viewport()->mapToGlobal(vp1),
+                         Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, vp1, view.viewport()->mapToGlobal(vp1),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(view.viewport(), &release);
+        QTest::qWait(20);
+    };
+    drag(mid.x, mid.y, mid.x, mid.y + 50.0);
 
     // 3) 连接已转为仅角度: 位置自由 + 自动解锁 (位置自由 ↔ 拖动保护互斥)。
     //    影子基准 (DETACH_SHADOW_DESIGN.md §3/§7.1, 2026-xx 翻案活引用语义):
     //    基准换代为隐藏影子块 (master = 本体 A), offset 原样保留 (R2)。
     QCOMPARE(doc.attachments().size(), size_t(1));
     const auto& after = doc.attachments().front();
-    QVERIFY2(after.angleOnly, "D 键应把连接转为仅角度 (拆开保留角度)");
+    QVERIFY2(after.angleOnly, "拖拽应把连接转为仅角度 (拆开保留角度)");
     QVERIFY2(!after.isLocked, "拆开自动清除拖动保护");
     {
         const auto* shadow = doc.blockById(after.toBlockId);
@@ -221,7 +231,7 @@ void TestSelectWKey::quickDetachKeyD()
 
     // 4) undo: 恢复完整连接 (焊接态原样还原 — SetAttachmentAngleOnlyCommand
     //    快照 isLocked=true, undo 回放); 影子随 undo 一并删除 (基准还原本体)。
-    stack.undo();
+    doc.undoStack()->undo();
     QCOMPARE(doc.attachments().size(), size_t(1));
     const auto& undone = doc.attachments().front();
     QVERIFY2(!undone.angleOnly, "undo 应恢复完整连接");

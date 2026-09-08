@@ -7,8 +7,11 @@ truth, light/dark aware, theme switching re-bakes instance QSS from tokens.
 A hex literal written into a stylesheet or a widget bypasses the theme:
 it is invisible in dark mode, and switching themes silently drops it.
 
-This script finds hex color literals (`#RRGGBB`) in `src/` and reports every
-one that is NOT declared as an allowed exception.
+This script finds color literals in `src/` — hex (`#RRGGBB`), numeric QColor
+construction (`QColor(120, 30, 40)` / `QColor(0xE9, 0x1E, 0x63)`), named Qt
+enums (`Qt::white`) and literal QSS `rgba(...)` — and reports every one that
+is NOT declared as an allowed exception. (2026-12 审计 P0-1: the previous
+hex-only scan false-passed ~62 numeric / Qt::named / QSS sites.)
 
 Rules
 -----
@@ -44,6 +47,18 @@ EXEMPT_FILES = {
 ALLOW_MARK = 'color-allow'
 
 HEX_COLOR = re.compile(r'#[0-9A-Fa-f]{6}\b')
+# QColor(120, 30, 40) / QColor(0xE9, 0x1E, 0x63) / QColor("#8C877D")
+QCOLOR_NUM = re.compile(r'\bQColor\s*\(\s*(?:0x[0-9A-Fa-f]+|\d)')
+QCOLOR_STR = re.compile(r'\bQColor\s*\(\s*(?:QStringLiteral\s*\(\s*)?["\']')
+# Literal QSS rgba(...) — .arg()-templated "rgba(%1,%2,%3,30)" is token-derived
+# and therefore NOT a violation (the digits must follow the paren directly).
+QSS_RGBA = re.compile(r'\brgba\s*\(\s*\d')
+# Named Qt color enums. Qt::transparent / NoPen / NoBrush are not color choices.
+QT_NAMED = re.compile(
+    r'\bQt::(?:white|black|red|green|blue|gray|grey|yellow|cyan|magenta|'
+    r'darkRed|darkGreen|darkBlue|darkYellow|darkCyan|darkMagenta|'
+    r'lightGray|darkGray|lightRed|lightGreen|lightBlue)\b')
+COLOR_PATTERNS = (HEX_COLOR, QCOLOR_NUM, QCOLOR_STR, QSS_RGBA, QT_NAMED)
 
 
 def main() -> int:
@@ -53,7 +68,11 @@ def main() -> int:
             if not name.endswith(('.cpp', '.h')):
                 continue
             rel = os.path.relpath(os.path.join(dirpath, name), REPO)
-            if rel.replace(os.sep, '/').lstrip('src/') in EXEMPT_FILES:
+            # 坑 (审计 P0-1): 旧写法 .lstrip('src/') 按字符集剥离, 把
+            # 'src/canvas/CanvasStyle.h' 变成 'anvas/CanvasStyle.h' → canvas
+            # 豁免从未生效。必须按前缀切片。
+            rel_posix = rel.replace(os.sep, '/')
+            if rel_posix.startswith('src/') and rel_posix[4:] in EXEMPT_FILES:
                 continue
             for lineno, line in enumerate(
                     open(os.path.join(dirpath, name), encoding='utf-8-sig',
@@ -61,11 +80,13 @@ def main() -> int:
                 if ALLOW_MARK in line:
                     continue
                 code = line.split('//', 1)[0]  # 剥掉行尾注释（文档引用色）；color-allow 在注释里时上面的判断已放行
-                for m in HEX_COLOR.finditer(code):
-                    violations.append((rel, lineno, m.group(0)))
+                for pattern in COLOR_PATTERNS:
+                    for m in pattern.finditer(code):
+                        violations.append((rel, lineno, m.group(0).strip()))
     if not violations:
-        print('hardcoded colors OK: no undeclared hex colors in src/ '
-              '(all widget colors come from ThemeTokens / CanvasStyle)')
+        print('hardcoded colors OK: no undeclared color literals in src/ '
+              '(hex / QColor(数字) / Qt::named / QSS rgba — all widget colors '
+              'come from ThemeTokens / CanvasStyle)')
         return 0
 
     print(f'{len(violations)} hardcoded color(s) outside the token tables:\n')
