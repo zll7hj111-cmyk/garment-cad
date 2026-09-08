@@ -81,7 +81,7 @@ private slots:
     /// 旋转工具锚心状态 (2026-12): 旋转会话内条带换向 = 切换锚心 —— 基准
     /// 读数锚心端在前 + 换向按钮资格/原因。
     void onRotateAnchorStateChanged(bool active, bool anchorIsEnd, bool canToggle,
-                                    const QString& reason);
+                                    const QString& reason, double baseAngleDeg = 0.0);
     /// Hold-to-show (N/L keys) changed on canvas — keep open
     /// LinePropertyDialogs' display toggles in sync.
     void onForceShowChanged(bool showNames, bool showLengths);

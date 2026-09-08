@@ -52,7 +52,7 @@ public:
 
     // ── 旋转工具锚心 (2026-12): 换向按钮在旋转会话内 = 切换锚心 ──
     void setRotateAnchorState(bool active, bool anchorIsEnd, bool canToggle,
-                              const QString& reason);
+                              const QString& reason, double baseAngleDeg = 0.0);
 
     // ── 焦点上报 (MainWindow 经 ToolHost 转发) ──
     void setHoverTarget(const QUuid& blockId, const QUuid& segmentId);
@@ -76,6 +76,7 @@ public:
     [[nodiscard]] ElaLineEdit* nameEdit() const { return m_nameEdit; }
     [[nodiscard]] ElaLineEdit* lengthEdit() const { return m_lenEdit; }
     [[nodiscard]] ElaPushButton* pasteLengthButton() const { return m_btnPasteLen; }
+    [[nodiscard]] ElaLineEdit* baseAngleEdit() const { return m_baseAngleEdit; }
     [[nodiscard]] ElaLineEdit* angleEdit() const { return m_angleEdit; }
     [[nodiscard]] ElaPushButton* pasteAngleButton() const { return m_btnPasteAngle; }
     [[nodiscard]] ElaPushButton* reverseButton() const { return m_btnReverse; }
@@ -125,8 +126,6 @@ private:
     // Display (src/app/ContextStripDisplay.cpp)
     void refreshFields();
     void refreshChrome();
-    [[nodiscard]] QString foldedArcDisplay(const cad::param::Attachment* att) const;
-    [[nodiscard]] QString foldedChordDisplay(const cad::param::Attachment* att) const;
 
     // Edit (src/app/ContextStripEdit.cpp)
     void applyName();
@@ -172,6 +171,7 @@ private:
         bool    anchorIsEnd = false;
         bool    canToggle = false;
         QString reason;
+        double  baseAngleDeg = 0.0;
     };
     RotateAnchorState m_rotateAnchor;
 
@@ -179,6 +179,7 @@ private:
     ElaLineEdit*   m_nameEdit = nullptr;
     ElaLineEdit*   m_lenEdit = nullptr;
     ElaPushButton* m_btnPasteLen = nullptr;
+    ElaLineEdit*   m_baseAngleEdit = nullptr;
     ElaLineEdit*   m_angleEdit = nullptr;
     ElaPushButton* m_btnPasteAngle = nullptr;
     QPushButton*   m_btnUnitAngle = nullptr;

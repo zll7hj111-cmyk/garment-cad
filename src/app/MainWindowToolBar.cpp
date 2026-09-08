@@ -16,6 +16,7 @@
 #include "ui/IconHelper.h"
 #include "ui/Theme.h"
 #include "ui/TooltipFormatter.h"
+#include "ui/UiStrings.h"
 
 namespace {
 
@@ -126,7 +127,7 @@ void MainWindow::refreshLayerChip()
     m_layerChip->setText(aux ? QStringLiteral("辅助：%1").arg(layer->name)
                              : QStringLiteral("图层：%1").arg(layer->name));
     m_layerChip->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
-        QStringLiteral("当前活动图层"),
+        cad::ui::str::kActiveLayer,
         QStringLiteral("点击快速切换"),
         QStringLiteral("当前图层：%1。所有新创建的图元均归属此图层。").arg(layer->name)));
 

@@ -23,6 +23,7 @@
 #include "tools/ToolManager.h"
 #include "tools/ToolSelect.h"
 #include "ui/QuickAuxDialog.h"
+#include "document/CommandTexts.h"
 
 void MainWindow::onSegmentContextMenu(const cad::canvas::SegmentHit& hit)
 {
@@ -35,7 +36,13 @@ void MainWindow::onSegmentContextMenu(const cad::canvas::SegmentHit& hit)
     // --- 拆开连接操作项 (全层穿透扫描) ---
     const auto userPos = cad::geo::Coord::toUser(hit.scenePos);
     const double zoom = m_canvasView ? m_canvasView->zoomFactor() : 1.0;
-    const double tol = 16.0 / (zoom > 1e-4 ? zoom : 1.0);
+    // 与画布悬停/拾取同源（CAN-P0-5：原 16px 自成一派，右键命中比左键宽一倍）。
+    const auto* segScene = m_canvasView
+                               ? qobject_cast<const CanvasScene*>(m_canvasView->scene())
+                               : nullptr;
+    const double hoverPx = segScene ? segScene->style()->hoverRadiusPx()
+                                    : CanvasStyle::fallback().hoverRadiusPx();
+    const double tol = hoverPx / (zoom > 1e-4 ? zoom : 1.0);
 
     QSet<QUuid> nearBlockIds;
     nearBlockIds.insert(hit.blockId);
@@ -124,7 +131,7 @@ void MainWindow::onSegmentContextMenu(const cad::canvas::SegmentHit& hit)
     // --- 烘焙到操作层 (measure line on the aux layer only) ---
     if (m_paramDoc->measurementsView().measureByOwner(hit.blockId)
         && m_paramDoc->layersView().isAuxLayer(blk->layer)) {
-        QMenu* bakeMenu = menu.addMenu(QStringLiteral("烘焙到操作层"));
+        QMenu* bakeMenu = menu.addMenu(cad::cmd::texts::kBakeToOperationLayer);
         const auto& layerList = m_paramDoc->layers();
         for (int i = 0; i < static_cast<int>(layerList.size()); ++i) {
             if (m_paramDoc->layersView().isAuxLayer(layerList[static_cast<size_t>(i)].id))

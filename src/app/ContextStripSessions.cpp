@@ -11,22 +11,15 @@
 #include "ElaPushButton.h"
 
 #include "ui/Theme.h"
+#include "ui/TooltipFormatter.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 
+using cad::ui::kbdBadge;
+
 namespace cad::app {
-namespace {
-
-QString kbdBadge(const QString& key)
-{
-    const auto& tk = cad::ui::Theme::tokens();
-    return QStringLiteral("<span style=\"background:%1; border:1px solid %2; border-radius:2px; padding:1px 4px; font-family:'Consolas',monospace; font-size:10px; font-weight:600; color:%3;\">%4</span>")
-        .arg(tk.surface2.name(), tk.borderStrong.name(), tk.text2.name(), key);
-}
-
-} // namespace
 
 void ContextStrip::setUndoStack(QUndoStack* stack)
 {
@@ -93,12 +86,14 @@ void ContextStrip::setConnectAngleValid(bool valid)
 }
 
 void ContextStrip::setRotateAnchorState(bool active, bool anchorIsEnd,
-                                        bool canToggle, const QString& reason)
+                                        bool canToggle, const QString& reason,
+                                        double baseAngleDeg)
 {
     m_rotateAnchor.active = active;
     m_rotateAnchor.anchorIsEnd = anchorIsEnd;
     m_rotateAnchor.canToggle = canToggle;
     m_rotateAnchor.reason = reason;
+    m_rotateAnchor.baseAngleDeg = baseAngleDeg;
     if (m_focus != StripFocus::Empty) {
         refreshFields();
         refreshChrome();
@@ -125,6 +120,7 @@ void ContextStrip::showStrokePreview(double lenCm, double angleDeg)
     m_nameEdit->clear();
     setReadOnlyFields(true);
     m_lenEdit->setText(cad::geo::Units::formatNumberTrimmed(lenCm));
+    if (m_baseAngleEdit) m_baseAngleEdit->setText(cad::geo::Units::formatDegValue(0.0));
     m_angleEdit->setText(cad::geo::Units::formatDegValue(
         cad::geo::normalizeDeg360(angleDeg)));
     m_btnUnitAngle->setChecked(true);

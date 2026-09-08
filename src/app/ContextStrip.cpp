@@ -19,6 +19,7 @@
 #include "parametric/Block.h"
 #include "parametric/Segment.h"
 #include "parametric/Serial.h"
+#include "ui/UiStrings.h"
 
 namespace cad::app {
 namespace {
@@ -90,11 +91,13 @@ void ContextStrip::buildUi()
         label->setObjectName(QStringLiteral("stripField"));
         label->setStyleSheet(QStringLiteral("font-size: 11px;"));
         lay->addWidget(label);
-        edit = new ElaLineEdit(m_segmentBar);
+        if (!edit) {
+            edit = new ElaLineEdit(m_segmentBar);
+            edit->setStyleSheet(QStringLiteral("font-size: 11px;"));
+        }
         edit->setFixedHeight(kFieldH);
         edit->setFixedWidth(width);
         edit->setPlaceholderText(placeholder);
-        edit->setStyleSheet(QStringLiteral("font-size: 11px;"));
         lay->addWidget(edit);
     };
 
@@ -106,10 +109,20 @@ void ContextStrip::buildUi()
     m_btnPasteLen->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_btnPasteLen->setCursor(Qt::PointingHandCursor);
     m_btnPasteLen->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
-        QStringLiteral("粘贴公式/数值"), QStringLiteral("Ctrl+V"),
+        cad::ui::str::kPasteFormulaOrValue, QStringLiteral("Ctrl+V"),
         QStringLiteral("将剪贴板内容写入长度框并立即应用（自动清洗换行）")));
     connect(m_btnPasteLen, &QAbstractButton::clicked, this, &ContextStrip::onPasteLength);
     lay->addWidget(m_btnPasteLen);
+
+    m_baseAngleEdit = new ElaLineEdit(m_segmentBar);
+    m_baseAngleEdit->setReadOnly(true);
+    m_baseAngleEdit->setFocusPolicy(Qt::NoFocus);
+    m_baseAngleEdit->setStyleSheet(QStringLiteral("font-size: 11px; color: %1;").arg(tk.text2.name()));
+    m_baseAngleEdit->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("基准角度"),
+        QStringLiteral("当前线段的基准方向角（度数）。有连接时为母线切向；无连接时为基准参考角。"),
+        false));
+    addField(QString::fromUtf8("基准:"), m_baseAngleEdit, 60, QString::fromUtf8("0.0"));
 
     addField(QString::fromUtf8("角度:"), m_angleEdit, 65, QString::fromUtf8("0.0"));
     m_btnPasteAngle = new ElaPushButton(QString::fromUtf8("粘贴"), m_segmentBar);
@@ -117,7 +130,7 @@ void ContextStrip::buildUi()
     m_btnPasteAngle->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_btnPasteAngle->setCursor(Qt::PointingHandCursor);
     m_btnPasteAngle->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
-        QStringLiteral("粘贴公式/数值"), QStringLiteral("Ctrl+V"),
+        cad::ui::str::kPasteFormulaOrValue, QStringLiteral("Ctrl+V"),
         QStringLiteral("将剪贴板内容写入角度框并立即应用（自动清洗换行）")));
     connect(m_btnPasteAngle, &QAbstractButton::clicked, this, &ContextStrip::onPasteAngle);
     lay->addWidget(m_btnPasteAngle);
@@ -180,8 +193,8 @@ void ContextStrip::buildUi()
         "#stripBasisBtn { %1 font-size: 10px; font-weight: 600; color: %2; background: %3; border: 1px solid %4; border-radius: 2px; padding: 2px 6px; }")
         .arg(cad::ui::ThemeTokens::kMonospaceFamily, tk.text2.name(), tk.surface2.name(), tk.borderStrong.name()));
     m_btnBasis->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("角度基准"),
-        QStringLiteral("起点 → 终点。换向后修改长度/角度将驱动对端。")));
+        cad::ui::str::kAngleBasis,
+        cad::ui::str::kStartToEndTip));
     lay->addWidget(m_btnBasis);
 
     m_btnPosDetach = new ElaPushButton(QString::fromUtf8("拆开"), m_segmentBar);

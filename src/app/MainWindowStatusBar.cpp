@@ -13,6 +13,7 @@
 #include "tools/ToolRegistry.h"
 #include "ui/Theme.h"
 #include "ui/TooltipFormatter.h"
+#include "ui/UiStrings.h"
 
 void MainWindow::setupStatusBar()
 {
@@ -34,7 +35,7 @@ void MainWindow::setupStatusBar()
     m_diagBadge->setText(QStringLiteral("⚠"));
     m_diagBadge->setCursor(Qt::PointingHandCursor);
     m_diagBadge->setToolTip(cad::ui::TooltipFormatter::status(
-        QStringLiteral("连接拓扑诊断"), QStringLiteral("存在连接问题，点击查看明细"), true));
+        cad::ui::str::kConnectionTopologyDiag, QStringLiteral("存在连接问题，点击查看明细"), true));
     m_diagBadge->hide();
     connect(m_diagBadge, &QToolButton::clicked, this, [this]() {
         using cad::param::ResolveDiagnostic;
@@ -99,7 +100,7 @@ void MainWindow::onDocumentChanged()
     if (diags.empty()) {
         m_diagBadge->setText(QStringLiteral("⚠"));
         m_diagBadge->setToolTip(cad::ui::TooltipFormatter::status(
-            QStringLiteral("连接拓扑诊断"), QStringLiteral("全部连接正常，无拓扑问题"), false));
+            cad::ui::str::kConnectionTopologyDiag, QStringLiteral("全部连接正常，无拓扑问题"), false));
         m_diagBadge->hide();
         return;
     }

@@ -27,6 +27,7 @@
 #include "ui/Theme.h"
 #include "ui/TooltipFormatter.h"
 #include "ui/VariablePanel.h"
+#include "ui/UiStrings.h"
 
 namespace {
 
@@ -66,8 +67,8 @@ void MainWindow::setupPages()
     headerLay->setSpacing(2);
 
     m_panelBigBar = new ElaTabBar(m_panelHeader);
-    m_panelBigBar->addTab(QStringLiteral("变量"));
-    m_panelBigBar->addTab(QStringLiteral("图层"));
+    m_panelBigBar->addTab(cad::ui::str::kVariable);
+    m_panelBigBar->addTab(cad::ui::str::kLayer);
     m_panelBigBar->addTab(QStringLiteral("组件"));
     m_panelBigBar->setTabSize(QSize(76, 32));
     m_panelBigBar->setExpanding(true);
@@ -127,8 +128,8 @@ void MainWindow::setupPages()
 
     m_pageTabs = new ElaTabBar(this);
     m_pageTabs->addTab(QStringLiteral("画布"));
-    m_pageTabs->addTab(QStringLiteral("变量"));
-    m_pageTabs->addTab(QStringLiteral("图层"));
+    m_pageTabs->addTab(cad::ui::str::kVariable);
+    m_pageTabs->addTab(cad::ui::str::kLayer);
     m_pageTabs->setTabSize(QSize(88, 30));
     m_pageTabs->setIconSize(QSize(14, 14));
     m_pageTabs->setTabToolTip(1,

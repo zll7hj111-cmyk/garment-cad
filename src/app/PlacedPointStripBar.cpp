@@ -11,12 +11,15 @@
 
 #include "ui/Theme.h"
 #include "ui/TooltipFormatter.h"
+#include "parametric/ConditionEngine.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/ParamPoint.h"
 #include "parametric/Segment.h"
 #include "parametric/Serial.h"
+#include "geometry/Units.h"
 #include "document/commands/BlockCommands.h"
+#include "document/CommandTexts.h"
 
 namespace cad::app {
 
@@ -79,7 +82,7 @@ void PlacedPointStripBar::buildUi()
     m_btnDeletePlacedPt->setStyleSheet(QStringLiteral("font-size: 11px;"));
     m_btnDeletePlacedPt->setCursor(Qt::PointingHandCursor);
     m_btnDeletePlacedPt->setToolTip(cad::ui::TooltipFormatter::action(
-        QStringLiteral("删除放置点"),
+        cad::cmd::texts::kDeletePlacedPoint,
         QStringLiteral("仅删除当前放置点，不影响基准线段与端点。快捷键 Del。")));
     connect(m_btnDeletePlacedPt, &QAbstractButton::clicked, this, &PlacedPointStripBar::onDeletePlacedPointClicked);
     ptLay->addWidget(m_btnDeletePlacedPt);
@@ -118,8 +121,13 @@ bool PlacedPointStripBar::setTarget(const QUuid& blockId, const QUuid& pointId)
 
     m_ptSerialLabel->setText(cad::param::Serial::tag(pt->serial));
     m_ptNameEdit->setText(pt->name);
-    m_ptDistEdit->setText(QString::number(pt->interpOffsetDist / 10.0, 'f', 1));
-    m_ptAngleEdit->setText(QString::number(pt->interpOffsetAngle, 'f', 1));
+    // 公式优先回显: 否则提交会把公式覆盖成数值 (CAN-P1-17 收口)。
+    m_ptDistEdit->setText(pt->interpOffsetDistFormula.isEmpty()
+        ? cad::geo::Units::formatCm(pt->interpOffsetDist)
+        : pt->interpOffsetDistFormula);
+    m_ptAngleEdit->setText(pt->interpOffsetAngleFormula.isEmpty()
+        ? cad::geo::Units::formatDegValue(pt->interpOffsetAngle)
+        : pt->interpOffsetAngleFormula);
 
     if (auto* seg = blk->findSegment(pt->hostSegmentId)) {
         QString tag = cad::param::Serial::tag(seg->serial);
@@ -169,10 +177,10 @@ void PlacedPointStripBar::updateValues(double distCm, double angleDeg, bool dist
 {
     if (!m_placePointSession) return;
     if (!distLocked && !m_ptDistEdit->hasFocus()) {
-        m_ptDistEdit->setText(QString::number(distCm, 'f', 1));
+        m_ptDistEdit->setText(cad::geo::Units::formatNumberTrimmed(distCm));
     }
     if (!angleLocked && !m_ptAngleEdit->hasFocus()) {
-        m_ptAngleEdit->setText(QString::number(angleDeg, 'f', 1));
+        m_ptAngleEdit->setText(cad::geo::Units::formatDegValue(angleDeg));
     }
 }
 
@@ -208,15 +216,21 @@ void PlacedPointStripBar::onPlacedPointDistEdited(const QString& text)
         applyPlacedPointEdits();
         return;
     }
-    const QString trimmed = text.trimmed();
-    if (trimmed.isEmpty()) {
+    // 与线段编辑条同一判读入口 (CAN-P1-17): 数值直接发, 公式求值后作为
+    // 实时预览值 (cm 域); 提交时公式原文写回 interpOffsetDistFormula。
+    const auto parsed = cad::geo::parseNumberOrFormula(text);
+    if (parsed.isNumber) {
+        emit distChanged(parsed.value, true);
+        return;
+    }
+    if (parsed.formula.isEmpty()) {
         emit distChanged(0.0, false);
-    } else {
-        bool ok = false;
-        double val = trimmed.toDouble(&ok);
-        if (ok) {
-            emit distChanged(val, true);
-        }
+        return;
+    }
+    if (m_paramDoc) {
+        const auto r = cad::param::ConditionEngine::evaluate(
+            parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
+        if (r.ok) emit distChanged(r.value, true);
     }
 }
 
@@ -226,15 +240,20 @@ void PlacedPointStripBar::onPlacedPointAngleEdited(const QString& text)
         applyPlacedPointEdits();
         return;
     }
-    const QString trimmed = text.trimmed();
-    if (trimmed.isEmpty()) {
+    // 角度域: parseAngleText 剥掉度数符号, 其余同距离框 (CAN-P1-17)。
+    const auto parsed = cad::geo::parseAngleText(text);
+    if (parsed.isNumber) {
+        emit angleChanged(parsed.value, true);
+        return;
+    }
+    if (parsed.formula.isEmpty()) {
         emit angleChanged(0.0, false);
-    } else {
-        bool ok = false;
-        double val = trimmed.toDouble(&ok);
-        if (ok) {
-            emit angleChanged(val, true);
-        }
+        return;
+    }
+    if (m_paramDoc) {
+        const auto r = cad::param::ConditionEngine::evaluate(
+            parsed.formula, m_paramDoc->parameters(), m_paramDoc->conditions());
+        if (r.ok) emit angleChanged(r.value, true);
     }
 }
 
@@ -250,11 +269,20 @@ void PlacedPointStripBar::applyPlacedPointEdits()
     cad::param::ParamPoint newPt = oldPt;
 
     newPt.name = m_ptNameEdit->text().trimmed();
-    bool ok = false;
-    double distCm = m_ptDistEdit->text().toDouble(&ok);
-    if (ok) newPt.interpOffsetDist = distCm * 10.0;
-    double angleDeg = m_ptAngleEdit->text().toDouble(&ok);
-    if (ok) newPt.interpOffsetAngle = angleDeg;
+    const auto dist = cad::geo::parseNumberOrFormula(m_ptDistEdit->text());
+    if (dist.isNumber) {
+        newPt.interpOffsetDist = cad::geo::Units::cmToMm(dist.value);
+        newPt.interpOffsetDistFormula.clear();
+    } else {
+        newPt.interpOffsetDistFormula = dist.formula;
+    }
+    const auto angle = cad::geo::parseAngleText(m_ptAngleEdit->text());
+    if (angle.isNumber) {
+        newPt.interpOffsetAngle = angle.value;
+        newPt.interpOffsetAngleFormula.clear();
+    } else {
+        newPt.interpOffsetAngleFormula = angle.formula;
+    }
 
     if (m_undoStack) {
         m_undoStack->push(new cad::cmd::EditPlacedPointCommand(m_paramDoc, m_placedBlockId, oldPt, newPt));

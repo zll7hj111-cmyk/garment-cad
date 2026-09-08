@@ -20,21 +20,15 @@
 #include "parametric/ParamPoint.h"
 #include "parametric/Attachment.h"
 #include "parametric/Serial.h"
+#include "parametric/FollowerAngle.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "document/commands/BlockCommands.h"
+#include "ui/UiStrings.h"
+
+using cad::ui::kbdBadge;
 
 namespace cad::app {
-namespace {
-
-QString kbdBadge(const QString& key)
-{
-    const auto& tk = cad::ui::Theme::tokens();
-    return QStringLiteral("<span style=\"background:%1; border:1px solid %2; border-radius:2px; padding:1px 4px; font-family:'Consolas',monospace; font-size:10px; font-weight:600; color:%3;\">%4</span>")
-        .arg(tk.surface2.name(), tk.borderStrong.name(), tk.text2.name(), key);
-}
-
-} // namespace
 
 void ContextStrip::refreshFields()
 {
@@ -61,8 +55,7 @@ void ContextStrip::refreshFields()
                 const double mm = (ep->constraint == cad::param::PointConstraint::OrthoOffset)
                     ? ep->distance
                     : sp->resolvedPos.distanceTo(ep->resolvedPos);
-                m_lenEdit->setText(cad::geo::Units::formatNumberTrimmed(
-                    cad::geo::Units::mmToCm(mm)));
+                m_lenEdit->setText(cad::geo::Units::formatCm(mm));
             } else {
                 m_lenEdit->clear();
             }
@@ -71,23 +64,39 @@ void ContextStrip::refreshFields()
 
     const cad::param::Attachment* att = findEditAttachment();
 
+    if (m_baseAngleEdit) {
+        double baseDeg = 0.0;
+        if (att && !att->angleIndependent) {
+            const double refWorldRad = cad::param::effectiveAngleRefWorld(m_paramDoc, *att);
+            baseDeg = cad::geo::normalizeDeg180(cad::geo::radToDeg(refWorldRad));
+        } else if (m_rotateAnchor.active) {
+            baseDeg = cad::geo::normalizeDeg180(m_rotateAnchor.baseAngleDeg);
+        } else {
+            const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId);
+            const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId);
+            if (sp && ep && sp->resolved && ep->resolved) {
+                const cad::geo::Vec2 wd = block->transform.toWorld(ep->resolvedPos)
+                                        - block->transform.toWorld(sp->resolvedPos);
+                baseDeg = cad::geo::normalizeDeg180(cad::geo::radToDeg(wd.angle()));
+            }
+        }
+        m_baseAngleEdit->setText(cad::geo::Units::formatDegValue(baseDeg));
+    }
+
     if (!m_angleEdit->hasFocus()) {
         const QSignalBlocker ab(m_angleEdit);
         if (att && !att->angleIndependent) {
-            if (att->rotationMode == cad::param::RotationMode::ArcLength) {
-                m_angleEdit->setText(att->arcLengthFormula.isEmpty()
-                    ? foldedArcDisplay(att)
-                    : att->arcLengthFormula);
-            } else if (att->rotationMode == cad::param::RotationMode::ChordLength) {
-                m_angleEdit->setText(att->chordLengthFormula.isEmpty()
-                    ? foldedChordDisplay(att)
-                    : att->chordLengthFormula);
-            } else {
-                m_angleEdit->setText(att->followerAngleFormula.isEmpty()
-                    ? cad::geo::Units::formatDegValue(
-                          cad::geo::normalizeDeg180(att->followerAngle))
-                    : att->followerAngleFormula);
-            }
+            const QString formula = att->rotationMode == cad::param::RotationMode::ArcLength
+                ? att->arcLengthFormula
+                : (att->rotationMode == cad::param::RotationMode::ChordLength
+                       ? att->chordLengthFormula
+                       : att->followerAngleFormula);
+            // 2026-12 审计 P0-2: 数值回填统一走 parametric 域入口 ——
+            // 角度折角显示域; 弧长/开度按存储值原样显示 (cm), 不再经
+            // arc→deg→normalizeDeg180→arc 往返（等效角 >180° 时显示成负值）。
+            m_angleEdit->setText(formula.isEmpty()
+                ? cad::param::attachmentValueDisplayText(*att)
+                : formula);
         } else if (const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId)) {
             const auto* sp = block->findPoint(seg->startPointId);
             const auto* driven = (ep && !ep->angleFormula.isEmpty()) ? ep
@@ -95,7 +104,7 @@ void ContextStrip::refreshFields()
             if (driven && !driven->angleFormula.isEmpty()) {
                 m_angleEdit->setText(driven->angleFormula);
             } else {
-                const double rotDeg = block->transform.rotation * 180.0 / M_PI;
+                const double rotDeg = cad::geo::radToDeg(block->transform.rotation);
                 double worldDeg = cad::geo::normalizeDeg360(ep->angle + rotDeg);
                 if (m_rotateAnchor.active && m_rotateAnchor.anchorIsEnd)
                     worldDeg = cad::geo::normalizeDeg360(worldDeg + 180.0);
@@ -105,32 +114,6 @@ void ContextStrip::refreshFields()
             m_angleEdit->clear();
         }
     }
-}
-
-QString ContextStrip::foldedArcDisplay(const cad::param::Attachment* att) const
-{
-    if (!att || !m_paramDoc || m_blockId.isNull()) return QStringLiteral("0");
-    const auto* blk = m_paramDoc->findBlock(m_blockId);
-    if (!blk) return QStringLiteral("0");
-    const double radius = blk->segmentLengthAtPoint(att->fromPointId);
-    const double alphaDeg = (radius > 1e-9)
-        ? cad::geo::arcMmToDeg(att->arcLength, radius) : 0.0;
-    const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
-    return cad::geo::Units::formatDegValue(
-        cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius)));
-}
-
-QString ContextStrip::foldedChordDisplay(const cad::param::Attachment* att) const
-{
-    if (!att || !m_paramDoc || m_blockId.isNull()) return QStringLiteral("0");
-    const auto* blk = m_paramDoc->findBlock(m_blockId);
-    if (!blk) return QStringLiteral("0");
-    const double radius = blk->segmentLengthAtPoint(att->fromPointId);
-    const double alphaDeg = (radius > 1e-9)
-        ? cad::geo::chordMmToDeg(att->chordLength, radius) : 0.0;
-    const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
-    return cad::geo::Units::formatDegValue(
-        cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius)));
 }
 
 void ContextStrip::refreshChrome()
@@ -175,10 +158,10 @@ void ContextStrip::refreshChrome()
     m_btnPosDetach->setEnabled(hasAtt && dimEditable);
     m_btnPosDetach->setToolTip(hasAtt && att->angleOnly
         ? cad::ui::TooltipFormatter::action(
-            QStringLiteral("重新连接位置"),
+            cad::ui::str::kReconnectPosition,
             QStringLiteral("吸附回原宿主点并重新焊接，角度基准保留"))
         : cad::ui::TooltipFormatter::action(
-            QStringLiteral("拆开位置连接"),
+            cad::ui::str::kDetachPositionLink,
             QStringLiteral("解除位置吸附（角度仍跟随基准线）；配合基准「拆开」可转为自由线")));
     m_btnAngleDetach->setText(hasAtt && att->angleIndependent
         ? QString::fromUtf8("重连") : QString::fromUtf8("拆开"));
@@ -197,10 +180,10 @@ void ContextStrip::refreshChrome()
         canRev = m_rotateAnchor.canToggle && m_focus == StripFocus::Pinned;
         reason = canRev
             ? cad::ui::TooltipFormatter::actionWithShortcut(
-                QStringLiteral("切换锚心"), QStringLiteral("X"),
+                cad::ui::str::kToggleAnchorCenter, QStringLiteral("X"),
                 QStringLiteral("切换旋转中心（起点 ↔ 终点）：旋转将绕另一端展开，画布箭头随之翻转"))
             : cad::ui::TooltipFormatter::actionWithShortcut(
-                QStringLiteral("切换锚心"), QStringLiteral("X"),
+                cad::ui::str::kToggleAnchorCenter, QStringLiteral("X"),
                 QStringLiteral("切换旋转中心（起点 ↔ 终点）"),
                 m_rotateAnchor.reason.isEmpty() ? QStringLiteral("当前状态不可切换锚心") : m_rotateAnchor.reason);
     } else {
@@ -210,11 +193,11 @@ void ContextStrip::refreshChrome()
                         m_paramDoc, m_blockId, m_segmentId, &reason);
         if (canRev) {
             reason = cad::ui::TooltipFormatter::action(
-                QStringLiteral("线段换向"),
+                cad::ui::str::kReverseSegment,
                 QStringLiteral("交换起点与终点身份：换向后修改长度/角度驱动另一端，几何位置不变"));
         } else {
             reason = cad::ui::TooltipFormatter::action(
-                QStringLiteral("线段换向"),
+                cad::ui::str::kReverseSegment,
                 QStringLiteral("交换起点与终点驱动角色"),
                 reason.isEmpty() ? QStringLiteral("当前状态不可换向") : reason);
         }
@@ -308,8 +291,8 @@ void ContextStrip::refreshChrome()
             QStringLiteral("旋转锚心"),
             QStringLiteral("当前旋转支点所在端。点击换向按钮可切换旋转锚心端。"))
         : cad::ui::TooltipFormatter::action(
-            QStringLiteral("角度基准"),
-            QStringLiteral("起点 → 终点。换向后修改长度/角度将驱动对端。")));
+            cad::ui::str::kAngleBasis,
+            cad::ui::str::kStartToEndTip));
 
     setProperty("stripFocus", m_focus == StripFocus::Pinned ? "pinned" : "hover");
     style()->unpolish(this);

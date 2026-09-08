@@ -334,7 +334,7 @@ void MainWindow::onSceneMouseMoved(qreal x, qreal y)
 void MainWindow::onZoomChanged(double factor)
 {
     m_zoomLabel->setText(
-        QString::fromUtf8("缩放: %1%").arg(factor * 100.0, 0, 'f', 0));
+        QString::fromUtf8("缩放: %1%").arg(qRound(factor * 100.0)));
 }
 
 void MainWindow::onToolChanged(ToolType type, const char* name)
@@ -445,12 +445,13 @@ void MainWindow::onConnectAngleValidityChanged(bool valid)
 }
 
 void MainWindow::onRotateAnchorStateChanged(bool active, bool anchorIsEnd,
-                                            bool canToggle, const QString& reason)
+                                            bool canToggle, const QString& reason,
+                                            double baseAngleDeg)
 {
     // 旋转会话 (2026-12): 锚心端在前 + 换向按钮转义为切锚心。active=false =
     // 会话结束, 条带恢复普通换向语义。
     if (m_contextStrip)
-        m_contextStrip->setRotateAnchorState(active, anchorIsEnd, canToggle, reason);
+        m_contextStrip->setRotateAnchorState(active, anchorIsEnd, canToggle, reason, baseAngleDeg);
 }
 
 void MainWindow::onForceShowChanged(bool showNames, bool showLengths)

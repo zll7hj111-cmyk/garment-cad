@@ -7,6 +7,7 @@
 #include <QClipboard>
 #include <QTimer>
 #include <QUndoStack>
+#include "geometry/Angle.h"
 
 #include "ElaLineEdit.h"
 #include "ElaPushButton.h"
@@ -21,6 +22,7 @@
 #include "geometry/Units.h"
 #include "document/commands/BlockCommands.h"
 #include "document/commands/AttachmentCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::app {
 
@@ -74,7 +76,7 @@ void ContextStrip::applyAngle()
     const QString text = m_angleEdit->text().trimmed();
     if (text.isEmpty()) return;
 
-    const auto parsed = cad::geo::parseNumberOrFormula(text);
+    const auto parsed = cad::geo::parseAngleText(text);
     double targetDeg = parsed.value;
     if (!parsed.isNumber) {
         auto r = cad::param::ConditionEngine::evaluate(
@@ -93,13 +95,13 @@ void ContextStrip::applyAngle()
         } else if (att->rotationMode == cad::param::RotationMode::ChordLength) {
             double chordMm = cad::geo::Units::cmToMm(targetDeg);
             const double radius = block->segmentLengthAtPoint(att->fromPointId);
-            if (radius > 1e-9) {
+            if (radius > cad::geo::kGeomEps) {
                 chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
             }
             st.chordLength = chordMm;
             st.chordLengthFormula = parsed.isNumber ? QString() : parsed.formula;
         } else {
-            st.followerAngle = targetDeg;
+            st.followerAngle = cad::param::followerAngleToStorage(targetDeg);
             st.followerAngleFormula = parsed.isNumber ? QString() : parsed.formula;
         }
     } else {
@@ -117,13 +119,13 @@ void ContextStrip::applyAngle()
             st.endRefPointId = seg->startPointId;
             st.endDistance = sp->resolvedPos.distanceTo(ep->resolvedPos);
         }
-        const double rotDeg = block->transform.rotation * 180.0 / M_PI;
+        const double rotDeg = cad::geo::radToDeg(block->transform.rotation);
         const double anchorOffset = (m_rotateAnchor.active && m_rotateAnchor.anchorIsEnd) ? 180.0 : 0.0;
         st.endAngle = (targetDeg - anchorOffset) - rotDeg;
         const double totalOffset = anchorOffset + rotDeg;
         st.endAngleFormula = parsed.isNumber
             ? QString()
-            : ((std::abs(totalOffset) > 1e-9)
+            : ((std::abs(totalOffset) > cad::geo::kGeomEps)
                    ? QStringLiteral("(%1)-%2").arg(parsed.formula).arg(totalOffset, 0, 'g', 12)
                    : parsed.formula);
         if (att && att->angleIndependent) st.attId = QUuid();
@@ -197,7 +199,7 @@ void ContextStrip::onUnitSelected(cad::param::RotationMode target)
         st.chordLength = res.chordMm;
         st.chordLengthFormula = res.chordFormula;
     } else {
-        st.followerAngle = res.angle;
+        st.followerAngle = cad::param::followerAngleToStorage(res.angle);
         st.followerAngleFormula = res.angleFormula;
     }
     commitState(std::move(st));
