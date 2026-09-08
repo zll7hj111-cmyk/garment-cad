@@ -14,6 +14,57 @@
 
 namespace cad::tools {
 
+namespace {
+
+/// 自由段「瞄准端」信息（2026-09 统一 S1）：离枢轴最远的端点 + 该端点相对
+/// 「块世界方向（start→end）」的角偏移。块绕枢轴刚体旋转时
+/// tipDir(α) = α + dirOffsetRad，其中 α = 段 start→end 世界方向角（= 自由段姿态）。
+struct FreeAimTip {
+    bool valid = false;
+    cad::geo::Vec2 pos;
+    double curDirRad = 0.0;      ///< 当前 start→end 世界方向角
+    double dirOffsetRad = 0.0;   ///< angle(tip − pivot) − curDirRad
+};
+
+FreeAimTip freeAimTip(const cad::param::ParamDocument* doc,
+                      const QUuid& blockId,
+                      const cad::geo::Vec2& pivot)
+{
+    FreeAimTip tip;
+    const cad::param::Block* blk = doc ? doc->findBlock(blockId) : nullptr;
+    if (!blk || blk->segments.empty()) return tip;
+
+    const cad::param::Segment& seg0 = blk->segments.front();
+    const auto* sp0 = blk->findPoint(seg0.startPointId);
+    const auto* ep0 = blk->findPoint(seg0.endPointId);
+    if (!sp0 || !ep0 || !sp0->resolved || !ep0->resolved) return tip;
+
+    const cad::param::ParamPoint* farPt = nullptr;
+    double farDist = -1.0;
+    for (const auto& seg : blk->segments) {
+        for (const QUuid& pid : {seg.startPointId, seg.endPointId}) {
+            const auto* pt = blk->findPoint(pid);
+            if (!pt || !pt->resolved) continue;
+            const double d = blk->transform.toWorld(pt->resolvedPos).distanceTo(pivot);
+            if (d > farDist) {
+                farDist = d;
+                farPt = pt;
+            }
+        }
+    }
+    if (!farPt) return tip;
+
+    const cad::geo::Vec2 w1 = blk->transform.toWorld(sp0->resolvedPos);
+    const cad::geo::Vec2 w2 = blk->transform.toWorld(ep0->resolvedPos);
+    tip.curDirRad = (w2 - w1).angle();
+    tip.pos = blk->transform.toWorld(farPt->resolvedPos);
+    tip.dirOffsetRad = (tip.pos - pivot).angle() - tip.curDirRad;
+    tip.valid = true;
+    return tip;
+}
+
+} // namespace
+
 cad::geo::Vec2 RotateAimSnap::endpointAtAngle(
     cad::param::ParamDocument* doc,
     const QUuid& blockId,
@@ -23,14 +74,23 @@ cad::geo::Vec2 RotateAimSnap::endpointAtAngle(
     RotateCopyGesture* copyGesture,
     double angleDeg)
 {
+    const bool isFree = !(copyGesture && copyGesture->active()) && !isConnected;
+    if (isFree) {
+        // 2026-09 统一 S1（D2/D4）：自由段枢轴可为任意点，块按刚体绕枢轴旋转 ⇒
+        // 瞄准端落点 = 当前落点绕枢轴转「目标世界方向 − 当前世界方向」。
+        // 旧式 `pivot + dir(angleDeg)·segLen` 隐含 pivot = 锚心端点，任意枢轴会错。
+        const FreeAimTip tip = freeAimTip(doc, blockId, pivot);
+        if (!tip.valid) return pivot;
+        const double deltaRad = cad::geo::degToRad(angleDeg) - tip.curDirRad;
+        return pivot + (tip.pos - pivot).rotated(deltaRad);
+    }
+
     double worldDirRad;
     if (copyGesture && copyGesture->active()) {
         worldDirRad = copyGesture->relToWorldRad(angleDeg);
-    } else if (isConnected) {
+    } else {
         worldDirRad = refWorldRad + cad::geo::kPi
                       - cad::geo::degToRad(cad::geo::normalizeDeg360(angleDeg));
-    } else {
-        worldDirRad = cad::geo::degToRad(angleDeg);
     }
 
     double segLen = 0.0;
@@ -66,6 +126,12 @@ void RotateAimSnap::checkSnap(cad::param::ParamDocument* doc,
     const double searchRadius = kAimSearchRadiusPx / cad::canvas::safeZoomOr(zoom);
     const double alignTolRad = cad::geo::degToRad(kAimAlignTolDeg);
 
+    // 自由段：瞄准端方向 ≠ 段世界方向（枢轴任意时二者差一个固定偏移），
+    // 命中后由 dirToP 反解姿态角 α = dirToP − offset（2026-09 统一 S1）。
+    const bool isFree = !(copyGesture && copyGesture->active()) && !isConnected;
+    const FreeAimTip freeTip = isFree ? freeAimTip(doc, currentBlockId, pivot) : FreeAimTip{};
+    if (isFree && !freeTip.valid) { clear(); return; }   // 几何未解析: 无瞄准端可吸附
+
     QUuid bestBlockId, bestPointId;
     cad::geo::Vec2 bestPos;
     double bestDist = searchRadius;
@@ -90,7 +156,8 @@ void RotateAimSnap::checkSnap(cad::param::ParamDocument* doc,
                 worldDirRad = refWorldRad + cad::geo::kPi
                               - cad::geo::degToRad(cad::geo::normalizeDeg360(inOutAngleDeg));
             } else {
-                worldDirRad = cad::geo::degToRad(inOutAngleDeg);
+                worldDirRad = cad::geo::degToRad(cad::geo::normalizeDeg360(inOutAngleDeg))
+                              + freeTip.dirOffsetRad;
             }
 
             double diff = dirToP - worldDirRad;
@@ -119,7 +186,7 @@ void RotateAimSnap::checkSnap(cad::param::ParamDocument* doc,
         inOutAngleDeg = cad::geo::normalizeDeg180(
             cad::geo::radToDeg(refWorldRad + cad::geo::kPi - dirToP));
     } else {
-        inOutAngleDeg = cad::geo::normalizeDeg360(cad::geo::radToDeg(dirToP));
+        inOutAngleDeg = cad::geo::normalizeDeg360(cad::geo::radToDeg(dirToP - freeTip.dirOffsetRad));
     }
 
     m_aimBlockId = bestBlockId;

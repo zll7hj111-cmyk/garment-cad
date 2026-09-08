@@ -134,8 +134,8 @@ private:
     bool trySwitchAnchor(const QUuid& hitEnd);
 
     // ── Target selection ──
-    void selectTarget(const QUuid& blockId,
-                      const std::optional<cad::geo::Vec2>& clickWorld = std::nullopt);
+    /// 2026-09 统一 S3：入口只给 blockId（旧 clickWorld 让单选与框选/移交的默认支点不同）
+    void selectTarget(const QUuid& blockId);
     void clearTarget();
 
     // ── Anchor point ──

@@ -1,4 +1,5 @@
 ﻿#include "test_rotate_helpers.h"
+#include "parametric/FollowerAngle.h"
 
 class TestRotateCopyFlow : public QObject
 {
@@ -9,6 +10,7 @@ private slots:
     void rotateCopyFourStepFlow();
     void dragJitterDoesNotReleaseUntilPhysicalRelease();
     void gizmoDisplayConsistencyAcrossModes();
+    void gizmoConnectedAnchorPointsAtBody();
 };
 void TestRotateCopyFlow::rotateCopyAutoPublishesParentParameter()
 {
@@ -256,28 +258,116 @@ void TestRotateCopyFlow::gizmoDisplayConsistencyAcrossModes()
     const auto* gz = tool->gizmo();
     QVERIFY(gz);
 
-    // 1. 起点锚心就绪态：黄弧长度为 0（无多余半圆），灰虚线对齐线段朝向 0 rad
+    // 1. 起点锚心就绪态：黄弧长度为 0（无多余半圆），黄虚线 = 起手姿态 = 线体世界方向 0 rad
+    //    （2026-09 统一 M2：灰虚线恒世界 0°，黄虚线才是起手姿态 —— 就绪态两者重合）
     QVERIFY(gz->isArcEmpty());
-    QVERIFY(std::abs(gz->refWorldRad() - 0.0) < 1e-4);
+    QVERIFY(std::abs(gz->startPoseRad() - 0.0) < 1e-4);
+    QVERIFY(std::abs(gz->currentPoseRad() - 0.0) < 1e-4);
 
-    // 2. 切换锚心为终点：黄弧长度仍为 0（绝无 180° 或 240° 怪异半圆），灰虚线对齐终点朝向 π (180°)
+    // 2. X 键换锚心（= 把枢轴移到另一端）：自由线姿态不再翻转 180°（拍板 D1），
+    //    黄弧长度仍为 0（绝无 180° 或 240° 怪异半圆），起手姿态仍是线体方向 0 rad
     sendKeyX(view);
     QVERIFY(gz->isArcEmpty());
-    QVERIFY(std::abs(std::abs(gz->refWorldRad()) - M_PI) < 1e-4);
+    QVERIFY(std::abs(gz->startPoseRad() - 0.0) < 1e-4);
+    QVERIFY(std::abs(gz->currentPoseRad() - 0.0) < 1e-4);
 
     // 切回起点锚心
     sendKeyX(view);
     sendConfirm(view);
     QVERIFY(gz->isArcEmpty());
 
-    // 3. 开始拖动旋转：黄弧从灰虚线（0°）展开为非空内弧
+    // 3. 开始拖动旋转：黄弧从起手姿态展开为非空内弧，且起手姿态冻结不变
     sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseMove, vp(50.0, 50.0), Qt::NoButton, Qt::NoModifier);
     QVERIFY(!gz->isArcEmpty());
+    QVERIFY2(std::abs(gz->startPoseRad() - 0.0) < 1e-4,
+             "拖动期黄虚线必须冻结在起手姿态（0°），不得跟随线段走");
+    QVERIFY2(std::abs(gz->currentPoseRad()) > 1e-4,
+             "黄虚线之外还须有当前姿态方向（黄弧才非空）");
 
     sendMouse(QEvent::MouseButtonRelease, vp(50.0, 50.0), Qt::LeftButton, Qt::NoModifier);
     // 提交后恢复就绪态：黄弧再次清空
     QVERIFY(gz->isArcEmpty());
+}
+
+// 回归（2026-09 用户报告「旋转工具的黄色显示圈是不是有显示错误」）：
+// 连接线（跟随线）世界段向 = refWorld + π − α，与锚心是起点还是终点无关；
+// 枢轴在终点时线体自枢轴反向延伸，姿态角内含 anchorFlip(π) 才能贴住线体，
+// 否则黄虚线/黄弧整体画在相反半球、与实体脱节。
+// 2026-09 统一 M2 后：黄虚线 = 起手姿态（静息态 = 当前姿态），黄弧 = 起手→当前。
+// 拖动中黄虚线**冻结**在起手姿态（= 静息态枢轴→线体方向），只有黄弧活动边跟着当前姿态走。
+void TestRotateCopyFlow::gizmoConnectedAnchorPointsAtBody()
+{
+    // 相对「静息态枢轴→线体方向」的三个偏差角；构造失败返回哨兵 1e9。
+    // startOff  = 黄虚线（起手姿态）偏差 —— 恒应为 0（静息态与拖动中都冻结在静息线体方向）
+    // currentOff= 黄弧活动边（当前姿态）偏差 —— 静息态 0，拖动中 −30°
+    // sweep     = 黄弧跨度 = 当前姿态 − 起手姿态 —— 静息态 0，拖动中 −30°
+    struct GizmoProbe {
+        double startOff;
+        double currentOff;
+        double sweep;
+    };
+    const auto measure = [](bool anchorEnd, bool rotating) {
+        ParamDocument doc;
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        const LineSetup leader = makeLine(doc, 100.0);                  // (0,0) → (100,0)
+        const LineSetup follower = makeLine(doc, 60.0, Vec2(200.0, 0.0));
+        doc.resolveAll();
+
+        Attachment att;
+        att.fromBlockId   = follower.blockId;
+        att.fromPointId   = anchorEnd ? follower.endId : follower.startId;
+        att.toBlockId     = leader.blockId;
+        att.toPointId     = leader.endId;
+        att.toSegmentId   = leader.segId;
+        att.followerAngle = 60.0;                                       // 非 90°: 避免补角与自身相等而漏检
+        att.rotationMode  = RotationMode::Angle;
+        if (!doc.addAttachment(att)) return GizmoProbe{1e9, 1e9, 1e9};
+        doc.resolveAll();
+
+        const Attachment* a = followerAttachmentOf(doc, follower.blockId);
+        const Block* fb = doc.findBlock(follower.blockId);
+        if (!a || !fb) return GizmoProbe{1e9, 1e9, 1e9};
+
+        const QUuid pivotId = anchorEnd ? follower.endId : follower.startId;
+        const QUuid bodyId  = anchorEnd ? follower.startId : follower.endId;
+        const cad::geo::Vec2 pivot = fb->worldPos(pivotId);
+        const double bodyRad = (fb->worldPos(bodyId) - pivot).angle();  // 枢轴 → 线体
+
+        cad::tools::GizmoPoseInput in;
+        in.isConnected     = true;
+        in.isAnchorEnd     = anchorEnd;                                 // RotateSession::setupTarget 置位
+        in.refWorldRad     = cad::param::effectiveAngleRefWorld(&doc, *a);
+        in.currentAngleDeg = rotating ? 90.0 : a->followerAngle;
+        in.isRotating      = rotating;
+        in.dragAngle0      = a->followerAngle;                          // 起手姿态 = 拖动开始时的 α
+
+        const cad::tools::GizmoPose pose = cad::tools::computeGizmoPose(in);
+        return GizmoProbe{
+            cad::geo::normalizeDeg180(cad::geo::radToDeg(pose.startPoseRad - bodyRad)),
+            cad::geo::normalizeDeg180(cad::geo::radToDeg(pose.currentPoseRad - bodyRad)),
+            cad::geo::radToDeg(cad::geo::normalizeRad(pose.currentPoseRad - pose.startPoseRad))};
+    };
+
+    const auto restStart = measure(false, false);
+    const auto restEnd = measure(true, false);
+    QVERIFY2(std::abs(restStart.startOff) < 1e-3, "连接线起点锚心: 静息态黄虚线必须自枢轴指向线体");
+    QVERIFY2(std::abs(restStart.currentOff) < 1e-3, "连接线起点锚心: 静息态黄弧活动边必须自枢轴指向线体");
+    QVERIFY2(std::abs(restEnd.startOff) < 1e-3, "连接线终点锚心: 静息态黄虚线必须自枢轴指向线体, 不得反向 180°");
+    QVERIFY2(std::abs(restEnd.currentOff) < 1e-3, "连接线终点锚心: 静息态黄弧活动边必须自枢轴指向线体");
+    // 静息态（尚未拖动）黄弧跨度必须为 0 —— 起手姿态就是当前姿态
+    QVERIFY2(std::abs(restStart.sweep) < 1e-3, "连接线起点锚心: 静息态黄弧跨度应为 0");
+    QVERIFY2(std::abs(restEnd.sweep) < 1e-3, "连接线终点锚心: 静息态黄弧跨度应为 0");
+
+    // 拖动中：黄虚线冻结在起手姿态（= 静息线体方向），黄弧跨度 = 当前 − 起手 = −30°（与锚心端无关）
+    const auto dragStart = measure(false, true);
+    const auto dragEnd = measure(true, true);
+    QVERIFY2(std::abs(dragStart.startOff) < 1e-3, "拖动中起点锚心: 黄虚线必须冻结在起手姿态(静息线体方向)");
+    QVERIFY2(std::abs(dragEnd.startOff) < 1e-3, "拖动中终点锚心: 黄虚线必须冻结在起手姿态(静息线体方向)");
+    QVERIFY2(std::abs(dragStart.currentOff + 30.0) < 1e-3, "拖动中起点锚心: 黄弧活动边应相对静息线体 −30°");
+    QVERIFY2(std::abs(dragEnd.currentOff + 30.0) < 1e-3, "拖动中终点锚心: 黄弧活动边应相对静息线体 −30°");
+    QVERIFY2(std::abs(dragStart.sweep + 30.0) < 1e-3, "拖动中起点锚心: 黄弧跨度应为 −30°");
+    QVERIFY2(std::abs(dragEnd.sweep + 30.0) < 1e-3, "拖动中终点锚心: 黄弧跨度应为 −30°");
 }
 
 QTEST_MAIN(TestRotateCopyFlow)

@@ -177,7 +177,7 @@ void ToolRotate::handleSelectingPress(const cad::geo::Vec2& pos, QGraphicsSceneM
         const QUuid hit = hitBlock(pos);
         if (!hit.isNull()) {
             if (!m_multi.selection().contains(hit)) {
-                selectTarget(hit, pos);
+                selectTarget(hit);
             }
         } else if (m_marqueeGesture) {
             m_marqueeGesture->begin(pos, m_multi.selection());
@@ -194,7 +194,7 @@ void ToolRotate::handleSelectingPress(const cad::geo::Vec2& pos, QGraphicsSceneM
     if (!self.isNull()) {
         if (self != m_session.blockId()) {
             commitCurrent();
-            selectTarget(self, pos);
+            selectTarget(self);
         }
         if ((event->modifiers() & Qt::ControlModifier) && !isMultiSelect()) {
             m_input.setPivotPicked(true);
@@ -216,7 +216,9 @@ void ToolRotate::handleSelectingPress(const cad::geo::Vec2& pos, QGraphicsSceneM
 void ToolRotate::handlePivotOrRotatePress(const cad::geo::Vec2& pos, QGraphicsSceneMouseEvent* event)
 {
     const bool ctrl = (event->modifiers() & Qt::ControlModifier);
-    if (ctrl && !isMultiSelect()) {
+    // 2026-09 统一 S1：副本焊在锚心端点上，只能绕端点转；枢轴为任意点时
+    // 复制语义冲突 ⇒ 退回普通旋转（不静默改枢轴）。
+    if (ctrl && !isMultiSelect() && m_session.pivotOnEndpoint(m_paramDoc)) {
         m_input.setPivotPicked(true);
         m_phase = RotatePhase::Rotating;
         m_copyGesture->begin(pos);
@@ -265,7 +267,7 @@ void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
                     beginRotation(m_input.pressPos());
                 }
                 const bool ctrl = (event->modifiers() & Qt::ControlModifier);
-                if (ctrl && !isMultiSelect()) {
+                if (ctrl && !isMultiSelect() && m_session.pivotOnEndpoint(m_paramDoc)) {
                     m_phase = RotatePhase::Rotating;
                     m_copyGesture->begin(m_input.pressPos());
                 } else {
@@ -342,16 +344,21 @@ void ToolRotate::handlePendingPivotRelease()
         restoreBase();
         m_state = RotateState::Ready;
     }
+    // 枢轴落点（2026-09 拍板 D4：枢轴可为任意点，不要求在线/端点上）：
+    // · 命中本块端点 → 枢轴精确落在该端点上（rebuildAnchorState 已写入 m_pivot）
+    // · 否则 → 枢轴 = 原始点击位置
+    bool pivotOnEndpoint = false;
     if (!isMultiSelect() && !m_multi.isMarqueeSelected() && !m_session.blockId().isNull()) {
         const QUuid hitEnd = m_session.anchorPointAt(m_paramDoc, m_input.pendingPivot(), currentZoom());
         if (!hitEnd.isNull()) {
             if (const auto* blk = m_paramDoc->findBlock(m_session.blockId()); blk && !blk->segments.empty()) {
                 m_session.anchor().isEnd = (hitEnd == blk->segments.front().endPointId);
                 m_session.rebuildAnchorState(m_paramDoc);
+                pivotOnEndpoint = true;
             }
         }
     }
-    m_session.setPivot(m_input.pendingPivot());
+    if (!pivotOnEndpoint) m_session.setPivot(m_input.pendingPivot());
     m_phase = RotatePhase::ReadyToRotate;
     buildGizmo();
     updateGizmo();
@@ -528,8 +535,7 @@ void ToolRotate::adoptSelection(const QSet<QUuid>& blockIds)
     m_scene->refreshAllBlockItems();
 }
 
-void ToolRotate::selectTarget(const QUuid& blockId,
-                              const std::optional<cad::geo::Vec2>& clickWorld)
+void ToolRotate::selectTarget(const QUuid& blockId)
 {
     if (!m_paramDoc || !m_scene) return;
     cad::param::Block* blk = m_paramDoc->findBlock(blockId);
@@ -539,7 +545,9 @@ void ToolRotate::selectTarget(const QUuid& blockId,
     if (m_state != RotateState::Idle)
         removeGizmo();
 
-    m_session.setupTarget(m_paramDoc, blockId, clickWorld);
+    // 2026-09 统一 S3：入口一律只给 blockId，不再按点击位置翻转锚心
+    // （旧 clickWorld 让单选与框选/选择工具移交的默认支点不同）。
+    m_session.setupTarget(m_paramDoc, blockId);
     m_multi.adoptSelection(m_paramDoc, {blockId});
     m_multi.setMarqueeSelected(false);
     syncSelectionVisual();
@@ -717,11 +725,12 @@ double ToolRotate::currentAngleDeg() const {
 }
 double ToolRotate::baseAngleDeg() const {
     if (m_session.blockId().isNull() || !m_paramDoc) return 0.0;
+    // 2026-09 拍板 D1/D3：基准角度 = 世界方向，统一显示域 [0,360)。
+    // 旧式连接段走 normalizeDeg180(refWorldRad)、自由段再按锚心端 ±180
+    // = 用户点 5「基准 180° 正负 vs 线段角度 360°」的不一致来源。
     if (m_session.isConnected())
-        return cad::geo::normalizeDeg180(cad::geo::radToDeg(m_session.refWorldRad()));
-    double orig = originalWorldRotDeg();
-    if (m_session.anchor().isEnd) orig += 180.0;
-    return cad::geo::normalizeDeg180(orig);
+        return cad::geo::normalizeDeg360(cad::geo::radToDeg(m_session.refWorldRad()));
+    return cad::geo::normalizeDeg360(originalWorldRotDeg());
 }
 bool ToolRotate::isAngleLocked() const { return m_session.isAngleLocked(m_copyGesture.get()); }
 
@@ -764,6 +773,12 @@ void ToolRotate::updateStatusHint() {
         .isAngleLocked = isAngleLocked(),
         .baseAngleDeg = baseAngleDeg(),
         .currentAngleDeg = currentAngleDeg(),
+        // 角度字段的显示域由物理量决定（2026-09 统一 M3）：连接段 = 折角，
+        // 自由段 = 世界方向，复制手势 = 增量。
+        .poseRole = (m_copyGesture && m_copyGesture->active())
+                        ? cad::geo::AngleDisplayRole::DeltaAmount
+                        : (m_session.isConnected() ? cad::geo::AngleDisplayRole::FoldPose
+                                                   : cad::geo::AngleDisplayRole::WorldDirection),
     };
     reportHintOverride(buildStatusHint(snap));
 }
@@ -792,8 +807,6 @@ GizmoPoseInput ToolRotate::makeGizmoInput(bool isRotating) const
         .originalWorldRotRad = cad::geo::degToRad(originalWorldRotDeg()),
         .isAnchorEnd = m_session.anchor().isEnd,
         .refWorldRad = m_session.refWorldRad(),
-        .localDir = m_session.localDir(),
-        .baseAngleDeg = m_session.base().baseAngle,
         .currentAngleDeg = currentAngleDeg(),
         .dragAngle0 = m_dragAngle0,
         .dragCursorAngle0 = m_dragCursorAngle0,
@@ -805,7 +818,7 @@ GizmoPoseInput ToolRotate::makeGizmoInput(bool isRotating) const
 void ToolRotate::buildGizmo() {
     if (!m_gizmo) return;
     auto pose = computeGizmoPose(makeGizmoInput(false));
-    m_gizmo->build(m_session.pivot(), pose.refBaseRad, pose.currentPoseRad, currentZoom());
+    m_gizmo->build(m_session.pivot(), pose.startPoseRad, pose.currentPoseRad, currentZoom());
 }
 
 double ToolRotate::originalWorldRotDeg() const { return m_session.originalWorldRotDeg(m_paramDoc); }
@@ -836,7 +849,7 @@ void ToolRotate::updateGizmo() {
     const bool shouldShow = (m_selectionConfirmed && m_input.pivotPicked()) || (m_copyGesture && m_copyGesture->active());
     m_gizmo->setConfirmed(shouldShow);
     auto pose = computeGizmoPose(makeGizmoInput(m_state == RotateState::Rotating));
-    m_gizmo->update(currentZoom(), pose.refBaseRad, pose.currentPoseRad, pose.deltaDeg, pose.badgeText);
+    m_gizmo->update(currentZoom(), pose.startPoseRad, pose.currentPoseRad, pose.badgeText);
     updateStatusHint();
 }
 

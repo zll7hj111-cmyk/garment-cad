@@ -36,11 +36,10 @@ void RotateSession::clear()
     m_detachedFollowerAttIds.clear();
 }
 
-void RotateSession::setupTarget(cad::param::ParamDocument* doc,
-                                const QUuid& blockId,
-                                const std::optional<cad::geo::Vec2>& clickWorld)
+void RotateSession::setupTarget(cad::param::ParamDocument* doc, const QUuid& blockId)
 {
     m_blockId = blockId;
+    m_localDir = 0.0;               // 目标切换自清理: 连接分支从不写它, 旧目标的自由线值不得残留
     m_anchor.releaseAttHeld = false;
     m_anchor.releaseAttId = QUuid();
 
@@ -53,6 +52,9 @@ void RotateSession::setupTarget(cad::param::ParamDocument* doc,
         }
     }
 
+    // 2026-09 统一（S3 入口统一）：默认支点端只由附件决定，自由线恒取起点。
+    // 旧「点击最近端翻转锚心」启发式已删 —— 它让单选（带 clickWorld）与框选 /
+    // 选择工具移交（无 clickWorld）两条入口的默认支点不同。
     m_anchor.isEnd = false;
     if (doc) {
         if (const auto* blk = doc->findBlock(blockId)) {
@@ -60,17 +62,7 @@ void RotateSession::setupTarget(cad::param::ParamDocument* doc,
                 const auto& seg = blk->segments.front();
                 const bool hasStartAtt = attachmentAtPoint(doc, seg.startPointId) != nullptr;
                 const bool hasEndAtt   = attachmentAtPoint(doc, seg.endPointId) != nullptr;
-                if (hasStartAtt && !hasEndAtt) {
-                    m_anchor.isEnd = false;
-                } else if (hasEndAtt && !hasStartAtt) {
-                    m_anchor.isEnd = true;
-                } else if (clickWorld.has_value()) {
-                    const cad::geo::Vec2 pStart = blk->worldPos(seg.startPointId);
-                    const cad::geo::Vec2 pEnd   = blk->worldPos(seg.endPointId);
-                    const double dStart = clickWorld->distanceTo(pStart);
-                    const double dEnd   = clickWorld->distanceTo(pEnd);
-                    m_anchor.isEnd = (dEnd < dStart);
-                }
+                if (hasEndAtt && !hasStartAtt) m_anchor.isEnd = true;
             }
         }
     }
@@ -122,6 +114,8 @@ void RotateSession::toggleAnchor(cad::param::ParamDocument* doc)
         || attachmentAtPoint(doc, blk->segments.front().endPointId))
         return;
 
+    // 2026-09 拍板 D2：X 键 / 点另一端 = 「把枢轴移到另一端」（不是换角度基准）。
+    // rebuildAnchorState 会把 m_pivot 设为新锚心端的世界坐标。
     m_anchor.isEnd = !m_anchor.isEnd;
     rebuildAnchorState(doc);
 }
@@ -254,12 +248,25 @@ void RotateSession::applyAngleDeg(cad::param::ParamDocument* doc,
             cad::param::writeFollowerAngleForMode(*a, m_base.rotationMode, deg, segmentRadius(doc));
         }
     } else {
+        // 自由线 = 绕任意枢轴的刚体旋转（2026-09 拍板 D2/D4，设计稿 D2 公式）。
+        // 起手姿态取 m_base.baseTf 快照：拖动期本函数已实时改写文档，现读文档会
+        // 得到「当前」姿态（点 1 黄圈根因）。旧式
+        //   origin = m_pivot − m_anchorLocal.rotated(newRot)
+        // 把锚心端点钉死在枢轴上 —— 枢轴不在端点时整块平移把端点搬过去 = 点 4 跳变。
+        // 枢轴 = 端点时两式等价，故既有 pin 测试语义不变。
         cad::param::Block* blk = doc->findBlock(m_blockId);
-        if (!blk) return;
-        const double anchorOffsetRad = m_anchor.isEnd ? cad::geo::kPi : 0.0;
-        const double newRot = cad::geo::degToRad(deg) - anchorOffsetRad - m_localDir;
-        blk->transform.rotation = newRot;
-        blk->transform.origin = m_pivot - m_anchorLocal.rotated(newRot);
+        if (!blk || blk->segments.empty()) return;
+        const auto& seg = blk->segments.front();
+        const auto* sp = blk->findPoint(seg.startPointId);
+        const auto* ep = blk->findPoint(seg.endPointId);
+        if (!sp || !ep || !sp->resolved || !ep->resolved) return;
+        // 局部弦向（start→end）在旋转下不变，可现读；世界向 = baseTf.rotation + 局部弦向。
+        const double baseWorldDeg = cad::geo::radToDeg(m_base.baseTf.rotation)
+            + cad::geo::radToDeg((ep->resolvedPos - sp->resolvedPos).angle());
+        const double deltaRad = cad::geo::degToRad(deg - baseWorldDeg);
+        blk->transform.rotation = m_base.baseTf.rotation + deltaRad;
+        blk->transform.origin = m_pivot
+            + (m_base.baseTf.origin - m_pivot).rotated(deltaRad);
     }
 
     QList<QUuid> rotSeeds{m_blockId};
@@ -423,9 +430,9 @@ double RotateSession::currentAngleDeg(const cad::param::ParamDocument* doc,
     const cad::geo::Vec2 w1 = blk->transform.toWorld(sp->resolvedPos);
     const cad::geo::Vec2 w2 = blk->transform.toWorld(ep->resolvedPos);
     double deg = cad::geo::radToDeg((w2 - w1).angle());
-    if (m_anchor.isEnd) deg += 180.0;
-    deg = cad::geo::normalizeDeg360(deg);
-    return deg;
+    // 2026-09 拍板 D1：自由段姿态 = 世界方向角（start→end），统一 [0,360)，
+    // 不再因「锚心在终点」加 180°（旧式让同一个姿态在两条入口下差 180°）。
+    return cad::geo::normalizeDeg360(deg);
 }
 
 bool RotateSession::isAngleLocked(RotateCopyGesture* copyGesture) const
@@ -616,6 +623,9 @@ double RotateSession::originalWorldRotDeg(const cad::param::ParamDocument* doc) 
         }
         return cad::geo::radToDeg(m_refWorldRad + cad::geo::kPi - cad::geo::degToRad(alpha));
     }
+    // 自由线起手姿态：世界向 = 快照 rotation + 局部弦向（局部弦向在旋转下不变，
+    // 可现读）。2026-09 统一：禁止现读文档姿态 —— 拖动期文档已被实时改写，
+    // 现读得到「当前」姿态（黄圈把起点也一起转，用户点 1）。
     double baseDeg = 0.0;
     if (doc) {
         if (const auto* blk = doc->findBlock(m_blockId);
@@ -624,10 +634,8 @@ double RotateSession::originalWorldRotDeg(const cad::param::ParamDocument* doc) 
             const auto* sp = blk->findPoint(seg.startPointId);
             const auto* ep = blk->findPoint(seg.endPointId);
             if (sp && ep && sp->resolved && ep->resolved) {
-                const cad::geo::Vec2 wd =
-                    blk->transform.toWorld(ep->resolvedPos)
-                    - blk->transform.toWorld(sp->resolvedPos);
-                baseDeg = cad::geo::radToDeg(wd.angle());
+                baseDeg = cad::geo::radToDeg(m_base.baseTf.rotation)
+                    + cad::geo::radToDeg((ep->resolvedPos - sp->resolvedPos).angle());
             }
         }
     }
@@ -640,59 +648,30 @@ QString RotateSession::anchorTag(const cad::param::ParamDocument* doc) const
     const auto* blk = doc->findBlock(m_blockId);
     if (!blk || blk->segments.empty()) return QStringLiteral("?");
     const auto& seg = blk->segments.front();
+    // 2026-09 拍板 D4：枢轴可为任意点。枢轴不在锚心端上时提示「自由点」，
+    // 免得用户以为锚心仍在端点上。
+    if (!m_connected && m_pivot.distanceTo(blk->worldPos(m_anchor.pointId)) > cad::geo::kGeomEpsLoose)
+        return QStringLiteral("自由点");
     const auto* ap = blk->findPoint(m_anchor.pointId);
     if (ap) return cad::param::Serial::tag(ap->serial);
     const auto* fallback = blk->findPoint(m_anchor.isEnd ? seg.endPointId : seg.startPointId);
     return fallback ? cad::param::Serial::tag(fallback->serial) : QStringLiteral("?");
 }
 
-RotateSession::GizmoAngles RotateSession::calculateGizmoAngles(
-    double deg, bool isRotating, double dragAngle0) const
+bool RotateSession::pivotOnEndpoint(const cad::param::ParamDocument* doc) const
 {
-    GizmoAngles out{};
-    if (m_connected) {
-        if (m_shadow.active() && !m_shadow.isMounted) {
-            const double curRad = cad::geo::degToRad(deg);
-            if (isRotating) {
-                const double dragStartRad = cad::geo::degToRad(dragAngle0);
-                out.dashRad = dragStartRad;
-                out.arcStart = dragStartRad;
-                double span = curRad - out.arcStart;
-                while (span >  cad::geo::kPi) span -= 2.0 * cad::geo::kPi;
-                while (span < -cad::geo::kPi) span += 2.0 * cad::geo::kPi;
-                out.arcEnd = out.arcStart + span;
-            } else {
-                out.dashRad = curRad;
-                out.arcStart = curRad;
-                out.arcEnd = curRad;
-            }
-            return out;
-        }
-        out.dashRad = m_refWorldRad + cad::geo::kPi;
-        const double aRad = cad::geo::degToRad(cad::geo::normalizeDeg360(deg));
-        out.arcStart = m_refWorldRad + cad::geo::kPi - aRad;
-        out.arcEnd = out.dashRad;
-        double span = out.arcEnd - out.arcStart;
-        while (span >  cad::geo::kPi) span -= 2.0 * cad::geo::kPi;
-        while (span < -cad::geo::kPi) span += 2.0 * cad::geo::kPi;
-        out.arcEnd = out.arcStart + span;
-    } else {
-        const double curRad = cad::geo::degToRad(deg);
-        if (isRotating) {
-            const double dragStartRad = cad::geo::degToRad(dragAngle0);
-            out.dashRad = dragStartRad;
-            out.arcStart = dragStartRad;
-            double span = curRad - out.arcStart;
-            while (span >  cad::geo::kPi) span -= 2.0 * cad::geo::kPi;
-            while (span < -cad::geo::kPi) span += 2.0 * cad::geo::kPi;
-            out.arcEnd = out.arcStart + span;
-        } else {
-            out.dashRad = curRad;
-            out.arcStart = curRad;
-            out.arcEnd = curRad;
+    if (!doc) return false;
+    const auto* blk = doc->findBlock(m_blockId);
+    if (!blk) return false;
+    for (const auto& seg : blk->segments) {
+        for (const QUuid& pid : {seg.startPointId, seg.endPointId}) {
+            const auto* pt = blk->findPoint(pid);
+            if (pt && pt->resolved
+                && m_pivot.distanceTo(blk->transform.toWorld(pt->resolvedPos)) <= cad::geo::kGeomEpsLoose)
+                return true;
         }
     }
-    return out;
+    return false;
 }
 
 } // namespace cad::tools

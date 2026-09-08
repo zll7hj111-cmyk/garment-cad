@@ -77,32 +77,44 @@ QString formatRotationBadge(double deg, RotateBadgeQuantity quantity)
 
 GizmoPose computeGizmoPose(const GizmoPoseInput& in)
 {
+    // 2026-09 统一 M2（用户拍板 D4）：三元素各有固定语义 ——
+    //   灰虚线 = 世界 0° 射线（TransientOverlay 内部固定，不经此函数）
+    //   黄虚线 = 起手姿态（按下瞬间冻结，不再每帧现读文档）
+    //   黄弧   = 起手姿态 → 当前姿态
+    // 旧式基准取「当前」姿态（自由线每帧现读文档）⇒ 灰虚线压线身、
+    // 黄虚线多转一倍、黄弧固定边跟着线段走（用户点 1 / 点 3）。
     GizmoPose out;
     if (in.isMultiOrMarquee) {
-        out.refBaseRad = in.isRotating ? in.dragCursorAngle0 : 0.0;
+        out.startPoseRad = in.isRotating ? in.dragCursorAngle0 : 0.0;
         out.currentPoseRad = in.isRotating ? (in.dragCursorAngle0 + cad::geo::degToRad(in.accumulatedAngleDeg)) : 0.0;
-        out.deltaDeg = in.isRotating ? in.accumulatedAngleDeg : 0.0;
     } else if (in.isCopyGestureActive) {
-        double origRad = in.originalWorldRotRad;
-        if (in.isAnchorEnd) origRad += cad::geo::kPi;
-        out.refBaseRad = in.refWorldRad;
-        out.currentPoseRad = cad::geo::normalizeRad(origRad) + cad::geo::degToRad(in.copyRelativeAngle);
-        out.deltaDeg = in.copyRelativeAngle;
+        // 复制手势：0° 相对角 = 副本与原线重叠（相对角以原线起手世界向为基准）。
+        const double origRad = cad::geo::normalizeRad(in.originalWorldRotRad);
+        out.startPoseRad = origRad;
+        out.currentPoseRad = origRad + cad::geo::degToRad(in.copyRelativeAngle);
     } else if (in.isConnected) {
-        out.refBaseRad = in.refWorldRad;
+        // 连接线（跟随线）世界段向 (start→end) = refWorld + π − α：
+        // ResolverAttachment.cpp:129 算出的是块 rotation = refWorld + π − α − localDir，
+        // 世界段向 = rotation + localDir，两者相消 —— 故此处**不得再减 localDir**，
+        // 减了会把「世界方向」算成「块 rotation」（黄虚线/黄弧整体转偏 localDir）。
+        // 锚心在跟随线终点时线体自枢轴反向延伸，需再翻 180°（与自由线分支同规）。
+        const double anchorFlip = in.isAnchorEnd ? cad::geo::kPi : 0.0;
+        const auto poseRad = [&](double alphaDeg) {
+            return in.refWorldRad + cad::geo::kPi - cad::geo::degToRad(alphaDeg) + anchorFlip;
+        };
         if (in.isRotating) {
-            out.currentPoseRad = in.refWorldRad + cad::geo::kPi - cad::geo::degToRad(in.currentAngleDeg) - in.localDir;
-            out.deltaDeg = in.dragAngle0 - in.currentAngleDeg;
+            out.startPoseRad = poseRad(in.dragAngle0);
+            out.currentPoseRad = poseRad(in.currentAngleDeg);
         } else {
-            out.currentPoseRad = in.refWorldRad + cad::geo::kPi - cad::geo::degToRad(in.baseAngleDeg) - in.localDir;
-            out.deltaDeg = 0.0;
+            out.startPoseRad = poseRad(in.currentAngleDeg);
+            out.currentPoseRad = out.startPoseRad;
         }
     } else {
-        double origRad = in.originalWorldRotRad;
-        if (in.isAnchorEnd) origRad += cad::geo::kPi;
-        out.refBaseRad = cad::geo::normalizeRad(origRad);
-        out.deltaDeg = in.isRotating ? (in.currentAngleDeg - in.dragAngle0) : 0.0;
-        out.currentPoseRad = out.refBaseRad + cad::geo::degToRad(out.deltaDeg);
+        // 自由线：起手姿态 = 按下瞬间冻结的世界方向（ToolRotate::beginRotation 的
+        // m_dragAngle0），当前姿态 = 线段当前世界方向。
+        const double curRad = cad::geo::degToRad(in.currentAngleDeg);
+        out.startPoseRad = in.isRotating ? cad::geo::degToRad(in.dragAngle0) : curRad;
+        out.currentPoseRad = curRad;
     }
 
     if (in.isRotating) {
@@ -110,7 +122,7 @@ GizmoPose computeGizmoPose(const GizmoPoseInput& in)
         // RotateSession::currentAngleDeg 的返回值随分支换物理量: 连接段 = 折角,
         // 自由段 = 世界方向, 复制手势 = 相对旋转量 —— 此处必须按物理量选域。
         if (in.isMultiOrMarquee)
-            out.badgeText = formatRotationBadge(out.deltaDeg, RotateBadgeQuantity::Delta);
+            out.badgeText = formatRotationBadge(in.accumulatedAngleDeg, RotateBadgeQuantity::Delta);
         else if (in.isCopyGestureActive)
             out.badgeText = formatRotationBadge(in.currentAngleDeg, RotateBadgeQuantity::Delta);
         else if (in.isConnected)

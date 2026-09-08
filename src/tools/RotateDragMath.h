@@ -55,8 +55,6 @@ struct GizmoPoseInput {
     double originalWorldRotRad = 0.0;
     bool isAnchorEnd = false;
     double refWorldRad = 0.0;
-    double localDir = 0.0;
-    double baseAngleDeg = 0.0;
     double currentAngleDeg = 0.0;
     double dragAngle0 = 0.0;
     double dragCursorAngle0 = 0.0;
@@ -64,11 +62,20 @@ struct GizmoPoseInput {
     double copyRelativeAngle = 0.0;
 };
 
-/// Gizmo 位姿计算结果
+/// Gizmo 位姿计算结果 (2026-09 统一 M2)
+///
+/// 三元素语义:
+///   · 灰虚线  —— 恒世界 0°, 由 TransientOverlay 固定绘制, 不在此结构内
+///   · startPoseRad   —— 黄虚线 = **起手姿态** (按下瞬间的块姿态角),
+///                        拖动期冻结不动, 静息态等于当前姿态
+///   · currentPoseRad —— 黄虚线/黄弧/徽标的当前姿态角;
+///                        黄弧跨度 = normalizeRad(currentPoseRad − startPoseRad)
+/// 姿态角按物理量选域后由 RotateBadgeQuantity 决定徽标显示 (见下)。
+/// 不含 deltaDeg —— 跨度一律由 normalizeRad(currentPoseRad − startPoseRad) 导出,
+/// 不再维护第二个角度真相 (2026-09 S5 清债)。
 struct GizmoPose {
-    double refBaseRad = 0.0;
+    double startPoseRad = 0.0;
     double currentPoseRad = 0.0;
-    double deltaDeg = 0.0;
     QString badgeText;
 };
 

@@ -24,6 +24,9 @@ void RotateCopyGesture::begin(const Vec2& pos)
 {
     ToolRotate& o = *m_owner;
     if (o.m_state != RotateState::Ready || !o.m_paramDoc) return;
+    // 2026-09 统一 S1：枢轴不在端点时复制语义冲突（副本绕锚心端点转而非枢轴），
+    // 入口 ToolRotate 已拦，此处防御性再拦一次。
+    if (!o.m_session.pivotOnEndpoint(o.m_paramDoc)) return;
 
     const cad::param::Block* orig = o.m_paramDoc->findBlock(o.m_session.blockId());
     if (!orig || orig->segments.empty()) return;
@@ -118,6 +121,8 @@ void RotateCopyGesture::convert(const Vec2& pos)
     if (o.m_state != RotateState::Rotating || m_copyMode || !o.m_paramDoc) return;
     // 跟随模式 / 已释放挂接的普通旋转语义复杂，中途转换不做（保持原样）。
     if (o.m_session.isConnected() || o.m_session.anchor().releaseAttHeld) return;
+    // 2026-09 统一 S1：副本焊在锚心端点、只能绕端点转 —— 枢轴任意点时拒绝转换。
+    if (!o.m_session.pivotOnEndpoint(o.m_paramDoc)) return;
 
     cad::param::Block* blk = o.m_paramDoc->findBlock(o.m_session.blockId());
     if (!blk || blk->segments.empty()) return;

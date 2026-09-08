@@ -16,14 +16,12 @@ public:
     explicit RotateGizmo(CanvasScene* scene);
     ~RotateGizmo();
 
-    /// (Re)build all items around @p pivotWorld with dual reference dashes.
-    void build(const cad::geo::Vec2& pivotWorld, double refBaseRad, double prevPoseRad, double zoom = 1.0);
+    /// (Re)build all items around @p pivotWorld with start-pose + current-pose rays.
+    void build(const cad::geo::Vec2& pivotWorld, double startPoseRad, double currentPoseRad, double zoom = 1.0);
 
-    /// Refresh dual dashes and sweep wedge for deltaDeg, with optional degree badge.
-    void update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg, const QString& badgeText = QString());
-
-    /// 兼容旧版：单基准弧线构建
-    void build(const cad::geo::Vec2& pivotWorld, double refWorldRad, double zoom = 1.0);
+    /// Refresh dashes and sweep wedge from the two poses, with optional degree badge.
+    /// 跨度由姿态差唯一确定（M2），不再另收 deltaDeg —— 避免两个角度真相互相矛盾。
+    void update(double zoom, double startPoseRad, double currentPoseRad, const QString& badgeText = QString());
 
     /// D15 确认门兼容（已无实际视觉差别）
     void setConfirmed(bool confirmed);
@@ -34,19 +32,16 @@ public:
     void remove();
 
     [[nodiscard]] bool visible() const { return m_visible; }
-    [[nodiscard]] double refBaseRad() const { return m_refBaseRad; }
-    [[nodiscard]] double prevPoseRad() const { return m_prevPoseRad; }
-    [[nodiscard]] double deltaDeg() const { return m_deltaDeg; }
-    [[nodiscard]] double refWorldRad() const { return m_refBaseRad; }
+    [[nodiscard]] double startPoseRad() const { return m_startPoseRad; }
+    [[nodiscard]] double currentPoseRad() const { return m_currentPoseRad; }
     [[nodiscard]] bool isArcEmpty() const;
 
 private:
     CanvasScene* m_scene = nullptr;
 
     cad::geo::Vec2 m_pivotWorld;
-    double m_refBaseRad = 0.0;
-    double m_prevPoseRad = 0.0;
-    double m_deltaDeg = 0.0;
+    double m_startPoseRad = 0.0;
+    double m_currentPoseRad = 0.0;
     bool   m_confirmed = false;
     bool   m_visible = false;
 };

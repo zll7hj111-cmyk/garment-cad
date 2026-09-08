@@ -44,7 +44,7 @@ private slots:
         QCOMPARE(overlay->isMarkerCrossVisible(), true);
 
         // 2. 展示 Tier 3: RotateGizmo
-        overlay->showRotateGizmo(cad::geo::Vec2(0.0, 0.0), 0.0, 0.0, 1.57, false);
+        overlay->showRotateGizmo(cad::geo::Vec2(0.0, 0.0), 0.0, 1.57);
         QCOMPARE(overlay->isRotateGizmoVisible(), true);
 
         // 3. 执行 clear(OverlayTier::Hover) -> Hover 应该隐藏，Session (Gizmo) 必须依然保持可见！
@@ -60,7 +60,7 @@ private slots:
 
         // 5. 重新展示并测试 clearAll
         overlay->showEndpointHover(cad::geo::Vec2(10.0, 20.0));
-        overlay->showRotateGizmo(cad::geo::Vec2(0.0, 0.0), 0.0, 0.0, 1.0, false);
+        overlay->showRotateGizmo(cad::geo::Vec2(0.0, 0.0), 0.0, 1.0);
         QCOMPARE(overlay->isEndpointHoverVisible(), true);
         QCOMPARE(overlay->isRotateGizmoVisible(), true);
 
@@ -121,7 +121,7 @@ private slots:
         auto* overlay = scene.overlay();
 
         overlay->showEndpointHover(cad::geo::Vec2(10.0, 10.0));
-        overlay->showRotateGizmo(cad::geo::Vec2(0.0, 0.0), 0.0, 0.0, 1.0, true);
+        overlay->showRotateGizmo(cad::geo::Vec2(0.0, 0.0), 0.0, 1.0);
         QCOMPARE(overlay->isEndpointHoverVisible(), true);
         QCOMPARE(overlay->isRotateGizmoVisible(), true);
 
@@ -141,7 +141,7 @@ private slots:
         QVERIFY(overlay != nullptr);
 
         // 验证带有度数徽标与专业靶心的调用
-        overlay->showRotateGizmo(cad::geo::Vec2(20.0, 30.0), 0.0, 0.0, 45.0, QStringLiteral("45.0°"));
+        overlay->showRotateGizmo(cad::geo::Vec2(20.0, 30.0), 0.0, 0.0, QStringLiteral("45.0°"));
         QCOMPARE(overlay->isRotateGizmoVisible(), true);
 
         // 隐藏旋转手柄

@@ -76,9 +76,7 @@ class RotateSession
 public:
     RotateSession() = default;
 
-    void setupTarget(cad::param::ParamDocument* doc,
-                     const QUuid& blockId,
-                     const std::optional<cad::geo::Vec2>& clickWorld = std::nullopt);
+    void setupTarget(cad::param::ParamDocument* doc, const QUuid& blockId);
     void clear();
 
     void toggleAnchor(cad::param::ParamDocument* doc);
@@ -111,9 +109,9 @@ public:
     [[nodiscard]] bool isAngleLocked(RotateCopyGesture* copyGesture) const;
     [[nodiscard]] double originalWorldRotDeg(const cad::param::ParamDocument* doc) const;
     [[nodiscard]] QString anchorTag(const cad::param::ParamDocument* doc) const;
-
-    struct GizmoAngles { double dashRad; double arcStart; double arcEnd; };
-    [[nodiscard]] GizmoAngles calculateGizmoAngles(double deg, bool isRotating, double dragAngle0) const;
+    /// 2026-09 统一 S1：枢轴是否落在本块某端点上。旋转复制把副本焊在锚心端点，
+    /// 只能绕端点转 —— 任意枢轴下复制语义冲突，入口据此拒绝复制。
+    [[nodiscard]] bool pivotOnEndpoint(const cad::param::ParamDocument* doc) const;
 
     [[nodiscard]] const cad::param::Attachment* editableAttachment(
         const cad::param::ParamDocument* doc) const;

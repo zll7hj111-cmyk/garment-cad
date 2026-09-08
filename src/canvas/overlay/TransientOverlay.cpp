@@ -231,9 +231,8 @@ void TransientOverlay::showMarqueeBox(const cad::geo::Vec2& p1World, const cad::
 }
 
 void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
-                                      double refBaseWorldRad,
-                                      double prevPoseWorldRad,
-                                      double deltaDeg,
+                                      double startPoseWorldRad,
+                                      double currentPoseWorldRad,
                                       const QString& badgeText)
 {
     const QPointF c = cad::geo::Coord::toScene(pivotWorld.x, pivotWorld.y);
@@ -281,12 +280,13 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     cross->setZValue(9999.0);
     cross->setVisible(true);
 
-    // 2. Dash 1: Reference Base Dash along refBaseWorldRad (55 px)
+    // 2. Dash 1 (灰): 世界 0° 射线（2026-09 拍板 D5：恒定，不跟随线段）
     auto* refLine = m_impl->ensureItem(m_impl->gizmoRefLine);
     constexpr double refLen = 55.0;
+    constexpr double kWorldZeroRad = 0.0;
     QPainterPath refPath;
     refPath.moveTo(0, 0);
-    refPath.lineTo(refLen * std::cos(refBaseWorldRad), -refLen * std::sin(refBaseWorldRad));
+    refPath.lineTo(refLen * std::cos(kWorldZeroRad), -refLen * std::sin(kWorldZeroRad));
     refLine->setPath(refPath);
     refLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     refLine->setPos(c);
@@ -298,12 +298,12 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     refLine->setZValue(9996.0);
     refLine->setVisible(true);
 
-    // 3. Dash 2: Previous Pose Dash along prevPoseWorldRad (65 px)
+    // 3. Dash 2 (黄): 起手姿态射线（按下瞬间冻结；活动边黄弧的固定边）
     auto* prevLine = m_impl->ensureItem(m_impl->gizmoPrevPoseLine);
     constexpr double prevLen = 65.0;
     QPainterPath prevPath;
     prevPath.moveTo(0, 0);
-    prevPath.lineTo(prevLen * std::cos(prevPoseWorldRad), -prevLen * std::sin(prevPoseWorldRad));
+    prevPath.lineTo(prevLen * std::cos(startPoseWorldRad), -prevLen * std::sin(startPoseWorldRad));
     prevLine->setPath(prevPath);
     prevLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     prevLine->setPos(c);
@@ -315,14 +315,14 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     prevLine->setZValue(9997.0);
     prevLine->setVisible(true);
 
-    // 4. Angle Wedge (Arc + Sector) from refBaseWorldRad to prevPoseWorldRad (current angle)
+    // 4. Angle Wedge (Arc + Sector) from startPoseWorldRad to currentPoseWorldRad
     auto* arc = m_impl->ensureItem(m_impl->gizmoArc);
     constexpr double arcR = 42.0;
     QPainterPath arcPath;
-    const double sweepDeg = cad::geo::radToDeg(cad::geo::normalizeRad(prevPoseWorldRad - refBaseWorldRad));
+    const double sweepDeg = cad::geo::radToDeg(cad::geo::normalizeRad(currentPoseWorldRad - startPoseWorldRad));
     if (std::abs(sweepDeg) > 1e-3) {
         arcPath.moveTo(0, 0);
-        const double sceneStartDeg = cad::geo::radToDeg(refBaseWorldRad);
+        const double sceneStartDeg = cad::geo::radToDeg(startPoseWorldRad);
         arcPath.arcTo(QRectF(-arcR, -arcR, arcR * 2.0, arcR * 2.0), sceneStartDeg, sweepDeg);
         arcPath.closeSubpath();
     }
@@ -343,7 +343,7 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
         auto* bg = m_impl->ensureItem(m_impl->gizmoBadgeBg);
         auto* textItem = m_impl->ensureItem(m_impl->gizmoBadgeText);
 
-        const double curRad = prevPoseWorldRad;
+        const double curRad = currentPoseWorldRad;
         constexpr double badgeDist = 58.0;
         const double bx = badgeDist * std::cos(curRad);
         const double by = -badgeDist * std::sin(curRad);
@@ -378,17 +378,6 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
         if (m_impl->gizmoBadgeBg) m_impl->gizmoBadgeBg->setVisible(false);
         if (m_impl->gizmoBadgeText) m_impl->gizmoBadgeText->setVisible(false);
     }
-}
-
-void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
-                                      double refWorldRad,
-                                      double arcStartWorldRad,
-                                      double arcEndWorldRad,
-                                      bool isConfirmed)
-{
-    (void)isConfirmed;
-    const double deltaDeg = cad::geo::radToDeg(arcEndWorldRad - arcStartWorldRad);
-    showRotateGizmo(pivotWorld, refWorldRad, arcStartWorldRad, deltaDeg, QString());
 }
 
 void TransientOverlay::hideRotateGizmo()

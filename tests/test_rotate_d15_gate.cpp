@@ -8,7 +8,7 @@ private slots:
     void d15GateRequiresConfirmBeforeDrag();
     void d15DragCommitDropsToSelected();
     void d15BlankClickClearsSelectedTarget();
-    void d15AnchorFollowsClickedEnd();
+    void d15FreeAnchorIsAlwaysStart();
     void d15ConfirmStateHasVisualAndHint();
 };
 void TestRotateD15Gate::d15GateRequiresConfirmBeforeDrag()
@@ -194,9 +194,11 @@ void TestRotateD15Gate::d15BlankClickClearsSelectedTarget()
 }
 
 
-// 锚心跟随点击端 (用户拍板 2026-08-27): 自由线取离点击更近的一端 (16px/zoom);
-// 连接线恒取挂连接的一端 —— 选中即入"编辑跟随角"安全模式; 中段点击保持起点.
-void TestRotateD15Gate::d15AnchorFollowsClickedEnd()
+// 锚心归属 (2026-09 统一 S1, 用户拍板 D2 取代 2026-08-27 的「点击最近端」启发式):
+// 自由线锚心**恒为起点** —— 锚心只表示「哪一端由连接/角度绑定」, 不再随点击漂移;
+// 想绕另一端旋转用 X 键/点端点把**枢轴**移到另一端 (任意枢轴刚体旋转, 见 S1)。
+// 连接线恒取挂接端 (起点) —— 选中即入"编辑跟随角"安全模式。
+void TestRotateD15Gate::d15FreeAnchorIsAlwaysStart()
 {
     ParamDocument doc;
     doc.setActiveLayer(layerIdAt(doc, 1));
@@ -242,10 +244,10 @@ void TestRotateD15Gate::d15AnchorFollowsClickedEnd()
         QTest::qWait(20);
     };
 
-    // 1) 自由线: 点近终点 (12mm 处, 避开端头 path-merge 空洞) → 锚 = 终点.
+    // 1) 自由线: 点近终点 (12mm 处, 避开端头 path-merge 空洞) → 锚仍 = 起点.
     sendMouse(QEvent::MouseButtonPress, vp(88.0, 200.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(88.0, 200.0), Qt::LeftButton, Qt::NoModifier);
-    QCOMPARE(tool->anchorPointId(), free2.endId);
+    QCOMPARE(tool->anchorPointId(), free2.startId);
     sendConfirm(view);
     // (不再拖动; Esc 退回选中态以换目标.)
     QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
@@ -253,7 +255,7 @@ void TestRotateD15Gate::d15AnchorFollowsClickedEnd()
     sendMouse(QEvent::MouseButtonPress, vp(400.0, 200.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(400.0, 200.0), Qt::LeftButton, Qt::NoModifier);
 
-    // 2) 自由线: 无阈值 —— 点左半段 → 锚 = 起点.
+    // 2) 自由线: 点左半段 → 锚 = 起点.
     sendMouse(QEvent::MouseButtonPress, vp(40.0, 200.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(40.0, 200.0), Qt::LeftButton, Qt::NoModifier);
     QCOMPARE(tool->anchorPointId(), free2.startId);
@@ -261,10 +263,10 @@ void TestRotateD15Gate::d15AnchorFollowsClickedEnd()
     sendMouse(QEvent::MouseButtonPress, vp(400.0, 200.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(400.0, 200.0), Qt::LeftButton, Qt::NoModifier);
 
-    // 2b) 点右半段 → 锚 = 终点.
+    // 2b) 点右半段 → 锚仍 = 起点 (D2: 不再翻锚心).
     sendMouse(QEvent::MouseButtonPress, vp(60.0, 200.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(60.0, 200.0), Qt::LeftButton, Qt::NoModifier);
-    QCOMPARE(tool->anchorPointId(), free2.endId);
+    QCOMPARE(tool->anchorPointId(), free2.startId);
     QApplication::sendEvent(&view, &esc);
     sendMouse(QEvent::MouseButtonPress, vp(400.0, 200.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseButtonRelease, vp(400.0, 200.0), Qt::LeftButton, Qt::NoModifier);

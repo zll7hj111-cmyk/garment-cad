@@ -3,6 +3,7 @@
 #include <cmath>
 #include "canvas/CanvasScene.h"
 #include "canvas/overlay/TransientOverlay.h"
+#include "geometry/Angle.h"
 
 namespace cad::tools {
 
@@ -16,44 +17,37 @@ RotateGizmo::~RotateGizmo()
     remove();
 }
 
-void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refBaseRad, double prevPoseRad, double zoom)
+void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double startPoseRad, double currentPoseRad, double zoom)
 {
     (void)zoom;
     m_pivotWorld = pivotWorld;
-    m_refBaseRad = refBaseRad;
-    m_prevPoseRad = prevPoseRad;
-    m_deltaDeg = 0.0;
+    m_startPoseRad = startPoseRad;
+    m_currentPoseRad = currentPoseRad;
     m_visible = true;
 
     if (m_scene && m_scene->overlay()) {
         if (m_confirmed) {
-            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
+            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_startPoseRad, m_currentPoseRad);
         } else {
             m_scene->overlay()->hideRotateGizmo();
         }
     }
 }
 
-void RotateGizmo::update(double zoom, double refBaseRad, double prevPoseRad, double deltaDeg, const QString& badgeText)
+void RotateGizmo::update(double zoom, double startPoseRad, double currentPoseRad, const QString& badgeText)
 {
     (void)zoom;
-    m_refBaseRad = refBaseRad;
-    m_prevPoseRad = prevPoseRad;
-    m_deltaDeg = deltaDeg;
+    m_startPoseRad = startPoseRad;
+    m_currentPoseRad = currentPoseRad;
     m_visible = true;
 
     if (m_scene && m_scene->overlay()) {
         if (m_confirmed) {
-            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg, badgeText);
+            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_startPoseRad, m_currentPoseRad, badgeText);
         } else {
             m_scene->overlay()->hideRotateGizmo();
         }
     }
-}
-
-void RotateGizmo::build(const cad::geo::Vec2& pivotWorld, double refWorldRad, double zoom)
-{
-    build(pivotWorld, refWorldRad, refWorldRad, zoom);
 }
 
 void RotateGizmo::setConfirmed(bool confirmed)
@@ -62,7 +56,7 @@ void RotateGizmo::setConfirmed(bool confirmed)
     m_confirmed = confirmed;
     if (m_scene && m_scene->overlay() && m_visible) {
         if (m_confirmed) {
-            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_refBaseRad, m_prevPoseRad, m_deltaDeg);
+            m_scene->overlay()->showRotateGizmo(m_pivotWorld, m_startPoseRad, m_currentPoseRad);
         } else {
             m_scene->overlay()->hideRotateGizmo();
         }
@@ -80,7 +74,8 @@ void RotateGizmo::remove()
 bool RotateGizmo::isArcEmpty() const
 {
     if (!m_visible) return true;
-    return std::abs(m_deltaDeg) <= 1e-4;
+    // M2：跨度 = normalizeRad(currentPoseRad − startPoseRad)，姿态角是唯一真相。
+    return std::abs(cad::geo::normalizeRad(m_currentPoseRad - m_startPoseRad)) <= 1e-4;
 }
 
 } // namespace cad::tools
