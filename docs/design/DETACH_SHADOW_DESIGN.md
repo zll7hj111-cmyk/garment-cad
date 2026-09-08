@@ -1,4 +1,4 @@
-﻿# 拆开影子线段设计（设计文档）
+# 拆开影子线段设计（设计文档）
 
 > 状态：✅ **已落地（2026-09-03）**。本文档是「拆开 = 复制隐藏影子线段作为角度基准 + 影子可挂载新线形成跟随链」功能的唯一设计记录。
 > 用户拍板项标注【拍板】；实现接线清单见 §10，动代码前逐条核对。
@@ -232,9 +232,9 @@ QUuid shadowMasterBlockId;    ///< 影子本体（拆开前的基准线块）；
 | canvas | `BlockItem` / `CanvasScene` | `isShadow` 不创建图元/不绘制 |
 | tools | `ToolSelect`、`HitTester`、`SnapEngine`、`ConnectGesture`、`ToolRotate` | 影子排除过滤 + 挂载路由 + 旋转影子通道 |
 | ui | `LinePropertyDialog`、`ContextStrip`、`SegmentConnectionCard(Refresh/Conn)`、`SegmentRefCard` | 影子角度行、复合读数、清除按钮 |
-| tests | `test_commands.cpp`（`setAttachmentAngleOnly_keepsFollowAngle` 断言"旋转 leader A +30° → B 跟随"**需翻案**）、`test_select_wkey.cpp`（`quickDetachKeyD`、`angleOnlyEndpointDragReconnects`）、`test_dialog_tabs.cpp`（`reattachPreservesAngleRef`）、`test_serializer.cpp`、`test_context_strip.cpp` | 按新语义重写 + 新增影子用例 |
+| tests | `test_attachment_angle.cpp`（`setAttachmentAngleOnly_keepsFollowAngle` 断言"旋转 leader A +30° → B 跟随"**需翻案**；原 `test_commands.cpp`）、`test_select_wkey_gestures.cpp`（`quickDetachKeyD`、`angleOnlyEndpointDragReconnects`）、`test_dialog_tabs_*`（`reattachPreservesAngleRef`）、`test_serializer.cpp`、`test_context_strip.cpp` | 按新语义重写 + 新增影子用例 |
 
-> ⚠️ **行为翻案自检**：`test_commands.cpp:1423-1431` 现断言"拆开后旋转 leader 30° 跟随线 B
+> ⚠️ **行为翻案自检**：`test_attachment_angle.cpp`（原 `test_commands.cpp:1423-1431`）现断言"拆开后旋转 leader 30° 跟随线 B
 > 跟着转"——新语义下**拆开态不再跟随本体旋转**（R1），该断言必须改为"挂载/重挂态才跟随"。
 
 ## 10. 验证方案（设计级验收断言）

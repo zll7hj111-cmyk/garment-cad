@@ -1,4 +1,4 @@
-﻿# DESIGN — Pattern Workbench（打版工作台）
+# DESIGN — Pattern Workbench（打版工作台）
 
 <!-- impeccable:design-schema 1 -->
 
@@ -17,8 +17,8 @@ Central table: `src/ui/Theme.h` `ThemeTokens` (light + dark factories in `Theme.
 - **Accent**: accent/accentStrong/accentTint + **onAccent** (text on accent fills; dark = deep ink `#0A1420` fixing the 3.2:1 white-on-blue failure)
 - **Piece palette**: piece1..piece4 (entity identity; canvas blocks and card values share the family)
 - **Semantic**: success/warning/danger/teal — light-theme values deepened to pass AA as foreground (success `#15803D`, warning `#B45309`, teal `#0F766E`)
-- **Type scale**: FontXs 10 / FontSm 11 / FontMd 12 / FontBase 13 / FontLg 14 — hierarchy by size, not color
-- **Radius scale**: RadiusXs 2 / RadiusSm 4 / RadiusMd 6 / RadiusLg 8 / RadiusPill 10
+- **Type scale**: FontXs 10 / FontSm 11 / FontMd 12 / FontBase 13 / FontLg 15 / FontXl 18 — hierarchy by size, not color (`src/ui/Theme.h:65-70`)
+- **Radius scale**: RadiusXs 0 / RadiusSm 2 / RadiusMd 2 / RadiusLg 4 / RadiusBadge 4 / RadiusCapsule 999 — 功能圆角上限 4px，输入框纯胶囊 (`src/ui/Theme.h:73-80`)
 - **Spacing scale**: SpaceXs 2 / SpaceSm 4 / SpaceMd 6 / SpaceBase 8 / SpaceLg 12 / SpaceXl 16
 
 Canvas tokens: `src/canvas/CanvasStyle.h/.cpp` kept in sync with ThemeTokens by hand (same accent/semantic/piece families). `canvasBackground` is now consumed: `CanvasScene::setStyle` pushes it to every attached view (authoritative theme path), and `CanvasView` seeds its background brush from the scene style at construction (fixes the dead-token P0).
@@ -36,7 +36,7 @@ Canvas tokens: `src/canvas/CanvasStyle.h/.cpp` kept in sync with ThemeTokens by 
 ## Surfaces
 
 - **Canvas**: pattern-paper ground, ink construction lines, piece-hued block fills, hairline grid, snap indicators in success green, protected connections in amber, attachments in teal. Length labels in Consolas monospace 10px.
-- **Chrome**: surface-toned panels, one accent for active/checked/focus, hairline borders, pill tool dock (radius 10).
+- **Chrome**: surface-toned panels, one accent for active/checked/focus, hairline borders, tool dock 圆角 = RadiusBadge 4px（"pill" 仅指视觉分组，非大圆角）。
 - **Cards** (variable/formula/measure/linked/angle): surface card + 3px piece-hued left bar + piece-hued value text; hover border in the piece soft tint; dangling values in danger.
 - **Dialogs** (condition etc.): token-derived inline styles only; warning-toned callouts with translucent washes built from rgba(warning, 30/110) so dark mode stays coherent.
 - **HUD** (AngleHud): theme-aware floating overlay — reads background/text/valid/invalid colors from the owning scene's CanvasStyle instead of hardcoded dark.
@@ -47,4 +47,4 @@ Canvas tokens: `src/canvas/CanvasStyle.h/.cpp` kept in sync with ThemeTokens by 
 > 与现状不符处：默认主题已拍板为 Light（见 DECISIONS.md）、AngleHud 已随 CONTEXT_STRIP 二期删除。
 
 - 2026-08-09: framework layer complete (tokens, stylesheet engine, canvas sync, card/dialog/HUD/badge/icons token migration) + dark-mode line adaptation (`displayColor`); 19/19 tests green. Pending: pixel-level review vs the approved comp, remaining hardcoded tool-layer colors (MarqueeGesture/ToolMeasure/ToolCurveEdit preview hues) if the review requires.
-- Direction contract review: `.impeccable/critique/src-ui-2026-08-09.md` (baseline 29/40), comp: `.impeccable/mocks/decision/pattern-workbench-v3` (approved direction).
+- Direction contract review: impeccable critique 2026-08-09 基线 29/40，comp = pattern-workbench-v3（approved direction）。原始 critique / comp 产物未纳入版本库（仓库内无 `.impeccable/` 目录），本稿仅保留其结论。

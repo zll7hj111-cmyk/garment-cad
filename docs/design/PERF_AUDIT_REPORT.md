@@ -211,10 +211,10 @@ if (m_pointIndex.size() != static_cast<int>(points.size()))
 | 项 | 所属模块 | 影响面 | 验证用单测（按影响面） |
 |---|----------|--------|------------------------|
 | ① 投影弧长表 | geometry | 曲线捕捉/投影 | `ctest -C RelWithDebInfo -R test_curve` |
-| ② spans 拷贝+弧长 | parametric+geometry | 曲线辅助点/交点 | `test_curve` + `test_resolver` |
-| ③ mobileAux 缓存 | parametric | 跨层文档拖帧 | `test_aux_layer` + `test_resolver` |
-| ④ pointOwner 成员 | parametric | 交点固定点 | `test_resolver` + `test_intersection_update` |
-| ⑤ 合并跨层扫描 | parametric | 结构性扫描 | `test_resolver`（行为不变） |
+| ② spans 拷贝+弧长 | parametric+geometry | 曲线辅助点/交点 | `test_curve` + `test_resolver_*` |
+| ③ mobileAux 缓存 | parametric | 跨层文档拖帧 | `test_aux_layer` + `test_resolver_*` |
+| ④ pointOwner 成员 | parametric | 交点固定点 | `test_resolver_*` + `test_intersection_update` |
+| ⑤ 合并跨层扫描 | parametric | 结构性扫描 | `test_resolver_*`（行为不变） |
 | A `runResolvePass` 收口 | parametric | 全求解管线 | `test_block_commands`（行为不变）+ 编译一次 `reldeb` |
 | C 引用索引失效粒度 | parametric | 拖帧 | `test_block_commands` + `test_aux_layer` |
 

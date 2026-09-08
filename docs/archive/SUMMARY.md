@@ -1,4 +1,4 @@
-﻿# SUMMARY.md —— 归档化石摘要
+# SUMMARY.md —— 归档化石摘要
 
 > 本文件是「归档瘦身」手术的产物（2026-09-02）。**严禁删除任何文字**——原文件完整移入
 > `docs/archive/` 对应年份目录，本文件只保留每份化石的 3-5 句结论摘要，供快速回顾。
@@ -35,6 +35,32 @@ A1/A3（角度收口）、B4（序列化表驱动）、B5/A5（注释回填）�
 
 ---
 
+## 2026-09 批次（docs/archive/2026-09/）
+
+### CURVE_P3_DESIGN.md —— 曲线系统 P3 改进任务书（已闭环）
+
+2026-08-28 派发给执行 AI 的自包含任务书：①画布上断开切线锁定的快捷键；②Hobby 求解极端转角的过冲限幅。
+任务书内的构建 / 测试命令（`build/out`、基线 22/26 红 4）已过时，**执行前须以当前 AGENTS.md 为准**（`tools\build.bat` + `build/out-reldeb`，基线红 0）。
+保留价值：P0/P1/P2 曲线审查的问题背景与 P3 验收口径。
+
+### DART_LINE_REMOVAL_REPORT.md —— 省道线功能彻底下线工程报告（已落地 2026-09）
+
+旧版「省道线（Dart Line）」被「正交拐角偏置（OrthoOffset）」+「端点跟随开度模式（ChordLength）」完全覆盖后彻底剥离，清理死码与孤岛逻辑 600+ 行。
+含跨层清理清单、旧档兼容策略与验证记录，是「如何干净下线一个跨层功能」的完整范例。
+文中 `42/42` 等历史计数已过时，现状以 `ctest -N` 为准。
+
+---
+
+## 2026-12 批次（docs/archive/2026-12/）
+
+### DETOUR_AUDIT_REPORT.md —— 全项目「拐弯路径实现」审计报告（10 候选全部闭环）
+
+2026-12 全量扫描 `src/` 291 个源文件，按模块边界 5 路并行审计，只报带 `file:line` 证据的候选。
+10 个修复候选（绕门面丢信号 / 冗余复算 / 隐藏点丢弃 / 死码 / 同构复制 / 手搭图元 / 命令分叉等）**全部闭环**，架构七守卫 100%。
+三条硬红线实测为 0：`const_cast` 0 处、手动 `++geometryEpoch` 0 处、`RawModelAccess` 无违规绕行——是「架构纪律体检」的基线记录。
+
+---
+
 ## 2026-07 批次（docs/archive/2026-07/repowiki/）
 
 ### repowiki —— 自动生成知识库（严重过时，2026-07 生成）
@@ -47,8 +73,23 @@ A1/A3（角度收口）、B4（序列化表驱动）、B5/A5（注释回填）�
 
 ## plans 批次（docs/archive/plans/）
 
+### DETACH_SHADOW_PLAN.md —— 拆开影子基准实施计划（已落地 2026-09-03）
+
+「拆开 = 复制隐藏影子基准线」语义的任务分解与验收标准；权威语义见 `docs/design/DETACH_SHADOW_DESIGN.md`。
+文内测试文件名（`test_commands` / `test_select_wkey` / `test_dialog_tabs` 等）与用例号为拆分前状态，现行清单见 `CONVENTIONS.md`。
+
+### FILE_SPLIT_PLAN_V2.md —— 文件职责治理第二轮计划（已被 V3 取代）
+
+提出「单文件 2500 行硬顶」并把 `test_commands.cpp`(3399) / `test_rotate_copy.cpp`(3373) / `test_resolver.cpp`(1688) 列为拆分对象。
+目标已由 `FILE_SPLIT_PLAN_V3.md` 全量落地（2026-09，HEAD `e2fe4e7`）；文内行数、文件名为当时快照。
+
+### FILE_SPLIT_PLAN_V3.md —— 文件职责治理第三轮实施计划（已全量落地 2026-09）
+
+批次 0~4 + 全局验收 100% 通过，是「智能体任务书」写作范例（现状证据 / 任务分解 / 验收口径）。
+文内 ctest 计数与 `test_*.cpp` 名称为拆分前状态（现行 = 61 用例、`test_resolver_*` 等）。
+
 ### plan-sess_577d56c5-4238-4245-abf5-5705b4540ae4.md —— 删除影子偏转实施计划（已完成）
 
 删除影子偏转功能（shadowAnchorRotDeg + noFollowRotate + 冻结机制）的一次性实施计划。
-该功能已删除（DECISIONS.md 第 33 条），计划已完成使命。
+该功能已删除（见 DECISIONS.md「拆开保留角度」条目——影子偏转字段随该决策删除），计划已完成使命。
 原位置 `.zcode/plans/`，迁入归档。

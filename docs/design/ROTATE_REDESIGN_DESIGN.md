@@ -1,4 +1,4 @@
-﻿# 旋转工具交互重设计 ROTATE_REDESIGN_DESIGN.md（已落地）
+# 旋转工具交互重设计 ROTATE_REDESIGN_DESIGN.md（已落地）
 
 > 状态：**已落地（2026-08-27 起，D15 确认门等）**。本文档是"旋转工具重设计"唯一权威设计记录。
 > 注意：选集旋转曾于 2026-08-29 删除（用户拍板），**2026-09-04 已重新设计回归**（MarqueeGesture
@@ -33,7 +33,7 @@
 > **2026-09-04 选集旋转回归（重新设计后落地，`61e2cee`）**：多选框选刚体旋转经
 > `MarqueeGesture` 框选手势 + `ToolRotate::adoptSelection`（选区继承，`ToolManager.cpp:103` 接线）
 > → `RotateBlocksCommand`（`BlockTransformCommands.h:104`，快照多块变换与被释放的外部连接，
-> 一步 undo/redo）重新实现；测试 `tests/test_rotate_copy.cpp::marqueeSelectionAndPivotSnapRotate`
+> 一步 undo/redo）重新实现；测试 `tests/test_rotate_copy_*.cpp::marqueeSelectionAndPivotSnapRotate`
 > （:3172）锁定。**产品内现有整组旋转入口**：多选（框选/选区继承）→ 旋转工具 = 多块刚体旋转。
 > 与旧版差异：**无影子偏转**（该功能 2026-09 已删除，见 DECISIONS「影子偏转」条目）；
 > `baselineOffsetDeg` 字段本身已随影子偏转删除（`src/parametric/Attachment.h` 无此字段，仅
@@ -220,7 +220,7 @@ S 外 follower 附着 S 上（宿主转动自动重新驱动它们）、绝对�
 | D12 | **新增持久化字段 `Attachment::baselineOffsetDeg`**（影子偏转角，默认 0，序列化 Optional since v11）——机制全案见 §2.6 | 【已拍板 2026-08-27】 | — |
 | D13 | **跨界连接处置分级**：A = 半拆降级 angleOnly（推荐：公式/联动/一键恢复全活，与 D 键同语义）；B = 整条删除（用户 2026-08-27 曾倾向"抛弃包袱直接清"；影子字段落地后 A 的劣势已消除） | 【建议 A，待复核】 | 二者互斥须全局统一口径 |
 | D14 | 单线模式旋转连接线是否从"常数落增量/公式烘焙"统一迁移到影子机制 | 【开放，P2 前不阻塞】 | 迁移则 lockedFollowerRotationBakesFormula 等用例需翻案重锁 |
-| D15 | **单线确认流（用户拍板 2026-08-27，已落地）**：选中态 →（右键/Enter 无输入焦点）→ 确定态 → 拖动 → 松手提交后**回落选中态**（再拖需再确认）。规则五条：①回车双重身份仲裁——焦点在 HUD 输入框 = 应用角度值，否则选中态 = 确认；②锚向切换（X/点端点）为**选中态专属**，确定态一切按压 = 拖动起手（连接线锚点被占用仍禁切、静默保持选中）；③选中态点空白 = 取消选择回 Idle（旧右键取消职责移交空白点击）；④Ctrl 旋转复制保留**即兴入口**（Ctrl 为刻意修饰键，不设确认门；切目标后 Ctrl 失效为普通选中）；⑤Esc 分层——HUD 编辑中放弃编辑 / 确定态反悔回选中态 / 拖动中取消回位并退出确定态 / 选中态清目标。**配套**：旋转会话期（hasSessionTarget）右键上下文菜单（发布长度参数等）屏蔽，确认手势独占右键（CanvasView::contextMenuEvent 早退）；HUD 数值提交不占确认门且提交后回显（onHudCommit 选中会话仍在时 showHud）。测试 tests/test_rotate_copy.cpp 新增 d15GateRequiresConfirmBeforeDrag / d15DragCommitDropsToSelected / d15BlankClickClearsSelectedTarget，既有 16 用例补确认步 | 【已拍板已落地】 | W 整组路径已删除（2026-08-29）；四段式多选流仍按 §1 推进 |
+| D15 | **单线确认流（用户拍板 2026-08-27，已落地）**：选中态 →（右键/Enter 无输入焦点）→ 确定态 → 拖动 → 松手提交后**回落选中态**（再拖需再确认）。规则五条：①回车双重身份仲裁——焦点在 HUD 输入框 = 应用角度值，否则选中态 = 确认；②锚向切换（X/点端点）为**选中态专属**，确定态一切按压 = 拖动起手（连接线锚点被占用仍禁切、静默保持选中）；③选中态点空白 = 取消选择回 Idle（旧右键取消职责移交空白点击）；④Ctrl 旋转复制保留**即兴入口**（Ctrl 为刻意修饰键，不设确认门；切目标后 Ctrl 失效为普通选中）；⑤Esc 分层——HUD 编辑中放弃编辑 / 确定态反悔回选中态 / 拖动中取消回位并退出确定态 / 选中态清目标。**配套**：旋转会话期（hasSessionTarget）右键上下文菜单（发布长度参数等）屏蔽，确认手势独占右键（CanvasView::contextMenuEvent 早退）；HUD 数值提交不占确认门且提交后回显（onHudCommit 选中会话仍在时 showHud）。测试 tests/test_rotate_copy_*.cpp 新增 d15GateRequiresConfirmBeforeDrag / d15DragCommitDropsToSelected / d15BlankClickClearsSelectedTarget，既有 16 用例补确认步 | 【已拍板已落地】 | W 整组路径已删除（2026-08-29）；四段式多选流仍按 §1 推进 |
 
 ### §3.5 角度分域矩阵（D5 展开 · 待讨论确认）
 
@@ -319,7 +319,7 @@ class RotateBlocksCommand : public QUndoCommand {
 
 ---
 
-## 7. 测试清单（tests/test_rotate_copy.cpp 迁移 + 新增）
+## 7. 测试清单（tests/test_rotate_copy_*.cpp 迁移 + 新增）
 
 | 用例 | 断言 |
 |---|---|
@@ -356,7 +356,7 @@ class RotateBlocksCommand : public QUndoCommand {
 6. `src/parametric/Attachment.h` 新字段 + `DocumentSerializer.cpp` v11 配对读写（缺失 = 0 向后兼容）；Duplicate 验证随深拷贝携带；
 7. **换向交叉核对**：ReverseSegment 的世界基线翻转补偿与 nonzero baselineOffsetDeg 叠加时是否双重计账——有疑虑先补回归测试再放行；
 8. `src/tools/SegmentConnectionCard*`：「引用线段」行追加只读读数「随组偏转 N°」+「归零」按钮；新小命令 `SetAttachmentBaselineOffsetCommand`（归 AttachmentCommands.h，undo 一步回位）；
-9. `tests/test_rotate_copy.cpp`：迁移 + 新增（§7）；
+9. `tests/test_rotate_copy_*.cpp`：迁移 + 新增（§7）；
 10. `TROUBLESHOOTING.md` 第 0 组登记表：R 行更新（四段流）、W 行改「框选切换」；
 11. `AGENTS.md` 领域建模决策：更新"组件整组旋转（2026-12）"条目（注明翻案：被多选旋转覆盖，W 语义改框选）、新增"旋转工具重设计（2026-13）"条目 + `baselineOffsetDeg` 字段事实条目（带 file:line 引用）。
 

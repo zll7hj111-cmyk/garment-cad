@@ -33,8 +33,8 @@ The canvas is the authority and the panels are live views of the same parametric
 
 ## Capabilities and Constraints
 
-- Capabilities: smart pen creation with inline edit strip, segment break/intersection/rotate/measure/angle-measure tools, formula variables with Kahn-topology single-pass solving, conditions dialog, layers (aux/working), groups (lightweight, zero-restriction philosophy), copy chips, delete-impact confirmation with 8 consequence classes, undo/redo, save/load with graceful degradation warnings.
-- Constraints: Qt style engine limits (no CSS flex/grid, no backdrop-filter, QSS box-shadow is simulated outline); QSS must be built at runtime from tokens (MSVC C2026 string-literal limits); canvas and UI token tables are separate and must stay in sync; UI text is Chinese; internal units cm, display mm.
+- Capabilities: smart pen creation with inline edit strip, segment break/intersection/rotate/measure/angle-measure tools, formula variables with Kahn-topology single-pass solving, conditions dialog, layers (aux/working), groups (lightweight, zero-restriction philosophy), copy chips, delete-impact confirmation with 9 consequence classes, undo/redo, save/load with graceful degradation warnings.
+- Constraints: Qt style engine limits (no CSS flex/grid, no backdrop-filter, QSS box-shadow is simulated outline); QSS must be built at runtime from tokens (MSVC C2026 string-literal limits); canvas and UI token tables are separate and must stay in sync; UI text is Chinese; internal units mm, display cm (`src/geometry/Units.h:29-31`).
 - Terminology is domain-fact, not negotiable: 智能笔, 打断, 交点, 烘焙, 辅助层, 桥接线, 组, 引用名 (uppercase), etc.
 
 ## Brand Commitments
@@ -46,8 +46,8 @@ The canvas is the authority and the panels are live views of the same parametric
 
 ## Evidence on Hand
 
-- Real UI evidence: Theme.cpp token table (42 colors, light+dark), Theme::buildStylesheet QSS generator, CanvasStyle.cpp canvas tokens, 19 Phosphor-style SVGs, MainWindow layout (pill dock / side panel / status bar), five card families (Variable/Formula/Measure/Linked/AngleMeasure), SegmentEditBar inline edit strip, DeleteImpactConfirm 8-class dialog.
-- Audit evidence (impeccable critique 2026-08-09, .impeccable/critique/src-ui-2026-08-09.md): 29/40 heuristics; P0 canvas-background dead token; P0 hardcoded light colors bypassing tokens + type colors colliding with semantic hues; P1 keyboard dead ends (Tab swallowed, hover-only delete); P1 inconsistent feedback channels; WCAG failures (dark primary-button white text 3.2:1, text3 all-backgrounds <4.5:1); no loading states; no spacing/radius/type-scale token system.
+- Real UI evidence: Theme.cpp token table (42 colors, light+dark), Theme::buildStylesheet QSS generator, CanvasStyle.cpp canvas tokens, 19 Phosphor-style SVGs, MainWindow layout (pill dock / side panel / status bar), five card families (Variable/Formula/Measure/Linked/AngleMeasure), SegmentEditBar inline edit strip, DeleteImpactConfirm 9-class dialog (`src/parametric/ParamDocumentDetail.h:8-17`).
+- Audit evidence (impeccable critique 2026-08-09, 原始报告未入库): 29/40 heuristics; P0 canvas-background dead token; P0 hardcoded light colors bypassing tokens + type colors colliding with semantic hues; P1 keyboard dead ends (Tab swallowed, hover-only delete); P1 inconsistent feedback channels; WCAG failures (dark primary-button white text 3.2:1, text3 all-backgrounds <4.5:1); no loading states; no spacing/radius/type-scale token system.
 - Must not fabricate: no testimonials, no customers, no pricing, no market claims.
 
 ## Product Principles

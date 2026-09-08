@@ -237,7 +237,7 @@ QString extendEndFormula;         // 公式（cm 域；非空覆盖数值）
 - [x] 参数驱动公式（变量变化 → 延长量重算）。
 - [x] 序列化 round-trip + 旧档缺省 0。
 - [x] 尾巴范围判定（segmentSnapWithinBase）。
-- [ ] 卡片置灰/编辑交互：UI 层手工验证（test_dialog_tabs 未覆盖延长卡片）。
+- [ ] 卡片置灰/编辑交互：UI 层手工验证（`test_dialog_tabs_*` 未覆盖延长卡片）。
 - [x] ctest 全量回归：25 个 target 中 23 通过；2 红 = 既有基线且数值一致
       （test_serializer::bridgeAuxPointSnappableAndAttachable +
       test_component::dragComponentLeaderCurveFollowStable 31.4798mm）。

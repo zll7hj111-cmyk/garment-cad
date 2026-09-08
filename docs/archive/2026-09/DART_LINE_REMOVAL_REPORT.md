@@ -1,9 +1,9 @@
-﻿# 省道线（Dart Line）功能彻底下线与替代方案工程报告
+# 省道线（Dart Line）功能彻底下线与替代方案工程报告
 
 > **编制日期**：2026-09-07  
 > **文档版本**：v1.0  
 > **状态**：✅ 已完成落地并全量验证通过  
-> **归档位置**：`docs/DART_LINE_REMOVAL_REPORT.md`（可独立分发与移动）
+> **归档位置**：`docs/archive/2026-09/DART_LINE_REMOVAL_REPORT.md`（可独立分发与移动）
 
 ---
 
@@ -271,4 +271,4 @@ flowchart LR
 - **交互认知更一致**：正交偏置（`OrthoOffset`）与跟随开度（`ChordLength`）统一了服装 CAD 的制图心智模型；
 - **代码库更健康**：清理死码与孤岛逻辑 600+ 行，七大架构守卫全绿。
 
-本报告已归档至代码库 `docs/DART_LINE_REMOVAL_REPORT.md`，可作为后续版本追溯、架构评审与跨团队移交的正式基线依据。
+本报告已归档至代码库 `docs/archive/2026-09/DART_LINE_REMOVAL_REPORT.md`，可作为后续版本追溯、架构评审与跨团队移交的正式基线依据。
