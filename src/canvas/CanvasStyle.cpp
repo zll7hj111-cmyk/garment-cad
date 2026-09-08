@@ -17,23 +17,23 @@ CanvasStyle::RoleDefaults CanvasStyle::roleDefaults(cad::param::SegmentRole role
     if (dark) {
         switch (role) {
         case SegmentRole::Outline:
-            return { QColor(255, 255, 255), 1.2, Qt::SolidLine };  // pure white #FFFFFF
+            return { QColor(255, 255, 255), cad::param::kDefaultSegmentWeight, Qt::SolidLine };  // pure white #FFFFFF
         case SegmentRole::Internal:
             return { QColor(213, 208, 197), 1.0, Qt::SolidLine };  // borderStrong #D5D0C5
         case SegmentRole::Auxiliary:
             return { QColor(163, 158, 147), 0.8, Qt::DashLine };   // text2 #A39E93
         }
-        return { QColor(255, 255, 255), 1.2, Qt::SolidLine };
+        return { QColor(255, 255, 255), cad::param::kDefaultSegmentWeight, Qt::SolidLine };
     }
     switch (role) {
     case SegmentRole::Outline:
-        return { QColor(20, 20, 19), 1.2, Qt::SolidLine };        // text1 #141413 near black ink
+        return { QColor(20, 20, 19), cad::param::kDefaultSegmentWeight, Qt::SolidLine };        // text1 #141413 near black ink
     case SegmentRole::Internal:
         return { QColor(92, 88, 80), 1.0, Qt::SolidLine };        // text2 #5C5850 warm slate ink
     case SegmentRole::Auxiliary:
         return { QColor(140, 135, 125), 0.8, Qt::DashLine };     // text3 #8C877D warm muted gray
     }
-    return { QColor(20, 20, 19), 1.2, Qt::SolidLine };
+    return { QColor(20, 20, 19), cad::param::kDefaultSegmentWeight, Qt::SolidLine };
 }
 
 QColor CanvasStyle::displayColor(cad::param::SegmentRole role,
@@ -189,6 +189,19 @@ CanvasStyle CanvasStyle::darkTheme()
     s.m_nameLabelColor    = QColor(163, 158, 147);  // #A39E93
     s.m_lengthLabelColor  = QColor(82, 171, 127);
     s.m_pointLabelColor   = QColor(163, 158, 147);
+
+    // Interaction tokens (audit P0-1): dark counterparts.
+    s.grayedLineColor = QColor(176, 171, 160);  // warm light gray reference
+    s.grayedOpacity   = 0.55;
+    s.hudBorderColor  = s.hudDarkPillBorder;    // #4D4943 on night paper
+    return s;
+}
+
+const CanvasStyle& CanvasStyle::fallback()
+{
+    // Default member initializers already define the light theme; a function-
+    // local static avoids per-paint construction in every fallback site.
+    static const CanvasStyle s;
     return s;
 }
 

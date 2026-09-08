@@ -14,6 +14,7 @@
 #include "geometry/Units.h"
 
 #include <cmath>
+#include "geometry/Epsilon.h"
 
 BlockItem::BlockItem(const QUuid& blockId, cad::param::ParamDocument* doc,
                      QGraphicsItem* parent)
@@ -44,8 +45,10 @@ QRectF BlockItem::boundingRect() const
     // the query point, so a margin smaller than the band makes the item
     // unpickable at low zoom (zoom 0.2 → tol ≈ 40 local units; the old ±10
     // margin silently dropped band-only hits).
-    constexpr double kPickMargin = 42.0;
-    return m_cache.cachedBounds().adjusted(-kPickMargin, -kPickMargin, kPickMargin, kPickMargin);
+    return m_cache.cachedBounds().adjusted(-BlockItemPick::kPickMarginLocal,
+                                           -BlockItemPick::kPickMarginLocal,
+                                           BlockItemPick::kPickMarginLocal,
+                                           BlockItemPick::kPickMarginLocal);
 }
 
 QPainterPath BlockItem::shape() const
@@ -59,10 +62,11 @@ QPainterPath BlockItem::shape() const
     double pxToLocal = 1.0;
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
         const qreal m11 = cs->currentZoom();
-        if (std::abs(m11) > 1e-9)
+        if (std::abs(m11) > cad::geo::kGeomEps)
             pxToLocal = 1.0 / std::abs(m11);
     }
-    const double tol = (style ? style->hoverRadiusPx() : 8.0) * pxToLocal;
+    const double tol = (style ? style->hoverRadiusPx()
+                              : CanvasStyle::fallback().hoverRadiusPx()) * pxToLocal;
 
     // Return the cached path when the tolerance has not changed enough to
     // matter (sub-pixel difference). Rebuilding the stroked path for every
@@ -132,7 +136,7 @@ void BlockItem::syncFromBlock()
     //    stayed put — without this, deleted points linger in the cache).
     // Pure translation keeps all local coordinates identical: just slide the
     // item (O(1), no alloc).
-    if (std::abs(block->transform.rotation - m_cache.lastRotation()) > 1e-9 ||
+    if (std::abs(block->transform.rotation - m_cache.lastRotation()) > cad::geo::kGeomEps ||
         block->geometryEpoch() != m_cache.lastGeometryEpoch() ||
         block->points.size() != m_cache.lastPointCount()) {
         updateFromBlock();

@@ -1,6 +1,7 @@
 ﻿#include "BlockItemPainter.h"
 #include "CanvasStyle.h"
 #include "CanvasAnimator.h"
+#include "CanvasFonts.h"
 #include "DirectionMarker.h"
 #include "parametric/PerfProbe.h"
 
@@ -11,35 +12,9 @@
 #include <QGraphicsItem>
 #include <cmath>
 
-namespace {
-
-/// Shared font instances — creating a QFont per label per frame is expensive
-/// (font engine resolution). Pixel-size fonts are device-independent.
-const QFont& nameFont()
-{
-    static QFont f = [] { QFont fnt; fnt.setPixelSize(10); return fnt; }();
-    return f;
-}
-const QFont& labelFont()
-{
-    static QFont f = [] { QFont fnt; fnt.setPixelSize(11); return fnt; }();
-    return f;
-}
-/// Length annotations: monospace digits so drag readouts never jitter.
-const QFont& lengthFont()
-{
-    static QFont f = [] {
-        QFont fnt;
-        fnt.setFamilies({QStringLiteral("Consolas"),
-                         QStringLiteral("Courier New"),
-                         QStringLiteral("monospace")});
-        fnt.setPixelSize(10);
-        return fnt;
-    }();
-    return f;
-}
-
-} // namespace
+using canvas_fonts::labelFont;
+using canvas_fonts::lengthFont;
+using canvas_fonts::nameFont;
 
 namespace BlockItemPainter {
 
@@ -53,15 +28,17 @@ void paint(const BlockPaintContext& ctx)
         return;
 
     QPainter* painter = ctx.painter;
-    const CanvasStyle* style = ctx.style;
+    // Style is always present: a missing scene style resolves to the shared
+    // default token table, so no painter site hardcodes a QColor (audit P0-1).
+    const CanvasStyle& st = ctx.style ? *ctx.style : CanvasStyle::fallback();
     CanvasAnimator* animator = ctx.animator;
     const QGraphicsItem* targetItem = ctx.animatorTargetItem;
 
     // Non-active visible layer: render as a gray, semi-transparent reference.
     const bool grayed = (ctx.layerMode == LayerMode::Grayed);
-    const QColor kGray = (style && style->dark) ? QColor(176, 171, 160) : QColor(0x9E, 0x9E, 0x9E);
+    const QColor kGray = st.grayedLineColor;
     if (grayed)
-        painter->setOpacity((style && style->dark) ? 0.55 : 0.4);
+        painter->setOpacity(st.grayedOpacity);
 
     // Draw segments — the hovered one is drawn LAST so its highlight sits on
     // top of sibling segments instead of being buried under them.
@@ -72,8 +49,7 @@ void paint(const BlockPaintContext& ctx)
         const bool ghost = !lc.visible;
         // Dark-mode adaptation: lift the data color to the role's
         // light-on-dark family so ink lines stay legible on night paper.
-        const QColor paintColor = style ? style->displayColor(lc.role, lc.color)
-                                        : lc.color;
+        const QColor paintColor = st.displayColor(lc.role, lc.color);
         EntityPaintParams pp;
         if (animator && targetItem) {
             pp = animator->lineParams(targetItem, lc.id,
@@ -82,8 +58,7 @@ void paint(const BlockPaintContext& ctx)
             // Fallback: resolve state directly without animation.
             pp.lineColor  = paintColor;
             pp.lineWidth  = lc.weight;
-            pp.labelColor = style ? style->labelColor(EntityState::Normal, false)
-                                  : QColor(100, 100, 100);
+            pp.labelColor = st.labelColor(EntityState::Normal, false);
         }
 
         QPen linePen(pp.lineColor, pp.lineWidth);
@@ -91,8 +66,8 @@ void paint(const BlockPaintContext& ctx)
         linePen.setStyle(lc.penStyle);
         // Leader-candidate override: teal recolor only ("connection" family),
         // same width — consistent with the hover-recolors-only language.
-        if (lc.id == ctx.leaderEntity && style)
-            linePen.setColor(style->attachmentNodeColor);
+        if (lc.id == ctx.leaderEntity)
+            linePen.setColor(st.attachmentNodeColor);
         // Grayed layers keep the highlight on hovered/leader segments — the
         // affordance that lets the user aim a connection; everything else
         // falls back to the gray reference tint.
@@ -152,8 +127,7 @@ void paint(const BlockPaintContext& ctx)
             QPointF mid((lc.p1.x() + lc.p2.x()) / 2.0,
                         (lc.p1.y() + lc.p2.y()) / 2.0);
             QColor lenColor = animator ? pp.lengthLabelColor
-                : (style ? style->labelColor(EntityState::Normal, true)
-                         : QColor(0, 110, 60));
+                                       : st.labelColor(EntityState::Normal, true);
             if (ghost) lenColor.setAlpha(kGhostAlpha);
             QPen textPen(lenColor);
             textPen.setCosmetic(true);
@@ -200,11 +174,9 @@ void paint(const BlockPaintContext& ctx)
             pp = animator->pointParams(targetItem, pc.id,
                                        pc.isAuxiliary);
         } else {
-            pp.pointFill   = pc.isAuxiliary
-                ? (style ? style->pointColor(EntityState::Normal, true) : QColor(67, 160, 71))
-                : (style ? style->pointColor(EntityState::Normal, false) : QColor(30, 30, 30));
+            pp.pointFill   = st.pointColor(EntityState::Normal, pc.isAuxiliary);
             pp.pointRadius = 0.8;   // unified marker size (all point kinds)
-            pp.labelColor  = style ? style->labelColor(EntityState::Normal, false) : QColor(80, 80, 80);
+            pp.labelColor  = st.labelColor(EntityState::Normal, false);
         }
 
         // Curve anchors (曲线点) render as a small ETCAD-style pink disc —
@@ -213,20 +185,20 @@ void paint(const BlockPaintContext& ctx)
         // (shape() keeps 2.5 for anchors): the hit area must stay finger-friendly
         // even though the dot is now a subtle marker.
         if (pc.isCurveAnchor) {
-            pp.pointFill   = QColor(0xE9, 0x1E, 0x63);  // ETCAD pink
+            pp.pointFill   = st.curveAnchorColor;  // ETCAD pink
             pp.pointRadius = 0.8;   // 原 2.0 → 缩小一半多；命中范围不变 (shape() 2.5)
         }
 
         // Placed points (放置点) render as a distinct diamond (菱形) marker
         if (pc.isPlaced) {
-            pp.pointFill = QColor(255, 140, 0);  // Amber/orange
+            pp.pointFill = st.placedPointColor;  // Amber/orange
             pp.pointRadius = 1.1;
         }
 
         // Hovered point: enlarged + teal — the "this is a grab/connect point"
         // affordance (same highlight language as hovered lines).
         if (pc.id == ctx.hoveredPointId) {
-            pp.pointFill   = QColor(38, 166, 154);
+            pp.pointFill   = st.snapNodeColor;
             pp.pointRadius = 1.6;
         }
 
@@ -251,20 +223,20 @@ void paint(const BlockPaintContext& ctx)
 
         // Anchor ring marking a connection point (attachment node). Protected
         // connections use the amber ring (拖动保护视觉区分).
-        if (pc.isAttachmentNode && style && style->attachmentRingWidth > 0.0) {
-            QPen ringPen(pc.isLockedNode ? style->lockedAttachmentColor
-                                         : style->attachmentNodeColor,
-                         style->attachmentRingWidth);
+        if (pc.isAttachmentNode && st.attachmentRingWidth > 0.0) {
+            QPen ringPen(pc.isLockedNode ? st.lockedAttachmentColor
+                                         : st.attachmentNodeColor,
+                         st.attachmentRingWidth);
             ringPen.setCosmetic(true);
             painter->setPen(ringPen);
             painter->setBrush(Qt::NoBrush);
-            const double r = pp.pointRadius + style->attachmentRingGap;
+            const double r = pp.pointRadius + st.attachmentRingGap;
             painter->drawEllipse(pc.pos, r, r);
         }
 
         // Selected point indicator (accent ring/diamond)
         if (pc.id == ctx.selectedPointId) {
-            const QColor selColor = style ? style->pointColor(EntityState::Selected, false) : QColor(204, 120, 92);
+            const QColor selColor = st.pointColor(EntityState::Selected, false);
             QPen selPen(selColor, 1.8);
             selPen.setCosmetic(true);
             painter->setPen(selPen);

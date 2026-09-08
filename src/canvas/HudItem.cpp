@@ -5,24 +5,12 @@
 #include <QGraphicsView>
 #include <QPainter>
 
+#include "canvas/CanvasFonts.h"
 #include "canvas/CanvasScene.h"
 #include "geometry/Units.h"   // Coord::toScene (user→scene)
+#include "geometry/Epsilon.h"
 
-namespace {
-
-/// 统一 Anthropic 温润象牙图纸面规范 (#FAF9F5 / #D5D0C5 / #141413)
-constexpr QColor kPillBg(250, 249, 245, 245);
-constexpr QColor kPillBorder(213, 208, 197, 220);
-constexpr QColor kPillFg(20, 20, 19);
-
-QFont hudFont()
-{
-    QFont f(QStringLiteral("Segoe UI"));
-    f.setPixelSize(11);
-    return f;
-}
-
-} // namespace
+using canvas_fonts::uiFont;
 
 HudItem::HudItem(QGraphicsItem* parent)
     : QGraphicsItem(parent)
@@ -36,7 +24,7 @@ void HudItem::setText(const QString& text)
     prepareGeometryChange();
     m_text = text;
     // 盒 = 字形外扩：统一呼吸感内边距 (padX = 7.0, padY = 3.5)
-    const QFontMetricsF fm(hudFont());
+    const QFontMetricsF fm(uiFont(11));
     const qreal padX = 7.0;
     const qreal padY = 3.5;
     m_rect = fm.boundingRect(m_text).adjusted(-padX, -padY, padX, padY);
@@ -66,7 +54,7 @@ void HudItem::place(const QPointF& scenePos, const QGraphicsView* view,
                     const QPointF& screenOffset)
 {
     double zoom = (view != nullptr) ? view->transform().m11() : 1.0;
-    if (std::abs(zoom) < 1e-9) zoom = 1.0;
+    if (std::abs(zoom) < cad::geo::kGeomEps) zoom = 1.0;
     // 1/zoom 补偿：盒与文字在任何视图变换下保持恒定屏幕尺寸。
     setTransform(QTransform().scale(1.0 / zoom, 1.0 / zoom));
     // 屏幕像素偏移 → 场景单位（÷zoom），WYSIWYG 恒距。
@@ -86,36 +74,26 @@ void HudItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 
+    // 主题令牌：无场景时回落到共享默认表 (审计 P0-1，画布层零颜色字面量)
+    auto* cs = qobject_cast<CanvasScene*>(scene());
+    const CanvasStyle& st = cs ? *cs->style() : CanvasStyle::fallback();
+    const bool isDark = st.dark;
+
     // 1. 微柔暖阴影 (向下 1px，微弱透明暖阴影)
     painter->setPen(Qt::NoPen);
-    painter->setBrush(QColor(20, 20, 19, 20));
+    painter->setBrush(st.hudShadowColor);
     painter->drawRoundedRect(m_rect.adjusted(-0.5, 1.0, 0.5, 2.0), 4.0, 4.0);
 
     // 2. 底色与边框：优先从场景取主题
-    QColor bg = kPillBg;
-    QColor fg = kPillFg;
-    QColor border = kPillBorder;
-
-    auto* cs = qobject_cast<CanvasScene*>(scene());
-    const bool isDark = cs && cs->style() && cs->style()->dark;
-
-    if (cs && cs->style()) {
-        bg = cs->style()->hudBackground;
-        fg = cs->style()->hudText;
-        border = isDark
-            ? QColor(77, 73, 67, 220)
-            : QColor(213, 208, 197, 220);
-    }
+    QColor bg = st.hudBackground;
+    QColor fg = st.hudText;
+    QColor border = st.hudBorderColor;
 
     if (m_look == Look::DarkPill) {
         if (isDark) {
-            bg = QColor(31, 30, 29, 245);
-            fg = QColor(236, 233, 226);
-            border = QColor(77, 73, 67, 220);
-        } else {
-            bg = kPillBg;
-            fg = kPillFg;
-            border = kPillBorder;
+            bg = st.hudDarkPillBg;
+            fg = st.hudDarkPillFg;
+            border = st.hudDarkPillBorder;
         }
     }
 
@@ -126,6 +104,6 @@ void HudItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*
 
     // 4. 文字绘制
     painter->setPen(fg);
-    painter->setFont(hudFont());
+    painter->setFont(uiFont(11));
     painter->drawText(m_rect, Qt::AlignCenter, m_text);
 }

@@ -71,7 +71,7 @@ CanvasView::CanvasView(CanvasScene* scene, QWidget* parent)
     if (auto* cs = qobject_cast<CanvasScene*>(this->scene()))
         applyCanvasBackground(cs->style()->canvasBackground);
     else
-        setBackgroundBrush(QColor(250, 249, 245));
+        setBackgroundBrush(CanvasStyle::fallback().canvasBackground);
 
     // Mouse tracking for coordinate display
     setMouseTracking(true);
@@ -98,7 +98,8 @@ void CanvasView::applyCanvasBackground(const QColor& c)
 void CanvasView::drawBackground(QPainter* painter, const QRectF& rect)
 {
     const CanvasStyle* style = m_scene ? m_scene->style() : nullptr;
-    const QColor bg = style ? style->canvasBackground : QColor(250, 249, 245);
+    const QColor bg = style ? style->canvasBackground
+                            : CanvasStyle::fallback().canvasBackground;
     painter->fillRect(rect, bg);
 
     if (!style) return;
@@ -469,7 +470,10 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
     const QPointF sp = mapToScene(event->pos());
     const auto userPos = cad::geo::Coord::toUser(sp);
     const double zoom = zoomFactor();
-    const double tolerance = 8.0 / zoom;
+    // 与悬停/拾取同源（CAN-P0-5：不得再复制 8px 字面量）。
+    const auto* hoverScene = qobject_cast<const CanvasScene*>(scene());
+    const double tolerance = (hoverScene ? hoverScene->style()->hoverRadiusPx()
+                                         : CanvasStyle::fallback().hoverRadiusPx()) / zoom;
 
     const QList<QGraphicsItem*> hits = scene()->items(sp);
     QUuid bestBlockId, bestSegId;
@@ -513,9 +517,9 @@ void CanvasView::contextMenuEvent(QContextMenuEvent* event)
             const auto w1 = blk->transform.toWorld(pSp->resolvedPos);
             const auto w2 = blk->transform.toWorld(pEp->resolvedPos);
             const auto ab = w2 - w1;
-            const double lenSq = ab.lengthSquared();
-            paramT = (lenSq < 1e-12) ? 0.5
-                   : std::clamp((userPos - w1).dot(ab) / lenSq, 0.0, 1.0);
+            paramT = (ab.lengthSquared() < cad::geo::kGeomEpsTight)
+                         ? 0.5
+                         : cad::geo::Vec2::closestParamOnSegment(userPos, w1, w2);
         }
     }
 

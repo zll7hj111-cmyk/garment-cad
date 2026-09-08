@@ -1,4 +1,5 @@
 #include "CanvasScene.h"
+#include "geometry/Angle.h"
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsRectItem>
@@ -24,6 +25,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/PerfProbe.h"
 #include "canvas/overlay/TransientOverlay.h"
+#include "geometry/Epsilon.h"
 
 CanvasScene::CanvasScene(cad::param::ParamDocument* paramDoc, QObject* parent)
     : QGraphicsScene(parent)
@@ -78,6 +80,11 @@ double CanvasScene::currentZoom() const
 {
     if (views().isEmpty()) return 1.0;
     return views().first()->transform().m11();
+}
+
+double CanvasScene::safeZoom() const
+{
+    return cad::canvas::safeZoomOr(currentZoom());
 }
 
 void CanvasScene::addBlockItem(const QUuid& blockId)
@@ -155,7 +162,7 @@ void CanvasScene::refreshComponentBoxes()
         QGraphicsRectItem* item = m_componentBoxes.value(c.id);
         if (!item) {
             item = new QGraphicsRectItem();
-            QPen pen(QColor(47, 111, 237, 210));
+            QPen pen(m_style.componentBoxColor);
             pen.setWidthF(1.0);
             pen.setCosmetic(true);
             pen.setStyle(Qt::DashLine);
@@ -189,8 +196,8 @@ void CanvasScene::refreshComponentBoxes()
                 sig *= 0x01000193ULL;
             }
         }
-        double zoom = currentZoom();
-        if (zoom < 1e-9) zoom = 1.0;
+        double zoom = safeZoom();
+        if (zoom < cad::geo::kGeomEps) zoom = 1.0;
         sig ^= std::bit_cast<quint64>(zoom) ^ std::bit_cast<quint64>(5.0 / zoom);
 
         if (m_componentBoxSig.value(c.id) == sig) {
@@ -502,7 +509,7 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
     const double denom = da.x() * db.y() - da.y() * db.x();
     QPointF pivot;
     bool havePivot = false;
-    if (std::abs(denom) > 1e-9) {
+    if (std::abs(denom) > cad::geo::kGeomEps) {
         const double t = ((b0s.x() - a0s.x()) * db.y() -
                           (b0s.y() - a0s.y()) * db.x()) / denom;
         pivot = a0s + t * da;
@@ -543,17 +550,17 @@ bool CanvasScene::flashAngleMeasure(const QUuid& blockA, const QUuid& segmentA,
     double dirA = 0.0;
     double dirB = 0.0;
     if (havePivot) {
-        dirA = std::atan2(da.y(), da.x()) + (flipA ? M_PI : 0.0);
-        dirB = std::atan2(db.y(), db.x()) + (flipB ? M_PI : 0.0);
+        dirA = std::atan2(da.y(), da.x()) + (flipA ? cad::geo::kPi : 0.0);
+        dirB = std::atan2(db.y(), db.x()) + (flipB ? cad::geo::kPi : 0.0);
     } else {
         dirA = std::atan2(da.y(), da.x());
         dirB = std::atan2(db.y(), db.x());
     }
     double span = dirB - dirA;
-    while (span >  M_PI) span -= 2.0 * M_PI;
-    while (span < -M_PI) span += 2.0 * M_PI;
+    while (span >  cad::geo::kPi) span -= 2.0 * cad::geo::kPi;
+    while (span < -cad::geo::kPi) span += 2.0 * cad::geo::kPi;
 
-    double zoom = currentZoom();
+    double zoom = safeZoom();
     const double arcR = 40.0 / zoom;
     QPainterPath arcPath;
     constexpr int kSamples = 40;

@@ -10,6 +10,8 @@
 #include <cmath>
 
 #include "canvas/CanvasScene.h"
+#include "canvas/CanvasFonts.h"
+#include "canvas/CanvasStyle.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 
@@ -24,6 +26,11 @@ public:
     }
 
     CanvasScene* scene = nullptr;
+
+    /// 画布调色板：无场景时回落到共享默认表 (审计 P0-1)
+    const CanvasStyle& style() const {
+        return scene ? *scene->style() : CanvasStyle::fallback();
+    }
 
     // ── Tier 1: Hover Slots ──
     QGraphicsEllipseItem* endpointRing = nullptr;
@@ -96,7 +103,7 @@ void TransientOverlay::showEndpointHover(const cad::geo::Vec2& worldPos, ScreenP
     item->setRect(-r, -r, 2.0 * r, 2.0 * r);
     item->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
 
-    QPen pen(QColor(0, 172, 193), 2.0);
+    QPen pen(m_impl->style().endpointHoverColor, 2.0);
     pen.setCosmetic(true);
     item->setPen(pen);
     item->setBrush(Qt::NoBrush);
@@ -113,10 +120,11 @@ void TransientOverlay::showSnapAim(const cad::geo::Vec2& worldPos, ScreenPx radi
     item->setRect(-r, -r, 2.0 * r, 2.0 * r);
     item->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
 
-    QPen pen(QColor(140, 100, 0), 1.0);
+    const CanvasStyle& st = m_impl->style();
+    QPen pen(st.snapAimOutlineColor, 1.0);
     pen.setCosmetic(true);
     item->setPen(pen);
-    item->setBrush(QColor(255, 193, 7)); // 小实心黄点
+    item->setBrush(st.snapAimColor); // 小实心黄点
     item->setZValue(10000.0);
 
     item->setPos(cad::geo::Coord::toScene(worldPos.x, worldPos.y));
@@ -215,8 +223,9 @@ void TransientOverlay::showMarqueeBox(const cad::geo::Vec2& p1World, const cad::
                std::abs(s1.y() - s2.y()));
 
     item->setRect(rect);
-    item->setPen(QPen(QColor(33, 150, 243), 1.0, Qt::DashLine));
-    item->setBrush(QColor(33, 150, 243, 30));
+    const QColor marquee = m_impl->style().marqueeColor;
+    item->setPen(QPen(marquee, 1.0, Qt::DashLine));
+    item->setBrush(QColor(marquee.red(), marquee.green(), marquee.blue(), 30));
     item->setZValue(9995.0);
     item->setVisible(true);
 }
@@ -236,10 +245,12 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     ring->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     ring->setPos(c);
 
-    QPen ringPen(QColor(38, 166, 154), 1.5);
+    const CanvasStyle& st = m_impl->style();
+    const QColor teal = st.snapNodeColor;
+    QPen ringPen(teal, 1.5);
     ringPen.setCosmetic(true);
     ring->setPen(ringPen);
-    ring->setBrush(QColor(38, 166, 154, 40));
+    ring->setBrush(QColor(teal.red(), teal.green(), teal.blue(), 40));
     ring->setZValue(9998.0);
     ring->setVisible(true);
 
@@ -249,7 +260,7 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     dot->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     dot->setPos(c);
     dot->setPen(Qt::NoPen);
-    dot->setBrush(QColor(38, 166, 154));
+    dot->setBrush(teal);
     dot->setZValue(9999.0);
     dot->setVisible(true);
 
@@ -263,7 +274,7 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     cross->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     cross->setPos(c);
 
-    QPen crossPen(QColor(38, 166, 154), 1.2);
+    QPen crossPen(teal, 1.2);
     crossPen.setCosmetic(true);
     cross->setPen(crossPen);
     cross->setBrush(Qt::NoBrush);
@@ -280,7 +291,7 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     refLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     refLine->setPos(c);
 
-    QPen refPen(QColor(120, 144, 156), 1.2, Qt::DashLine);
+    QPen refPen(st.gizmoBaseColor, 1.2, Qt::DashLine);
     refPen.setCosmetic(true);
     refLine->setPen(refPen);
     refLine->setBrush(Qt::NoBrush);
@@ -297,7 +308,7 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     prevLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     prevLine->setPos(c);
 
-    QPen prevPen(QColor(245, 124, 0), 1.2, Qt::DashLine);
+    QPen prevPen(st.gizmoAccentColor, 1.2, Qt::DashLine);
     prevPen.setCosmetic(true);
     prevLine->setPen(prevPen);
     prevLine->setBrush(Qt::NoBrush);
@@ -311,7 +322,7 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     const double sweepDeg = cad::geo::radToDeg(cad::geo::normalizeRad(prevPoseWorldRad - refBaseWorldRad));
     if (std::abs(sweepDeg) > 1e-3) {
         arcPath.moveTo(0, 0);
-        const double sceneStartDeg = refBaseWorldRad * 180.0 / M_PI;
+        const double sceneStartDeg = cad::geo::radToDeg(refBaseWorldRad);
         arcPath.arcTo(QRectF(-arcR, -arcR, arcR * 2.0, arcR * 2.0), sceneStartDeg, sweepDeg);
         arcPath.closeSubpath();
     }
@@ -319,10 +330,11 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     arc->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
     arc->setPos(c);
 
-    QPen arcPen(QColor(251, 140, 0), 1.8, Qt::SolidLine);
+    const QColor accent = st.gizmoAccentColor;
+    QPen arcPen(accent, 1.8, Qt::SolidLine);
     arcPen.setCosmetic(true);
     arc->setPen(arcPen);
-    arc->setBrush(QBrush(QColor(251, 140, 0, 38))); // semi-transparent sector
+    arc->setBrush(QBrush(QColor(accent.red(), accent.green(), accent.blue(), 38))); // semi-transparent sector
     arc->setZValue(9998.0);
     arc->setVisible(true);
 
@@ -336,10 +348,9 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
         const double bx = badgeDist * std::cos(curRad);
         const double by = -badgeDist * std::sin(curRad);
 
-        QFont font(QStringLiteral("Segoe UI"), 9, QFont::Bold);
-        textItem->setFont(font);
+        textItem->setFont(canvas_fonts::uiFontPt(9, true));
         textItem->setText(badgeText);
-        textItem->setBrush(QColor(255, 255, 255));
+        textItem->setBrush(st.gizmoBadgeFg);
         textItem->setPen(Qt::NoPen);
 
         QRectF tb = textItem->boundingRect();
@@ -350,8 +361,9 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
         QPainterPath bgPath;
         bgPath.addRoundedRect(bgRect, 3.0, 3.0);
         bg->setPath(bgPath);
-        bg->setPen(QPen(QColor(255, 255, 255, 120), 1.0));
-        bg->setBrush(QColor(33, 33, 33, 210));
+        const QColor badgeFg = st.gizmoBadgeFg;
+        bg->setPen(QPen(QColor(badgeFg.red(), badgeFg.green(), badgeFg.blue(), 120), 1.0));
+        bg->setBrush(st.gizmoBadgeBg);
 
         bg->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
         bg->setPos(c);
@@ -375,7 +387,7 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
                                       bool isConfirmed)
 {
     (void)isConfirmed;
-    const double deltaDeg = (arcEndWorldRad - arcStartWorldRad) * 180.0 / M_PI;
+    const double deltaDeg = cad::geo::radToDeg(arcEndWorldRad - arcStartWorldRad);
     showRotateGizmo(pivotWorld, refWorldRad, arcStartWorldRad, deltaDeg, QString());
 }
 

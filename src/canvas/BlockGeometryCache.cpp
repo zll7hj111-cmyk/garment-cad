@@ -5,14 +5,15 @@
 #include <QPainterPath>
 #include <QSet>
 #include <cmath>
-#include <numbers>
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Serial.h"
 #include "parametric/Block.h"
 #include "parametric/PerfProbe.h"
 #include "geometry/Units.h"   // cad::geo::Coord, cad::geo::Units
+#include "geometry/Angle.h"
 #include "geometry/CurveMath.h"
+#include "geometry/Epsilon.h"
 
 BlockGeometryCache::~BlockGeometryCache()
 {
@@ -159,7 +160,7 @@ bool BlockGeometryCache::rebuild(const QUuid& blockId, cad::param::ParamDocument
         QPointF pCenter;
         if (const auto* ep = block->findPoint(seg.endPointId)) {
             if (ep->constraint == cad::param::PointConstraint::OrthoOffset &&
-                std::abs(ep->orthoOffsetDist) > 1e-6) {
+                std::abs(ep->orthoOffsetDist) > cad::geo::kGeomEpsLoose) {
                 isOrtho = true;
                 if (const auto* ref = block->findPoint(ep->refPointId)) {
                     if (ref->resolved) {
@@ -175,7 +176,7 @@ bool BlockGeometryCache::rebuild(const QUuid& blockId, cad::param::ParamDocument
                                 }
                             }
                         }
-                        const double axisRad = baseAngle + ang * std::numbers::pi / 180.0;
+                        const double axisRad = baseAngle + cad::geo::degToRad(ang);
                         const cad::geo::Vec2 axisDir{std::cos(axisRad), std::sin(axisRad)};
                         const cad::geo::Vec2 centerPos = ref->resolvedPos + axisDir * ep->distance;
                         const cad::geo::Vec2 wCenter = block->transform.toWorld(centerPos);

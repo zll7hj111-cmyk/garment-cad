@@ -49,6 +49,10 @@ public:
     /// Returns 1.0 when there are no views — safe for headless tests.
     [[nodiscard]] double currentZoom() const;
 
+    /// currentZoom() with the U11 guard: degenerate scale (<= kGeomEps) reads
+    /// as 1.0, so pixel↔world conversions can divide by it unconditionally.
+    [[nodiscard]] double safeZoom() const;
+
     /// Create and add a BlockItem for the given block ID.
     void addBlockItem(const QUuid& blockId);
 

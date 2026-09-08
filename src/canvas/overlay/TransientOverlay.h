@@ -3,6 +3,7 @@
 #include <memory>
 #include <QColor>
 
+#include "canvas/CanvasStyle.h"
 #include "geometry/Vec2.h"
 
 class CanvasScene;
@@ -68,7 +69,7 @@ public:
 
     /// 悬停对齐/引导虚线
     void showGuideLine(const cad::geo::Vec2& p1World, const cad::geo::Vec2& p2World,
-                       const QColor& color = QColor(150, 150, 150), bool dashed = true,
+                       const QColor& color = CanvasStyle::fallback().guideLineColor, bool dashed = true,
                        OverlayTier tier = OverlayTier::Hover);
 
     // ─── Tier 2: 手势级视觉反馈 ──────────────────────────────

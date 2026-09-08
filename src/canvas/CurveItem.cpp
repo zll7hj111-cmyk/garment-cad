@@ -12,30 +12,12 @@
 #include "CanvasScene.h"
 #include "CanvasAnimator.h"
 #include "DirectionMarker.h"
+#include "BlockItemPick.h"
+#include "CanvasFonts.h"
+#include "geometry/Epsilon.h"
 
-namespace {
-
-/// Shared font instance (creating a QFont per label per frame is expensive).
-const QFont& nameFont()
-{
-    static QFont f = [] { QFont fnt; fnt.setPixelSize(10); return fnt; }();
-    return f;
-}
-/// Length annotations: monospace digits so drag readouts never jitter.
-const QFont& lengthFont()
-{
-    static QFont f = [] {
-        QFont fnt;
-        fnt.setFamilies({QStringLiteral("Consolas"),
-                         QStringLiteral("Courier New"),
-                         QStringLiteral("monospace")});
-        fnt.setPixelSize(10);
-        return fnt;
-    }();
-    return f;
-}
-
-} // namespace
+using canvas_fonts::lengthFont;
+using canvas_fonts::nameFont;
 
 CurveItem::CurveItem(BlockItem* owner, const Data& data)
     : QGraphicsObject(owner)
@@ -90,9 +72,10 @@ QRectF CurveItem::boundingRect() const
     // tol ≈ 40 local units; the old ±10 margin silently dropped hits in the
     // band outside the path bbox — 选择工具对曲线判定不准的另一半成因).
     // Worst case: hoverRadiusPx(8) / ZOOM_MIN(0.2) = 40 + cap safety.
-    constexpr double kPickMargin = 42.0;
-    return m_data.path.boundingRect().adjusted(-kPickMargin, -kPickMargin,
-                                               kPickMargin, kPickMargin);
+    return m_data.path.boundingRect().adjusted(-BlockItemPick::kPickMarginLocal,
+                                               -BlockItemPick::kPickMarginLocal,
+                                               BlockItemPick::kPickMarginLocal,
+                                               BlockItemPick::kPickMarginLocal);
 }
 
 QPainterPath CurveItem::shape() const
@@ -102,10 +85,10 @@ QPainterPath CurveItem::shape() const
     double pxToLocal = 1.0;
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
         const qreal m11 = cs->currentZoom();
-        if (std::abs(m11) > 1e-9)
+        if (std::abs(m11) > cad::geo::kGeomEps)
             pxToLocal = 1.0 / std::abs(m11);
     }
-    double tol = 8.0;
+    double tol = CanvasStyle::fallback().hoverRadiusPx();
     if (auto* cs = qobject_cast<CanvasScene*>(scene()))
         tol = cs->style()->hoverRadiusPx();
     tol *= pxToLocal;
@@ -138,41 +121,41 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
         return;
 
     CanvasAnimator* animator = nullptr;
-    const CanvasStyle* style = nullptr;
+    const CanvasStyle* sceneStyle = nullptr;
     bool forceName = false, forceLen = false;  // Hold-to-show (N/M keys).
     bool dirArrows = true;   // 方向基准箭头全局开关 (2026-12); 无场景时保持画.
     if (auto* cs = qobject_cast<CanvasScene*>(scene())) {
-        animator  = cs->animator();
-        style     = cs->style();
-        forceName = cs->forceShowName();
-        forceLen  = cs->forceShowLength();
-        dirArrows = cs->directionArrowsEnabled();
+        animator   = cs->animator();
+        sceneStyle = cs->style();
+        forceName  = cs->forceShowName();
+        forceLen   = cs->forceShowLength();
+        dirArrows  = cs->directionArrowsEnabled();
     }
+    // Style is always present (audit P0-1): no inline QColor fallbacks.
+    const CanvasStyle& st = sceneStyle ? *sceneStyle : CanvasStyle::fallback();
 
     const bool ghost = !m_data.visible;  // hovered hidden curve → ghost style
-    const QColor kGray = (style && style->dark) ? QColor(176, 171, 160) : QColor(0x9E, 0x9E, 0x9E);
+    const QColor kGray = st.grayedLineColor;
     if (m_grayed)
-        painter->setOpacity((style && style->dark) ? 0.55 : 0.4);
+        painter->setOpacity(st.grayedOpacity);
 
     // Dark-mode adaptation: lift the data color to the role's light-on-dark
     // family so ink curves stay legible on night paper.
-    const QColor paintColor = style ? style->displayColor(m_data.role, m_data.color)
-                                    : m_data.color;
+    const QColor paintColor = st.displayColor(m_data.role, m_data.color);
     EntityPaintParams pp;
     if (animator) {
         pp = animator->lineParams(m_owner, m_data.id, paintColor, m_data.weight);
     } else {
         pp.lineColor  = paintColor;
         pp.lineWidth  = m_data.weight;
-        pp.labelColor = style ? style->labelColor(EntityState::Normal, false)
-                              : QColor(100, 100, 100);
+        pp.labelColor = st.labelColor(EntityState::Normal, false);
     }
 
     QPen curvePen(pp.lineColor, pp.lineWidth);
     curvePen.setCosmetic(true);
     curvePen.setStyle(m_data.penStyle);
-    if (m_leader && style)
-        curvePen.setColor(style->attachmentNodeColor);
+    if (m_leader)
+        curvePen.setColor(st.attachmentNodeColor);
     // Grayed reference layers keep the highlight on hovered/leader curves so
     // connections can be aimed (matches the parent's hover policy).
     if (m_grayed && !m_hovered && !m_leader)
@@ -208,8 +191,7 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
     }
     if ((m_data.showLength || forceLen) && !m_data.lengthText.isEmpty() && !m_grayed) {
         QColor lenColor = animator ? pp.lengthLabelColor
-            : (style ? style->labelColor(EntityState::Normal, true)
-                     : QColor(0, 110, 60));
+                                   : st.labelColor(EntityState::Normal, true);
         if (ghost) lenColor.setAlpha(kGhostAlpha);
         QPen textPen(lenColor);
         textPen.setCosmetic(true);

@@ -6,16 +6,18 @@
 #include <QPainterPathStroker>
 #include <algorithm>
 #include <cmath>
+#include "geometry/Epsilon.h"
+#include "geometry/Vec2.h"
 
 namespace BlockItemPick {
 
 double computeHoverThreshold(const CanvasScene* scene)
 {
-    double threshold = 8.0;  // default
+    double threshold = CanvasStyle::fallback().hoverRadiusPx();
     if (scene) {
         threshold = scene->style()->hoverRadiusPx();
         const qreal m11 = scene->currentZoom();
-        if (std::abs(m11) > 1e-9)
+        if (std::abs(m11) > cad::geo::kGeomEps)
             threshold /= std::abs(m11);
     }
     return threshold;
@@ -41,10 +43,11 @@ QPainterPath buildShape(const std::vector<LineCache>& lines,
     // covers lines and points.
     // Points contribute only their visual disc (they are tiny; the segment
     // band already covers their surroundings for block-level picking).
-    // PICK radius is unified at 2.5 for ALL point kinds — deliberately larger
-    // than the 0.8 visual radius so grabbing stays finger-friendly.
+    // PICK radius 见 BlockItemPick.h 常量：普通点 2.5px / 放置点 6px ——
+    // 刻意大于 0.8 的可视半径，保证好抓。
     for (const auto& pc : points) {
-        const double rPx = pc.isPlaced ? 6.0 : 2.5;
+        const double rPx = pc.isPlaced ? kPlacedPointPickRadiusPx
+                                       : kPointPickRadiusPx;
         const double r = rPx * pxToLocal;
         path.addEllipse(pc.pos, r, r);
     }
@@ -66,22 +69,11 @@ QUuid hitTestLines(const std::vector<LineCache>& lines,
 
     // Test line segments.
     for (const auto& lc : lines) {
-        // Distance from point to line segment.
-        const double ax = lc.p1.x(), ay = lc.p1.y();
-        const double bx = lc.p2.x(), by = lc.p2.y();
-        const double px = localPos.x(), py = localPos.y();
-
-        const double abx = bx - ax, aby = by - ay;
-        const double apx = px - ax, apy = py - ay;
-        const double lenSq = abx * abx + aby * aby;
-
-        double t = 0.0;
-        if (lenSq > 1e-12)
-            t = std::clamp((apx * abx + apy * aby) / lenSq, 0.0, 1.0);
-
-        const double cx = ax + t * abx - px;
-        const double cy = ay + t * aby - py;
-        const double dist = std::sqrt(cx * cx + cy * cy);
+        // Distance from point to line segment (U5: shared geometry helper).
+        const cad::geo::Vec2 a{lc.p1.x(), lc.p1.y()};
+        const cad::geo::Vec2 b{lc.p2.x(), lc.p2.y()};
+        const cad::geo::Vec2 p{localPos.x(), localPos.y()};
+        const double dist = cad::geo::Vec2::distanceToSegment(p, a, b);
 
         if (dist < bestDist) {
             bestDist = dist;

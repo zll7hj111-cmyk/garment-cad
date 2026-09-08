@@ -7,30 +7,15 @@
 #include <cmath>
 
 #include "canvas/CanvasScene.h"
+#include "canvas/CanvasFonts.h"
 #include "canvas/CanvasStyle.h"
 #include "geometry/Units.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::canvas {
 
-namespace {
-
-QFont monoFont(int pixelSize, bool bold = false)
-{
-    QFont f(QStringLiteral("Consolas, 'Courier New', monospace"));
-    f.setPixelSize(pixelSize);
-    f.setBold(bold);
-    return f;
-}
-
-QFont standardFont(int pixelSize, bool bold = false)
-{
-    QFont f(QStringLiteral("Segoe UI"));
-    f.setPixelSize(pixelSize);
-    f.setBold(bold);
-    return f;
-}
-
-} // namespace
+using canvas_fonts::monoFont;
+using canvas_fonts::uiFont;
 
 OverlapBatteryHud::OverlapBatteryHud(QGraphicsItem* parent)
     : QGraphicsItem(parent)
@@ -94,7 +79,7 @@ void OverlapBatteryHud::updatePosition(const cad::geo::Vec2& worldPos, const QGr
 {
     m_worldPos = worldPos;
     double zoom = (view != nullptr) ? view->transform().m11() : 1.0;
-    if (std::abs(zoom) < 1e-9) zoom = 1.0;
+    if (std::abs(zoom) < cad::geo::kGeomEps) zoom = 1.0;
     m_currentZoom = zoom;
 
     // 1/zoom 补偿: 屏幕尺寸恒定
@@ -127,7 +112,7 @@ QPointF OverlapBatteryHud::chipPortLocal(int index) const
 
 QPointF OverlapBatteryHud::candidatePortScenePos(int index, double zoom) const
 {
-    if (std::abs(zoom) < 1e-9) zoom = m_currentZoom;
+    if (std::abs(zoom) < cad::geo::kGeomEps) zoom = m_currentZoom;
     const QPointF portLocal = chipPortLocal(index);
     // pos() 是场景坐标, portLocal 是屏幕像素坐标 -> ÷ zoom
     return pos() + portLocal / zoom;
@@ -136,7 +121,7 @@ QPointF OverlapBatteryHud::candidatePortScenePos(int index, double zoom) const
 int OverlapBatteryHud::hitCandidateAtScene(const QPointF& scenePos, double zoom) const
 {
     if (m_mode != DisplayMode::Expanded) return -1;
-    if (std::abs(zoom) < 1e-9) zoom = m_currentZoom;
+    if (std::abs(zoom) < cad::geo::kGeomEps) zoom = m_currentZoom;
 
     // 转为本地屏幕像素坐标
     const QPointF deltaScene = scenePos - pos();
@@ -163,7 +148,7 @@ int OverlapBatteryHud::hitCandidateAtScene(const QPointF& scenePos, double zoom)
 bool OverlapBatteryHud::hitBadgeAtScene(const QPointF& scenePos, double zoom) const
 {
     if (m_mode != DisplayMode::Badge) return false;
-    if (std::abs(zoom) < 1e-9) zoom = m_currentZoom;
+    if (std::abs(zoom) < cad::geo::kGeomEps) zoom = m_currentZoom;
 
     const QPointF deltaScene = scenePos - pos();
     const QPointF localPt = deltaScene * zoom;
@@ -200,8 +185,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
             cs = sc->style();
         }
     }
-    CanvasStyle fallbackStyle = CanvasStyle::lightTheme();
-    const CanvasStyle& s = cs ? *cs : fallbackStyle;
+    const CanvasStyle& s = cs ? *cs : CanvasStyle::fallback();
 
     struct StyleTokens {
         QColor accent;
@@ -235,7 +219,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
 
         // 柔和微阴影
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(20, 20, 19, 20));
+        painter->setBrush(s.hudShadowColor);
         painter->drawRoundedRect(br.adjusted(-0.5, 1.0, 0.5, 2.0), 3.0, 3.0);
 
         // 微标底色与边框
@@ -248,7 +232,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
         const QString icon = isPoint ? QStringLiteral("●") : QStringLiteral("━");
         const QString countText = QString::number(m_candidates.size());
 
-        painter->setFont(standardFont(10, true));
+        painter->setFont(uiFont(10, true));
         painter->setPen(tk.accent);
         painter->drawText(QRectF(br.left() + 4.0, br.top(), 12.0, br.height()),
                           Qt::AlignCenter, icon);
@@ -305,7 +289,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
         // 3. 电池芯片卡片 (Chip Card)
         // 阴影
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(20, 20, 19, 25));
+        painter->setBrush(s.hudShadowColor);
         painter->drawRoundedRect(cr.adjusted(-0.5, 1.0, 0.5, 2.0), 4.0, 4.0);
 
         // 芯片底色与外框
@@ -326,7 +310,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
         }
 
         const qreal iconX = cr.left() + 8.0;
-        painter->setFont(standardFont(9, true));
+        painter->setFont(uiFont(9, true));
         painter->setPen(cand.isPlaced ? tk.warning : (isActive ? tk.accent : tk.text2));
         painter->drawText(QRectF(iconX, cr.top() + 2.0, 12.0, 14.0),
                           Qt::AlignCenter, glyph);
@@ -341,7 +325,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
             mainTitle = QStringLiteral("%1 · %2").arg(mainTitle, cand.blockName);
         }
 
-        painter->setFont(standardFont(10, true));
+        painter->setFont(uiFont(10, true));
         painter->setPen(tk.text1);
         const QFontMetricsF fmTitle(painter->font());
         const QString elidedTitle = fmTitle.elidedText(mainTitle, Qt::ElideRight, textW);
@@ -360,7 +344,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
             else subText += QStringLiteral(" · ") + cand.layerName;
         }
 
-        painter->setFont(standardFont(8.5, false));
+        painter->setFont(uiFont(8.5, false));
         painter->setPen(tk.text2);
         const QFontMetricsF fmSub(painter->font());
         const QString elidedSub = fmSub.elidedText(subText, Qt::ElideRight, textW);
@@ -368,7 +352,7 @@ void OverlapBatteryHud::paint(QPainter* painter, const QStyleOptionGraphicsItem*
                           Qt::AlignLeft | Qt::AlignVCenter, elidedSub);
 
         if (isSelected) {
-            painter->setFont(standardFont(9, true));
+            painter->setFont(uiFont(9, true));
             painter->setPen(tk.accent);
             painter->drawText(QRectF(cr.right() - 16.0, cr.top(), 12.0, cr.height()),
                               Qt::AlignCenter, QStringLiteral("✓"));

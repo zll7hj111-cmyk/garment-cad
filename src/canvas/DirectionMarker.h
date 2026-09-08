@@ -6,6 +6,7 @@
 #include <QColor>
 
 #include <cmath>
+#include "geometry/Angle.h"
 
 /// 线段方向指示 (2026-12): 起点 → 终点 的小箭头 (chevron), 画在段中点旁。
 ///
@@ -26,7 +27,7 @@ inline void drawDirectionChevron(QPainter* painter, const QPointF& mid,
 
     constexpr double kArm = 4.0;    ///< 臂长 (scene 单位, cosmetic 画笔)
     constexpr double kOff = 5.0;    ///< 离线距离 (贴着线但不压线)
-    constexpr double kSpread = 25.0 * M_PI / 180.0;
+    constexpr double kSpread = cad::geo::degToRad(25.0);
 
     // 顶点 = 中点 + 垂向偏移 + 一个臂长的前进量; 两臂从顶点回开 ±kSpread。
     const QPointF tip(mid.x() + px * kOff + dirX * kArm,
