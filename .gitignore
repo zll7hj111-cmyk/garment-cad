@@ -112,3 +112,7 @@ tools/_cleanup_*.ps1
 # Python cache
 __pycache__/
 *.pyc
+
+# 测试/构建残留产物（tests/test_extend.cpp 探针输出、MSVC 独立 PDB）
+/probe_output.txt
+/vc140.pdb
