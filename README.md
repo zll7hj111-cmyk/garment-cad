@@ -27,9 +27,9 @@ ctest
 ```
 
 - 全量 ctest 是收尾/跨模块大改的最终验证；日常按影响面选测（纯几何 → test_curve + test_expression；parametric 引擎 → test_resolver_points / _attachment / _curve_arc / _diag_misc + test_block_commands + test_attachment_shadow / _slide / _angle + test_variable_layer_commands + test_reverse_segment_commands + test_serializer + test_migration；工具/UI → test_select_wkey / test_rotate_copy_* / test_context_strip / test_dialog_tabs_* 等）。
-- 单测：`ctest -R <名>`；七守卫（check_layering / check_hardcoded_colors / check_test_fixtures / check_file_size / check_header_classification / check_bool_flags / check_test_split）已进 ctest，全量即覆盖。
+- 单测：`ctest -R <名>`；八守卫（check_layering / check_hardcoded_colors / check_test_fixtures / check_file_size / check_header_classification / check_bool_flags / check_test_split / check_inline_units）已进 ctest，全量即覆盖。
 - 不进 ctest 需手动跑：test_realdoc_perf、test_realdoc_full（env `GCAD_DOC`）、test_nav_smoke。
-- 回归基线红 = 0；ctest 共 61 个用例（54 功能测试 + 7 守卫）。历史上有过依赖活档 E:/3.gcad 的环境漂移红，2026-09 已改合成档消除（test_intersection_update 用 CrossLayerDoc）。详见 CONVENTIONS.md 验证命令区。
+- 回归基线红 = 0；ctest 共 64 个用例（56 功能测试 + 8 守卫）。历史上有过依赖活档 E:/3.gcad 的环境漂移红，2026-09 已改合成档消除（test_intersection_update 用 CrossLayerDoc）。详见 CONVENTIONS.md 验证命令区。
 
 ## 许可证
 
