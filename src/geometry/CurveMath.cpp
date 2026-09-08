@@ -1,15 +1,13 @@
 #include "CurveMath.h"
+#include "geometry/Angle.h"
 
 #include <QPainterPath>
 
 #include <algorithm>
 #include <array>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 #include <cmath>
+#include "geometry/Epsilon.h"
 
 namespace cad::geo {
 
@@ -40,7 +38,7 @@ constexpr std::array<double, GL_N> GL_WEIGHTS = {
 inline double knotInterval(const Vec2& a, const Vec2& b)
 {
     double d = a.distanceTo(b);
-    return std::sqrt(std::max(d, 1e-9));
+    return std::sqrt(std::max(d, cad::geo::kGeomEps));
 }
 
 /// Solve a cubic equation: t³ + a*t² + b*t + c = 0.
@@ -55,26 +53,26 @@ std::vector<double> solveCubicInUnit(double a, double b, double c)
     std::vector<double> roots;
 
     auto addIfInUnit = [&](double t) {
-        if (t >= -1e-9 && t <= 1.0 + 1e-9)
+        if (t >= -cad::geo::kGeomEps && t <= 1.0 + cad::geo::kGeomEps)
             roots.push_back(std::clamp(t, 0.0, 1.0));
     };
 
-    if (disc > 1e-12) {
+    if (disc > cad::geo::kGeomEpsTight) {
         // One real root
         double sq = std::sqrt(disc);
         double u = std::cbrt(-q / 2.0 + sq) + std::cbrt(-q / 2.0 - sq);
         addIfInUnit(u - a / 3.0);
-    } else if (disc < -1e-12) {
+    } else if (disc < -cad::geo::kGeomEpsTight) {
         // Three real roots (casus irreducibilis)
         double r = std::sqrt(-p * p * p / 27.0);
         double theta = std::acos(std::clamp(-q / (2.0 * r), -1.0, 1.0));
         double m = 2.0 * std::cbrt(r);
         addIfInUnit(m * std::cos(theta / 3.0) - a / 3.0);
-        addIfInUnit(m * std::cos((theta + 2.0 * M_PI) / 3.0) - a / 3.0);
-        addIfInUnit(m * std::cos((theta + 4.0 * M_PI) / 3.0) - a / 3.0);
+        addIfInUnit(m * std::cos((theta + 2.0 * cad::geo::kPi) / 3.0) - a / 3.0);
+        addIfInUnit(m * std::cos((theta + 4.0 * cad::geo::kPi) / 3.0) - a / 3.0);
     } else {
         // Repeated root
-        if (std::abs(p) < 1e-12) {
+        if (std::abs(p) < cad::geo::kGeomEpsTight) {
             addIfInUnit(-a / 3.0);
         } else {
             double u1 = 3.0 * q / p;
@@ -111,7 +109,7 @@ Vec2 catmullRomTangent(const std::vector<Vec2>& points, int index, double tensio
     double t1 = t0 + knotInterval(prev, points[index]);
     double t2 = t1 + knotInterval(points[index], next);
 
-    if (t2 - t0 < 1e-9) return Vec2::zero();
+    if (t2 - t0 < cad::geo::kGeomEps) return Vec2::zero();
 
     // Barry-Goldman tangent at P_index
     Vec2 tangent = (next - prev) / (t2 - t0) * (t1 - t0);
@@ -165,8 +163,8 @@ std::vector<double> solveTridiagonalScalar(std::vector<double> a, std::vector<do
 /// Normalize an angle to (-π, π].
 double normAnglePi(double a)
 {
-    while (a > M_PI) a -= 2.0 * M_PI;
-    while (a <= -M_PI) a += 2.0 * M_PI;
+    while (a > cad::geo::kPi) a -= 2.0 * cad::geo::kPi;
+    while (a <= -cad::geo::kPi) a += 2.0 * cad::geo::kPi;
     return a;
 }
 
@@ -185,7 +183,7 @@ double hobbyVelocity(double theta, double phi)
                                 * (std::sin(phi) - std::sin(theta) / 16.0)
                                 * (std::cos(theta) - std::cos(phi));
     const double den = 3.0 * (1.0 + cA * std::cos(theta) + cB * std::cos(phi));
-    return (std::abs(den) > 1e-9) ? (num / den) : (1.0 / 3.0);
+    return (std::abs(den) > cad::geo::kGeomEps) ? (num / den) : (1.0 / 3.0);
 }
 
 /// Handle-length clamp (P3-2): at near-180° chord fold-backs (e.g. anchors
@@ -221,7 +219,7 @@ std::vector<Vec2> solveC2Tangents(const std::vector<Vec2>& points,
     std::vector<double> h(n - 1);
     for (int i = 0; i < n - 1; ++i) {
         h[i] = points[i].distanceTo(points[i + 1]);
-        if (h[i] < 1e-9) h[i] = 1e-9;
+        if (h[i] < cad::geo::kGeomEps) h[i] = cad::geo::kGeomEps;
     }
 
     // Solve each maximal contiguous run of AUTO points as a tridiagonal system.
@@ -306,7 +304,7 @@ std::pair<std::vector<Vec2>, std::vector<Vec2>> solveHobbyTangents(
     std::vector<double> chordAng(n - 1), chordLen(n - 1);
     for (int i = 0; i < n - 1; ++i) {
         const Vec2 c = points[i + 1] - points[i];
-        chordLen[i] = std::max(c.length(), 1e-9);
+        chordLen[i] = std::max(c.length(), cad::geo::kGeomEps);
         chordAng[i] = std::atan2(c.y, c.x);
     }
 
@@ -391,11 +389,12 @@ std::pair<std::vector<Vec2>, std::vector<Vec2>> solveHobbyTangents(
     // keep their stored tangent length (direction still θ — which for a
     // manual point IS its stored direction, so manual tangents are exact).
     // tension==0 (the Segment default) means classic Hobby (tau = 1).
-    const double tau = (tension > 1e-6) ? tension : 1.0;
+    constexpr double kMinTension = 1e-6;  // 张力下限（非几何容差）
+    const double tau = (tension > kMinTension) ? tension : 1.0;
     for (int k = 0; k < n - 1; ++k) {
         const double psi = chordAng[k];
         const double tStart = normAnglePi(theta[k] - psi);
-        const double tEnd   = normAnglePi(theta[k + 1] - (psi + M_PI));
+        const double tEnd   = normAnglePi(theta[k + 1] - (psi + cad::geo::kPi));
 
         // P3-2 (D6/D7/D8): AUTO handle lengths are clamped to kMaxHandleRatio
         // times their chord — fold-back chords near ±180° turn make the
@@ -640,7 +639,7 @@ double arcLengthToParam(const std::vector<BezierSpan>& spans, double targetS,
 
     double localTarget = targetS - (*cum)[spanIdx];
     double spanLen = (*cum)[spanIdx + 1] - (*cum)[spanIdx];
-    if (spanLen < 1e-9) return static_cast<double>(spanIdx);
+    if (spanLen < cad::geo::kGeomEps) return static_cast<double>(spanIdx);
 
     // Safeguarded Newton within the span. Arc length over [0, t] is monotone
     // in t with derivative speed(t) = |B'(t)|, so Newton converges
@@ -659,12 +658,12 @@ double arcLengthToParam(const std::vector<BezierSpan>& spans, double targetS,
     double lo = 0.0, hi = 1.0, t = 0.5;
     for (int iter = 0; iter < 32; ++iter) {
         const double f = lenTo(t) - localTarget;
-        if (std::abs(f) < 1e-9) break;
+        if (std::abs(f) < cad::geo::kGeomEps) break;
         if (f < 0.0) lo = t; else hi = t;
         const double speed = evalBezierDerivative(sp, t).length();
-        double next = (speed > 1e-9) ? (t - f / speed) : (lo + hi) * 0.5;
+        double next = (speed > cad::geo::kGeomEps) ? (t - f / speed) : (lo + hi) * 0.5;
         if (next <= lo || next >= hi) next = (lo + hi) * 0.5;  // safeguard
-        if (std::abs(next - t) < 1e-12) { t = next; break; }
+        if (std::abs(next - t) < cad::geo::kGeomEpsTight) { t = next; break; }
         t = next;
     }
     return spanIdx + t;
@@ -731,16 +730,16 @@ CurveProjection projectPointOnCurve(const Vec2& query,
 
                 // f'(t) = |B'(t)|² + dot(B(t)-Q, B''(t))
                 // Approximate B''(t) numerically
-                double eps = 1e-6;
-                Vec2 derivPlus = evalBezierDerivative(sp, std::min(t + eps, 1.0));
-                Vec2 derivMinus = evalBezierDerivative(sp, std::max(t - eps, 0.0));
-                Vec2 secondDeriv = (derivPlus - derivMinus) / (2.0 * eps);
+                const double h = 1e-6;  // 有限差分步长（非几何容差）
+                Vec2 derivPlus = evalBezierDerivative(sp, std::min(t + h, 1.0));
+                Vec2 derivMinus = evalBezierDerivative(sp, std::max(t - h, 0.0));
+                Vec2 secondDeriv = (derivPlus - derivMinus) / (2.0 * h);
                 double fPrime = deriv.lengthSquared() + (pt - query).dot(secondDeriv);
 
-                if (std::abs(fPrime) < 1e-12) break;
+                if (std::abs(fPrime) < cad::geo::kGeomEpsTight) break;
                 double dt = -f / fPrime;
                 t = std::clamp(t + dt, 0.0, 1.0);
-                if (std::abs(dt) < 1e-10) break;
+                if (std::abs(dt) < cad::geo::kGeomEpsUltra) break;
             }
             const double dSq = query.distanceSquaredTo(evalBezier(sp, t));
             if (dSq < bestSpanDistSq) {
@@ -807,13 +806,13 @@ std::vector<CurveHit> rayCurveIntersect(const Vec2& origin, const Vec2& dir,
 
         // Normalize: t³ + (b/a)t² + (c/a)t + (d/a) = 0
         std::vector<double> roots;
-        if (std::abs(a) < 1e-12) {
+        if (std::abs(a) < cad::geo::kGeomEpsTight) {
             // Degenerate to quadratic
-            if (std::abs(b) < 1e-12) {
+            if (std::abs(b) < cad::geo::kGeomEpsTight) {
                 // Linear
-                if (std::abs(c) > 1e-12) {
+                if (std::abs(c) > cad::geo::kGeomEpsTight) {
                     double t = -d / c;
-                    if (t >= -1e-9 && t <= 1.0 + 1e-9)
+                    if (t >= -cad::geo::kGeomEps && t <= 1.0 + cad::geo::kGeomEps)
                         roots.push_back(std::clamp(t, 0.0, 1.0));
                 }
             } else {
@@ -822,8 +821,8 @@ std::vector<CurveHit> rayCurveIntersect(const Vec2& origin, const Vec2& dir,
                     double sq = std::sqrt(disc);
                     double t1 = (-c + sq) / (2.0 * b);
                     double t2 = (-c - sq) / (2.0 * b);
-                    if (t1 >= -1e-9 && t1 <= 1.0 + 1e-9) roots.push_back(std::clamp(t1, 0.0, 1.0));
-                    if (t2 >= -1e-9 && t2 <= 1.0 + 1e-9) roots.push_back(std::clamp(t2, 0.0, 1.0));
+                    if (t1 >= -cad::geo::kGeomEps && t1 <= 1.0 + cad::geo::kGeomEps) roots.push_back(std::clamp(t1, 0.0, 1.0));
+                    if (t2 >= -cad::geo::kGeomEps && t2 <= 1.0 + cad::geo::kGeomEps) roots.push_back(std::clamp(t2, 0.0, 1.0));
                 }
             }
         } else {
@@ -834,7 +833,7 @@ std::vector<CurveHit> rayCurveIntersect(const Vec2& origin, const Vec2& dir,
         for (double t : roots) {
             Vec2 pt = evalBezier(sp, t);
             double s = (pt - origin).dot(dir.normalized());
-            if (bidirectional || s >= -1e-6) {
+            if (bidirectional || s >= -cad::geo::kGeomEpsLoose) {
                 hits.push_back({i + t, pt});
             }
         }
@@ -847,7 +846,7 @@ std::vector<CurveHit> rayCurveIntersect(const Vec2& origin, const Vec2& dir,
     // Deduplicate (same hit from adjacent spans at boundary)
     std::vector<CurveHit> unique;
     for (const auto& h : hits) {
-        if (unique.empty() || std::abs(h.t - unique.back().t) > 1e-6)
+        if (unique.empty() || std::abs(h.t - unique.back().t) > cad::geo::kGeomEpsLoose)
             unique.push_back(h);
     }
     return unique;
@@ -888,11 +887,8 @@ void flattenSpan(const BezierSpan& s, double tol, int depth, std::vector<Vec2>& 
     double maxDev = 0.0;
     const Vec2 chord = s.p3 - s.p0;
     const double len2 = chord.lengthSquared();
-    if (len2 > 1e-12) {
-        auto dev = [&](const Vec2& p) {
-            const double t = std::clamp((p - s.p0).dot(chord) / len2, 0.0, 1.0);
-            return (p - (s.p0 + chord * t)).length();
-        };
+    if (len2 > cad::geo::kGeomEpsTight) {
+        auto dev = [&](const Vec2& p) { return Vec2::distanceToSegment(p, s.p0, s.p3); };
         maxDev = std::max(dev(s.ctrl1), dev(s.ctrl2));
     } else {
         // Degenerate span: measure against the control points directly.
@@ -917,7 +913,7 @@ std::vector<Vec2> flattenBezierSpans(const std::vector<BezierSpan>& spans,
     std::vector<Vec2> pts;
     if (spans.empty()) return pts;
 
-    const double tol = std::max(tolerance, 1e-6);
+    const double tol = std::max(tolerance, cad::geo::kGeomEpsLoose);
     pts.reserve(spans.size() * 16 + 4);
     pts.push_back(spans[0].p0);
     for (const auto& s : spans)

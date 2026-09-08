@@ -43,21 +43,35 @@ struct Units {
     static constexpr double inchToMm(double inch) { return inch * MM_PER_INCH; }
 
     // --- Formatted display strings ---
-    /// Format a mm value as cm string with given precision (default 2 decimal places = 0.01cm = 0.1mm).
-    static QString formatLength(double mm, int precision = 2) {
-        return QString::number(mmToCm(mm), 'f', precision) + QStringLiteral(" cm");
+    //
+    // 显示格式契约（审计 P1-6 / §3.6，2026-12 收口）：同一物理量只允许一种
+    // 显示精度，且 mm→cm 与数值格式化一律走这里，调用点禁止裸
+    // `QString::number(..., 'f', N)`。
+    //   * 长度：2 位小数 + 去尾零（"12.5" / "12"）；`formatCm` 不带单位
+    //     （数值框 / 卡片值标签），`formatLength` 带 " cm"（句子、提示、
+    //     量测结果）。
+    //   * 角度：1 位小数 + 去尾零；`formatDegValue` 不带后缀，
+    //     `formatDegTrimmed` 带 "°"。
+    //   * 纯数字：`formatNumberTrimmed`（默认 2 位，可指定）。
+
+    /// 长度显示的唯一格式化器：mm → cm，2 位小数去尾零，不带单位后缀
+    /// （"12.5" / "12"）。
+    static QString formatCm(double mm) {
+        return trimTrailingZeros(QString::number(mmToCm(mm), 'f', 2));
     }
 
-    /// Format a coordinate pair (mm) as cm string.
+    /// 长度 + 显示单位（"12.5 cm"）。与 `formatCm` 同一精度约定——刻意不提供
+    /// precision 参数（审计 P1-6：同一物理量只允许一种精度）。
+    static QString formatLength(double mm) {
+        return formatCm(mm) + QStringLiteral(" cm");
+    }
+
+    /// Format a coordinate pair (mm) as cm string. 固定 2 位小数（不去尾零）
+    /// 是刻意的：状态栏读数宽度必须稳定，光标移动时不能跳动。
     static QString formatPoint(double xMm, double yMm, int precision = 2) {
         return QStringLiteral("X: %1  Y: %2 cm")
             .arg(mmToCm(xMm), 0, 'f', precision)
             .arg(mmToCm(yMm), 0, 'f', precision);
-    }
-
-    /// Format an angle in degrees.
-    static QString formatAngle(double degrees, int precision = 1) {
-        return QString::number(degrees, 'f', precision) + QChar(0x00B0); // ° symbol
     }
 
     // --- Trimmed display strings (card value labels) ---
@@ -70,16 +84,10 @@ struct Units {
         return s;
     }
 
-    /// Format a mm value as a trimmed cm string WITHOUT a unit suffix
-    /// (e.g. "12.5"). Shared by the variable/measure card value labels.
-    static QString formatCmTrimmed(double mm) {
-        return trimTrailingZeros(QString::number(mmToCm(mm), 'f', 2));
-    }
-
-    /// Format a plain number with 2 decimals, trailing zeros trimmed
-    /// (e.g. "12.5"). Shared by the formula card result label.
-    static QString formatNumberTrimmed(double v) {
-        return trimTrailingZeros(QString::number(v, 'f', 2));
+    /// 纯数字（无单位量）：默认 2 位小数、去尾零（"12.5"）。长度走
+    /// `formatCm`、角度走 `formatDegValue`，不要用本函数转单位。
+    static QString formatNumberTrimmed(double v, int decimals = 2) {
+        return trimTrailingZeros(QString::number(v, 'f', decimals));
     }
 
     /// Format a degree value with trailing zeros trimmed and a degree suffix
@@ -115,6 +123,22 @@ inline ParsedNumberOrFormula parseNumberOrFormula(const QString& text)
     ParsedNumberOrFormula out;
     out.formula = text.trimmed();
     out.value = out.formula.toDouble(&out.isNumber);
+    return out;
+}
+
+/// 角度文本判读入口 (2026-12 审计 UI-P0-7 收口).
+///
+/// 与 `parseNumberOrFormula` 同构, 但数值判读前剥掉度数符号 "°" (U+00B0):
+/// 显示侧 `formatDegTrimmed` 与卡片标签会带后缀, 输入框必须能原样回读,
+/// 否则回车会被判成公式并静默回滚 (端点偏移框即为此 bug)。公式原文**不剥**
+/// °（公式求值器自行处理）。
+inline ParsedNumberOrFormula parseAngleText(const QString& text)
+{
+    ParsedNumberOrFormula out;
+    out.formula = text.trimmed();
+    QString numText = out.formula;
+    numText.remove(QChar(0x00B0));
+    out.value = numText.toDouble(&out.isNumber);
     return out;
 }
 

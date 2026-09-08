@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include "geometry/Epsilon.h"
 
 namespace cad::geo {
 
@@ -23,7 +24,7 @@ CurveSplitInfo splitCurveAtPoint(const Vec2& point, const std::vector<BezierSpan
     const double t0 = std::clamp(proj.t - static_cast<double>(spanIdx), 0.0, 1.0);
     info.spanIndex = spanIdx;
 
-    if (t0 > 1e-6 && t0 < 1.0 - 1e-6) {
+    if (t0 > cad::geo::kGeomEpsLoose && t0 < 1.0 - cad::geo::kGeomEpsLoose) {
         const auto [left, right] = subdivideBezier(spans[static_cast<size_t>(spanIdx)], t0);
         info.hasSubSpans = true;
         info.subTan.tInBreak     = (left.p3 - left.ctrl2) * 3.0;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include "geometry/Epsilon.h"
 
 namespace cad::geo {
 
@@ -44,7 +45,7 @@ struct Vec2 {
     // --- Normalization ---
     Vec2 normalized() const {
         double len = length();
-        if (len < 1e-12) return {0.0, 0.0};
+        if (len < cad::geo::kGeomEpsTight) return {0.0, 0.0};
         return *this / len;
     }
 
@@ -72,14 +73,23 @@ struct Vec2 {
     static constexpr Vec2 unitY() { return {0.0, 1.0}; }
 
     // --- Geometric utilities ---
+    /// Clamped projection parameter t in [0, 1] of p onto the segment [a, b].
+    /// Degenerate segments (length^2 < kGeomEpsTight) return 0.0; callers that
+    /// need a different degenerate fallback test the length themselves.
+    static double closestParamOnSegment(const Vec2& p, const Vec2& a, const Vec2& b) {
+        const Vec2 ab = b - a;
+        const double lenSq = ab.lengthSquared();
+        if (lenSq < cad::geo::kGeomEpsTight)
+            return 0.0;
+        return std::clamp((p - a).dot(ab) / lenSq, 0.0, 1.0);
+    }
+
     /// Shortest distance from point p to the segment [a, b].
     static double distanceToSegment(const Vec2& p, const Vec2& a, const Vec2& b) {
         const Vec2 ab = b - a;
-        const double lenSq = ab.lengthSquared();
-        if (lenSq < 1e-12)
+        if (ab.lengthSquared() < cad::geo::kGeomEpsTight)
             return p.distanceTo(a);
-        const double t = std::clamp((p - a).dot(ab) / lenSq, 0.0, 1.0);
-        return p.distanceTo(a + ab * t);
+        return p.distanceTo(a + ab * closestParamOnSegment(p, a, b));
     }
 };
 

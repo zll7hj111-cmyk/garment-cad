@@ -3,6 +3,7 @@
 #include <cmath>
 #include <numbers>
 #include <algorithm>
+#include "geometry/Epsilon.h"
 
 namespace cad::geo {
 
@@ -58,10 +59,10 @@ inline double normalizeRad(double rad)
 
 /// Convert an arc length (mm) on a circle of the given radius (mm) to the
 /// subtended angle in degrees. The closed-base mapping: 弧长 0 = 0° 折叠,
-/// πr = 180° 开平. Returns 0 for a degenerate (≤ 1e-9) radius.
+/// πr = 180° 开平. Returns 0 for a degenerate (≤ cad::geo::kGeomEps) radius.
 inline double arcMmToDeg(double arcMm, double radiusMm)
 {
-    return (radiusMm > 1e-9) ? (arcMm / radiusMm) * 180.0 / kPi : 0.0;
+    return (radiusMm > cad::geo::kGeomEps) ? (arcMm / radiusMm) * 180.0 / kPi : 0.0;
 }
 
 /// Convert an angle in degrees to the arc length (mm) on a circle of the
@@ -76,10 +77,10 @@ inline double degToArcMm(double deg, double radiusMm)
 /// Convert a chord length (mm) on a circle of the given radius (mm) to the
 /// subtended angle in degrees.
 /// chord = 2 * r * sin(theta / 2)  =>  theta = 2 * asin(chord / (2 * r))
-/// Returns 0 for degenerate radius (<= 1e-9).
+/// Returns 0 for degenerate radius (<= cad::geo::kGeomEps).
 inline double chordMmToDeg(double chordMm, double radiusMm)
 {
-    if (radiusMm <= 1e-9) return 0.0;
+    if (radiusMm <= cad::geo::kGeomEps) return 0.0;
     const double ratio = std::clamp(std::abs(chordMm) / (2.0 * radiusMm), 0.0, 1.0);
     const double deg = 2.0 * std::asin(ratio) * 180.0 / kPi;
     return (chordMm < 0.0) ? -deg : deg;
@@ -89,7 +90,7 @@ inline double chordMmToDeg(double chordMm, double radiusMm)
 /// given radius (mm). Inverse of chordMmToDeg.
 inline double degToChordMm(double deg, double radiusMm)
 {
-    if (radiusMm <= 1e-9) return 0.0;
+    if (radiusMm <= cad::geo::kGeomEps) return 0.0;
     const double rad = std::abs(deg) * kPi / 180.0;
     const double chord = 2.0 * radiusMm * std::sin(rad * 0.5);
     return (deg < 0.0) ? -chord : chord;

@@ -8,6 +8,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include "geometry/Epsilon.h"
 
 namespace cad::geo {
 namespace {
@@ -57,7 +58,7 @@ bool placeThird(const Vec2& a, const Vec2& b,
                 double distanceToA, double distanceToB,
                 double sideSign, Vec2& result)
 {
-    constexpr double kEpsilon = 1e-10;
+    constexpr double kEpsilon = cad::geo::kGeomEpsUltra;
     const Vec2 chord = b - a;
     const double chordLength = chord.length();
     if (chordLength <= kEpsilon || distanceToA <= kEpsilon || distanceToB <= kEpsilon)
@@ -68,7 +69,7 @@ bool placeThird(const Vec2& a, const Vec2& b,
                           + chordLength * chordLength)
                          / (2.0 * chordLength);
     double heightSquared = distanceToA * distanceToA - along * along;
-    const double tolerance = 1e-8 * std::max({1.0,
+    const double tolerance = cad::geo::kGeomEpsSq * std::max({1.0,
                                                distanceToA * distanceToA,
                                                distanceToB * distanceToB});
     if (heightSquared < -tolerance)
@@ -153,7 +154,7 @@ bool placeChild(const TriangleSurface& surface, int childFace,
         surface.points[static_cast<size_t>(edgeA)]) * scaleToMm;
     const double childToB = surface.points[static_cast<size_t>(childThird)].distanceTo(
         surface.points[static_cast<size_t>(edgeB)]) * scaleToMm;
-    const double sideSign = std::abs(parentSide) < 1e-10
+    const double sideSign = std::abs(parentSide) < cad::geo::kGeomEpsUltra
         ? 1.0 : (parentSide > 0.0 ? -1.0 : 1.0);
 
     Vec2 third;
