@@ -127,6 +127,9 @@ void RotateBlockCommand::redo()
         b->transform = m_newTf;
         b->endTargetBlockId = m_newEndTargetBlock;
         b->endTargetPointId = m_newEndTargetPoint;
+        // 2026-09 统一 S5：与 RotateBlocksCommand 对齐 —— 变换写入必须递增
+        // geometryEpoch（唯一入口 touchGeometry），否则缓存（曲线/命中）不失效。
+        b->touchGeometry();
     }
     // 旋转 = 放弃跟随: the pivot was moved off the attachment point, so the
     // rotation detaches the follower link (undo restores it).
@@ -141,6 +144,7 @@ void RotateBlockCommand::undo()
         b->transform = m_oldTf;
         b->endTargetBlockId = m_oldEndTargetBlock;
         b->endTargetPointId = m_oldEndTargetPoint;
+        b->touchGeometry();
     }
     if (!m_releasedAttId.isNull())
         cad::param::RawModelAccess::addAttachmentRaw(*m_doc, m_releasedAttBackup);  // verbatim (keep snapshot isLocked)
