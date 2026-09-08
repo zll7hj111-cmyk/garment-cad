@@ -789,9 +789,6 @@ void ToolRotate::buildGizmo() {
         refBaseRad = prevPoseRad;
     }
     m_gizmo->build(m_session.pivot(), refBaseRad, prevPoseRad, currentZoom());
-    if ((!m_selectionConfirmed || !m_input.pivotPicked()) && (!m_copyGesture || !m_copyGesture->active())) {
-        if (m_scene && m_scene->overlay()) m_scene->overlay()->hideRotateGizmo();
-    }
 }
 
 double ToolRotate::originalWorldRotDeg() const { return m_session.originalWorldRotDeg(m_paramDoc); }
@@ -816,11 +813,14 @@ void ToolRotate::applySelectionConfirmed(bool confirmed) {
     updateStatusHint();
 }
 
-bool ToolRotate::gizmoConfirmed() const { return m_gizmo && m_gizmo->confirmed(); }
+bool ToolRotate::gizmoConfirmed() const {
+    return m_selectionConfirmed || (m_gizmo && m_gizmo->confirmed());
+}
 
 void ToolRotate::updateGizmo() {
     if (!m_gizmo) return;
-    m_gizmo->setConfirmed(m_selectionConfirmed || (m_copyGesture && m_copyGesture->active()));
+    const bool shouldShow = (m_selectionConfirmed && m_input.pivotPicked()) || (m_copyGesture && m_copyGesture->active());
+    m_gizmo->setConfirmed(shouldShow);
     double refBaseRad = 0.0, prevPoseRad = 0.0, deltaDeg = 0.0;
     if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
         refBaseRad = 0.0; prevPoseRad = m_dragCursorAngle0;
@@ -847,9 +847,6 @@ void ToolRotate::updateGizmo() {
         badgeText = QString::asprintf("%.1f°", std::abs(deltaDeg));
     }
     m_gizmo->update(currentZoom(), refBaseRad, prevPoseRad, deltaDeg, badgeText);
-    if ((!m_selectionConfirmed || !m_input.pivotPicked()) && (!m_copyGesture || !m_copyGesture->active())) {
-        if (m_scene && m_scene->overlay()) m_scene->overlay()->hideRotateGizmo();
-    }
     updateStatusHint();
 }
 

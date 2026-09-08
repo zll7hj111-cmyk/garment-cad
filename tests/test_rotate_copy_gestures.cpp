@@ -2,6 +2,7 @@
 /// 旋转复制高阶手势: 锚心切换、单位换算模式、D15确认门流、多选与快捷发布。
 
 #include "test_rotate_copy.h"
+#include "canvas/overlay/TransientOverlay.h"
 
 void TestRotateCopy::xToggleSwitchesAnchorToEndPoint()
 {
@@ -1698,12 +1699,14 @@ void TestRotateCopy::singleLinePickPivotAndRotateCadFlow()
     QCOMPARE(tool->phase(), cad::tools::RotatePhase::Selecting);
     QVERIFY(!tool->selectionConfirmed());
     QVERIFY(!tool->pivotPicked());
+    QCOMPARE(scene.overlay()->isRotateGizmoVisible(), false);
 
     // 2. 右键确定选区
     sendConfirm(view);
     QVERIFY(tool->selectionConfirmed());
     QCOMPARE(tool->phase(), cad::tools::RotatePhase::PickingPivot);
     QVERIFY(!tool->pivotPicked());
+    QCOMPARE(scene.overlay()->isRotateGizmoVisible(), false);
 
     // 3. 点击空白处 (50, 50) 确定旋转中心，松开
     sendMouse(QEvent::MouseButtonPress, vp(50.0, 50.0), Qt::LeftButton, Qt::NoModifier);
@@ -1711,12 +1714,14 @@ void TestRotateCopy::singleLinePickPivotAndRotateCadFlow()
     QVERIFY(tool->pivotPicked());
     QVERIFY(tool->pivot().distanceTo({50.0, 50.0}) < 1e-4);
     QCOMPARE(tool->phase(), cad::tools::RotatePhase::ReadyToRotate);
+    QCOMPARE(scene.overlay()->isRotateGizmoVisible(), true);
 
     // 右键可退回定中心阶段，重新指定中心
     QTest::mouseClick(view.viewport(), Qt::RightButton, Qt::NoModifier, vp(50.0, 50.0));
     QTest::qWait(20);
     QVERIFY(!tool->pivotPicked());
     QCOMPARE(tool->phase(), cad::tools::RotatePhase::PickingPivot);
+    QCOMPARE(scene.overlay()->isRotateGizmoVisible(), false);
 
     // 点击端点 (100, 0) 并松开确定中心
     sendMouse(QEvent::MouseButtonPress, vp(100.0, 0.0), Qt::LeftButton, Qt::NoModifier);
@@ -1724,16 +1729,19 @@ void TestRotateCopy::singleLinePickPivotAndRotateCadFlow()
     QVERIFY(tool->pivotPicked());
     QVERIFY(tool->pivot().distanceTo({100.0, 0.0}) < 1e-4);
     QCOMPARE(tool->phase(), cad::tools::RotatePhase::ReadyToRotate);
+    QCOMPARE(scene.overlay()->isRotateGizmoVisible(), true);
 
     // 4. 再次按下并拖拽旋转：从 (100, 50) 拖拽到 (50, 0)（绕 (100, 0) 逆时针 90°）
     sendMouse(QEvent::MouseButtonPress, vp(100.0, 50.0), Qt::LeftButton, Qt::NoModifier);
     sendMouse(QEvent::MouseMove, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
     QCOMPARE(tool->phase(), cad::tools::RotatePhase::Rotating);
+    QCOMPARE(scene.overlay()->isRotateGizmoVisible(), true);
 
     // 松开提交并退出状态
     sendMouse(QEvent::MouseButtonRelease, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
     QCOMPARE(tool->state(), cad::tools::RotateState::Idle);
     QVERIFY(!tool->selectionConfirmed());
+    QCOMPARE(scene.overlay()->isRotateGizmoVisible(), false);
 
     // 验证旋转结果：以 (100, 0) 为中心
     const auto* blk = doc.findBlock(a.blockId);
