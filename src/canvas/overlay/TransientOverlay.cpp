@@ -11,6 +11,7 @@
 
 #include "canvas/CanvasScene.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
 
 namespace cad::canvas {
 
@@ -303,16 +304,15 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     prevLine->setZValue(9997.0);
     prevLine->setVisible(true);
 
-    // 4. Angle Wedge (Arc + Sector) from prevPoseWorldRad by deltaDeg (42 px)
+    // 4. Angle Wedge (Arc + Sector) from refBaseWorldRad to prevPoseWorldRad (current angle)
     auto* arc = m_impl->ensureItem(m_impl->gizmoArc);
     constexpr double arcR = 42.0;
     QPainterPath arcPath;
-    if (std::abs(deltaDeg) > 1e-4) {
+    const double sweepDeg = cad::geo::radToDeg(cad::geo::normalizeRad(prevPoseWorldRad - refBaseWorldRad));
+    if (std::abs(sweepDeg) > 1e-3) {
         arcPath.moveTo(0, 0);
-        // Scene Y is down => screen angle is negated
-        const double sceneStartDeg = -prevPoseWorldRad * 180.0 / M_PI;
-        const double sceneSweepDeg = -deltaDeg;
-        arcPath.arcTo(QRectF(-arcR, -arcR, arcR * 2.0, arcR * 2.0), sceneStartDeg, sceneSweepDeg);
+        const double sceneStartDeg = refBaseWorldRad * 180.0 / M_PI;
+        arcPath.arcTo(QRectF(-arcR, -arcR, arcR * 2.0, arcR * 2.0), sceneStartDeg, sweepDeg);
         arcPath.closeSubpath();
     }
     arc->setPath(arcPath);
@@ -327,11 +327,11 @@ void TransientOverlay::showRotateGizmo(const cad::geo::Vec2& pivotWorld,
     arc->setVisible(true);
 
     // 5. Canvas Floating Degree Text Badge
-    if (!badgeText.isEmpty() && std::abs(deltaDeg) > 1e-3) {
+    if (!badgeText.isEmpty()) {
         auto* bg = m_impl->ensureItem(m_impl->gizmoBadgeBg);
         auto* textItem = m_impl->ensureItem(m_impl->gizmoBadgeText);
 
-        const double curRad = prevPoseWorldRad + deltaDeg * M_PI / 180.0;
+        const double curRad = prevPoseWorldRad;
         constexpr double badgeDist = 58.0;
         const double bx = badgeDist * std::cos(curRad);
         const double by = -badgeDist * std::sin(curRad);

@@ -116,6 +116,8 @@ add_library(gcad_geometry STATIC
     src/geometry/CurveSplitter.cpp
     src/geometry/TriangleUnfold.h
     src/geometry/TriangleUnfold.cpp
+    src/geometry/RayCast.h
+    src/geometry/RayCast.cpp
 )
 target_include_directories(gcad_geometry PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_geometry PUBLIC Qt6::Core Qt6::Gui)
@@ -126,6 +128,11 @@ add_library(gcad_parametric STATIC
     src/parametric/Segment.h
     src/parametric/Block.h
     src/parametric/Block.cpp
+    src/parametric/BlockResolve.cpp
+    src/parametric/BlockCurve.cpp
+    src/parametric/BlockExtend.cpp
+    src/parametric/BlockQuery.cpp
+    src/parametric/BlockLifecycle.cpp
     # ── P1-2 前半段（B 类）：门面按域分组的只读视图（header-only，委托门面实现）──
     src/parametric/BlockView.h
     src/parametric/AttachmentsView.h
@@ -140,6 +147,9 @@ add_library(gcad_parametric STATIC
     src/parametric/FollowerAngle.h
     src/parametric/Resolver.h
     src/parametric/Resolver.cpp
+    src/parametric/ResolverAttachment.cpp
+    src/parametric/ResolverIntersection.cpp
+    src/parametric/ResolverSlide.cpp
     src/parametric/ParamDocumentDetail.h
     src/parametric/ParamDocument.h
     src/parametric/ParamDocument.cpp
@@ -196,6 +206,12 @@ add_library(gcad_canvas STATIC
     src/canvas/HudItem.cpp
     src/canvas/BlockItem.h
     src/canvas/BlockItem.cpp
+    src/canvas/BlockGeometryCache.h
+    src/canvas/BlockGeometryCache.cpp
+    src/canvas/BlockItemPainter.h
+    src/canvas/BlockItemPainter.cpp
+    src/canvas/BlockItemPick.h
+    src/canvas/BlockItemPick.cpp
     src/canvas/CurveItem.h
     src/canvas/CurveItem.cpp
     src/canvas/OverlapBatteryHud.h
@@ -289,6 +305,14 @@ add_library(gcad_ui STATIC
     src/ui/ConditionDialog.cpp
     src/ui/VariablePanel.h
     src/ui/VariablePanel.cpp
+    src/ui/CardTabBase.h
+    src/ui/CardTabBase.cpp
+    src/ui/VariableTab.h
+    src/ui/VariableTab.cpp
+    src/ui/FormulaTab.h
+    src/ui/FormulaTab.cpp
+    src/ui/LinkedTab.h
+    src/ui/LinkedTab.cpp
     src/ui/PanelSubTabBar.h
     src/ui/PanelSubTabBar.cpp
     src/ui/MeasureTab.h
@@ -310,6 +334,7 @@ add_library(gcad_ui STATIC
     src/ui/Theme.h
     src/ui/Theme.cpp
     src/ui/TooltipFormatter.h
+    src/ui/ConnHintFormatter.h
     src/ui/ElaMsgBox.h
     src/ui/ElaDialogButtons.h
     src/ui/FormScaffold.h
@@ -352,6 +377,12 @@ add_library(gcad_ui STATIC
     src/ui/SegmentConnectionCardConn.cpp
     src/ui/SegmentAngleCard.h
     src/ui/SegmentAngleCard.cpp
+    src/ui/SegmentAlignPointCard.h
+    src/ui/SegmentAlignPointCard.cpp
+    src/ui/SegmentShadowBasisCard.h
+    src/ui/SegmentShadowBasisCard.cpp
+    src/ui/SegmentAngleRefCard.h
+    src/ui/SegmentAngleRefCard.cpp
     src/ui/SegmentRefCard.h
     src/ui/SegmentRefCard.cpp
     src/ui/PointRefEdit.h
@@ -405,8 +436,14 @@ add_library(gcad_tools STATIC
     src/tools/LeaderCandidatePicker.cpp
     src/tools/ToolCurveEdit.h
     src/tools/ToolCurveEdit.cpp
+    src/tools/ToolCurveEditAnchor.cpp
+    src/tools/ToolCurveEditHandles.cpp
     src/tools/ToolRotate.h
     src/tools/ToolRotate.cpp
+    src/tools/RotateDragMath.h
+    src/tools/RotateDragMath.cpp
+    src/tools/RotateHintTexts.h
+    src/tools/RotateHintTexts.cpp
     src/tools/RotateCopyGesture.h
     src/tools/RotateCopyGesture.cpp
     src/tools/RotateGizmo.h
@@ -423,6 +460,9 @@ add_library(gcad_tools STATIC
     src/tools/ToolBreak.cpp
     src/tools/ToolIntersection.h
     src/tools/ToolIntersection.cpp
+    src/tools/IntersectionAngleAim.h
+    src/tools/IntersectionToolVisuals.h
+    src/tools/IntersectionToolVisuals.cpp
     src/tools/ToolPlacePoint.h
     src/tools/ToolPlacePoint.cpp
     src/tools/ToolMeasure.h
@@ -442,8 +482,19 @@ target_link_libraries(gcad_tools PUBLIC
 add_library(gcad_app STATIC
     src/app/MainWindow.h
     src/app/MainWindow.cpp
+    src/app/MainWindowFileSession.cpp
+    src/app/MainWindowMenuBar.cpp
+    src/app/MainWindowToolBar.cpp
+    src/app/MainWindowStatusBar.cpp
+    src/app/MainWindowPanelWindow.cpp
+    src/app/MainWindowSegmentMenu.cpp
     src/app/ContextStrip.h
     src/app/ContextStrip.cpp
+    src/app/ContextStripSessions.cpp
+    src/app/ContextStripDisplay.cpp
+    src/app/ContextStripEdit.cpp
+    src/app/PlacedPointStripBar.h
+    src/app/PlacedPointStripBar.cpp
 )
 target_include_directories(gcad_app PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_app PUBLIC
@@ -496,7 +547,7 @@ set_tests_properties(check_layering check_test_fixtures check_hardcoded_colors
 # ── Test: Tool hint completeness (TOOL_SYSTEM_AUDIT H3) ──
 add_executable(test_tool_hints tests/test_tool_hints.cpp)
 target_include_directories(test_tool_hints PRIVATE ${GCAD_SRC})
-target_link_libraries(test_tool_hints PRIVATE gcad_tools Qt6::Core Qt6::Test)
+target_link_libraries(test_tool_hints PRIVATE gcad_tools gcad_ui Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 add_test(NAME test_tool_hints COMMAND test_tool_hints)
 
 # ── Test: W 键模式切换的持久化显示标识 (2026-08-29) ──
@@ -515,11 +566,26 @@ target_include_directories(test_expression PRIVATE ${GCAD_SRC})
 target_link_libraries(test_expression PRIVATE gcad_parametric Qt6::Core Qt6::Test)
 add_test(NAME test_expression COMMAND test_expression)
 
-# ── Test: Resolver ──
-add_executable(test_resolver tests/test_resolver.cpp)
-target_include_directories(test_resolver PRIVATE ${GCAD_SRC})
-target_link_libraries(test_resolver PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
-add_test(NAME test_resolver COMMAND test_resolver)
+# ── Test: Resolver (Rule VIII test decomposition) ──
+add_executable(test_resolver_points tests/test_resolver_points.cpp)
+target_include_directories(test_resolver_points PRIVATE ${GCAD_SRC})
+target_link_libraries(test_resolver_points PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_resolver_points COMMAND test_resolver_points)
+
+add_executable(test_resolver_attachment tests/test_resolver_attachment.cpp)
+target_include_directories(test_resolver_attachment PRIVATE ${GCAD_SRC})
+target_link_libraries(test_resolver_attachment PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_resolver_attachment COMMAND test_resolver_attachment)
+
+add_executable(test_resolver_curve_arc tests/test_resolver_curve_arc.cpp)
+target_include_directories(test_resolver_curve_arc PRIVATE ${GCAD_SRC})
+target_link_libraries(test_resolver_curve_arc PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_resolver_curve_arc COMMAND test_resolver_curve_arc)
+
+add_executable(test_resolver_diag_misc tests/test_resolver_diag_misc.cpp)
+target_include_directories(test_resolver_diag_misc PRIVATE ${GCAD_SRC})
+target_link_libraries(test_resolver_diag_misc PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_resolver_diag_misc COMMAND test_resolver_diag_misc)
 
 # ── Test: OrthoOffset (拐角偏置) ──
 add_executable(test_ortho_offset tests/test_ortho_offset.cpp)
@@ -551,11 +617,21 @@ target_include_directories(test_duplicate PRIVATE ${GCAD_SRC})
 target_link_libraries(test_duplicate PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_duplicate COMMAND test_duplicate)
 
-# ── Test: breakSegment (point break tool) ──
-add_executable(test_break tests/test_break.cpp)
-target_include_directories(test_break PRIVATE ${GCAD_SRC})
-target_link_libraries(test_break PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
-add_test(NAME test_break COMMAND test_break)
+# ── Test: breakSegment (Rule VIII test decomposition) ──
+add_executable(test_break_basic tests/test_break_basic.cpp)
+target_include_directories(test_break_basic PRIVATE ${GCAD_SRC})
+target_link_libraries(test_break_basic PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_break_basic COMMAND test_break_basic)
+
+add_executable(test_break_curve tests/test_break_curve.cpp)
+target_include_directories(test_break_curve PRIVATE ${GCAD_SRC})
+target_link_libraries(test_break_curve PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_break_curve COMMAND test_break_curve)
+
+add_executable(test_break_follower tests/test_break_follower.cpp)
+target_include_directories(test_break_follower PRIVATE ${GCAD_SRC})
+target_link_libraries(test_break_follower PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_break_follower COMMAND test_break_follower)
 
 # ── Test: intersection point + aux ref point ──
 add_executable(test_intersection tests/test_intersection.cpp)
@@ -581,10 +657,20 @@ target_include_directories(test_block_commands PRIVATE ${GCAD_SRC})
 target_link_libraries(test_block_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_block_commands COMMAND test_block_commands)
 
-add_executable(test_attachment_commands tests/test_attachment_commands.cpp)
-target_include_directories(test_attachment_commands PRIVATE ${GCAD_SRC})
-target_link_libraries(test_attachment_commands PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
-add_test(NAME test_attachment_commands COMMAND test_attachment_commands)
+add_executable(test_attachment_shadow tests/test_attachment_shadow.cpp)
+target_include_directories(test_attachment_shadow PRIVATE ${GCAD_SRC})
+target_link_libraries(test_attachment_shadow PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_attachment_shadow COMMAND test_attachment_shadow)
+
+add_executable(test_attachment_slide tests/test_attachment_slide.cpp)
+target_include_directories(test_attachment_slide PRIVATE ${GCAD_SRC})
+target_link_libraries(test_attachment_slide PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_attachment_slide COMMAND test_attachment_slide)
+
+add_executable(test_attachment_angle tests/test_attachment_angle.cpp)
+target_include_directories(test_attachment_angle PRIVATE ${GCAD_SRC})
+target_link_libraries(test_attachment_angle PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_attachment_angle COMMAND test_attachment_angle)
 
 add_executable(test_variable_layer_commands tests/test_variable_layer_commands.cpp)
 target_include_directories(test_variable_layer_commands PRIVATE ${GCAD_SRC})
@@ -717,28 +803,118 @@ target_link_libraries(test_curve_edit PRIVATE
 add_test(NAME test_curve_edit COMMAND test_curve_edit)
 
 
-# ── Test: rotate-copy (Ctrl+drag in ToolRotate) ──
-add_executable(test_rotate_copy
-    tests/test_rotate_copy.cpp
-    tests/test_rotate_copy_gestures.cpp
+# ── Test: rotate-copy (Rule VIII test decomposition) ──
+add_executable(test_rotate_copy_semantics
+    tests/test_rotate_copy_semantics.cpp
     resources/icons.qrc
 )
-target_include_directories(test_rotate_copy PRIVATE ${GCAD_SRC})
-target_link_libraries(test_rotate_copy PRIVATE
+target_include_directories(test_rotate_copy_semantics PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_copy_semantics PRIVATE
     gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
     Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
-add_test(NAME test_rotate_copy COMMAND test_rotate_copy)
+add_test(NAME test_rotate_copy_semantics COMMAND test_rotate_copy_semantics)
 
-# ── Test: line-property dialog tab switching ──
-add_executable(test_dialog_tabs
-    tests/test_dialog_tabs.cpp
+add_executable(test_rotate_copy_shadow
+    tests/test_rotate_copy_shadow.cpp
     resources/icons.qrc
 )
-target_include_directories(test_dialog_tabs PRIVATE ${GCAD_SRC})
-target_link_libraries(test_dialog_tabs PRIVATE
+target_include_directories(test_rotate_copy_shadow PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_copy_shadow PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_rotate_copy_shadow COMMAND test_rotate_copy_shadow)
+
+add_executable(test_rotate_copy_endtarget
+    tests/test_rotate_copy_endtarget.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_rotate_copy_endtarget PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_copy_endtarget PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_rotate_copy_endtarget COMMAND test_rotate_copy_endtarget)
+
+# ── Test: rotate gestures (Rule VIII test decomposition) ──
+add_executable(test_rotate_anchor
+    tests/test_rotate_anchor.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_rotate_anchor PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_anchor PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_rotate_anchor COMMAND test_rotate_anchor)
+
+add_executable(test_rotate_strip
+    tests/test_rotate_strip.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_rotate_strip PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_strip PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_rotate_strip COMMAND test_rotate_strip)
+
+add_executable(test_rotate_d15_gate
+    tests/test_rotate_d15_gate.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_rotate_d15_gate PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_d15_gate PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_rotate_d15_gate COMMAND test_rotate_d15_gate)
+
+add_executable(test_rotate_copy_flow
+    tests/test_rotate_copy_flow.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_rotate_copy_flow PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_copy_flow PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_rotate_copy_flow COMMAND test_rotate_copy_flow)
+
+add_executable(test_rotate_pivot_multi
+    tests/test_rotate_pivot_multi.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_rotate_pivot_multi PRIVATE ${GCAD_SRC})
+target_link_libraries(test_rotate_pivot_multi PRIVATE
+    gcad_app gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_rotate_pivot_multi COMMAND test_rotate_pivot_multi)
+
+# ── Test: line-property dialog tab switching (Rule VIII test decomposition) ──
+add_executable(test_dialog_tabs_switch
+    tests/test_dialog_tabs_switch.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_dialog_tabs_switch PRIVATE ${GCAD_SRC})
+target_link_libraries(test_dialog_tabs_switch PRIVATE
     gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
     Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
-add_test(NAME test_dialog_tabs COMMAND test_dialog_tabs)
+add_test(NAME test_dialog_tabs_switch COMMAND test_dialog_tabs_switch)
+
+add_executable(test_dialog_tabs_angle_conn
+    tests/test_dialog_tabs_angle_conn.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_dialog_tabs_angle_conn PRIVATE ${GCAD_SRC})
+target_link_libraries(test_dialog_tabs_angle_conn PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_dialog_tabs_angle_conn COMMAND test_dialog_tabs_angle_conn)
+
+add_executable(test_dialog_tabs_aux
+    tests/test_dialog_tabs_aux.cpp
+    resources/icons.qrc
+)
+target_include_directories(test_dialog_tabs_aux PRIVATE ${GCAD_SRC})
+target_link_libraries(test_dialog_tabs_aux PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric
+    Qt6::Widgets Qt6::Svg Qt6::OpenGLWidgets Qt6::Test miniz ElaWidgetTools)
+add_test(NAME test_dialog_tabs_aux COMMAND test_dialog_tabs_aux)
 
 # ── Benchmark: curve-heavy canvas interaction (compute + software repaint cost) ──
 add_executable(test_canvas_perf tests/test_canvas_perf.cpp)
@@ -823,7 +999,11 @@ add_test(NAME test_transient_overlay COMMAND test_transient_overlay)
 foreach(_t IN ITEMS
         test_realdoc_full test_nav_smoke test_aux_layer test_smartpen_aux
         test_measure test_context_strip test_tool_intersection
-        test_select_wkey test_curve_edit test_rotate_copy test_dialog_tabs
+        test_select_wkey test_curve_edit
+        test_rotate_copy_semantics test_rotate_copy_shadow test_rotate_copy_endtarget
+        test_dialog_tabs_switch test_dialog_tabs_angle_conn test_dialog_tabs_aux
+        test_rotate_anchor test_rotate_d15_gate test_rotate_strip
+        test_rotate_copy_flow test_rotate_pivot_multi
         test_component test_ortho_offset test_place_point test_overlap_battery
         test_transient_overlay)
     target_link_options(${_t} PRIVATE /INCREMENTAL:NO)

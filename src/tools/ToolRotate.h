@@ -20,6 +20,7 @@
 #include "tools/RotateInputTracker.h"
 #include "tools/RotateSession.h"
 #include "tools/MultiRotateSession.h"
+#include "tools/RotateDragMath.h"
 
 namespace cad::tools {
 class MarqueeGesture;
@@ -119,8 +120,19 @@ public:
     { return reinterpret_cast<const char*>(u8"旋转"); }
     [[nodiscard]] RotateState state() const { return m_state; }
     [[nodiscard]] RotatePhase phase() const { return m_phase; }
+    [[nodiscard]] RotateConstraintMode constraintMode() const { return m_constraintMode; }
+    void toggleConstraintMode();
 
 private:
+    // ── Mouse & key event decomposition helpers ──
+    void handleRightButtonPress(QGraphicsSceneMouseEvent* event);
+    void handleSelectingPress(const cad::geo::Vec2& pos, QGraphicsSceneMouseEvent* event);
+    void handlePivotOrRotatePress(const cad::geo::Vec2& pos, QGraphicsSceneMouseEvent* event);
+    void handleMarqueeRelease(const cad::geo::Vec2& pos, QGraphicsSceneMouseEvent* event);
+    void handlePendingPivotRelease();
+    void handleEscapeKey();
+    bool trySwitchAnchor(const QUuid& hitEnd);
+
     // ── Target selection ──
     void selectTarget(const QUuid& blockId,
                       const std::optional<cad::geo::Vec2>& clickWorld = std::nullopt);
@@ -157,6 +169,7 @@ private:
     void removeGizmo();
     void applySelectionConfirmed(bool confirmed);
     [[nodiscard]] double originalWorldRotDeg() const;
+    [[nodiscard]] GizmoPoseInput makeGizmoInput(bool isRotating) const;
 
     // ── Hit testing / helpers ──
     [[nodiscard]] QUuid hitBlock(const cad::geo::Vec2& worldPos) const;
@@ -178,7 +191,9 @@ private:
     // ── Core tool state (single explicit gate) ──
     RotateState m_state = RotateState::Idle;
     RotatePhase m_phase = RotatePhase::Selecting;
+    RotateConstraintMode m_constraintMode = RotateConstraintMode::None;
     bool m_selectionConfirmed = false;
+    cad::geo::Vec2 m_lastMousePos;
 
     // ── Drag angle tracking ──
     cad::geo::Vec2 m_guidePoint;

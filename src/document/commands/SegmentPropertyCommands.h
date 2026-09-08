@@ -161,6 +161,10 @@ public:
         double chordLength = 0.0;
         QString chordLengthFormula;
         int rotationMode = 0;
+
+        /// 从模型中捕获线段编辑状态快照 (供命令构造与参数覆盖).
+        static State captureFrom(const cad::param::ParamDocument& doc,
+                                 const QUuid& blockId, const QUuid& segmentId);
     };
 
     /// @p newState Target state; the OLD state is captured from the model at

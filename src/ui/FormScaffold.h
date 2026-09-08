@@ -10,6 +10,8 @@
 #include <QWidget>
 
 #include "ElaPushButton.h"
+#include "ElaLineEdit.h"
+#include "ElaText.h"
 #include "Theme.h"
 
 namespace cad::ui {
@@ -195,6 +197,48 @@ inline FormButtonBar makeFormButtonBar(
     QObject::connect(out.cancel, &ElaPushButton::clicked, dlg, &QDialog::reject);
     out.row = row;
     return out;
+}
+
+/// 分区标题: [3px 信号黄竖条][13px 700 标题] … [可选右侧控件/提示]。
+/// 竖条/分隔线样式走全局 QSS (QFrame#accentBar / QFrame#divider, 明暗双模)。
+inline QWidget* makeSectionHeader(const QString& title, QWidget* parent,
+                                  QWidget* right = nullptr)
+{
+    auto* w = new QWidget(parent);
+    auto* h = new QHBoxLayout(w);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(6);
+    auto* bar = new QFrame(w);
+    bar->setObjectName(QStringLiteral("accentBar"));
+    bar->setFixedSize(3, 12);
+    h->addWidget(bar, 0, Qt::AlignVCenter);
+    auto* t = new ElaText(title, 13, w);
+    t->setObjectName(QStringLiteral("sectionTitleLabel"));
+    t->setStyleSheet(QStringLiteral(
+        "#sectionTitleLabel { background: transparent; font-weight:700; color:%1; }")
+                         .arg(cad::ui::Theme::tokens().text1.name()));
+    h->addWidget(t);
+    h->addStretch();
+    if (right) h->addWidget(right);
+    return w;
+}
+
+/// 分区之间的 1px hairline (全局 QSS QFrame#divider)。
+inline QFrame* makeDivider(QWidget* parent)
+{
+    auto* d = new QFrame(parent);
+    d->setObjectName(QStringLiteral("divider"));
+    return d;
+}
+
+/// 紧凑型单行输入框 (默认高度 30px, 字体 11px)。
+inline ElaLineEdit* makeCompactEdit(QWidget* parent, int width, int height = 30)
+{
+    auto* e = new ElaLineEdit(parent);
+    e->setFixedHeight(height);
+    e->setMaximumWidth(width);
+    e->setStyleSheet(QStringLiteral("font-size: 11px;"));
+    return e;
 }
 
 } // namespace cad::ui

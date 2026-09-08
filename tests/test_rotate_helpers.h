@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QtTest>
 #include <QApplication>
@@ -15,6 +15,7 @@
 
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasView.h"
+#include "canvas/overlay/TransientOverlay.h"
 #include "app/ContextStrip.h"
 #include "tools/ToolManager.h"
 #include "tools/ToolRotate.h"
@@ -138,90 +139,3 @@ inline Attachment attachCloneToOriginal(ParamDocument& doc, const Block& clone,
     att.rotationMode = RotationMode::Angle;
     return att;
 }
-
-class TestRotateCopy : public QObject
-{
-    Q_OBJECT
-
-private slots:
-    // ── 模型层 ──
-    void cloneAttachesToOriginalWithRelativeAngle();
-    void cloneFollowsOriginalRotation();
-    void rotateCopyCommandUndoRedo();
-    void formulaLockedOriginalCopyIsFree();
-
-    // ── 影子角度通道 (拆开影子基准 R6/R8, DETACH_SHADOW_DESIGN.md §7.2) ──
-    void shadowChannel_formulaLockRotatesShadowKeepsP3();
-    void shadowChannel_noFormulaLockRotatesShadowKeepsFollowerAngle();
-
-    // ── UI 层完整事件链 ──
-    void ctrlDragRotateCopyCommits();
-    void diagonalFreeLineCopyOverlapsOriginal();
-    void ctrlDragZeroAngleDiscards();
-    void escCancelsCopy();
-    void consecutiveCopiesAllAttachToOriginal();
-    /// 复制提交后条带锁定回原线段 (原 rotateCopyCommitHidesHud —— 旋转工具
-    /// 不再持有 HUD, 同一条防呆改由"复制期间解除锁定、提交后锁回原线"承担)。
-    void rotateCopyCommitRestoresStripTarget();
-
-    // ── 公式锁定跟随线 ──
-    void lockedFollowerRotationBakesFormula();
-    void lockedFollowerRotateCopyWorks();
-    void propertyDialogShowsFollowValue();
-
-    // ── 终点指向 (endTarget) 锁定 ──
-    void endTargetRotationReleasesAim();
-    void endTargetRotateCopyDropsAim();
-    void endTargetRotateCopyKeepsOriginalAim();
-    void endTargetRotateCopyIdleGestureKeepsOriginalAim();
-    void endTargetRotateCopyUndoRedoKeepsOriginalAim();
-    void midGestureCtrlConvertsToCopy();
-
-    // ── 锚心切换 (起点 ↔ 终点) ──
-    void xToggleSwitchesAnchorToEndPoint();
-    void clickEndPointSwitchesAnchor();
-    void connectedLineXAnchorSwitchBlocked();
-    void independentAngleLineRotatesBlockKeepsPin();
-    void endAnchorRotateCopyAttachesToEnd();
-    void endAnchorLineFollowsCursor();
-    /// 条带「换向」在旋转会话内 = 切换锚心 (2026-12): 转交 ToolRotate 切锚心,
-    /// gizmo pivot 环随锚心移动; 连接线换向 = no-op (与 X 键同守卫)。
-    void stripReverseTogglesAnchor();
-    /// 锚心切换 (换向/点端点) 全链路同步条带 (2026-12): 选中即进旋转会话
-    /// (基准读数锚心端在前 + 角度字段随锚心基准 ±180°), 换向/点端点切换时
-    /// 条带基准与角度随之翻转, 状态栏提示带锚心确定信息。
-    void anchorSwitchSyncsStrip();
-
-    // ── 单位切换 (角度 ↔ 弧长) 与多圈归一化 —— 判据走上下文属性条 ──
-    void modeSwitchKeepsFormula();
-    void angleModeOverflowNormalized();
-    void arcLengthModeOverflowNormalized();
-
-    // ── 公式线角度格显示公式原文 (2026-12 统一, 用户报告 "用了变量参数,
-    // 显示的是换算的数值") —— 判据从 HUD 迁移到 ContextStrip 角度格 ──
-    void stripShowsFormulaForFormulaDrivenAngle();
-    void stripShowsFormulaForFormulaDrivenArc();
-
-    // ── D15 单线确认流 (用户拍板 2026-08-27) ──
-    void d15GateRequiresConfirmBeforeDrag();    // 选中态按住拖动 = no-op; 确认后才能转
-    void d15DragCommitDropsToSelected();        // 提交后回落选中态, 再拖需再确认
-    void d15BlankClickClearsSelectedTarget();   // 选中态点空白 = 取消选择
-    void d15AnchorFollowsClickedEnd();          // 锚心跟随点击端 (自由线近端; 连接线恒取挂接端)
-
-    // ── TOOL_SYSTEM_AUDIT P0 (2026-08-29) ──
-    /// H2: 确认门有可视 —— gizmo 样式 + 状态栏提示 (原第三条表达是 HUD
-    /// caption 后缀, 一期随 AngleHud 退场迁入状态栏)。
-    void d15ConfirmStateHasVisualAndHint();
-
-    // ── 旋转复制快捷键与对齐点/参数自动发布 (2026-09) ──
-    void rotateCopyAutoPublishesParentParameter();
-    void rotateCopyFourStepFlow();
-    void dragJitterDoesNotReleaseUntilPhysicalRelease();
-    void gizmoDisplayConsistencyAcrossModes();
-
-    // ── 多选框选与端点锚心旋转 (2026-09) ──
-    void marqueeSelectionAndPivotSnapRotate();
-    void adoptSelectionFromSelectToolAndRotate();
-    void singleLinePickPivotAndRotateCadFlow();
-};
-

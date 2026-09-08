@@ -56,7 +56,9 @@ def main() -> int:
             return 1
 
     violations = []
+    ratchet_violations = []
     monitored_exceptions = set()
+    retired_candidates = []
 
     for dirpath, _, files in os.walk(SRC):
         for name in sorted(files):
@@ -70,23 +72,44 @@ def main() -> int:
             lines = count_lines(full_path)
             threshold, layer_name = get_layer_threshold(rel)
 
-            if lines > threshold:
-                if rel in exceptions:
-                    monitored_exceptions.add(rel)
-                else:
-                    violations.append((rel, lines, threshold, layer_name))
+            if rel in exceptions:
+                monitored_exceptions.add(rel)
+                declared_lines = exceptions[rel].get('lines', threshold)
+                if lines > declared_lines:
+                    ratchet_violations.append((rel, lines, declared_lines, lines - declared_lines, layer_name))
+                elif lines <= threshold:
+                    retired_candidates.append((rel, lines, threshold))
+            elif lines > threshold:
+                violations.append((rel, lines, threshold, layer_name))
 
     print(f'check_file_size: scanned src/ files, {len(monitored_exceptions)} legacy exceptions monitored.')
 
+    if retired_candidates:
+        print(f'NOTE: {len(retired_candidates)} file(s) in exceptions are now within threshold:')
+        for rel, lines, threshold in retired_candidates:
+            print(f'  [INFO] {rel}: {lines} lines <= threshold {threshold} (can retire entry once responsibility refactor completes)')
+
+    failed = False
+    if ratchet_violations:
+        failed = True
+        print(f'\nFAIL: Found {len(ratchet_violations)} registered exception(s) that have inflated beyond declared baseline:\n')
+        for rel, lines, declared, diff, layer_name in ratchet_violations:
+            print(f'  {rel}: {lines} lines (declared: {declared}, inflated by +{diff} lines, layer: {layer_name})')
+        print('\nTo fix: Revert unexpected inflation, or split the file per FILE_SPLIT_PLAN_V3.md.')
+        print('Note: Baseline updates must sync with split tasks (ratchet invariant: line counts may only decrease upon completion).')
+
     if violations:
+        failed = True
         print(f'\nFAIL: Found {len(violations)} unexempted file size violation(s):\n')
         for rel, lines, threshold, layer_name in violations:
             print(f'  {rel}: {lines} lines (limit: {threshold}, layer: {layer_name})')
         print('\nTo fix: Refactor/split the file per file_split_rules_v2_final.md.')
         print('If an emergency exemption is required, declare it in redline_exceptions.json with rationale and milestone.')
+
+    if failed:
         return 1
 
-    print('file size OK: no undeclared over-threshold files in src/.')
+    print('file size OK: no undeclared over-threshold or inflated files in src/.')
     return 0
 
 

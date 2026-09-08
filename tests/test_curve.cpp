@@ -1,9 +1,10 @@
-﻿#include <QtTest>
+#include <QtTest>
 #include <cmath>
 #include <vector>
 #include <limits>
 
 #include "geometry/CurveMath.h"
+#include "geometry/RayCast.h"
 #include "geometry/Vec2.h"
 #include "geometry/Angle.h"
 
@@ -44,6 +45,8 @@ private slots:
     void arcLengthToParamPrecision();
     void projectHairpinGlobalMin();
     void angleNormalizationRobustness();
+    void raySegmentIntersectionTests();
+    void rayVsCurveSpansTests();
 };
 
 // ─── Catmull-Rom tangent ────────────────────────────────────────────────────
@@ -696,6 +699,66 @@ void TestCurve::angleNormalizationRobustness()
     QCOMPARE(normalizeRad(inf), 0.0);
     QCOMPARE(normalizeRad(-inf), 0.0);
     QCOMPARE(normalizeRad(nan), 0.0);
+}
+
+void TestCurve::raySegmentIntersectionTests()
+{
+    // Horizontal segment from (0, 0) to (100, 0)
+    const Vec2 w1(0.0, 0.0);
+    const Vec2 segDir(100.0, 0.0);
+
+    // 1. Ray hitting middle of segment perpendicularly from below
+    const Vec2 origin(50.0, -50.0);
+    const Vec2 dir(0.0, 1.0);
+    auto hit = raySegmentIntersect(origin, dir, w1, segDir);
+    QVERIFY(hit.has_value());
+    QVERIFY(std::abs(hit->point.x - 50.0) < 1e-6);
+    QVERIFY(std::abs(hit->point.y - 0.0) < 1e-6);
+    QVERIFY(std::abs(hit->t - 0.5) < 1e-6);
+
+    // 2. Ray pointing away: unidirectional misses, bidirectional hits
+    const Vec2 dirAway(0.0, -1.0);
+    auto miss = raySegmentIntersect(origin, dirAway, w1, segDir, /*bidirectional=*/false);
+    QVERIFY(!miss.has_value());
+    auto hitBi = raySegmentIntersect(origin, dirAway, w1, segDir, /*bidirectional=*/true);
+    QVERIFY(hitBi.has_value());
+    QVERIFY(std::abs(hitBi->point.x - 50.0) < 1e-6);
+    QVERIFY(std::abs(hitBi->t - 0.5) < 1e-6);
+
+    // 3. Parallel ray
+    const Vec2 dirParallel(1.0, 0.0);
+    auto missParallel = raySegmentIntersect(origin, dirParallel, w1, segDir);
+    QVERIFY(!missParallel.has_value());
+
+    // 4. Ray misses segment outside [0, 1] range
+    const Vec2 originOutside(150.0, -50.0);
+    auto missOutside = raySegmentIntersect(originOutside, dir, w1, segDir);
+    QVERIFY(!missOutside.has_value());
+}
+
+void TestCurve::rayVsCurveSpansTests()
+{
+    // A single cubic bezier span from (0, 0) to (100, 0) with an arch
+    BezierSpan span;
+    span.p0 = Vec2(0.0, 0.0);
+    span.ctrl1 = Vec2(25.0, 50.0);
+    span.ctrl2 = Vec2(75.0, 50.0);
+    span.p3 = Vec2(100.0, 0.0);
+    std::vector<BezierSpan> spans = {span};
+
+    // Block placed at (10.0, 20.0) with zero rotation
+    const Vec2 blockOrigin(10.0, 20.0);
+    const double blockRotation = 0.0;
+
+    // Ray from world (60.0, -10.0) aiming up (0, 1) -> corresponds to local x=50
+    const Vec2 worldOrigin(60.0, -10.0);
+    const Vec2 worldDir(0.0, 1.0);
+
+    auto hit = rayVsCurveSpans(worldOrigin, worldDir, spans, blockOrigin, blockRotation);
+    QVERIFY(hit.has_value());
+    QVERIFY(std::abs(hit->point.x - 60.0) < 1e-4);
+    QVERIFY(hit->point.y > 20.0); // should be above block origin
+    QVERIFY(hit->t > 0.4 && hit->t < 0.6);
 }
 
 QTEST_GUILESS_MAIN(TestCurve)

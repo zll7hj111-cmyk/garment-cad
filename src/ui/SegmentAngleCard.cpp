@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 #include <QHBoxLayout>
 #include <QSignalBlocker>
@@ -15,11 +16,8 @@
 #include "parametric/Attachment.h"
 #include "parametric/ConditionEngine.h"
 #include "parametric/FollowerAngle.h"
-#include "parametric/Serial.h"
-#include "document/commands/BlockCommands.h"
 #include "document/commands/AttachmentAngleCommands.h"
 #include "document/commands/SegmentPropertyCommands.h"
-#include "canvas/CanvasScene.h"   // showToast (公式拒绝切换反馈)
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "ui/Theme.h"
@@ -32,44 +30,161 @@ namespace {
 constexpr int kLabelW = 64;   ///< 标签列定宽 (2026-12 去卡框化: 短词列).
 constexpr int kFieldH = 30;   ///< 2026-xx 紧凑化 (35→30, 与状态栏对齐).
 
-/// 捕获编辑条命令的完整状态快照 (段名/长度/终点 Polar/跟随角) —— 供
-/// applyAngle 自由线分支以「模型现态 + 角度覆盖」构造入栈命令, 非角度
-/// 字段原样重放, 命令无副作用。
-cad::cmd::SegmentEditBarCommand::State captureEditStripState(
-    cad::param::ParamDocument& doc, const QUuid& blockId, const QUuid& segmentId)
+/// 计算线段起止两点构成的世界绝对角度（0~360° 逆时针为正）.
+std::optional<double> worldDegOfSegment(const cad::param::Block* block,
+                                        const cad::param::Segment* seg)
 {
-    cad::cmd::SegmentEditBarCommand::State s;
-    auto* b = doc.findBlock(blockId);
-    auto* seg = b ? b->findSegment(segmentId) : nullptr;
-    if (!b || !seg) return s;
-    s.segName = seg->name;
-    s.lengthFormula = seg->lengthFormula;
-    if (auto* ep = b->findPoint(seg->endPointId)) {
-        s.endDistance = ep->distance;
-        s.endDistanceFormula = ep->distanceFormula;
-        s.endAngle = ep->angle;
-        s.endAngleFormula = ep->angleFormula;
-        s.endConstraint = static_cast<int>(ep->constraint);
-        s.endRefPointId = ep->refPointId;
-        if (ep->constraint == cad::param::PointConstraint::OrthoOffset) {
-            s.orthoOffsetDist = ep->orthoOffsetDist;
-            s.orthoOffsetDistFormula = ep->orthoOffsetDistFormula;
-        }
-    }
-    for (const auto& a : doc.attachments()) {
-        if (a.isPin || a.fromBlockId != blockId) continue;
-        s.attId = a.id;
-        s.followerAngle = a.followerAngle;
-        s.followerAngleFormula = a.followerAngleFormula;
-        s.arcLength = a.arcLength;
-        s.arcLengthFormula = a.arcLengthFormula;
-        s.chordLength = a.chordLength;
-        s.chordLengthFormula = a.chordLengthFormula;
-        s.rotationMode = static_cast<int>(a.rotationMode);
-        break;
-    }
-    return s;
+    if (!block || !seg) return std::nullopt;
+    const auto* sp = block->findPoint(seg->startPointId);
+    const auto* ep = block->findPoint(seg->endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) return std::nullopt;
+    const cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
+    const cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
+    return cad::geo::normalizeDeg360(
+        std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI);
 }
+
+/// 计算自由线段的世界角度或正交偏置线段的中心基准轴角度.
+std::optional<double> worldOrNominalDegOfSegment(const cad::param::Block* block,
+                                                 const cad::param::Segment* seg)
+{
+    if (!block || !seg) return std::nullopt;
+    const auto* ep = block->findPoint(seg->endPointId);
+    if (ep && ep->constraint == cad::param::PointConstraint::OrthoOffset) {
+        const double rotDeg = block->transform.rotation * 180.0 / M_PI;
+        return cad::geo::normalizeDeg360(ep->angle + rotDeg);
+    }
+    return worldDegOfSegment(block, seg);
+}
+
+/// 寻找决定线段角度属性的驱动点（优先使用带公式的端点，默认终点）.
+const cad::param::ParamPoint* findDrivenAnglePoint(const cad::param::Block* block,
+                                                   const cad::param::Segment* seg)
+{
+    if (!block || !seg) return nullptr;
+    const auto* ep = block->findPoint(seg->endPointId);
+    const auto* sp = block->findPoint(seg->startPointId);
+    return (ep && !ep->angleFormula.isEmpty()) ? ep
+        : ((sp && !sp->angleFormula.isEmpty()) ? sp : ep);
+}
+
+/// 求值驱动点的角度公式并返回回显文本（如 "= 45.00°"）. 若无公式或求值失败返回空.
+QString evaluatedFollowValueText(const cad::param::Block* block,
+                                 const cad::param::ParamPoint* driven,
+                                 const cad::param::ParamDocument* doc)
+{
+    if (!driven || driven->angleFormula.isEmpty() || !doc) return {};
+    auto r = cad::param::ConditionEngine::evaluate(
+        driven->angleFormula, doc->parameters(), {});
+    if (!r.ok) return {};
+    const double rotDeg = block ? block->transform.rotation * 180.0 / M_PI : 0.0;
+    const double deg = cad::geo::normalizeDeg360(r.value + rotDeg);
+    return QString::fromUtf8("= %1°").arg(cad::geo::Units::formatDegValue(deg));
+}
+
+/// 三模态（角度/弧长/开度）控件配置表.
+struct ModeProfile {
+    QString symbol;
+    QString caption;
+    QString placeholder;
+};
+
+ModeProfile modeProfile(cad::param::RotationMode mode)
+{
+    switch (mode) {
+    case cad::param::RotationMode::ArcLength:
+        return {QStringLiteral("⌒"), QString::fromUtf8("弧长"), cad::ui::kPlaceholderCmOrFormula};
+    case cad::param::RotationMode::ChordLength:
+        return {QStringLiteral("↔"), QString::fromUtf8("开度"), cad::ui::kPlaceholderCmOrFormula};
+    case cad::param::RotationMode::Angle:
+    default:
+        return {QStringLiteral("∠"), QString::fromUtf8("跟随角"), cad::ui::kPlaceholderAngleOrFormula};
+    }
+}
+
+/// 读取附件对应模式的数值与公式.
+struct ModeValue {
+    double value = 0.0;
+    QString formula;
+};
+
+ModeValue getAttachmentModeValue(const cad::param::Attachment& att)
+{
+    switch (att.rotationMode) {
+    case cad::param::RotationMode::ArcLength:
+        return {att.arcLength, att.arcLengthFormula};
+    case cad::param::RotationMode::ChordLength:
+        return {att.chordLength, att.chordLengthFormula};
+    case cad::param::RotationMode::Angle:
+    default:
+        return {att.followerAngle, att.followerAngleFormula};
+    }
+}
+
+/// 计算附件在当前模式下表达的实际角度（度制，0~360° 归一化）.
+double attachmentEffectiveAngleDeg(const cad::param::Attachment& att,
+                                   const cad::param::ParamDocument* doc,
+                                   double radius)
+{
+    if (att.rotationMode == cad::param::RotationMode::ArcLength) {
+        double arcMm = att.arcLength;
+        if (doc)
+            (void)cad::param::ConditionEngine::evaluateLengthMm(
+                att.arcLengthFormula, doc->parameters(), doc->conditions(), arcMm);
+        const double alphaDeg = (radius > 1e-9) ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
+        return cad::geo::normalizeDeg360(alphaDeg);
+    }
+    if (att.rotationMode == cad::param::RotationMode::ChordLength) {
+        double chordMm = att.chordLength;
+        if (doc)
+            (void)cad::param::ConditionEngine::evaluateLengthMm(
+                att.chordLengthFormula, doc->parameters(), doc->conditions(), chordMm);
+        const double alphaDeg = (radius > 1e-9) ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
+        return cad::geo::normalizeDeg360(alphaDeg);
+    }
+    double constDeg = att.followerAngle;
+    if (!att.followerAngleFormula.isEmpty() && doc) {
+        auto r = cad::param::ConditionEngine::evaluate(
+            att.followerAngleFormula, doc->parameters(), doc->conditions());
+        if (r.ok) constDeg = r.value;
+    }
+    return constDeg;
+}
+
+/// 格式化附件跟随值（用于卡片回显，若无公式则返回空）.
+QString formatAttachmentFormulaFollowValue(const cad::param::Attachment& att,
+                                           const cad::param::ParamDocument* doc,
+                                           double radius)
+{
+    if (!doc || getAttachmentModeValue(att).formula.isEmpty()) return {};
+    const double foldDeg = cad::geo::normalizeDeg180(attachmentEffectiveAngleDeg(att, doc, radius));
+    if (att.rotationMode == cad::param::RotationMode::ArcLength) {
+        return QString::fromUtf8("= %1 cm").arg(cad::geo::Units::formatNumberTrimmed(
+            cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius))));
+    }
+    if (att.rotationMode == cad::param::RotationMode::ChordLength) {
+        return QString::fromUtf8("= %1 cm").arg(cad::geo::Units::formatNumberTrimmed(
+            cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius))));
+    }
+    return QString::fromUtf8("= %1°").arg(cad::geo::Units::formatDegValue(foldDeg));
+}
+
+/// 格式化附件数值输入框显示内容（无公式时使用）.
+QString formatAttachmentDisplayValue(cad::param::RotationMode mode, double value, double radius)
+{
+    if (mode == cad::param::RotationMode::ArcLength) {
+        const double alphaDeg = (radius > 1e-9) ? cad::geo::arcMmToDeg(value, radius) : 0.0;
+        return cad::geo::Units::formatNumberTrimmed(
+            cad::geo::Units::mmToCm(cad::geo::degToArcMm(cad::geo::normalizeDeg180(alphaDeg), radius)));
+    }
+    if (mode == cad::param::RotationMode::ChordLength) {
+        const double alphaDeg = (radius > 1e-9) ? cad::geo::chordMmToDeg(value, radius) : 0.0;
+        return cad::geo::Units::formatNumberTrimmed(
+            cad::geo::Units::mmToCm(cad::geo::degToChordMm(cad::geo::normalizeDeg180(alphaDeg), radius)));
+    }
+    return cad::geo::Units::formatDegValue(cad::geo::normalizeDeg180(value));
+}
+
 } // namespace
 
 SegmentAngleCard::SegmentAngleCard(cad::param::ParamDocument* doc, QWidget* parent)
@@ -182,47 +297,22 @@ void SegmentAngleCard::refresh()
     m_editAngle->setEnabled(!angleGray);
     m_btnAngleMode->setEnabled(hasAtt && !att->angleIndependent && !angleGray);
 
-    if (!hasAtt) {
+    if (!hasAtt || att->angleIndependent) {
         m_btnAngleMode->setText(QStringLiteral("∠"));
-        m_lblCaption->setText(QString::fromUtf8("角度"));
+        m_lblCaption->setText(hasAtt ? QString::fromUtf8("独立角") : QString::fromUtf8("角度"));
         m_lblCaption->setStyleSheet(QString());
-        // 自由线世界方向提示 (0~360° 逆时针为正)。
-        if (block && seg) {
-            const auto* sp = block->findPoint(seg->startPointId);
-            const auto* ep = block->findPoint(seg->endPointId);
-            if (sp && ep && sp->resolved && ep->resolved) {
-                double deg = 0.0;
-                if (ep->constraint == cad::param::PointConstraint::OrthoOffset) {
-                    const double rotDeg = block ? block->transform.rotation * 180.0 / M_PI : 0.0;
-                    deg = cad::geo::normalizeDeg360(ep->angle + rotDeg);
-                } else {
-                    const cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-                    const cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-                    deg = cad::geo::normalizeDeg360(
-                        std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI);
-                }
-                const QString text = QString::fromUtf8("= 世界角度 %1°")
-                    .arg(cad::geo::Units::formatDegValue(deg));
-                if (m_lblWorldAngle->text() != text)
-                    m_lblWorldAngle->setText(text);
-                m_lblWorldAngle->setVisible(true);
-            }
+        if (auto d = worldOrNominalDegOfSegment(block, seg)) {
+            const QString text = QString::fromUtf8("= 世界角度 %1°")
+                .arg(cad::geo::Units::formatDegValue(*d));
+            if (m_lblWorldAngle->text() != text)
+                m_lblWorldAngle->setText(text);
+            m_lblWorldAngle->setVisible(true);
         }
-        // 公式时显示当前计算值。
-        const cad::param::ParamPoint* epFree =
-            seg ? block->findPoint(seg->endPointId) : nullptr;
-        const cad::param::ParamPoint* spFree =
-            seg ? block->findPoint(seg->startPointId) : nullptr;
-        const auto* driven = (epFree && !epFree->angleFormula.isEmpty()) ? epFree
-            : ((spFree && !spFree->angleFormula.isEmpty()) ? spFree : epFree);
+        const auto* driven = findDrivenAnglePoint(block, seg);
         if (driven && !driven->angleFormula.isEmpty()) {
-            auto r = cad::param::ConditionEngine::evaluate(
-                driven->angleFormula, m_doc->parameters(), {});
-            if (r.ok) {
-                const double rotDeg = block ? block->transform.rotation * 180.0 / M_PI : 0.0;
-                const double deg = cad::geo::normalizeDeg360(r.value + rotDeg);
-                m_lblFollowValue->setText(QString::fromUtf8("= %1°")
-                    .arg(cad::geo::Units::formatDegValue(deg)));
+            const QString valText = evaluatedFollowValueText(block, driven, m_doc);
+            if (!valText.isEmpty()) {
+                m_lblFollowValue->setText(valText);
                 m_lblFollowValue->setVisible(true);
             }
             m_lblFxAngle->setVisible(true);
@@ -230,98 +320,15 @@ void SegmentAngleCard::refresh()
         return;
     }
 
-    if (att->angleIndependent) {
-        // 独立角度: 位置吸附保持、角度不跟随 (世界方向提示)。
-        m_btnAngleMode->setText(QStringLiteral("∠"));
-        m_lblCaption->setText(QString::fromUtf8("独立角"));
-        m_lblCaption->setStyleSheet(QString());
-        if (block && seg) {
-            const auto* sp = block->findPoint(seg->startPointId);
-            const auto* ep = block->findPoint(seg->endPointId);
-            if (sp && ep && sp->resolved && ep->resolved) {
-                const cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-                const cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-                const double deg = cad::geo::normalizeDeg360(
-                    std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI);
-                const QString text = QString::fromUtf8("= 世界角度 %1°")
-                    .arg(cad::geo::Units::formatDegValue(deg));
-                if (m_lblWorldAngle->text() != text)
-                    m_lblWorldAngle->setText(text);
-                m_lblWorldAngle->setVisible(true);
-            }
-            const auto* driven = (ep && !ep->angleFormula.isEmpty()) ? ep
-                : ((sp && !sp->angleFormula.isEmpty()) ? sp : ep);
-            if (driven && !driven->angleFormula.isEmpty()) {
-                auto r = cad::param::ConditionEngine::evaluate(
-                    driven->angleFormula, m_doc->parameters(), {});
-                if (r.ok) {
-                    const double rotDeg = block ? block->transform.rotation * 180.0 / M_PI : 0.0;
-                    const double deg = cad::geo::normalizeDeg360(r.value + rotDeg);
-                    m_lblFollowValue->setText(QString::fromUtf8("= %1°")
-                        .arg(cad::geo::Units::formatDegValue(deg)));
-                    m_lblFollowValue->setVisible(true);
-                }
-                m_lblFxAngle->setVisible(true);
-            }
-        }
-        return;
-    }
-
-    if (att->rotationMode == cad::param::RotationMode::ArcLength) {
-        m_btnAngleMode->setText(QStringLiteral("⌒"));
-        m_lblCaption->setText(QString::fromUtf8("弧长"));
-        m_lblCaption->setStyleSheet(QString());
-        double arcMm = att->arcLength;
-        if (!att->arcLengthFormula.isEmpty()) {
-            (void)cad::param::ConditionEngine::evaluateLengthMm(
-                att->arcLengthFormula, m_doc->parameters(), m_doc->conditions(), arcMm);
-            const double radius = block ? block->segmentLengthAtPoint(att->fromPointId) : 0.0;
-            const double alphaDeg = (radius > 1e-9)
-                ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
-            const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
-            m_lblFollowValue->setText(QString::fromUtf8("= %1 cm")
-                .arg(cad::geo::Units::formatNumberTrimmed(
-                    cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius)))));
-            m_lblFollowValue->setVisible(true);
-            m_lblFxAngle->setVisible(true);
-        }
-        updateWorldAngleLabel(*att);
-        return;
-    }
-
-    if (att->rotationMode == cad::param::RotationMode::ChordLength) {
-        m_btnAngleMode->setText(QStringLiteral("↔"));
-        m_lblCaption->setText(QString::fromUtf8("开度"));
-        m_lblCaption->setStyleSheet(QString());
-        double chordMm = att->chordLength;
-        if (!att->chordLengthFormula.isEmpty()) {
-            (void)cad::param::ConditionEngine::evaluateLengthMm(
-                att->chordLengthFormula, m_doc->parameters(), m_doc->conditions(), chordMm);
-            const double radius = block ? block->segmentLengthAtPoint(att->fromPointId) : 0.0;
-            const double alphaDeg = (radius > 1e-9)
-                ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
-            const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
-            m_lblFollowValue->setText(QString::fromUtf8("= %1 cm")
-                .arg(cad::geo::Units::formatNumberTrimmed(
-                    cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius)))));
-            m_lblFollowValue->setVisible(true);
-            m_lblFxAngle->setVisible(true);
-        }
-        updateWorldAngleLabel(*att);
-        return;
-    }
-
-    m_btnAngleMode->setText(QStringLiteral("∠"));
-    m_lblCaption->setText(QString::fromUtf8("跟随角"));
+    const auto prof = modeProfile(att->rotationMode);
+    m_btnAngleMode->setText(prof.symbol);
+    m_lblCaption->setText(prof.caption);
     m_lblCaption->setStyleSheet(QString());
-    double constDeg = att->followerAngle;
-    if (!att->followerAngleFormula.isEmpty()) {
-        auto r = cad::param::ConditionEngine::evaluate(
-            att->followerAngleFormula, m_doc->parameters(), m_doc->conditions());
-        if (r.ok) constDeg = r.value;
-        m_lblFollowValue->setText(QString::fromUtf8("= %1°")
-            .arg(cad::geo::Units::formatDegValue(
-                cad::geo::normalizeDeg180(constDeg))));
+
+    const double radius = block ? block->segmentLengthAtPoint(att->fromPointId) : 0.0;
+    const QString fv = formatAttachmentFormulaFollowValue(*att, m_doc, radius);
+    if (!fv.isEmpty()) {
+        m_lblFollowValue->setText(fv);
         m_lblFollowValue->setVisible(true);
         m_lblFxAngle->setVisible(true);
     }
@@ -339,20 +346,14 @@ void SegmentAngleCard::populateAngleField()
     m_editAngle->setEnabled(!(block && block->isBridge)
                             && !(block && !block->endTargetPointId.isNull()));
     const auto* att = findFollowerAttachment();
-    if (att && att->angleIndependent && block && seg) {
-        const auto* sp = block->findPoint(seg->startPointId);
-        const auto* ep = block->findPoint(seg->endPointId);
-        const auto* driven = (ep && !ep->angleFormula.isEmpty()) ? ep
-            : ((sp && !sp->angleFormula.isEmpty()) ? sp : ep);
+
+    if ((!att || att->angleIndependent) && block && seg) {
+        const auto* driven = findDrivenAnglePoint(block, seg);
         if (driven && !driven->angleFormula.isEmpty()) {
             m_editAngle->setText(driven->angleFormula);
             m_lblFxAngle->setVisible(true);
-        } else if (sp && ep && sp->resolved && ep->resolved) {
-            cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-            cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-            double angleDeg = std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI;
-            angleDeg = cad::geo::normalizeDeg360(angleDeg);
-            m_editAngle->setText(cad::geo::Units::formatDegValue(angleDeg));
+        } else if (auto d = worldOrNominalDegOfSegment(block, seg)) {
+            m_editAngle->setText(cad::geo::Units::formatDegValue(*d));
             m_lblFxAngle->setVisible(false);
         }
         m_editAngle->setPlaceholderText(cad::ui::kPlaceholderAngleOrFormula);
@@ -360,71 +361,14 @@ void SegmentAngleCard::populateAngleField()
     }
 
     if (att) {
-        if (att->rotationMode == cad::param::RotationMode::ArcLength) {
-            if (!att->arcLengthFormula.isEmpty()) {
-                m_editAngle->setText(att->arcLengthFormula);
-                m_lblFxAngle->setVisible(true);
-            } else {
-                const double radius = block ? block->segmentLengthAtPoint(att->fromPointId) : 0.0;
-                const double alphaDeg = (radius > 1e-9)
-                    ? cad::geo::arcMmToDeg(att->arcLength, radius) : 0.0;
-                const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
-                m_editAngle->setText(cad::geo::Units::formatNumberTrimmed(
-                    cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius))));
-                m_lblFxAngle->setVisible(false);
-            }
-            m_editAngle->setPlaceholderText(cad::ui::kPlaceholderCmOrFormula);
-        } else if (att->rotationMode == cad::param::RotationMode::ChordLength) {
-            if (!att->chordLengthFormula.isEmpty()) {
-                m_editAngle->setText(att->chordLengthFormula);
-                m_lblFxAngle->setVisible(true);
-            } else {
-                const double radius = block ? block->segmentLengthAtPoint(att->fromPointId) : 0.0;
-                const double alphaDeg = (radius > 1e-9)
-                    ? cad::geo::chordMmToDeg(att->chordLength, radius) : 0.0;
-                const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
-                m_editAngle->setText(cad::geo::Units::formatNumberTrimmed(
-                    cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius))));
-                m_lblFxAngle->setVisible(false);
-            }
-            m_editAngle->setPlaceholderText(cad::ui::kPlaceholderCmOrFormula);
-        } else {
-            if (!att->followerAngleFormula.isEmpty()) {
-                m_editAngle->setText(att->followerAngleFormula);
-                m_lblFxAngle->setVisible(true);
-            } else {
-                m_editAngle->setText(cad::geo::Units::formatDegValue(
-                    cad::geo::normalizeDeg180(att->followerAngle)));
-                m_lblFxAngle->setVisible(false);
-            }
-            m_editAngle->setPlaceholderText(cad::ui::kPlaceholderAngleOrFormula);
-        }
-        return;
-    }
-
-    if (block && seg) {
-        const auto* sp = block->findPoint(seg->startPointId);
-        const auto* ep = block->findPoint(seg->endPointId);
-        const auto* driven = (ep && !ep->angleFormula.isEmpty()) ? ep
-            : ((sp && !sp->angleFormula.isEmpty()) ? sp : ep);
-        if (driven && !driven->angleFormula.isEmpty()) {
-            m_editAngle->setText(driven->angleFormula);
-            m_lblFxAngle->setVisible(true);
-        } else if (ep && ep->constraint == cad::param::PointConstraint::OrthoOffset) {
-            // 正交拐角偏置：角度输入框显示中心基准轴角度，绝不计算斜边角
-            const double rotDeg = block ? block->transform.rotation * 180.0 / M_PI : 0.0;
-            const double angleDeg = cad::geo::normalizeDeg360(ep->angle + rotDeg);
-            m_editAngle->setText(cad::geo::Units::formatDegValue(angleDeg));
-            m_lblFxAngle->setVisible(false);
-        } else if (sp && ep && sp->resolved && ep->resolved) {
-            cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-            cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-            double angleDeg = std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI;
-            angleDeg = cad::geo::normalizeDeg360(angleDeg);
-            m_editAngle->setText(cad::geo::Units::formatDegValue(angleDeg));
-            m_lblFxAngle->setVisible(false);
-        }
-        m_editAngle->setPlaceholderText(cad::ui::kPlaceholderAngleOrFormula);
+        const auto prof = modeProfile(att->rotationMode);
+        m_editAngle->setPlaceholderText(prof.placeholder);
+        const double radius = block ? block->segmentLengthAtPoint(att->fromPointId) : 0.0;
+        const auto mv = getAttachmentModeValue(*att);
+        const bool hasFormula = !mv.formula.isEmpty();
+        m_editAngle->setText(hasFormula ? mv.formula
+                                        : formatAttachmentDisplayValue(att->rotationMode, mv.value, radius));
+        m_lblFxAngle->setVisible(hasFormula);
     }
 }
 
@@ -507,34 +451,23 @@ void SegmentAngleCard::applyAngle()
         if (!ep) return;
         // 目标态 = 当前模型态 + 角度覆盖 (与旧直写逐位一致; 非角度字段
         // 原样重放 = 命令无副作用)。自由→Polar 转换一并入栈。
-        cad::cmd::SegmentEditBarCommand::State st = captureEditStripState(*m_doc, m_blockId, m_segmentId);
-        if (ep->constraint == cad::param::PointConstraint::OrthoOffset) {
-            // 正交拐角偏置：保持 OrthoOffset 约束，直接更新基准轴角度，不改变偏置量和基准长
-            const double rotDeg = block->transform.rotation * 180.0 / M_PI;
-            const double localDeg = targetDeg - rotDeg;
-            st.endAngle = localDeg;
-            st.endAngleFormula = (!parsed.isNumber)
-                ? ((std::abs(rotDeg) > 1e-9)
-                    ? QStringLiteral("(%1)-%2").arg(parsed.formula).arg(rotDeg, 0, 'g', 12)
-                    : parsed.formula)
-                : QString();
-        } else {
-            if (ep->constraint != cad::param::PointConstraint::Polar) {
-                const auto* sp = block->findPoint(seg->startPointId);
-                if (!sp || !sp->resolved || !ep->resolved) return;
-                st.endConstraint = static_cast<int>(cad::param::PointConstraint::Polar);
-                st.endRefPointId = seg->startPointId;
-                st.endDistance = sp->resolvedPos.distanceTo(ep->resolvedPos);
-            }
-            const double rotDeg = block->transform.rotation * 180.0 / M_PI;
-            const double localDeg = targetDeg - rotDeg;
-            st.endAngle = localDeg;
-            st.endAngleFormula = (!parsed.isNumber)
-                ? ((std::abs(rotDeg) > 1e-9)
-                    ? QStringLiteral("(%1)-%2").arg(parsed.formula).arg(rotDeg, 0, 'g', 12)
-                    : parsed.formula)
-                : QString();
+        cad::cmd::SegmentEditBarCommand::State st =
+            cad::cmd::SegmentEditBarCommand::State::captureFrom(*m_doc, m_blockId, m_segmentId);
+        if (ep->constraint != cad::param::PointConstraint::OrthoOffset &&
+            ep->constraint != cad::param::PointConstraint::Polar) {
+            const auto* sp = block->findPoint(seg->startPointId);
+            if (!sp || !sp->resolved || !ep->resolved) return;
+            st.endConstraint = static_cast<int>(cad::param::PointConstraint::Polar);
+            st.endRefPointId = seg->startPointId;
+            st.endDistance = sp->resolvedPos.distanceTo(ep->resolvedPos);
         }
+        const double rotDeg = block->transform.rotation * 180.0 / M_PI;
+        st.endAngle = targetDeg - rotDeg;
+        st.endAngleFormula = (!parsed.isNumber)
+            ? ((std::abs(rotDeg) > 1e-9)
+                ? QStringLiteral("(%1)-%2").arg(parsed.formula).arg(rotDeg, 0, 'g', 12)
+                : parsed.formula)
+            : QString();
         if (auto* stack = m_doc->undoStack()) {
             stack->push(new cad::cmd::SegmentEditBarCommand(
                 m_doc, m_blockId, m_segmentId, st));
@@ -582,48 +515,33 @@ void SegmentAngleCard::onModeToggle()
 
     auto* blk = m_doc->findBlock(m_blockId);
     double radius = blk ? blk->segmentLengthAtPoint(mutAtt->fromPointId) : 0.0;
-    cad::param::RotationMode target = cad::param::RotationMode::Angle;
-    if (mutAtt->rotationMode == cad::param::RotationMode::Angle) {
-        target = cad::param::RotationMode::ArcLength;
-    } else if (mutAtt->rotationMode == cad::param::RotationMode::ArcLength) {
-        target = cad::param::RotationMode::ChordLength;
-    } else {
-        target = cad::param::RotationMode::Angle;
-    }
+    const auto target = (mutAtt->rotationMode == cad::param::RotationMode::Angle)
+        ? cad::param::RotationMode::ArcLength
+        : ((mutAtt->rotationMode == cad::param::RotationMode::ArcLength)
+            ? cad::param::RotationMode::ChordLength : cad::param::RotationMode::Angle);
     // 2026-12: 公式驱动不再拒绝切换 —— 公式跨域换算保留变量链接 (半径烘焙
     // 为常数), 见 FollowerAngle.h。数值路径保持历史 fmod 语义。
     const auto res = cad::param::followerModeSwitchValues(
         *mutAtt, radius, target, m_doc->parameters(), m_doc->conditions());
+    const double newAngle = (target == cad::param::RotationMode::Angle) ? res.angle : mutAtt->followerAngle;
+    const QString newAngleFormula = (target == cad::param::RotationMode::Angle) ? res.angleFormula : mutAtt->followerAngleFormula;
+    const double newArc = (target == cad::param::RotationMode::ArcLength) ? res.arcMm : mutAtt->arcLength;
+    const QString newArcFormula = (target == cad::param::RotationMode::ArcLength) ? res.arcFormula : mutAtt->arcLengthFormula;
+    const double newChord = (target == cad::param::RotationMode::ChordLength) ? res.chordMm : mutAtt->chordLength;
+    const QString newChordFormula = (target == cad::param::RotationMode::ChordLength) ? res.chordFormula : mutAtt->chordLengthFormula;
+
     if (auto* stack = m_doc->undoStack()) {
-        // 三模切换入栈: 目标模字段 = 跨域换算结果, 其余两模字段保持原值
-        // (命令 verbatim 全字段写)。
         stack->push(new cad::cmd::SetFollowerAngleCommand(
-            m_doc, mutAtt->id,
-            target == cad::param::RotationMode::Angle
-                ? res.angle : mutAtt->followerAngle,
-            target == cad::param::RotationMode::Angle
-                ? res.angleFormula : mutAtt->followerAngleFormula,
-            target,
-            target == cad::param::RotationMode::ArcLength
-                ? res.arcMm : mutAtt->arcLength,
-            target == cad::param::RotationMode::ArcLength
-                ? res.arcFormula : mutAtt->arcLengthFormula,
-            target == cad::param::RotationMode::ChordLength
-                ? res.chordMm : mutAtt->chordLength,
-            target == cad::param::RotationMode::ChordLength
-                ? res.chordFormula : mutAtt->chordLengthFormula));
+            m_doc, mutAtt->id, newAngle, newAngleFormula, target,
+            newArc, newArcFormula, newChord, newChordFormula));
     } else {
         mutAtt->rotationMode = target;
-        if (target == cad::param::RotationMode::ArcLength) {
-            mutAtt->arcLength = res.arcMm;
-            mutAtt->arcLengthFormula = res.arcFormula;
-        } else if (target == cad::param::RotationMode::ChordLength) {
-            mutAtt->chordLength = res.chordMm;
-            mutAtt->chordLengthFormula = res.chordFormula;
-        } else {
-            mutAtt->followerAngle = res.angle;
-            mutAtt->followerAngleFormula = res.angleFormula;
-        }
+        mutAtt->followerAngle = newAngle;
+        mutAtt->followerAngleFormula = newAngleFormula;
+        mutAtt->arcLength = newArc;
+        mutAtt->arcLengthFormula = newArcFormula;
+        mutAtt->chordLength = newChord;
+        mutAtt->chordLengthFormula = newChordFormula;
     }
     m_doc->resolveAll();
     populateAngleField();
@@ -639,31 +557,9 @@ void SegmentAngleCard::updateWorldAngleLabel(const cad::param::Attachment& att)
     // 线实际方向不符。
     const double refWorldDeg = cad::param::effectiveAngleRefWorld(m_doc, att)
         * 180.0 / M_PI;
-
-    double constDeg;
-    if (att.rotationMode == cad::param::RotationMode::ArcLength) {
-        double arcMm = att.arcLength;
-        (void)cad::param::ConditionEngine::evaluateLengthMm(att.arcLengthFormula, m_doc->parameters(), m_doc->conditions(), arcMm);
-        const auto* block = m_doc->blocksView().byId(m_blockId);
-        const double radius = block ? block->segmentLengthAtPoint(att.fromPointId) : 0.0;
-        constDeg = (radius > 1e-9) ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
-        constDeg = cad::geo::normalizeDeg360(constDeg);
-    } else if (att.rotationMode == cad::param::RotationMode::ChordLength) {
-        double chordMm = att.chordLength;
-        (void)cad::param::ConditionEngine::evaluateLengthMm(att.chordLengthFormula, m_doc->parameters(), m_doc->conditions(), chordMm);
-        const auto* block = m_doc->blocksView().byId(m_blockId);
-        const double radius = block ? block->segmentLengthAtPoint(att.fromPointId) : 0.0;
-        constDeg = (radius > 1e-9) ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
-        constDeg = cad::geo::normalizeDeg360(constDeg);
-    } else {
-        constDeg = att.followerAngle;
-        if (!att.followerAngleFormula.isEmpty()) {
-            auto r = cad::param::ConditionEngine::evaluate(
-                att.followerAngleFormula, m_doc->parameters(), m_doc->conditions());
-            if (r.ok) constDeg = r.value;
-        }
-    }
-
+    const auto* block = m_doc->blocksView().byId(m_blockId);
+    const double radius = block ? block->segmentLengthAtPoint(att.fromPointId) : 0.0;
+    const double constDeg = attachmentEffectiveAngleDeg(att, m_doc, radius);
     const double absDeg = cad::geo::normalizeDeg360(refWorldDeg + 180.0 - constDeg);
     const QString text = QString::fromUtf8("= 绝对角度 %1°")
                              .arg(cad::geo::Units::formatDegValue(absDeg));
@@ -697,21 +593,13 @@ void SegmentAngleCard::onDocResolved()
     // (换向等模型变更经 resolveAll 广播, 漏刷会让标签消失/滞留旧值)。
     const auto* block = m_doc ? m_doc->blocksView().byId(m_blockId) : nullptr;
     const auto* seg = block ? block->findSegment(m_segmentId) : nullptr;
-    if (block && seg) {
-        const auto* sp = block->findPoint(seg->startPointId);
-        const auto* ep = block->findPoint(seg->endPointId);
-        if (sp && ep && sp->resolved && ep->resolved) {
-            const cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-            const cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-            const double deg = cad::geo::normalizeDeg360(
-                std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI);
-            const QString text = QString::fromUtf8("= 世界角度 %1°")
-                .arg(cad::geo::Units::formatDegValue(deg));
-            if (m_lblWorldAngle->text() != text)
-                m_lblWorldAngle->setText(text);
-            m_lblWorldAngle->setVisible(true);
-            return;
-        }
+    if (auto d = worldOrNominalDegOfSegment(block, seg)) {
+        const QString text = QString::fromUtf8("= 世界角度 %1°")
+            .arg(cad::geo::Units::formatDegValue(*d));
+        if (m_lblWorldAngle->text() != text)
+            m_lblWorldAngle->setText(text);
+        m_lblWorldAngle->setVisible(true);
+        return;
     }
     m_lblWorldAngle->setVisible(false);
 }
@@ -724,14 +612,8 @@ void SegmentAngleCard::setBridgeReadOnly(bool bridge)
     const auto* seg = block->findSegment(m_segmentId);
     if (!seg) return;
 
-    const auto* sp = block->findPoint(seg->startPointId);
-    const auto* ep = block->findPoint(seg->endPointId);
-    if (sp && ep && sp->resolved && ep->resolved) {
-        const cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-        const cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-        double angleDeg = std::atan2(w2.y - w1.y, w2.x - w1.x) * 180.0 / M_PI;
-        angleDeg = cad::geo::normalizeDeg360(angleDeg);
-        m_editAngle->setText(cad::geo::Units::formatDegValue(angleDeg));
+    if (auto d = worldDegOfSegment(block, seg)) {
+        m_editAngle->setText(cad::geo::Units::formatDegValue(*d));
     }
     m_editAngle->setEnabled(false);
     m_lblFxAngle->setVisible(false);

@@ -9,17 +9,8 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGuiApplication>
 #include <QGraphicsView>
-#include <QGraphicsRectItem>
-#include <QGraphicsSimpleTextItem>
 #include <QKeyEvent>
-#include <QMenu>
 #include <QUndoStack>
-#include <QPen>
-#include <QFontMetrics>
-#include <QLineEdit>
-#include <QInputDialog>
-#include <QWidget>
-#include <QEvent>
 
 #include <algorithm>
 #include <cmath>
@@ -32,28 +23,14 @@
 #include "canvas/HudItem.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
-#include "parametric/AttachmentGraph.h"
-#include "parametric/ConditionEngine.h"
 #include "parametric/DomainViews.h"
-#include "parametric/Serial.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
-#include "document/commands/AttachmentCommands.h"
-#include "geometry/CurveMath.h"
-#include "parametric/FollowerAngle.h"
-#include "ui/LinePropertyDialog.h"
-#include "ui/PlacedPointDialog.h"
 #include "ConnectGesture.h"
 #include "CopyDragController.h"
 #include "MarqueeGesture.h"
-#include "document/commands/BlockCommands.h"
 #include "document/commands/EndpointCommands.h"
-#include "document/commands/ComponentCommands.h"
-#include "document/commands/DocumentCommands.h"
-#include "document/commands/AttachmentCommands.h"
-#include "document/commands/LayerCommands.h"
-#include "ui/DeleteImpactConfirm.h"
 
 namespace cad::tools {
 
@@ -451,18 +428,10 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
     }
 
     // ── 记录点击位置处的重叠点，供快捷键 (W/B) 随时打开电池组 ──
-    {
+    if (m_overlapCtl) {
         double zoom = m_scene ? m_scene->currentZoom() : 1.0;
         if (zoom < 1e-9) zoom = 1.0;
-        const auto ptCands = m_overlapCtl ? m_overlapCtl->collectPoints(pos, zoom)
-                                          : QList<OverlapDisambiguationController::Candidate>();
-        if (ptCands.size() >= 2) {
-            m_clickedOverlapPos = pos;
-            m_clickedOverlapCands = ptCands;
-            showToast(QStringLiteral("此处有 %1 个重叠点，按 W 键打开电池组切换").arg(ptCands.size()));
-        } else {
-            m_clickedOverlapCands.clear();
-        }
+        m_overlapCtl->recordClickedOverlap(pos, zoom, [this](const QString& msg) { showToast(msg); });
     }
 
     // ── Placed point press: 单击选中放置点 ──
@@ -759,14 +728,7 @@ void ToolSelect::keyPress(QKeyEvent* event)
         event->accept();
         return;
     } else if (event->key() == Qt::Key_Space || event->key() == Qt::Key_Alt) {
-        if (!m_clickedOverlapCands.isEmpty() && m_overlapCtl) {
-            if (m_overlapCtl->hasBattery()) {
-                m_overlapCtl->hideBattery();
-            } else {
-                m_overlapCtl->showBattery(m_clickedOverlapPos, m_clickedOverlapCands,
-                                          cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
-                m_overlapCtl->setBatterySelectedIndex(0);
-            }
+        if (m_overlapCtl && m_overlapCtl->handleSpaceOrAltKey()) {
             event->accept();
             return;
         }
@@ -778,18 +740,6 @@ void ToolSelect::keyPress(QKeyEvent* event)
             QUndoStack* stack = m_undoStack ? m_undoStack : (m_paramDoc ? m_paramDoc->undoStack() : nullptr);
             if (stack) {
                 stack->push(new cad::cmd::RemovePlacedPointCommand(m_paramDoc, blkId, ptId));
-            } else if (auto* blk = m_paramDoc->findBlock(blkId)) {
-                for (auto& seg : blk->segments) {
-                    seg.auxPointIds.erase(
-                        std::remove(seg.auxPointIds.begin(), seg.auxPointIds.end(), ptId),
-                        seg.auxPointIds.end());
-                }
-                auto& pts = blk->points;
-                pts.erase(std::remove_if(pts.begin(), pts.end(),
-                    [ptId](const cad::param::ParamPoint& p) { return p.id == ptId; }),
-                    pts.end());
-                blk->rebuildPointIndex();
-                m_paramDoc->resolveAll();
             }
             if (m_scene) m_scene->refreshAllBlockItems();
             event->accept();
@@ -797,39 +747,11 @@ void ToolSelect::keyPress(QKeyEvent* event)
         }
         deleteSelectedBlocks();
     } else if (event->key() == Qt::Key_W || event->key() == Qt::Key_B) {
-        if (m_overlapCtl && m_overlapCtl->index() >= 0) {
-            m_overlapCtl->cycle();
-            event->accept();
-            return;
+        if (m_overlapCtl) {
+            double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+            if (zoom < 1e-9) zoom = 1.0;
+            m_overlapCtl->handleWOrBKey(m_lastCursorPos, zoom);
         }
-        // 如果电池组已打开，快捷键切换收起
-        if (m_overlapCtl && m_overlapCtl->hasBattery()) {
-            m_overlapCtl->hideBattery();
-            event->accept();
-            return;
-        }
-        // 如果点击处有记录的重叠点，打开电池组
-        if (!m_clickedOverlapCands.isEmpty() && m_overlapCtl) {
-            m_overlapCtl->showBattery(m_clickedOverlapPos, m_clickedOverlapCands,
-                                      cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
-            m_overlapCtl->setBatterySelectedIndex(0);
-            event->accept();
-            return;
-        }
-        // 若当前光标悬停处有重叠点，也可直接按快捷键打开
-        const double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-        const auto hoverPts = m_overlapCtl ? m_overlapCtl->collectPoints(m_lastCursorPos, zoom)
-                                           : QList<OverlapDisambiguationController::Candidate>();
-        if (hoverPts.size() >= 2 && m_overlapCtl) {
-            m_clickedOverlapPos = m_lastCursorPos;
-            m_clickedOverlapCands = hoverPts;
-            m_overlapCtl->showBattery(m_clickedOverlapPos, m_clickedOverlapCands,
-                                      cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
-            m_overlapCtl->setBatterySelectedIndex(0);
-            event->accept();
-            return;
-        }
-        // 无重叠点时，忽略模式切换，仅接受按键
         event->accept();
         return;
     } else if (event->key() == Qt::Key_D

@@ -1133,8 +1133,17 @@ void TestContextStrip::pasteButtonsPopulateAndApply()
     QVERIFY(strip.pasteLengthButton()->isEnabled());
     QVERIFY(strip.pasteAngleButton()->isEnabled());
 
+    auto setClipboardSafe = [](const QString& text) {
+        for (int retry = 0; retry < 10; ++retry) {
+            QApplication::clipboard()->setText(text);
+            QCoreApplication::processEvents();
+            if (QApplication::clipboard()->text() == text) return;
+            QTest::qWait(20);
+        }
+    };
+
     // 1) 填入长度: 剪贴板带有首尾空格及换行符，点击后清空原有内容并填入清洗后的内容
-    QApplication::clipboard()->setText(QStringLiteral("  25.5 \r\n "));
+    setClipboardSafe(QStringLiteral("  25.5 \r\n "));
     strip.pasteLengthButton()->click();
 
     QCOMPARE(strip.lengthEdit()->text(), QStringLiteral("25.5"));
@@ -1148,7 +1157,7 @@ void TestContextStrip::pasteButtonsPopulateAndApply()
              "timed out waiting for pasted length to reach model");
 
     // 2) 填入角度: 点击后清空原有内容并填入清洗后的角度
-    QApplication::clipboard()->setText(QStringLiteral("\r\n 60 \n"));
+    setClipboardSafe(QStringLiteral("\r\n 60 \n"));
     strip.pasteAngleButton()->click();
 
     QCOMPARE(strip.angleEdit()->text(), QStringLiteral("60"));
@@ -1160,7 +1169,7 @@ void TestContextStrip::pasteButtonsPopulateAndApply()
              "timed out waiting for pasted angle to reach model");
 
     // 3) 剪贴板为空时: 先清空输入框内容
-    QApplication::clipboard()->setText(QString());
+    setClipboardSafe(QString());
     strip.pasteLengthButton()->click();
     QVERIFY(strip.lengthEdit()->text().isEmpty());
 

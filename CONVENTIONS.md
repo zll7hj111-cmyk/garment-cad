@@ -65,7 +65,7 @@ ctest -C RelWithDebInfo               # 【收尾验收专用】跑全量 42 个
   - **隐式状态防爆炸**：单类内 bool 成员变量禁止 >5 个；超标必须提炼显式状态机、子会话或属性结构体。
   - **测试单 Target 拆分规范（2026-09-06 增补）**：测试代码超标拆分**严禁新建可执行文件 target**（防止 MSVC 胖重链和 PDB 膨胀）；必须在既有单 target 内部按测试业务域拆分为多个 `.cpp` 编译单元（如 `test_foo_basic.cpp` + `test_foo_advanced.cpp`）。
   - **自动化守护体系（七守卫进 ctest）**：
-    1. `tools/check_file_size.py`：按架构层扫描行数；
+    1. `tools/check_file_size.py`：按架构层扫描行数（含申报豁免文件的膨胀棘轮检查，超申报行数直接 FAIL）；
     2. `tools/check_header_classification.py`：头文件 fan-in 与命令大杂烩检测；
     3. `tools/check_bool_flags.py`：检测类内 bool 状态爆炸；
     4. `tools/check_test_split.py`：检测测试文件行数硬顶与命名规范；

@@ -1,4 +1,4 @@
-#include "ui/LineGeometrySection.h"
+﻿#include "ui/LineGeometrySection.h"
 #include "ui/LineOrthoOffsetCard.h"
 
 #include <algorithm>
@@ -38,15 +38,6 @@ namespace {
 
 constexpr int kLabelW = 64;
 constexpr int kFieldH = 30;
-
-ElaLineEdit* makeCompactEdit(QWidget* parent, int width)
-{
-    auto* e = new ElaLineEdit(parent);
-    e->setFixedHeight(kFieldH);
-    e->setMaximumWidth(width);
-    e->setStyleSheet(QStringLiteral("font-size: 11px;"));
-    return e;
-}
 
 const cad::param::Attachment* findFollowerAttachment(const cad::param::ParamDocument* doc,
                                                     const QUuid& blockId)

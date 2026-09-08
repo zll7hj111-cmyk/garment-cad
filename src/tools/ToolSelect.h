@@ -156,9 +156,6 @@ private:
 
     QUuid m_lastHitSegmentId;
 
-    // ── 单独重叠点与电池组交互 ──
-    cad::geo::Vec2 m_clickedOverlapPos;
-    QList<OverlapDisambiguationController::Candidate> m_clickedOverlapCands;
     cad::geo::Vec2 m_lastCursorPos;
 
     // ── Extracted gesture controllers (阶段 3 拆分, onActivate 时构造) ──

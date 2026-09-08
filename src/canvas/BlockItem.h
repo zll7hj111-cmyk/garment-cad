@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <QGraphicsObject>
 #include <QPainterPath>
 #include <QUuid>
 #include <QSet>
 
-#include "parametric/Segment.h"  // cad::param::SegmentRole (LineCache default)
+#include "BlockGeometryCache.h"
 
 namespace cad::param { class ParamDocument; class Block; }
 
@@ -28,12 +28,9 @@ public:
     enum { Type = UserType + 1 };
     [[nodiscard]] int type() const override { return Type; }
 
-    /// How the owning block's canvas layer affects this item's rendering.
-    enum class LayerMode {
-        Normal,  ///< Active layer: full color, selectable, hoverable.
-        Grayed,  ///< Non-active visible layer: gray, not selectable, snappable.
-        Hidden,  ///< Hidden layer: not painted, not pickable.
-    };
+    using LayerMode = ::LayerMode;
+    using LineCache = ::LineCache;
+    using PointCache = ::PointCache;
 
     explicit BlockItem(const QUuid& blockId, cad::param::ParamDocument* doc,
                        QGraphicsItem* parent = nullptr);
@@ -43,10 +40,7 @@ public:
     /// Public wrapper of the private hitTest(): nearest LINE entity id at
     /// @p scenePos within the hover pick radius (screen px ÷ zoom). Null
     /// QUuid when the position misses every segment.
-    [[nodiscard]] QUuid hitSegmentAtScene(const QPointF& scenePos) const
-    {
-        return hitTest(mapFromScene(scenePos), hoverThreshold());
-    }
+    [[nodiscard]] QUuid hitSegmentAtScene(const QPointF& scenePos) const;
 
     QRectF boundingRect() const override;
     /// Precise pick region: strokes around segments/points with a screen-space
@@ -95,7 +89,6 @@ public:
     void setSelectedPoint(const QUuid& pointId);
     [[nodiscard]] QUuid selectedPoint() const { return m_selectedPointId; }
 
-
 protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override;
     void hoverMoveEvent(QGraphicsSceneHoverEvent* event) override;
@@ -105,36 +98,12 @@ private:
     QUuid m_blockId;
     cad::param::ParamDocument* m_doc = nullptr;
 
-    // Cached geometry in local coordinates for fast painting
-    struct LineCache {
-        QUuid id;
-        QPointF p1; QPointF p2;
-        QColor color;      ///< Data-driven color (raw from the segment).
-        cad::param::SegmentRole role = cad::param::SegmentRole::Outline;
-        double weight;
-        Qt::PenStyle penStyle;
-        QString name;
-        bool showName;
-        bool showLength;
-        QString lengthText;  ///< Pre-formatted length label (cm).
-        bool visible;        ///< False = hidden: kept for hit-testing/hover but
-                             ///< not painted unless transiently revealed (hover).
-        bool isOrtho = false;  ///< 正交拐角偏置线
-        bool showAxis = false; ///< 是否显示中心基准轴虚线
-        QPointF pCenter;       ///< 中心主轴拐点本地坐标
-    };
-    struct PointCache { QUuid id; QPointF pos; bool isAuxiliary; bool isPlaced; QString label; bool showLabel;
-                        bool isAttachmentNode; bool isCurveAnchor; bool isLockedNode; bool visible; };
+    BlockGeometryCache m_cache;
 
-    std::vector<LineCache>  m_lines;
-    std::vector<CurveItem*> m_curveItems;  ///< One child item per curve segment.
-    std::vector<PointCache> m_points;
-    QRectF m_cachedBounds;
-    LayerMode m_layerMode = LayerMode::Normal;  ///< From owning block's layer.
-    QUuid m_hoveredEntity;  ///< Currently hovered entity (null = none).
+    QUuid m_hoveredEntity;   ///< Currently hovered entity (null = none).
     QUuid m_hoveredPointId;  ///< Currently hovered point (null = none).
     QUuid m_selectedPointId; ///< Currently selected point (null = none).
-    QUuid m_leaderEntity;   ///< Segment highlighted as leader candidate (null = none).
+    QUuid m_leaderEntity;    ///< Segment highlighted as leader candidate (null = none).
     bool  m_toolSelected = false;  ///< Tool-managed selection (red highlight).
     bool  m_toolLocked   = false;  ///< Confirmed selection (red + bold).
     QSet<CurveItem*> m_curvesUnderCursor;  ///< Curve children currently hovered.
@@ -150,9 +119,6 @@ private:
     /// is prohibitively expensive for multi-segment blocks.
     mutable QPainterPath m_cachedShape;
     mutable double m_cachedShapeTol = -1.0;  ///< Tolerance used for the cache (-1 = invalid).
-    double m_lastRotation = 0.0;  ///< Block rotation at last rebuildCache() (rad).
-    quint64 m_lastGeometryEpoch = 0;  ///< Block::geometryEpoch at last rebuildCache().
-    size_t m_lastPointCount = 0;  ///< Block::points.size() at last rebuildCache().
 
     /// Hit-test: returns nearest LINE entity ID within threshold, or null
     /// QUuid (curves are hit-tested by their own child items). When
@@ -175,4 +141,7 @@ private:
 
     /// Notify the animator about state changes when hover target changes.
     void updateHoverState(const QUuid& newHover);
+
+    /// Broadcast resolved entity states to CanvasAnimator.
+    void forEachEntityPushState();
 };

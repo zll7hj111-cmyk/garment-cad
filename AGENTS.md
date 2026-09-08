@@ -26,7 +26,7 @@ WildWind Pattern（野风帖）——参数化服装 CAD 系统，C++23 / Qt6。
 | `src/ui` | 面板与对话框 UI：变量面板、图层面板、公式卡片、条件对话框、IconHelper、Theme、线段属性对话框群——凡 QWidget 即归 `ui/` |
 | `src/tools` | **只放手势与状态机**：选择、智能笔、曲线编辑、捕捉引擎、工具管理器、Connect/Marquee/RotateCopyGesture、LineFactory、SnapEngine、RotateGizmo。**本层不含任何 QWidget**；需要弹窗用 `cad::ui::` 前置声明 |
 | `src/canvas` | 画布渲染：CanvasView/CanvasScene、BlockItem/CurveItem、图层、OpenGL 视口 |
-| `src/geometry` | 基础几何：Vec2、单位定义、CurveMath |
+| `src/geometry` | 基础几何：Vec2、单位定义、CurveMath、RayCast |
 | `src/app` | 应用入口、上下文属性条（ContextStrip，见 CONTEXT_STRIP_DESIGN.md） |
 
 ## 架构原则（不可破坏）

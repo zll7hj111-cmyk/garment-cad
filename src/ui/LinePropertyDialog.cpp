@@ -1,44 +1,32 @@
 #include "ui/LinePropertyDialog.h"
 
-#include <algorithm>
 #include <cmath>
 
-#include "ElaTabWidget.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
-#include "ElaLineEdit.h"
-#include "ElaComboBox.h"
-#include "ElaText.h"
-#include "ElaScrollArea.h"
 #include <QScreen>
-#include "ElaPushButton.h"
-#include <QPushButton>
-#include <QButtonGroup>
 #include <QComboBox>
-#include <QFrame>
-#include "ui/ElaDialogButtons.h"
 #include <QSignalBlocker>
 #include <QKeyEvent>
+
+#include "ElaTabWidget.h"
+#include "ElaLineEdit.h"
+#include "ElaComboBox.h"
+#include "ElaScrollArea.h"
 
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Serial.h"
-#include "parametric/ConditionEngine.h"
-#include "parametric/AttachmentGraph.h"
-#include "parametric/LinkedVariable.h"
 #include "canvas/CanvasScene.h"
 #include "canvas/BlockItem.h"
-#include "geometry/Units.h"
-#include "geometry/Angle.h"
 #include "ui/Theme.h"
 #include "ui/FormScaffold.h"
 #include "ui/TooltipFormatter.h"
+#include "ui/ConnHintFormatter.h"
+#include "ui/ElaDialogButtons.h"
 #include "ui/NoteButton.h"
-#include "parametric/FollowerAngle.h"
 #include "document/commands/ReverseSegmentCommand.h"
-#include "ui/PointRefEdit.h"
 #include "ui/SegmentAnchorTab.h"
-#include "ui/SegmentConnectionCard.h"
 #include "ui/SegmentAuxTab.h"
 #include "ui/LineEndpointSection.h"
 #include "ui/LineAppearanceSection.h"
@@ -52,62 +40,6 @@ namespace {
 constexpr int kLabelW = 64;
 /// 行内控件统一高度 (2026-xx 紧凑化: 35→30, 与状态栏对齐)。
 constexpr int kFieldH = 30;
-
-/// 分区标题: [3px 信号黄竖条][11px 600 标题] … [可选右侧控件/提示]。
-/// 竖条/分隔线样式走全局 QSS (QFrame#accentBar / QFrame#divider, 明暗双模)。
-QWidget* makeSectionHeader(const QString& title, QWidget* parent,
-                           QWidget* right = nullptr)
-{
-    auto* w = new QWidget(parent);
-    auto* h = new QHBoxLayout(w);
-    h->setContentsMargins(0, 0, 0, 0);
-    h->setSpacing(6);
-    auto* bar = new QFrame(w);
-    bar->setObjectName(QStringLiteral("accentBar"));
-    bar->setFixedSize(3, 12);
-    h->addWidget(bar, 0, Qt::AlignVCenter);
-    auto* t = new ElaText(title, 13, w);
-    t->setObjectName(QStringLiteral("sectionTitleLabel"));
-    t->setStyleSheet(QStringLiteral(
-        "#sectionTitleLabel { background: transparent; font-weight:700; color:%1; }")
-                         .arg(cad::ui::Theme::tokens().text1.name()));
-    h->addWidget(t);
-    h->addStretch();
-    if (right) h->addWidget(right);
-    return w;
-}
-
-/// 分区之间的 1px hairline (全局 QSS QFrame#divider)。
-QFrame* makeDivider(QWidget* parent)
-{
-    auto* d = new QFrame(parent);
-    d->setObjectName(QStringLiteral("divider"));
-    return d;
-}
-
-ElaLineEdit* makeCompactEdit(QWidget* parent, int width)
-{
-    auto* e = new ElaLineEdit(parent);
-    e->setFixedHeight(kFieldH);
-    e->setMaximumWidth(width);
-    e->setStyleSheet(QStringLiteral("font-size: 11px;"));
-    return e;
-}
-
-/// 目标块的非 pin 跟随 attachment (自由线时 nullptr)。
-const cad::param::Attachment* findFollowerAttachmentFor(
-    const cad::param::ParamDocument* doc, const QUuid& blockId)
-{
-    if (!doc) return nullptr;
-    for (const auto& att : doc->attachments()) {
-        if (att.isPin) continue;
-        if (att.fromBlockId == blockId)
-            return &att;
-    }
-    return nullptr;
-}
-
-
 
 } // namespace
 
@@ -476,52 +408,8 @@ void LinePropertyDialog::refreshEndpointConnRows()
 
 void LinePropertyDialog::refreshConnHint()
 {
-    if (!m_lblConnHint || !m_paramDoc) return;
-    const auto* block = m_paramDoc->findBlock(m_blockId);
-    if (!block) { m_lblConnHint->clear(); return; }
-
-    QString connHint;
-    const cad::param::Attachment* att = nullptr;
-    for (const auto& a : m_paramDoc->attachments()) {
-        if (a.isPin) continue;
-        if (a.fromBlockId == m_blockId) { att = &a; break; }
-    }
-    if (att) {
-        // 连接分区状态提示 (已连接 L#·名; 仅角度/滑轨等子态由卡内 badge 细化)。
-        connHint = QString::fromUtf8("已连接");
-        if (const auto* leader = m_paramDoc->findBlock(att->toBlockId)) {
-            if (const auto* lseg = leader->findSegment(att->toSegmentId)) {
-                connHint += QStringLiteral(" ")
-                    + cad::param::Serial::tag(lseg->serial);
-                if (!lseg->name.isEmpty())
-                    connHint += QStringLiteral("·") + lseg->name;
-            }
-        }
-        // 连接子状态 (2026-xx 两维独立四态): 双拆开 = 自由; 独立角 =
-        // 有连接线·无基准线; 仅角度 = 无连接线·有基准线。
-        if (att->angleIndependent && att->angleOnly)
-            connHint += QString::fromUtf8(" · 自由");
-        else if (att->angleIndependent)
-            connHint += QString::fromUtf8(" · 独立角");
-        else if (att->angleOnly)
-            connHint += QString::fromUtf8(" · 仅角度");
-    }
-    // 终点指向 (终点连接, 2026-xx 每端完整连接): 双端连接 = 桥接线 (起点
-    // Attachment + 终点 endTarget); 仅终点指向 = 自由线带指向。
-    if (!block->endTargetPointId.isNull()) {
-        connHint = att ? QString::fromUtf8("桥接线")
-                       : QString::fromUtf8("终点指向");
-        if (const auto* tb = m_paramDoc->findBlock(block->endTargetBlockId)) {
-            const QUuid ts = tb->exitSegmentAtPoint(block->endTargetPointId);
-            if (const auto* tsg = tb->findSegment(ts)) {
-                QString t = cad::param::Serial::tag(tsg->serial);
-                if (!tsg->name.isEmpty())
-                    t += QStringLiteral("·") + tsg->name;
-                connHint += QStringLiteral(" ") + t;
-            }
-        }
-    }
-    m_lblConnHint->setText(connHint);
+    if (!m_lblConnHint) return;
+    m_lblConnHint->setText(formatConnectionHint(m_paramDoc, m_blockId));
 }
 
 void LinePropertyDialog::applyHoldOverride(bool forceName, bool forceLength)

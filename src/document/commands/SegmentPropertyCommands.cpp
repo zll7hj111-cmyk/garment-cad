@@ -201,6 +201,50 @@ void applyEditStripState(cad::param::ParamDocument& doc,
 
 } // namespace
 
+SegmentEditBarCommand::State SegmentEditBarCommand::State::captureFrom(
+    const cad::param::ParamDocument& doc, const QUuid& blockId, const QUuid& segmentId)
+{
+    State s;
+    const auto* b = doc.findBlock(blockId);
+    const auto* seg = b ? b->findSegment(segmentId) : nullptr;
+    if (!b || !seg) return s;
+
+    s.segName = seg->name;
+    s.lengthFormula = seg->lengthFormula;
+    if (const auto* ep = b->findPoint(seg->endPointId)) {
+        s.endDistance = ep->distance;
+        s.endDistanceFormula = ep->distanceFormula;
+        s.endAngle = ep->angle;
+        s.endAngleFormula = ep->angleFormula;
+        s.endConstraint = static_cast<int>(ep->constraint);
+        s.endRefPointId = ep->refPointId;
+        if (ep->constraint == cad::param::PointConstraint::OrthoOffset) {
+            s.orthoOffsetDist = ep->orthoOffsetDist;
+            s.orthoOffsetDistFormula = ep->orthoOffsetDistFormula;
+        }
+    }
+    // Follower attachment snapshot: the attachment anchored at THIS
+    // segment's start/end point (a block may own one attachment while
+    // having several lines — the first block-wide match would snapshot
+    // the WRONG line's attachment; same rule as SegmentEditBar).
+    for (const auto& att : doc.attachments()) {
+        if (att.fromBlockId != blockId || att.isPin) continue;
+        if (att.fromPointId != seg->startPointId
+            && att.fromPointId != seg->endPointId)
+            continue;
+        s.attId = att.id;
+        s.followerAngle = att.followerAngle;
+        s.followerAngleFormula = att.followerAngleFormula;
+        s.arcLength = att.arcLength;
+        s.arcLengthFormula = att.arcLengthFormula;
+        s.chordLength = att.chordLength;
+        s.chordLengthFormula = att.chordLengthFormula;
+        s.rotationMode = static_cast<int>(att.rotationMode);
+        break;
+    }
+    return s;
+}
+
 SegmentEditBarCommand::SegmentEditBarCommand(cad::param::ParamDocument* doc,
                                              const QUuid& blockId,
                                              const QUuid& segmentId,
@@ -213,42 +257,8 @@ SegmentEditBarCommand::SegmentEditBarCommand(cad::param::ParamDocument* doc,
     , m_newState(std::move(newState))
 {
     setText(QStringLiteral("编辑线段属性"));
-    // Snapshot the pre-edit state from the model.
-    if (const auto* b = doc->findBlock(blockId)) {
-        if (const auto* seg = b->findSegment(segmentId)) {
-            m_oldState.segName = seg->name;
-            m_oldState.lengthFormula = seg->lengthFormula;
-            if (const auto* ep = b->findPoint(seg->endPointId)) {
-                m_oldState.endDistance = ep->distance;
-                m_oldState.endDistanceFormula = ep->distanceFormula;
-                m_oldState.endAngle = ep->angle;
-                m_oldState.endAngleFormula = ep->angleFormula;
-                m_oldState.endConstraint = static_cast<int>(ep->constraint);
-                m_oldState.endRefPointId = ep->refPointId;
-                m_oldState.orthoOffsetDist = ep->orthoOffsetDist;
-                m_oldState.orthoOffsetDistFormula = ep->orthoOffsetDistFormula;
-            }
-            // Follower attachment snapshot: the attachment anchored at THIS
-            // segment's start/end point (a block may own one attachment while
-            // having several lines — the first block-wide match would snapshot
-            // the WRONG line's attachment; same rule as SegmentEditBar).
-            for (const auto& att : doc->attachments()) {
-                if (att.fromBlockId != blockId || att.isPin) continue;
-                if (att.fromPointId != seg->startPointId
-                    && att.fromPointId != seg->endPointId)
-                    continue;
-                m_oldState.attId = att.id;
-                m_oldState.followerAngle = att.followerAngle;
-                m_oldState.followerAngleFormula = att.followerAngleFormula;
-                m_oldState.arcLength = att.arcLength;
-                m_oldState.arcLengthFormula = att.arcLengthFormula;
-                m_oldState.chordLength = att.chordLength;
-                m_oldState.chordLengthFormula = att.chordLengthFormula;
-                m_oldState.rotationMode = static_cast<int>(att.rotationMode);
-                break;
-            }
-        }
-    }
+    if (doc)
+        m_oldState = State::captureFrom(*doc, blockId, segmentId);
 }
 
 void SegmentEditBarCommand::redo()

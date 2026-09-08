@@ -1,591 +1,24 @@
-#include <QtTest>
-#include <QApplication>
-#include <QElapsedTimer>
-#include <QFrame>
-#include <QLineEdit>
-#include <QListWidget>
-#include <QPushButton>
-#include <QTabBar>
-#include <QTabWidget>
+﻿#include "test_dialog_tabs_helpers.h"
 
-#include <cmath>
-
-#include "parametric/ParamDocument.h"
-#include "parametric/Block.h"
-#include "parametric/ParamPoint.h"
-#include "parametric/Segment.h"
-#include "parametric/Serial.h"
-#include "canvas/CanvasScene.h"
-#include "canvas/CanvasView.h"
-#include "ui/LinePropertyDialog.h"
-#include "ui/SegmentAngleCard.h"
-#include "ui/SegmentRefCard.h"
-#include "ui/PointRefEdit.h"
-#include "ui/SegmentAuxTab.h"
-#include "ui/SegmentConnectionCard.h"
-#include "ElaComboBox.h"
-#include "ElaPushButton.h"
-#include "ElaLineEdit.h"
-#include "ui/AuxPointForm.h"
-#include "ElaScrollPageArea.h"
-#include "ElaText.h"
-#include "geometry/Angle.h"
-#include "TestHelpers.h"
-
-using namespace cad::param;
-using namespace cad::test;
-
-/// Reproduce the reported UX bug: switching back to the 属性 tab inside the
-/// line-property dialog requires repeated clicks ("狂点才生效"), while other
-/// tab switches are snappy. Hypothesis: when the aux tab hides, its focused
-/// QLineEdit loses focus → editingFinished → SegmentAuxTab::onLiveUpdate →
-/// applyTo + resolveAll + refreshAllBlockItems run SYNCHRONOUSLY inside the
-/// tab-bar mouse-press handler, freezing the UI; repeated clicks then bounce
-/// the page back and forth until an odd click count lands on 属性.
-class TestDialogTabs : public QObject
+class TestDialogTabsAngleConn : public QObject
 {
     Q_OBJECT
 private slots:
-    void switchBackAfterTyping();      ///< full user sequence (typed value)
-    void switchBackWithoutEditing();   ///< control: no editing, no focus
-    void switchBackLargeDoc();         ///< heavy document: freeze magnitude
-    void probeTabHitArea();            ///< which widget owns the tab-bar pixels
-    void probeCardTitleColor();        ///< why section titles look washed out (像素探针)
-    void endpointCardsStacked();    ///< 端点 起点|终点 双微卡上下堆叠 (2026-xx §3)
-    void connectCardUniformHeights();  ///< 连接卡行内控件统一高度/宽度 (用户 2026-12 反馈)
-    void independentAngleInputDoesNotJump();  ///< 独立角输入不回跳 (用户 2026-12 反馈)
-    void followerAngleModeToggleToArc();  ///< REPRO: 跟随角 → 弧长 切换 (用户报告切换不了)
-    void endConnectionRowAndBadge();  ///< 终点连接行 + 桥接线 badge + 端点微卡摘要 (2026-xx 每端完整连接)
-    void detachClearsConnectEditAndRetargetReconnects();  ///< 拆开清空「连接到」框 + 拆开后输入 P# 重连 (用户 2026-09 报告)
-    void reattachPreservesAngleRef();  ///< 重连保持方向基准: 自动态固化为两点基准, 自定义原样保留 (用户 2026-09 拍板)
-    void linkCurrentLineButtonClearsRef();  ///< [链接当前线] 清空自定义基准回自动态 (用户 2026-09 拍板)
-    void independentAngleKeepsRefEditsEnabled();  ///< 独立角: 点1/点2 清空但不禁用 (用户 2026-09 拍板)
-    void angleFormulaPreservedInDialog();         ///< 角度表达式优先，绝不自动转数值覆盖 (用户 2026-09 拍板)
-    void auxPointOutgoingFollowerMountAndDetach();///< 辅助点作为跟随端显示跟随宿主并可拆开
+    void endpointCardsStacked();
+    void connectCardUniformHeights();
+    void independentAngleInputDoesNotJump();
+    void followerAngleModeToggleToArc();
+    void angleFormulaPreservedInDialog();
+    void endConnectionRowAndBadge();
+    void detachClearsConnectEditAndRetargetReconnects();
+    void reattachPreservesAngleRef();
+    void linkCurrentLineButtonClearsRef();
+    void independentAngleKeepsRefEditsEnabled();
 };
-
-namespace {
-
-QUuid addAuxPoint(ParamDocument& doc, const QUuid& blockId, const QUuid& segId)
-{
-    Block* blk = doc.findBlock(blockId);
-    ParamPoint pt;
-    pt.constraint = PointConstraint::Interpolated;
-    pt.hostSegmentId = segId;
-    pt.isAuxiliary = true;
-    pt.visible = true;
-    pt.interpPercent = 0.5;
-    pt.interpConstant = 0.0;
-    pt.interpOffsetAngle = 0.0;
-    pt.interpOffsetDist = 0.0;
-    pt.serial = doc.newPointSerial();
-    const QUuid id = blk->addPoint(pt);
-    blk->findSegment(segId)->auxPointIds.push_back(id);
-    return id;
-}
-
-QUuid addAnchorPoint(ParamDocument& doc, const QUuid& blockId, const QUuid& segId)
-{
-    Block* blk = doc.findBlock(blockId);
-    auto* seg = blk->findSegment(segId);
-    seg->type = SegmentType::Bezier;
-    ParamPoint pp;
-    pp.constraint = PointConstraint::CurveAnchor;
-    pp.hostSegmentId = segId;
-    pp.interpPercent = 0.5;
-    pp.interpOffsetDist = 20.0;
-    pp.autoTangent = true;
-    pp.serial = doc.newPointSerial();
-    const QUuid id = blk->addPoint(pp);
-    seg->passPointIds.push_back(id);
-    return id;
-}
-
-/// Open the dialog over a fresh scene with one leader + one line (+aux point).
-void setup(ParamDocument& doc, CanvasScene& scene, LineSetup& line)
-{
-    doc.setActiveLayer(layerIdAt(doc, 1));
-    makeLine(doc, 100.0, Vec2(200.0, 0.0));
-    line = makeLine(doc, 60.0);
-}
-
-QLineEdit* percentEditOf(cad::ui::AuxPointForm* form)
-{
-    for (auto* e : form->findChildren<QLineEdit*>())
-        if (e->placeholderText().contains(QLatin1String("0.5")))
-            return e;
-    return nullptr;
-}
-
-} // namespace
-
-void TestDialogTabs::switchBackAfterTyping()
-{
-    ParamDocument doc;
-    CanvasScene scene(&doc);
-    LineSetup line;
-    setup(doc, scene, line);
-    addAuxPoint(doc, line.blockId, line.segId);
-    addAnchorPoint(doc, line.blockId, line.segId);
-    doc.resolveAll();
-    qInfo() << "[dialog-tabs] seg aux after add:"
-            << doc.findBlock(line.blockId)->findSegment(line.segId)->auxPointIds.size()
-            << "block id:" << line.blockId.toString() << "seg id:" << line.segId.toString();
-
-    CanvasView view(&scene);
-    view.resize(900, 600);
-    view.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&view));
-
-    auto* dlg = new cad::ui::LinePropertyDialog(
-        line.blockId, line.segId, &doc, &scene, &view);
-    dlg->show();
-    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
-    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
-             "timed out waiting for QTabWidget* to appear");
-    auto* tabs = dlg->findChild<QTabWidget*>();
-    QVERIFY(tabs);
-    // 2026-08: 「点连接」只读 tab 已删 (属性页连接分区覆盖其内容);
-    // 2026-09: 辅助点下沉为属性页【线上点】分区, 现为 2 枚 = 属性 / 锚点。
-    QCOMPARE(tabs->count(), 2);
-
-    // 辅助点已作为分区嵌入在属性页 (tab 0) 内，无需切换 tab 即可找到
-    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
-    QVERIFY(auxTab);
-    auto* list = auxTab->findChild<QListWidget*>();
-    QVERIFY(list);
-    qInfo() << "[dialog-tabs] list count after dialog open:"
-            << list->count()
-            << "seg aux:"
-            << doc.findBlock(line.blockId)->findSegment(line.segId)->auxPointIds.size();
-    QCOMPARE(list->count(), 1);
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
-                      list->visualItemRect(list->item(0)).center());
-    // P2-3: 等子控件出现而不是固定 sleep 20ms（负载下会让下面
-    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<cad::ui::AuxPointForm*>() != nullptr; }),
-             "timed out waiting for cad::ui::AuxPointForm* to appear");
-    auto* form = dlg->findChild<cad::ui::AuxPointForm*>();
-    QVERIFY(form);
-    QVERIFY(form->isVisible());
-    QLineEdit* percentEdit = percentEditOf(form);
-    QVERIFY(percentEdit);
-
-    // Type into the percent field: focus + keystrokes (debounce not yet fired)
-    QTest::mouseClick(percentEdit, Qt::LeftButton, Qt::NoModifier, QPoint(12, 6));
-    percentEdit->selectAll();
-    QTest::keyClicks(percentEdit, QStringLiteral("0.6"));
-    QCOMPARE(percentEdit->text(), QStringLiteral("0.6"));
-
-    // ── 0→1 (属性 → 锚点): the suspected freeze point with focus loss ──
-    QElapsedTimer t0;
-    t0.start();
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(1).center());
-    const qint64 msToAnchor = t0.elapsed();
-    QVERIFY2(cad::test::waitUntil([&] { return tabs->currentIndex() == 1; }),
-             "timed out waiting for the tab switch to 锚点");
-    QCOMPARE(tabs->currentIndex(), 1);
-
-    // ── 1→0 (锚点 → 属性) ──
-    QElapsedTimer t1;
-    t1.start();
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(0).center());
-    const qint64 msBack = t1.elapsed();
-
-    // P2-3: this is where the ctest flake lived. The typed value is applied on
-    // FOCUS LOSS and the apply path is debounced (SegmentAuxTab's live-update
-    // timer) -- it is NOT guaranteed to have run by the time mouseClick()
-    // returns. Asserting immediately made the test measure how busy the machine
-    // was instead of whether the feature works: on a loaded box the debounce
-    // had not fired yet and a healthy dialog looked broken.
-    QVERIFY2(cad::test::waitUntil([&] { return tabs->currentIndex() == 0; }),
-             "timed out waiting for the tab switch back to 属性");
-    QCOMPARE(tabs->currentIndex(), 0);
-
-    const QUuid blockId = line.blockId;
-    const QUuid segId   = line.segId;
-    QVERIFY2(cad::test::waitUntil([&] {
-                 auto* b = doc.findBlock(blockId);
-                 if (!b) return false;
-                 auto* s = b->findSegment(segId);
-                 if (!s || s->auxPointIds.empty()) return false;
-                 auto* p = b->findPoint(s->auxPointIds.front());
-                 return p && std::abs(p->interpPercent - 0.6) < 1e-9;
-             }),
-             "timed out waiting for the typed interpPercent to be applied");
-
-    auto* blk = doc.findBlock(line.blockId);
-    auto* seg = blk->findSegment(line.segId);
-    auto* pt = blk->findPoint(seg->auxPointIds.front());
-    QVERIFY(pt);
-    QVERIFY(std::abs(pt->interpPercent - 0.6) < 1e-9);
-
-    qInfo() << "[dialog-tabs] latency 0->1:" << msToAnchor
-            << "ms; 1->0 after typing:" << msBack << "ms";
-
-    // Simulate frantic re-clicking (odd count must land on 属性)
-    QElapsedTimer t2;
-    t2.start();
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(1).center());
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(0).center());
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(1).center());
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(0).center());
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(1).center());
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(0).center());
-    const qint64 msRapid = t2.elapsed();
-    QCOMPARE(tabs->currentIndex(), 0);
-    qInfo() << "[dialog-tabs] 6 rapid re-clicks:" << msRapid << "ms";
-
-    delete dlg;
-}
-
-void TestDialogTabs::switchBackLargeDoc()
-{
-    // Emulate a real garment pattern: 20 work-layer lines, 4 aux points each,
-    // plus a bridge — the freeze (if any) comes from the full resolveAll +
-    // refreshAllBlockItems triggered on focus loss when switching back.
-    ParamDocument doc;
-    CanvasScene scene(&doc);
-    doc.setActiveLayer(layerIdAt(doc, 1));
-
-    LineSetup target;
-    QVector<LineSetup> others;
-    for (int i = 0; i < 20; ++i) {
-        LineSetup line = makeLine(doc, 60.0 + i * 3.0, Vec2(i * 30.0, i * 20.0));
-        if (i == 10) target = line;
-        others.append(line);
-    }
-    for (auto& line : others) {
-        for (int k = 0; k < 4; ++k) {
-            ParamDocument& d = doc;
-            Block* blk = d.findBlock(line.blockId);
-            ParamPoint pt;
-            pt.constraint = PointConstraint::Interpolated;
-            pt.hostSegmentId = line.segId;
-            pt.isAuxiliary = true;
-            pt.visible = true;
-            pt.interpPercent = 0.2 + 0.2 * k;
-            pt.interpConstant = 0.0;
-            pt.interpOffsetAngle = 30.0;
-            pt.interpOffsetDist = 5.0;
-            pt.serial = d.newPointSerial();
-            const QUuid id = blk->addPoint(pt);
-            blk->findSegment(line.segId)->auxPointIds.push_back(id);
-        }
-    }
-    {
-        ParamDocument& d = doc;
-        const auto a = d.findBlock(target.blockId);
-        ParamPoint pt;
-        pt.constraint = PointConstraint::Interpolated;
-        pt.hostSegmentId = target.segId;
-        pt.isAuxiliary = true;
-        pt.visible = true;
-        pt.interpPercent = 0.5;
-        pt.serial = d.newPointSerial();
-        const QUuid id = a->addPoint(pt);
-        a->findSegment(target.segId)->auxPointIds.push_back(id);
-    }
-    addAnchorPoint(doc, target.blockId, target.segId);
-    doc.resolveAll();
-
-    CanvasView view(&scene);
-    view.resize(900, 600);
-    view.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&view));
-
-    auto* dlg = new cad::ui::LinePropertyDialog(
-        target.blockId, target.segId, &doc, &scene, &view);
-    dlg->show();
-    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
-    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
-             "timed out waiting for QTabWidget* to appear");
-    auto* tabs = dlg->findChild<QTabWidget*>();
-    QVERIFY(tabs);
-
-    QElapsedTimer tr;
-    tr.start();
-    doc.resolveAll();
-    const qint64 resolveMs = tr.elapsed();
-
-    // Aux point list is in 属性 tab (index 0).
-    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
-    QVERIFY(auxTab);
-    auto* list = auxTab->findChild<QListWidget*>();
-    QVERIFY(list);
-    QCOMPARE(list->count(), 5);
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
-                      list->visualItemRect(list->item(0)).center());
-    // P2-3: 等子控件出现而不是固定 sleep 20ms（负载下会让下面
-    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<cad::ui::AuxPointForm*>() != nullptr; }),
-             "timed out waiting for cad::ui::AuxPointForm* to appear");
-    auto* form = dlg->findChild<cad::ui::AuxPointForm*>();
-    QVERIFY(form && form->isVisible());
-    QLineEdit* percentEdit = percentEditOf(form);
-    QVERIFY(percentEdit);
-    QTest::mouseClick(percentEdit, Qt::LeftButton, Qt::NoModifier, QPoint(12, 6));
-    percentEdit->selectAll();
-    QTest::keyClicks(percentEdit, QStringLiteral("0.6"));
-    QCOMPARE(percentEdit->text(), QStringLiteral("0.6"));
-
-    // Switch to 锚点 (1) then back to 属性 (0)
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(1).center());
-    QCOMPARE(tabs->currentIndex(), 1);
-
-    QElapsedTimer t1;
-    t1.start();
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(0).center());
-    const qint64 msBack = t1.elapsed();
-    QCOMPARE(tabs->currentIndex(), 0);
-
-    qInfo() << "[dialog-tabs] large doc: resolveAll" << resolveMs
-            << "ms; 1->0 after typing:" << msBack << "ms";
-    delete dlg;
-}
-
-void TestDialogTabs::probeTabHitArea()
-{
-    ParamDocument doc;
-    CanvasScene scene(&doc);
-    LineSetup line;
-    setup(doc, scene, line);
-    addAnchorPoint(doc, line.blockId, line.segId);
-    doc.resolveAll();
-
-    CanvasView view(&scene);
-    view.resize(900, 600);
-    view.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&view));
-
-    auto* dlg = new cad::ui::LinePropertyDialog(
-        line.blockId, line.segId, &doc, &scene, &view);
-    dlg->show();
-    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
-    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
-             "timed out waiting for QTabWidget* to appear");
-    auto* tabs = dlg->findChild<QTabWidget*>();
-    QVERIFY(tabs);
-    auto* bar = tabs->tabBar();
-    QVERIFY(bar);
-
-    qInfo() << "[hit] dlg geo:" << dlg->geometry()
-            << "tabs geo:" << tabs->geometry()
-            << "tabbar geo:" << bar->geometry();
-    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
-    QVERIFY(auxTab);
-
-    auto widgetAt = [&](int tabIdx, int yFrac) {
-        const QRect r = bar->tabRect(tabIdx);
-        const QPoint p = bar->mapToGlobal(
-            r.topLeft() + QPoint(r.width() / 2, qMax(1, r.height() * yFrac / 4)));
-        // widget-tree hit test: QApplication::widgetAt() 是窗口像素级命中，
-        // 对 ElaDialog 的透明阴影 margin 区返回 null（Windows GetWindowFromPoint
-        // 不命中全透明像素），与字体/阴影环境耦合；childAt 走纯 widget 几何，
-        // 同时仍能检出 aux 容器盖住 tabbar 的回归。
-        auto* w = dlg->childAt(dlg->mapFromGlobal(p));
-        return w ? QString::fromLatin1(w->metaObject()->className()) : QStringLiteral("null");
-    };
-    qInfo() << "[hit] auxTab visible:" << auxTab->isVisible();
-    qInfo() << "[hit] tab0 top/mid/bot:"
-            << widgetAt(0, 1) << widgetAt(0, 2) << widgetAt(0, 3)
-            << "| tab1 mid:" << widgetAt(1, 2);
-
-    // Regression: the aux-tab container must never sit on top of the tab bar.
-    // ElaTabWidget uses an ElaTabBar (className "ElaTabBar") — a QTabBar
-    // subclass — so the hit-test asserts on that name.
-    QCOMPARE(widgetAt(0, 1), QStringLiteral("ElaTabBar"));
-    QCOMPARE(widgetAt(0, 2), QStringLiteral("ElaTabBar"));
-    QCOMPARE(widgetAt(1, 2), QStringLiteral("ElaTabBar"));
-
-    // Sanity: a click on the 锚点 tab now actually switches to it.
-    QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier,
-                      bar->tabRect(1).center());
-    QCOMPARE(tabs->currentIndex(), 1);
-    QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier,
-                      bar->tabRect(0).topLeft() + QPoint(24, 4));
-    QCOMPARE(tabs->currentIndex(), 0);
-
-    // Exhaustive sweep: any VISIBLE widget (dialog-owned or nested) whose
-    // global rect intersects the tab bar would swallow clicks on some tabs.
-    // Widgets inside the tab bar's own subtree (Ela tab close buttons etc.)
-    // are tab-bar chrome by definition — only OUTSIDE widgets must not
-    // overlap the bar.
-    const QPoint barTL = bar->mapToGlobal(QPoint(0, 0));
-    const QRect barGlobal(barTL, bar->size());
-    int overlaps = 0;
-    for (auto* w : dlg->findChildren<QWidget*>()) {
-        if (w == bar || w == tabs) continue;
-        if (bar->isAncestorOf(w)) continue;  // tab-bar-internal chrome.
-        if (!w->isVisible() && !w->isVisibleTo(dlg)) continue;
-        const QRect g(w->mapToGlobal(QPoint(0, 0)), w->size());
-        if (!g.intersects(barGlobal)) continue;
-        if (QString::fromLatin1(w->metaObject()->className())
-                .startsWith(QLatin1String("Ela")))
-            continue;  // ElaTabWidget internal chrome — allowed.
-        ++overlaps;
-        qInfo() << "[hit] OVERLAP on tabbar:" << w->metaObject()->className()
-                << "visible:" << w->isVisible()
-                << "geo:" << g;
-    }
-    qInfo() << "[hit] overlap count:" << overlaps;
-    QCOMPARE(overlaps, 0);
-
-    // Regression: cards are ElaScrollPageArea subclasses whose constructor
-    // hard-codes setFixedHeight(75) — that crushed every card's content and
-    // made the dialog unusable. The dialog lifts the constraint; assert no
-    // card is still pinned to the 75px fixed height.
-    const auto cards = dlg->findChildren<ElaScrollPageArea*>();
-    int pinned = 0;
-    for (auto* card : cards) {
-        if (card->minimumHeight() == card->maximumHeight()
-            && card->maximumHeight() <= 80) {
-            ++pinned;
-            qInfo() << "[hit] PINNED card:" << card->metaObject()->className()
-                    << "h:" << card->height();
-        } else {
-            qInfo() << "[hit] card:" << card->metaObject()->className()
-                    << "h:" << card->height();
-        }
-    }
-    qInfo() << "[hit] pinned card count:" << pinned;
-    QCOMPARE(pinned, 0);
-    for (int i = 0; i < tabs->count(); ++i) {
-        const QRect r = bar->tabRect(i);
-        const QPoint topC = bar->mapToGlobal(
-            r.topLeft() + QPoint(r.width() / 2, qMax(1, r.height() / 4)));
-        const QPoint midC = bar->mapToGlobal(r.center());
-        const QPoint botC = bar->mapToGlobal(
-            r.topLeft() + QPoint(r.width() / 2, r.height() * 3 / 4));
-        auto* wTop = QApplication::widgetAt(topC);
-        auto* wMid = QApplication::widgetAt(midC);
-        auto* wBot = QApplication::widgetAt(botC);
-        qInfo() << "[hit] tab" << i << tabs->tabText(i)
-                << "rect:" << r
-                << "top:" << (wTop ? wTop->metaObject()->className() : "null")
-                << "mid:" << (wMid ? wMid->metaObject()->className() : "null")
-                << "bot:" << (wBot ? wBot->metaObject()->className() : "null");
-    }
-    delete dlg;
-}
-
-void TestDialogTabs::switchBackWithoutEditing()
-{
-    ParamDocument doc;
-    CanvasScene scene(&doc);
-    LineSetup line;
-    setup(doc, scene, line);
-    addAnchorPoint(doc, line.blockId, line.segId);
-    doc.resolveAll();
-
-    CanvasView view(&scene);
-    view.resize(900, 600);
-    view.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&view));
-
-    auto* dlg = new cad::ui::LinePropertyDialog(
-        line.blockId, line.segId, &doc, &scene, &view);
-    dlg->show();
-    // P2-3: 等子控件出现而不是固定 sleep 80ms（负载下会让下面
-    // 的 QVERIFY 假失败 —— ctest 抖动的来源）。
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
-             "timed out waiting for QTabWidget* to appear");
-    auto* tabs = dlg->findChild<QTabWidget*>();
-    QVERIFY(tabs);
-
-    QElapsedTimer t0;
-    t0.start();
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(1).center());
-    const qint64 msToAnchor = t0.elapsed();
-    QCOMPARE(tabs->currentIndex(), 1);
-
-    QElapsedTimer t1;
-    t1.start();
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
-                      tabs->tabBar()->tabRect(0).center());
-    const qint64 msBack = t1.elapsed();
-    QCOMPARE(tabs->currentIndex(), 0);
-
-    qInfo() << "[dialog-tabs] control (no editing): 0->1:" << msToAnchor
-            << "ms; 1->0:" << msBack << "ms";
-    delete dlg;
-}
-
-/// 像素探针: 分区标题为什么"掉色" (用户报告 2026-?)。对比 几何 分区标题
-/// 与 长度 标签的真实渲染 (grab 最暗像素) + QSS 解析后的调色板。
-void TestDialogTabs::probeCardTitleColor()
-{
-    ParamDocument doc;
-    CanvasScene scene(&doc);
-    LineSetup line;
-    setup(doc, scene, line);
-    doc.resolveAll();
-
-    CanvasView view(&scene);
-    view.resize(900, 600);
-    view.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&view));
-
-    auto* dlg = new cad::ui::LinePropertyDialog(
-        line.blockId, line.segId, &doc, &scene, &view);
-    dlg->show();
-    cad::test::grabStable(*dlg);   // 等待 polish + 首次 paint: 两帧一致 = 已绘制 (替代 150ms 墙钟)
-
-    auto dump = [](const QString& tag, ElaText* t) {
-        if (!t) { qInfo().noquote() << tag << "= null"; return; }
-        const QImage img = t->grab().toImage();
-        // 文字像素 = alpha>0 (透明底); 统计 最暗 / 平均明度 / 实心占比。
-        qint64 sumL = 0, solid = 0, n = 0;
-        QColor darkest(255, 255, 255);
-        for (int y = 0; y < img.height(); ++y)
-            for (int x = 0; x < img.width(); ++x) {
-                const QColor c = img.pixelColor(x, y);
-                if (c.alpha() == 0) continue;
-                if (c.lightness() < darkest.lightness()) darkest = c;
-                sumL += c.lightness();
-                if (c.lightness() < 90) ++solid;
-                ++n;
-            }
-        qInfo().noquote()
-            << tag
-            << "| text=" << t->text()
-            << "| font=" << t->font().family() << "w" << t->font().weight()
-            << "px" << t->font().pixelSize()
-            << "| darkest=" << darkest.name()
-            << QStringLiteral("| textPx=%1 avgL=%2 solid(%3%)")
-                   .arg(n).arg(n ? sumL / n : 0).arg(n ? 100 * solid / n : 0);
-    };
-
-    for (auto* t : dlg->findChildren<ElaText*>()) {
-        if (t->text() == QString::fromUtf8("几何"))
-            dump(QStringLiteral("TITLE-几何"), t);
-        if (t->text() == QString::fromUtf8("连接"))
-            dump(QStringLiteral("TITLE-连接"), t);
-        if (t->text() == QString::fromUtf8("长度"))
-            dump(QStringLiteral("LABEL-长度"), t);
-        if (t->text() == QString::fromUtf8("连接线段"))
-            dump(QStringLiteral("LABEL-连接线段"), t);
-    }
-    delete dlg;
-}
 
 /// 回归：端点 起点|终点 双微卡上下堆叠 (2026-xx §3: 两个端点组之间夹朝向箭头)。
 /// 起点卡在上、终点卡在下、等宽; 朝向箭头在两者之间。
-void TestDialogTabs::endpointCardsStacked()
+void TestDialogTabsAngleConn::endpointCardsStacked()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -650,7 +83,7 @@ void TestDialogTabs::endpointCardsStacked()
 /// 回归：连接卡「输入框大小不一」 (用户 2026-12 反馈) —— 行内控件统一高
 /// 30px (2026-xx 紧凑化, ElaLineEdit/ElaComboBox 原生值, PointRefEdit 已对齐),
 /// 点引用输入统一宽 140px (列对齐)。
-void TestDialogTabs::connectCardUniformHeights()
+void TestDialogTabsAngleConn::connectCardUniformHeights()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -725,7 +158,7 @@ void TestDialogTabs::connectCardUniformHeights()
 // 写模型后立即 populateAngleField 按 (尚未重解的) resolvedPos 读回世界角,
 // 拿到旧值覆盖用户刚输入的内容。修复后输入保留, 世界角由 onDocResolved
 // (重解广播) 刷新。
-void TestDialogTabs::independentAngleInputDoesNotJump()
+void TestDialogTabsAngleConn::independentAngleInputDoesNotJump()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -782,7 +215,7 @@ void TestDialogTabs::independentAngleInputDoesNotJump()
 
 // REPRO (用户报告 2026-12): 「跟随角度」状态下点 ∠/⌒ 切换不到弧长模式。
 // 逐步验证: 数值跟随角 → 弧长; 弧长 → 角度; 公式跟随角 → 弧长 (应被拒, 设计如此)。
-void TestDialogTabs::followerAngleModeToggleToArc()
+void TestDialogTabsAngleConn::followerAngleModeToggleToArc()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -892,7 +325,7 @@ void TestDialogTabs::followerAngleModeToggleToArc()
     delete dlg;
 }
 
-void TestDialogTabs::angleFormulaPreservedInDialog()
+void TestDialogTabsAngleConn::angleFormulaPreservedInDialog()
 {
     // ① 自由线使用表达式角度 (如 1+1):
     // 打开面板必须显示 "1+1" 原文, 副标签显示 "= 2°", 绝不自动把表达式清空并直接显示 2.
@@ -1010,7 +443,7 @@ void TestDialogTabs::angleFormulaPreservedInDialog()
 //   · 双端连接 = 桥接线: 起点连接行输入 leader P# → badge「桥接线」+
 //     基准线卡 (SegmentRefCard) 隐藏 + 起点卡「跟随」。
 // ─────────────────────────────────────────────────────────────────────────
-void TestDialogTabs::endConnectionRowAndBadge()
+void TestDialogTabsAngleConn::endConnectionRowAndBadge()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -1124,7 +557,7 @@ void TestDialogTabs::endConnectionRowAndBadge()
 //     (旧实现: 只改目标点, angleOnly 保持, 位置维度仍自由 —— 画布上
 //     只有线段特效, 位置不跟随)。
 // ─────────────────────────────────────────────────────────────────────────
-void TestDialogTabs::detachClearsConnectEditAndRetargetReconnects()
+void TestDialogTabsAngleConn::detachClearsConnectEditAndRetargetReconnects()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -1230,7 +663,7 @@ void TestDialogTabs::detachClearsConnectEditAndRetargetReconnects()
 //     方向基准不随新宿主漂移 —— 拆开保留的角度继续由旧的活基准线驱动。
 //   · 自定义基准重连时原样保留。
 // ─────────────────────────────────────────────────────────────────────────
-void TestDialogTabs::reattachPreservesAngleRef()
+void TestDialogTabsAngleConn::reattachPreservesAngleRef()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -1345,7 +778,7 @@ void TestDialogTabs::reattachPreservesAngleRef()
 // [链接当前线] 按钮 (用户 2026-09 拍板): 清空自定义角度基准回自动态 ——
 // 方向基准 = 当前所连线段出口方向 (方向行灰显回显当前线段两点)。
 // ─────────────────────────────────────────────────────────────────────────
-void TestDialogTabs::linkCurrentLineButtonClearsRef()
+void TestDialogTabsAngleConn::linkCurrentLineButtonClearsRef()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -1433,7 +866,7 @@ void TestDialogTabs::linkCurrentLineButtonClearsRef()
 // 2026-09 修正: 独立角**不锁「链接当前线」按钮** —— 独立角 + 自定义基准
 // (ref 字段 = 还原缓存) 时按钮可用, 点击 = 清空基准 + 退出独立角回自动态。
 // ─────────────────────────────────────────────────────────────────────────
-void TestDialogTabs::independentAngleKeepsRefEditsEnabled()
+void TestDialogTabsAngleConn::independentAngleKeepsRefEditsEnabled()
 {
     ParamDocument doc;
     CanvasScene scene(&doc);
@@ -1521,79 +954,6 @@ void TestDialogTabs::independentAngleKeepsRefEditsEnabled()
     delete dlg;
 }
 
-void TestDialogTabs::auxPointOutgoingFollowerMountAndDetach()
-{
-    ParamDocument doc;
-    CanvasScene scene(&doc);
-    doc.setActiveLayer(layerIdAt(doc, 1));
-    LineSetup leaderLine = makeLine(doc, 100.0, Vec2(0.0, 0.0));
-    LineSetup followerLine = makeLine(doc, 60.0, Vec2(50.0, 50.0));
-    const QUuid auxId = addAuxPoint(doc, followerLine.blockId, followerLine.segId);
 
-    // Follower line connects to leaderLine via follower's auxPoint
-    Attachment att;
-    att.fromBlockId = followerLine.blockId;
-    att.fromPointId = auxId;
-    att.toBlockId = leaderLine.blockId;
-    att.toPointId = leaderLine.startId;
-    att.toSegmentId = leaderLine.segId;
-    att.followerAngle = 90.0;
-    QVERIFY(doc.addAttachment(att));
-    doc.resolveAll();
-
-    CanvasView view(&scene);
-    view.resize(900, 600);
-    view.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&view));
-
-    auto* dlg = new cad::ui::LinePropertyDialog(
-        followerLine.blockId, followerLine.segId, &doc, &scene, &view);
-    dlg->show();
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<QTabWidget*>() != nullptr; }),
-             "timed out waiting for QTabWidget*");
-    auto* tabs = dlg->findChild<QTabWidget*>();
-    QVERIFY(tabs);
-
-    // 辅助点已作为【线上点】分区嵌入在属性页 (tab 0)
-    auto* auxTab = dlg->findChild<cad::ui::SegmentAuxTab*>();
-    QVERIFY(auxTab);
-
-    // Click aux list item
-    auto* list = auxTab->findChild<QListWidget*>();
-    QVERIFY(list);
-    QCOMPARE(list->count(), 1);
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
-                      list->visualItemRect(list->item(0)).center());
-
-    QVERIFY2(cad::test::waitUntil([&] { return dlg->findChild<cad::ui::AuxPointForm*>() != nullptr; }),
-             "timed out waiting for AuxPointForm");
-    auto* form = dlg->findChild<cad::ui::AuxPointForm*>();
-    QVERIFY(form && form->isVisible());
-
-    auto* lblMount = form->findChild<ElaText*>(QStringLiteral("auxMountInfo"));
-    auto* btnDetach = form->findChild<QPushButton*>(QStringLiteral("auxDetachBtn"));
-    QVERIFY(lblMount && btnDetach);
-
-    const auto* ldrSeg = doc.findBlock(leaderLine.blockId)->findSegment(leaderLine.segId);
-    const QString ldrTag = cad::param::Serial::tag(ldrSeg->serial);
-
-    // Verify label contains "跟随" and the leader tag
-    QVERIFY2(lblMount->text().contains(QString::fromUtf8("跟随")) &&
-             lblMount->text().contains(ldrTag),
-             "辅助点挂载信息必须显示跟随的宿主线段");
-    QVERIFY2(btnDetach->isEnabled(), "拆开按钮应处于可用状态");
-
-    // Click detach button
-    btnDetach->click();
-    QVERIFY2(cad::test::waitUntil([&] { return doc.attachments().empty(); }),
-             "点击拆开后 attachment 必须被彻底移除");
-    QVERIFY2(lblMount->text() == QString::fromUtf8("无挂载"),
-             "拆开后辅助点状态必须变为无挂载");
-    QVERIFY2(!btnDetach->isEnabled(), "拆开后按钮必须禁用");
-
-    delete dlg;
-}
-
-
-QTEST_MAIN(TestDialogTabs)
-#include "test_dialog_tabs.moc"
+QTEST_MAIN(TestDialogTabsAngleConn)
+#include "test_dialog_tabs_angle_conn.moc"

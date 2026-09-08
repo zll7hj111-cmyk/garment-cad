@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include <algorithm>
-#include <limits>
 
 #include <QGraphicsSceneMouseEvent>
 #include <QKeyEvent>
@@ -10,8 +9,6 @@
 #include <QUndoStack>
 
 #include "canvas/CanvasScene.h"
-#include "canvas/CanvasView.h"
-#include "canvas/overlay/TransientOverlay.h"
 #include "canvas/BlockItem.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -22,8 +19,10 @@
 #include "tools/MarqueeGesture.h"
 #include "tools/RotateCopyGesture.h"
 #include "tools/RotateGizmo.h"
-#include "ui/LinePropertyDialog.h"
+#include "tools/RotateDragMath.h"
+#include "tools/RotateHintTexts.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "parametric/FollowerAngle.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -33,14 +32,14 @@ namespace cad::tools {
 
 ToolDescriptor ToolRotate::describe()
 {
-    ToolDescriptor d;
-    d.id          = ToolType::Rotate;
-    d.displayName = QString::fromUtf8("旋转(&R)");
-    d.iconName    = QStringLiteral("rotate");
-    d.shortcut    = QKeySequence(Qt::CTRL | Qt::Key_T);
-    d.hintText    = QString::fromUtf8("旋转：选择线段 | 右键或回车确定 | 点击指定中心 | 拖动旋转(Shift吸附15°) | 回车/松开提交 | Esc取消");
-    d.factory     = []() { return std::make_unique<ToolRotate>(); };
-    return d;
+    return ToolDescriptor{
+        .id          = ToolType::Rotate,
+        .displayName = QString::fromUtf8("旋转(&R)"),
+        .iconName    = QStringLiteral("rotate"),
+        .shortcut    = QKeySequence(Qt::CTRL | Qt::Key_T),
+        .hintText    = QString::fromUtf8("旋转：选择线段 | 右键或回车确认 | 点击指定中心 | 拖动旋转(Shift切换约束) | 回车/松开提交 | Esc取消"),
+        .factory     = []() { return std::make_unique<ToolRotate>(); },
+    };
 }
 
 ToolRotate::~ToolRotate() = default;
@@ -49,6 +48,7 @@ void ToolRotate::onActivate(CanvasScene& scene, cad::param::ParamDocument* param
 {
     (void)paramDoc;
     m_state = RotateState::Idle;
+    m_constraintMode = RotateConstraintMode::None;
     m_copyGesture = std::make_unique<RotateCopyGesture>(this);
     m_gizmo = std::make_unique<RotateGizmo>(&scene);
     m_marqueeGesture = std::make_unique<MarqueeGesture>(&scene, paramDoc);
@@ -77,6 +77,7 @@ void ToolRotate::onDeactivate()
     reportHintOverride(QString());
     m_session.clear();
     m_state = RotateState::Idle;
+    m_constraintMode = RotateConstraintMode::None;
     reportRotateAnchorState();
 }
 
@@ -86,124 +87,136 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
     const cad::geo::Vec2 pos(event->scenePos().x(), event->scenePos().y());
 
     if (event->button() == Qt::RightButton) {
-        if (m_copyGesture && m_copyGesture->active()) {
-            m_copyGesture->cancel();
-            m_phase = m_selectionConfirmed ? (m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot) : RotatePhase::Selecting;
-            updateGizmo();
-            updateStatusHint();
-            event->accept();
-            return;
-        }
-        if (m_state == RotateState::Rotating) {
-            cancelRotation();
-            m_phase = m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot;
-            updateStatusHint();
-            event->accept();
-            return;
-        }
-        if (m_input.pressPending()) m_input.setPressPending(false);
-        if (!m_multi.selection().isEmpty() || !m_session.blockId().isNull()) {
-            if (m_selectionConfirmed) {
-                if (m_input.pivotPicked()) {
-                    m_input.setPivotPicked(false);
-                    m_phase = RotatePhase::PickingPivot;
-                    removeGizmo();
-                    updateStatusHint();
-                } else {
-                    applySelectionConfirmed(false);
-                }
-            } else {
-                applySelectionConfirmed(true);
-            }
-            event->accept();
-            return;
-        } else {
-            clearTarget();
-            event->accept();
-            return;
-        }
+        handleRightButtonPress(event);
+        return;
     }
     if (event->button() != Qt::LeftButton) return;
 
     if (!m_selectionConfirmed) {
-        // ── 阶段 1：选图元（复用选择工具交互逻辑） ──
-        if (event->modifiers() & Qt::ShiftModifier) {
-            const QUuid hit = hitBlock(pos);
-            if (!hit.isNull()) {
-                if (m_multi.selection().contains(hit)) m_multi.selection().remove(hit);
-                else                                  m_multi.selection().insert(hit);
-                adoptSelection(m_multi.selection());
-            } else if (m_marqueeGesture) {
-                m_marqueeGesture->begin(pos, m_multi.selection());
-            }
-            return;
-        }
+        handleSelectingPress(pos, event);
+        return;
+    }
 
-        if (isMultiSelect() || m_multi.isMarqueeSelected()) {
-            const QUuid hit = hitBlock(pos);
-            if (!hit.isNull()) {
-                if (!m_multi.selection().contains(hit)) {
-                    selectTarget(hit, pos);
-                }
-            } else if (m_marqueeGesture) {
-                m_marqueeGesture->begin(pos, m_multi.selection());
-            }
-            return;
-        }
+    handlePivotOrRotatePress(pos, event);
+}
 
-        const QUuid hitEnd = m_session.anchorPointAt(m_paramDoc, pos, currentZoom());
-        bool endpointSwitched = false;
-        if (!hitEnd.isNull() && hitEnd != m_session.anchor().pointId) {
-            bool anchorLocked = false;
-            if (const auto* blk = m_paramDoc->findBlock(m_session.blockId());
-                blk && !blk->segments.empty()) {
-                anchorLocked =
-                    m_session.attachmentAtPoint(m_paramDoc, blk->segments.front().startPointId)
-                    || m_session.attachmentAtPoint(m_paramDoc, blk->segments.front().endPointId);
-            }
-            if (!anchorLocked) {
-                commitCurrent();
-                m_session.anchor().isEnd = false;
-                if (const auto* blk = m_paramDoc->findBlock(m_session.blockId());
-                    blk && !blk->segments.empty()) {
-                    m_session.anchor().isEnd = (hitEnd == blk->segments.front().endPointId);
-                }
-                rebuildAnchorState();
-                reportRotateAnchorState();
-                updateStatusHint();
+void ToolRotate::handleRightButtonPress(QGraphicsSceneMouseEvent* event)
+{
+    if (m_copyGesture && m_copyGesture->active()) {
+        m_copyGesture->cancel();
+        m_phase = m_selectionConfirmed ? (m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot) : RotatePhase::Selecting;
+        updateGizmo();
+        updateStatusHint();
+        event->accept();
+        return;
+    }
+    if (m_state == RotateState::Rotating) {
+        cancelRotation();
+        m_phase = m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot;
+        updateStatusHint();
+        event->accept();
+        return;
+    }
+    if (m_input.pressPending()) m_input.setPressPending(false);
+    if (!m_multi.selection().isEmpty() || !m_session.blockId().isNull()) {
+        if (m_selectionConfirmed) {
+            if (m_input.pivotPicked()) {
+                m_input.setPivotPicked(false);
+                m_phase = RotatePhase::PickingPivot;
                 removeGizmo();
-                buildGizmo();
-                updateGizmo();
-                endpointSwitched = true;
-            }
-        }
-        if (endpointSwitched) return;
-
-        const QUuid self = hitBlock(pos);
-        if (!self.isNull()) {
-            if (self != m_session.blockId()) {
-                commitCurrent();
-                selectTarget(self, pos);
-            }
-            if ((event->modifiers() & Qt::ControlModifier) && !isMultiSelect()) {
-                m_input.setPivotPicked(true);
-                m_phase = RotatePhase::Rotating;
-                m_copyGesture->begin(pos);
-                return;
+                updateStatusHint();
+            } else {
+                applySelectionConfirmed(false);
             }
         } else {
-            if (m_state == RotateState::Idle) {
-                if (m_marqueeGesture) {
-                    m_marqueeGesture->begin(pos, m_multi.selection());
-                }
-            } else {
-                clearTarget();
-            }
+            applySelectionConfirmed(true);
+        }
+        event->accept();
+    } else {
+        clearTarget();
+        event->accept();
+    }
+}
+
+bool ToolRotate::trySwitchAnchor(const QUuid& hitEnd)
+{
+    bool anchorLocked = false;
+    if (const auto* blk = m_paramDoc->findBlock(m_session.blockId()); blk && !blk->segments.empty()) {
+        anchorLocked = m_session.attachmentAtPoint(m_paramDoc, blk->segments.front().startPointId)
+                    || m_session.attachmentAtPoint(m_paramDoc, blk->segments.front().endPointId);
+    }
+    if (anchorLocked) return false;
+
+    commitCurrent();
+    m_session.anchor().isEnd = false;
+    if (const auto* blk = m_paramDoc->findBlock(m_session.blockId()); blk && !blk->segments.empty()) {
+        m_session.anchor().isEnd = (hitEnd == blk->segments.front().endPointId);
+    }
+    rebuildAnchorState();
+    reportRotateAnchorState();
+    updateStatusHint();
+    removeGizmo();
+    buildGizmo();
+    updateGizmo();
+    return true;
+}
+
+void ToolRotate::handleSelectingPress(const cad::geo::Vec2& pos, QGraphicsSceneMouseEvent* event)
+{
+    if (event->modifiers() & Qt::ShiftModifier) {
+        const QUuid hit = hitBlock(pos);
+        if (!hit.isNull()) {
+            if (m_multi.selection().contains(hit)) m_multi.selection().remove(hit);
+            else                                  m_multi.selection().insert(hit);
+            adoptSelection(m_multi.selection());
+        } else if (m_marqueeGesture) {
+            m_marqueeGesture->begin(pos, m_multi.selection());
         }
         return;
     }
 
-    // ── 选区已确认：阶段 2 (定中心) 或 阶段 3 (准备旋转) ──
+    if (isMultiSelect() || m_multi.isMarqueeSelected()) {
+        const QUuid hit = hitBlock(pos);
+        if (!hit.isNull()) {
+            if (!m_multi.selection().contains(hit)) {
+                selectTarget(hit, pos);
+            }
+        } else if (m_marqueeGesture) {
+            m_marqueeGesture->begin(pos, m_multi.selection());
+        }
+        return;
+    }
+
+    const QUuid hitEnd = m_session.anchorPointAt(m_paramDoc, pos, currentZoom());
+    if (!hitEnd.isNull() && hitEnd != m_session.anchor().pointId) {
+        if (trySwitchAnchor(hitEnd)) return;
+    }
+
+    const QUuid self = hitBlock(pos);
+    if (!self.isNull()) {
+        if (self != m_session.blockId()) {
+            commitCurrent();
+            selectTarget(self, pos);
+        }
+        if ((event->modifiers() & Qt::ControlModifier) && !isMultiSelect()) {
+            m_input.setPivotPicked(true);
+            m_phase = RotatePhase::Rotating;
+            m_copyGesture->begin(pos);
+            return;
+        }
+    } else {
+        if (m_state == RotateState::Idle) {
+            if (m_marqueeGesture) {
+                m_marqueeGesture->begin(pos, m_multi.selection());
+            }
+        } else {
+            clearTarget();
+        }
+    }
+}
+
+void ToolRotate::handlePivotOrRotatePress(const cad::geo::Vec2& pos, QGraphicsSceneMouseEvent* event)
+{
     const bool ctrl = (event->modifiers() & Qt::ControlModifier);
     if (ctrl && !isMultiSelect()) {
         m_input.setPivotPicked(true);
@@ -213,7 +226,6 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
     }
 
     if (!m_input.pivotPicked()) {
-        // 阶段 2：单击端点或空白处以确定轴心
         const bool hasSingleDefaultAnchor = !isMultiSelect() && !m_multi.isMarqueeSelected() && !m_session.blockId().isNull();
         const cad::geo::Vec2 pivot = m_input.hoverSnapped() ? m_input.hoverSnapPoint() : pos;
         m_input.setPendingHoverSnapped(m_input.hoverSnapped());
@@ -229,7 +241,6 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
         return;
     }
 
-    // 阶段 3：轴心已定，按下左键开始拖拽旋转
     beginRotation(pos);
     m_phase = RotatePhase::Rotating;
 }
@@ -237,6 +248,7 @@ void ToolRotate::mousePress(QGraphicsSceneMouseEvent* event)
 void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
 {
     const cad::geo::Vec2 pos(event->scenePos().x(), event->scenePos().y());
+    m_lastMousePos = pos;
 
     if (m_marqueeGesture && m_marqueeGesture->active()) {
         m_marqueeGesture->update(pos);
@@ -265,8 +277,7 @@ void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
                     }
                 }
                 buildGizmo();
-                const bool snap = (event->modifiers() & Qt::ShiftModifier);
-                updateRotation(pos, snap);
+                updateRotation(pos, false);
                 return;
             }
         }
@@ -292,8 +303,60 @@ void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
         m_copyGesture->convert(pos);
         if (!m_copyGesture->active()) return;
     }
-    const bool snap = (event->modifiers() & Qt::ShiftModifier);
-    updateRotation(pos, snap);
+    updateRotation(pos, false);
+}
+
+void ToolRotate::handleMarqueeRelease(const cad::geo::Vec2& pos, QGraphicsSceneMouseEvent* event)
+{
+    const double zoom = currentZoom();
+    const double dist = (pos - m_marqueeGesture->startPos()).length();
+    QSet<QUuid> hits = m_marqueeGesture->end(pos);
+
+    if (dist < 3.0 / zoom) {
+        if (!(event->modifiers() & Qt::ShiftModifier)) {
+            clearTarget();
+        }
+        return;
+    }
+    for (auto it = hits.begin(); it != hits.end(); ) {
+        const auto* blk = m_paramDoc ? m_paramDoc->findBlock(*it) : nullptr;
+        if (!blk || blk->isBridge || blk->segments.empty()) {
+            it = hits.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (!hits.isEmpty()) {
+        adoptSelection(hits);
+        m_multi.setMarqueeSelected(hits.size() > 1);
+        applySelectionConfirmed(false);
+    } else {
+        clearTarget();
+    }
+}
+
+void ToolRotate::handlePendingPivotRelease()
+{
+    m_input.setPressPending(false);
+    m_input.setPivotPicked(true);
+    if (m_state == RotateState::Rotating) {
+        restoreBase();
+        m_state = RotateState::Ready;
+    }
+    if (!isMultiSelect() && !m_multi.isMarqueeSelected() && !m_session.blockId().isNull()) {
+        const QUuid hitEnd = m_session.anchorPointAt(m_paramDoc, m_input.pendingPivot(), currentZoom());
+        if (!hitEnd.isNull()) {
+            if (const auto* blk = m_paramDoc->findBlock(m_session.blockId()); blk && !blk->segments.empty()) {
+                m_session.anchor().isEnd = (hitEnd == blk->segments.front().endPointId);
+                m_session.rebuildAnchorState(m_paramDoc);
+            }
+        }
+    }
+    m_session.setPivot(m_input.pendingPivot());
+    m_phase = RotatePhase::ReadyToRotate;
+    buildGizmo();
+    updateGizmo();
+    updateStatusHint();
 }
 
 void ToolRotate::mouseRelease(QGraphicsSceneMouseEvent* event)
@@ -302,57 +365,12 @@ void ToolRotate::mouseRelease(QGraphicsSceneMouseEvent* event)
 
     if (m_marqueeGesture && m_marqueeGesture->active()) {
         const QPointF up = event->scenePos();
-        const cad::geo::Vec2 pos(up.x(), up.y());
-        const double zoom = currentZoom();
-        const double dist = (pos - m_marqueeGesture->startPos()).length();
-        QSet<QUuid> hits = m_marqueeGesture->end(pos);
-
-        if (dist < 3.0 / zoom) {
-            if (!(event->modifiers() & Qt::ShiftModifier)) {
-                clearTarget();
-                return;
-            }
-        } else {
-            for (auto it = hits.begin(); it != hits.end(); ) {
-                const auto* blk = m_paramDoc ? m_paramDoc->findBlock(*it) : nullptr;
-                if (!blk || blk->isBridge || blk->segments.empty()) {
-                    it = hits.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            if (!hits.isEmpty()) {
-                adoptSelection(hits);
-                m_multi.setMarqueeSelected(true);
-                applySelectionConfirmed(false);
-            } else {
-                clearTarget();
-            }
-            return;
-        }
+        handleMarqueeRelease(cad::geo::Vec2(up.x(), up.y()), event);
+        return;
     }
 
     if (m_input.pressPending()) {
-        m_input.setPressPending(false);
-        m_input.setPivotPicked(true);
-        if (m_state == RotateState::Rotating) {
-            restoreBase();
-            m_state = RotateState::Ready;
-        }
-        if (!isMultiSelect() && !m_multi.isMarqueeSelected() && !m_session.blockId().isNull()) {
-            const QUuid hitEnd = m_session.anchorPointAt(m_paramDoc, m_input.pendingPivot(), currentZoom());
-            if (!hitEnd.isNull()) {
-                if (const auto* blk = m_paramDoc->findBlock(m_session.blockId()); blk && !blk->segments.empty()) {
-                    m_session.anchor().isEnd = (hitEnd == blk->segments.front().endPointId);
-                    m_session.rebuildAnchorState(m_paramDoc);
-                }
-            }
-        }
-        m_session.setPivot(m_input.pendingPivot());
-        m_phase = RotatePhase::ReadyToRotate;
-        buildGizmo();
-        updateGizmo();
-        updateStatusHint();
+        handlePendingPivotRelease();
         return;
     }
 
@@ -379,42 +397,41 @@ void ToolRotate::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
         cancelRotation();
     clearTarget();
 
-    const auto hits = blockHitsAtScene(*m_scene, *m_paramDoc, event->scenePos());
-    if (hits.empty() || hits.front().segmentId.isNull()) return;
+    openRotateLinePropertyDialog(m_scene, m_paramDoc, event->scenePos());
+}
 
-    QWidget* parentWidget = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
-    auto* dlg = new cad::ui::LinePropertyDialog(hits.front().blockId, hits.front().segmentId,
-                                                m_paramDoc, m_scene, parentWidget);
-    dlg->show();
+void ToolRotate::handleEscapeKey()
+{
+    if (m_marqueeGesture && m_marqueeGesture->active()) {
+        m_marqueeGesture->cancel();
+    } else if (m_copyGesture && m_copyGesture->active()) {
+        m_copyGesture->cancel();
+        m_phase = m_selectionConfirmed ? (m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot) : RotatePhase::Selecting;
+        updateGizmo();
+        updateStatusHint();
+    } else if (m_state == RotateState::Rotating) {
+        cancelRotation();
+        m_phase = m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot;
+        updateStatusHint();
+    } else if (m_state == RotateState::Ready && m_selectionConfirmed) {
+        if (m_input.pivotPicked()) {
+            m_input.setPivotPicked(false);
+            m_phase = RotatePhase::PickingPivot;
+            removeGizmo();
+            updateStatusHint();
+        } else {
+            applySelectionConfirmed(false);
+        }
+    } else {
+        restoreBase();
+        clearTarget();
+    }
 }
 
 void ToolRotate::keyPress(QKeyEvent* event)
 {
     if (event->key() == Qt::Key_Escape) {
-        if (m_marqueeGesture && m_marqueeGesture->active()) {
-            m_marqueeGesture->cancel();
-        } else if (m_copyGesture && m_copyGesture->active()) {
-            m_copyGesture->cancel();
-            m_phase = m_selectionConfirmed ? (m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot) : RotatePhase::Selecting;
-            updateGizmo();
-            updateStatusHint();
-        } else if (m_state == RotateState::Rotating) {
-            cancelRotation();
-            m_phase = m_input.pivotPicked() ? RotatePhase::ReadyToRotate : RotatePhase::PickingPivot;
-            updateStatusHint();
-        } else if (m_state == RotateState::Ready && m_selectionConfirmed) {
-            if (m_input.pivotPicked()) {
-                m_input.setPivotPicked(false);
-                m_phase = RotatePhase::PickingPivot;
-                removeGizmo();
-                updateStatusHint();
-            } else {
-                applySelectionConfirmed(false);
-            }
-        } else {
-            restoreBase();
-            clearTarget();
-        }
+        handleEscapeKey();
         event->accept();
     } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space) {
         if (m_state == RotateState::Ready && !m_selectionConfirmed)
@@ -423,7 +440,24 @@ void ToolRotate::keyPress(QKeyEvent* event)
     } else if (event->key() == Qt::Key_X) {
         if (!m_selectionConfirmed) toggleAnchor();
         event->accept();
+    } else if (event->key() == Qt::Key_Shift) {
+        toggleConstraintMode();
+        event->accept();
     }
+}
+
+void ToolRotate::toggleConstraintMode()
+{
+    if (m_session.isConnected()) {
+        m_constraintMode = (m_constraintMode == RotateConstraintMode::None) ? RotateConstraintMode::Baseline
+                         : (m_constraintMode == RotateConstraintMode::Baseline) ? RotateConstraintMode::World
+                         : RotateConstraintMode::None;
+    } else {
+        m_constraintMode = (m_constraintMode == RotateConstraintMode::None) ? RotateConstraintMode::World
+                                                                            : RotateConstraintMode::None;
+    }
+    updateStatusHint();
+    if (m_state == RotateState::Rotating) updateRotation(m_lastMousePos, false);
 }
 
 void ToolRotate::toggleAnchor()
@@ -462,7 +496,7 @@ void ToolRotate::syncSelectionVisual()
         if (BlockItem* bi = m_scene->findBlockItem(blk.id)) {
             const bool inSel = m_multi.selection().contains(blk.id);
             bi->setToolSelected(inSel);
-            bi->setToolLocked(inSel);
+            bi->setToolLocked(inSel && m_selectionConfirmed);
         }
     }
 }
@@ -476,6 +510,7 @@ void ToolRotate::adoptSelection(const QSet<QUuid>& blockIds)
 
     if (m_multi.selection().size() == 1) {
         m_session.setupTarget(m_paramDoc, *m_multi.selection().begin());
+        m_multi.setMarqueeSelected(false);
     } else {
         m_session.clear();
     }
@@ -484,6 +519,12 @@ void ToolRotate::adoptSelection(const QSet<QUuid>& blockIds)
     m_input.setPivotPicked(false);
     applySelectionConfirmed(false);
     syncSelectionVisual();
+    if (m_multi.selection().size() == 1) {
+        reportRotateAnchorState();
+        reportStripTarget();
+        buildGizmo();
+        updateGizmo();
+    }
     updateStatusHint();
     m_scene->refreshAllBlockItems();
 }
@@ -546,29 +587,11 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
 
         m_state = RotateState::Rotating;
         const cad::geo::Vec2 d = pos - m_session.pivot();
-        m_dragCursorAngle0 = std::atan2(d.y, d.x);
-        m_dragCursorAnglePrev = m_dragCursorAngle0;
+        m_dragCursorAngle0 = m_dragCursorAnglePrev = std::atan2(d.y, d.x);
         m_accumulatedAngleDeg = 0.0;
         m_dragAngle0 = 0.0;
 
-        m_guidePoint = pos;
-        double bestDist = std::numeric_limits<double>::max();
-        if (m_paramDoc) {
-            for (const auto& blkId : m_multi.selection()) {
-                if (const auto* b = m_paramDoc->findBlock(blkId)) {
-                    for (const auto& pt : b->points) {
-                        if (pt.resolved) {
-                            const cad::geo::Vec2 wpt = b->worldPos(pt.id);
-                            const double dist = wpt.distanceTo(pos);
-                            if (dist < bestDist) {
-                                bestDist = dist;
-                                m_guidePoint = wpt;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        m_guidePoint = findClosestGuidePoint(m_paramDoc, m_multi.selection(), pos);
 
         if (m_paramDoc) m_paramDoc->resolveAll();
         if (m_scene) m_scene->syncBlockPositions();
@@ -596,26 +619,23 @@ void ToolRotate::beginRotation(const cad::geo::Vec2& pos)
     }
     m_state = RotateState::Rotating;
     const cad::geo::Vec2 d = pos - m_session.pivot();
-    m_dragCursorAngle0 = std::atan2(d.y, d.x);
-    m_dragCursorAnglePrev = m_dragCursorAngle0;
+    m_dragCursorAngle0 = m_dragCursorAnglePrev = std::atan2(d.y, d.x);
     m_accumulatedAngleDeg = 0.0;
     m_dragAngle0 = currentAngleDeg();
 }
 
-void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
+void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool /*snap*/)
 {
     if (m_state != RotateState::Rotating) return;
-    const cad::geo::Vec2 d = pos - m_session.pivot();
-    const double theta = std::atan2(d.y, d.x);
-    const double stepRad = cad::geo::normalizeRad(theta - m_dragCursorAnglePrev);
-    m_dragCursorAnglePrev = theta;
-    m_accumulatedAngleDeg += cad::geo::radToDeg(stepRad);
+    m_lastMousePos = pos;
+
+    auto step = computeDragStep(pos, m_session.pivot(), m_dragCursorAnglePrev);
+    m_dragCursorAnglePrev = step.newCursorAngle;
+    m_accumulatedAngleDeg += step.stepDeg;
 
     if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
-        double deltaDeg = m_accumulatedAngleDeg;
-        if (snap) {
-            deltaDeg = std::round(deltaDeg / 15.0) * 15.0;
-        } else {
+        double deltaDeg = computeMultiDeltaDeg(m_accumulatedAngleDeg, m_constraintMode);
+        if (m_constraintMode == RotateConstraintMode::None) {
             m_aimSnap.checkGuideSnap(m_paramDoc, m_scene, m_multi.selection(),
                                      m_session.pivot(), m_guidePoint, currentZoom(), deltaDeg);
         }
@@ -625,21 +645,18 @@ void ToolRotate::updateRotation(const cad::geo::Vec2& pos, bool snap)
         return;
     }
 
-    double target;
-    if (m_copyGesture->active()) {
-        target = m_dragAngle0 + m_accumulatedAngleDeg;
-        if (snap) target = std::round(target / 15.0) * 15.0;
-    } else if (m_session.isConnected()) {
-        const double alpha0 = cad::geo::normalizeDeg360(m_dragAngle0);
-        double alpha = cad::geo::normalizeDeg360(alpha0 - m_accumulatedAngleDeg);
-        if (snap) alpha = std::round(alpha / 15.0) * 15.0;
-        target = cad::geo::normalizeDeg180(alpha);
-    } else {
-        target = m_dragAngle0 + m_accumulatedAngleDeg;
-        if (snap) target = std::round(target / 15.0) * 15.0;
-    }
+    DragSample sample{
+        .isCopyGestureActive = (m_copyGesture && m_copyGesture->active()),
+        .isConnected = m_session.isConnected(),
+        .constraintMode = m_constraintMode,
+        .dragAngle0 = m_dragAngle0,
+        .accumulatedAngleDeg = m_accumulatedAngleDeg,
+        .refWorldRad = m_session.refWorldRad(),
+        .localDir = m_session.localDir(),
+    };
+    double target = computeDragTargetDeg(sample);
 
-    if (!snap) checkEndpointAimSnap(target);
+    if (m_constraintMode == RotateConstraintMode::None) checkEndpointAimSnap(target);
 
     applyAngleDeg(target);
     updateGizmo();
@@ -683,21 +700,15 @@ void ToolRotate::cancelRotation() {
 
 void ToolRotate::commitCurrent() {
     if (!m_paramDoc || !m_undoStack) return;
-    if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
-        m_multi.commit(m_paramDoc, m_undoStack);
-    } else {
-        m_session.commit(m_paramDoc, m_undoStack);
-    }
+    if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) m_multi.commit(m_paramDoc, m_undoStack);
+    else m_session.commit(m_paramDoc, m_undoStack);
     updateGizmo();
 }
 
 void ToolRotate::restoreBase() {
     if (!m_paramDoc) return;
-    if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
-        m_multi.restoreBase(m_paramDoc, m_scene);
-        return;
-    }
-    m_session.restoreBase(m_paramDoc, m_scene);
+    if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) m_multi.restoreBase(m_paramDoc, m_scene);
+    else m_session.restoreBase(m_paramDoc, m_scene);
 }
 
 double ToolRotate::currentAngleDeg() const {
@@ -724,7 +735,7 @@ void ToolRotate::reportRotateAnchorState() {
             const auto& seg = blk->segments.front();
             if (m_session.attachmentAtPoint(m_paramDoc, seg.startPointId) || m_session.attachmentAtPoint(m_paramDoc, seg.endPointId)) {
                 canToggle = false;
-                reason = QString::fromUtf8("已连接线段禁止切换锚心（先断开连接）");
+                reason = buildAnchorLockedReason();
             }
         }
     }
@@ -733,29 +744,19 @@ void ToolRotate::reportRotateAnchorState() {
 void ToolRotate::onReverseRequested(const QUuid&, const QUuid&) { toggleAnchor(); }
 
 void ToolRotate::updateStatusHint() {
-    if (m_copyGesture && m_copyGesture->active()) {
-        reportHintOverride(QString::fromUtf8("旋转复制 %1°").arg(cad::geo::Units::formatDegValue(m_copyGesture->currentRelativeAngle())));
-        return;
-    }
-    if (m_state == RotateState::Idle) {
-        reportHintOverride(QString());
-    } else if (m_state == RotateState::Rotating) {
-        reportHintOverride(QString::fromUtf8("旋转中 · 松手提交 · Esc 回位"));
-    } else if (m_state == RotateState::Ready) {
-        if (!m_selectionConfirmed) {
-            if (!m_session.blockId().isNull() && m_multi.selection().size() <= 1) {
-                reportHintOverride(QString::fromUtf8("旋转：锚心 %1 · 右键或回车确认选区 | 点击切换端点").arg(m_session.anchorTag(m_paramDoc)));
-            } else {
-                reportHintOverride(QString::fromUtf8("已选 %1 条线段 · 右键或回车确认选区 | Shift加减选 | Esc清除").arg(m_multi.selection().size()));
-            }
-        } else if (!m_input.pivotPicked()) {
-            reportHintOverride(QString::fromUtf8("请指定旋转中心（锚点）：点击线段端点或画布任意位置 | Esc返回选区"));
-        } else if (isAngleLocked()) {
-            reportHintOverride(QString::fromUtf8("旋转：锚心 %1 · 角度由变量/公式驱动，已锁定（移除公式后可旋转）").arg(m_session.anchorTag(m_paramDoc)));
-        } else {
-            reportHintOverride(QString::fromUtf8("已指定旋转中心 · 拖动旋转(Shift吸附15°) | 长按Ctrl拖动复制 | Esc重选中心"));
-        }
-    }
+    RotateHintSnapshot snap{
+        .isCopyGestureActive = (m_copyGesture && m_copyGesture->active()),
+        .copyRelativeAngle = (m_copyGesture ? m_copyGesture->currentRelativeAngle() : 0.0),
+        .state = m_state,
+        .constraintMode = m_constraintMode,
+        .selectionConfirmed = m_selectionConfirmed,
+        .hasSingleBlock = (!m_session.blockId().isNull() && m_multi.selection().size() <= 1),
+        .selectionSize = static_cast<int>(m_multi.selection().size()),
+        .anchorTag = m_session.anchorTag(m_paramDoc),
+        .pivotPicked = m_input.pivotPicked(),
+        .isAngleLocked = isAngleLocked(),
+    };
+    reportHintOverride(buildStatusHint(snap));
 }
 
 double ToolRotate::currentZoom() const {
@@ -766,29 +767,36 @@ cad::geo::Vec2 ToolRotate::endpointAtAngle(double angleDeg) const {
     return RotateAimSnap::endpointAtAngle(m_paramDoc, m_session.blockId(), m_session.pivot(),
         m_session.refWorldRad(), m_session.isConnected(), m_copyGesture.get(), angleDeg);
 }
-
 void ToolRotate::checkEndpointAimSnap(double& angleDeg) {
     m_aimSnap.checkSnap(m_paramDoc, m_scene, m_session.blockId(), m_session.pivot(),
         m_session.refWorldRad(), m_session.isConnected(), currentZoom(), m_copyGesture.get(), angleDeg);
 }
-
 void ToolRotate::clearAimCandidate() { m_aimSnap.clear(); }
+
+GizmoPoseInput ToolRotate::makeGizmoInput(bool isRotating) const
+{
+    return GizmoPoseInput{
+        .isMultiOrMarquee = isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected()),
+        .isCopyGestureActive = (m_copyGesture && m_copyGesture->active()),
+        .isConnected = m_session.isConnected(),
+        .isRotating = isRotating,
+        .originalWorldRotRad = cad::geo::degToRad(originalWorldRotDeg()),
+        .isAnchorEnd = m_session.anchor().isEnd,
+        .refWorldRad = m_session.refWorldRad(),
+        .localDir = m_session.localDir(),
+        .baseAngleDeg = m_session.base().baseAngle,
+        .currentAngleDeg = currentAngleDeg(),
+        .dragAngle0 = m_dragAngle0,
+        .dragCursorAngle0 = m_dragCursorAngle0,
+        .accumulatedAngleDeg = m_accumulatedAngleDeg,
+        .copyRelativeAngle = (m_copyGesture ? m_copyGesture->currentRelativeAngle() : 0.0),
+    };
+}
 
 void ToolRotate::buildGizmo() {
     if (!m_gizmo) return;
-    double refBaseRad = 0.0, prevPoseRad = 0.0;
-    if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
-        refBaseRad = 0.0; prevPoseRad = 0.0;
-    } else if (m_session.isConnected()) {
-        refBaseRad = m_session.refWorldRad();
-        prevPoseRad = refBaseRad + M_PI - cad::geo::degToRad(m_session.base().baseAngle);
-    } else {
-        double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
-        if (m_session.anchor().isEnd) origRad += M_PI;
-        prevPoseRad = cad::geo::normalizeRad(origRad);
-        refBaseRad = prevPoseRad;
-    }
-    m_gizmo->build(m_session.pivot(), refBaseRad, prevPoseRad, currentZoom());
+    auto pose = computeGizmoPose(makeGizmoInput(false));
+    m_gizmo->build(m_session.pivot(), pose.refBaseRad, pose.currentPoseRad, currentZoom());
 }
 
 double ToolRotate::originalWorldRotDeg() const { return m_session.originalWorldRotDeg(m_paramDoc); }
@@ -796,18 +804,15 @@ double ToolRotate::originalWorldRotDeg() const { return m_session.originalWorldR
 void ToolRotate::applySelectionConfirmed(bool confirmed) {
     if (m_selectionConfirmed == confirmed) return;
     m_selectionConfirmed = confirmed;
+    m_input.resetPress();
+    m_input.setPivotPicked(false);
     if (!confirmed) {
-        m_input.resetPress();
         m_input.hideHoverSnap();
-        m_input.setPivotPicked(false);
         m_phase = RotatePhase::Selecting;
-        removeGizmo();
     } else {
-        m_input.resetPress();
-        m_input.setPivotPicked(false);
         m_phase = RotatePhase::PickingPivot;
-        removeGizmo();
     }
+    removeGizmo();
     syncSelectionVisual();
     updateGizmo();
     updateStatusHint();
@@ -821,32 +826,8 @@ void ToolRotate::updateGizmo() {
     if (!m_gizmo) return;
     const bool shouldShow = (m_selectionConfirmed && m_input.pivotPicked()) || (m_copyGesture && m_copyGesture->active());
     m_gizmo->setConfirmed(shouldShow);
-    double refBaseRad = 0.0, prevPoseRad = 0.0, deltaDeg = 0.0;
-    if (isMultiSelect() || (m_multi.isMarqueeSelected() && !m_session.isConnected())) {
-        refBaseRad = 0.0; prevPoseRad = m_dragCursorAngle0;
-        deltaDeg = (m_state == RotateState::Rotating) ? m_accumulatedAngleDeg : 0.0;
-    } else if (m_copyGesture && m_copyGesture->active()) {
-        double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
-        if (m_session.anchor().isEnd) origRad += M_PI;
-        refBaseRad = m_session.refWorldRad();
-        prevPoseRad = cad::geo::normalizeRad(origRad);
-        deltaDeg = m_copyGesture->currentRelativeAngle();
-    } else if (m_session.isConnected()) {
-        refBaseRad = m_session.refWorldRad();
-        prevPoseRad = refBaseRad + M_PI - cad::geo::degToRad(m_dragAngle0);
-        deltaDeg = (m_state == RotateState::Rotating) ? (currentAngleDeg() - m_dragAngle0) : 0.0;
-    } else {
-        double origRad = std::fmod(originalWorldRotDeg(), 360.0) * M_PI / 180.0;
-        if (m_session.anchor().isEnd) origRad += M_PI;
-        prevPoseRad = cad::geo::normalizeRad(origRad);
-        refBaseRad = prevPoseRad;
-        deltaDeg = (m_state == RotateState::Rotating) ? (currentAngleDeg() - m_dragAngle0) : 0.0;
-    }
-    QString badgeText;
-    if (m_state == RotateState::Rotating && std::abs(deltaDeg) > 0.01) {
-        badgeText = QString::asprintf("%.1f°", std::abs(deltaDeg));
-    }
-    m_gizmo->update(currentZoom(), refBaseRad, prevPoseRad, deltaDeg, badgeText);
+    auto pose = computeGizmoPose(makeGizmoInput(m_state == RotateState::Rotating));
+    m_gizmo->update(currentZoom(), pose.refBaseRad, pose.currentPoseRad, pose.deltaDeg, pose.badgeText);
     updateStatusHint();
 }
 

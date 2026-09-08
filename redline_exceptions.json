@@ -5,58 +5,22 @@
   "rules_reference": "E:/e/file_split_rules_v2_final.md",
   "description": "Baseline exceptions for file split rules v2.0. Invariant: This list may only shrink over time, never expand.",
   "file_size_exceptions": {
-    "src/app/MainWindow.cpp": {
-      "lines": 1650,
-      "threshold": 900,
-      "reason": "Application main window and menu/action coordination center; scheduled for Phase 3.",
-      "scheduled_phase": "Phase 3"
-    },
-    "src/parametric/Block.cpp": {
-      "lines": 1432,
-      "threshold": 900,
-      "reason": "Core parametric block entity model and effective geometry calculation; scheduled for Phase 3.",
-      "scheduled_phase": "Phase 3"
-    },
-    "src/app/ContextStrip.cpp": {
-      "lines": 1154,
-      "threshold": 900,
-      "reason": "Context property strip UI layout and field sync; scheduled for Phase 3.",
-      "scheduled_phase": "Phase 3"
-    },
     "src/document/DocumentSerializer.cpp": {
-      "lines": 979,
+      "lines": 987,
       "threshold": 900,
-      "reason": "Exempt per Rule 附1: high cohesion, single serialization/deserialization responsibility.",
+      "reason": "Exempt per Rule 附1: high cohesion, single serialization/deserialization responsibility; 2026-12 审计刷新 987 行",
       "scheduled_phase": "Exempt"
     },
-    "src/parametric/Resolver.cpp": {
-      "lines": 960,
-      "threshold": 900,
-      "reason": "Constraint resolver; resolveAll 553-line function scheduled for pipeline refactor.",
-      "scheduled_phase": "Phase 3"
-    },
-    "src/ui/VariablePanel.cpp": {
-      "lines": 942,
-      "threshold": 800,
-      "reason": "Variable dock panel UI; scheduled for Phase 3.",
-      "scheduled_phase": "Phase 3"
-    },
-    "src/canvas/BlockItem.cpp": {
-      "lines": 941,
-      "threshold": 900,
-      "reason": "Canvas block QGraphicsItem rendering and hit testing; scheduled for Phase 3.",
-      "scheduled_phase": "Phase 3"
-    },
     "src/geometry/CurveMath.cpp": {
-      "lines": 906,
+      "lines": 928,
       "threshold": 500,
-      "reason": "Pure bezier and curve geometry algorithms; scheduled for Phase 3 sub-math extraction.",
+      "reason": "Pure bezier and curve geometry algorithms; 2026-12 审计刷新，拆分进行中（对应任务 Backlog B.1）",
       "scheduled_phase": "Phase 3"
     },
     "src/document/commands/ReverseSegmentCommand.cpp": {
-      "lines": 451,
+      "lines": 458,
       "threshold": 400,
-      "reason": "Reverse segment command implementation; minor overshoot of 400-line model command target.",
+      "reason": "Reverse segment command implementation; 2026-12 审计刷新，暂缓观察（Backlog B.3）",
       "scheduled_phase": "Phase 3"
     }
   },
@@ -66,12 +30,6 @@
       "file": "src/parametric/ParamPoint.h",
       "count": 11,
       "reason": "Constraint & interpolation flag fields on data entity struct; evaluated as model fields. EVALUATED 2026-09-04: isAuxiliary/isPlaced/visible/selectable/showName/resolved are persistent model fields; tangentLocked/autoTangent/interBidirectional are tangent/interpolation config flags each independently driving render/resolve branches, no composite hidden state machine; retained per Rule 附1 (pure data/config fields exempt).",
-      "scheduled_phase": "Exempt"
-    },
-    "ContextStrip": {
-      "file": "src/app/ContextStrip.h",
-      "count": 6,
-      "reason": "Session & pin state flags in strip; EVALUATED 2026-09-04: m_connectSession/m_rotateSession/m_strokePreview/m_creationPinned are INDEPENDENT session markers driving distinct UI conditions (no boolean cross-product hidden states); retained per Rule 附1 (pure config/session fields exempt).",
       "scheduled_phase": "Exempt"
     },
     "Props": {

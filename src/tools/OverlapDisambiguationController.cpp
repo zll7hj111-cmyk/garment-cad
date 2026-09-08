@@ -393,10 +393,68 @@ OverlapDisambiguationController::batteryCandidateAt(int index) const
     return Candidate{};
 }
 
+void OverlapDisambiguationController::recordClickedOverlap(
+    const cad::geo::Vec2& pos, double zoom,
+    const std::function<void(const QString&)>& toastFn)
+{
+    const auto ptCands = collectPoints(pos, zoom);
+    if (ptCands.size() >= 2) {
+        m_clickedPos = pos;
+        m_clickedCands = ptCands;
+        if (toastFn) {
+            toastFn(QStringLiteral("此处有 %1 个重叠点，按 W 键打开电池组切换").arg(ptCands.size()));
+        }
+    } else {
+        m_clickedCands.clear();
+    }
+}
+
+bool OverlapDisambiguationController::handleSpaceOrAltKey()
+{
+    if (m_clickedCands.isEmpty()) return false;
+    if (hasBattery()) {
+        hideBattery();
+    } else {
+        showBattery(m_clickedPos, m_clickedCands,
+                    cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+        setBatterySelectedIndex(0);
+    }
+    return true;
+}
+
+bool OverlapDisambiguationController::handleWOrBKey(const cad::geo::Vec2& cursorPos, double zoom)
+{
+    if (index() >= 0) {
+        cycle();
+        return true;
+    }
+    if (hasBattery()) {
+        hideBattery();
+        return true;
+    }
+    if (!m_clickedCands.isEmpty()) {
+        showBattery(m_clickedPos, m_clickedCands,
+                    cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+        setBatterySelectedIndex(0);
+        return true;
+    }
+    const auto hoverPts = collectPoints(cursorPos, zoom);
+    if (hoverPts.size() >= 2) {
+        m_clickedPos = cursorPos;
+        m_clickedCands = hoverPts;
+        showBattery(m_clickedPos, m_clickedCands,
+                    cad::canvas::OverlapBatteryHud::DisplayMode::Expanded);
+        setBatterySelectedIndex(0);
+        return true;
+    }
+    return false;
+}
+
 void OverlapDisambiguationController::dispose()
 {
     m_index = -1;
     m_candidates.clear();
+    m_clickedCands.clear();
     hideBattery();
 }
 

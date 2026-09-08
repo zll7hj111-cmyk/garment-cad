@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <QWidget>
 #include <QUuid>
@@ -21,6 +21,8 @@ enum class RotationMode;
 
 namespace cad::app {
 
+class PlacedPointStripBar;
+
 /// 上下文属性条焦点三态 (CONTEXT_STRIP_DESIGN.md §2.1)。
 enum class StripFocus {
     Empty,   ///< 无焦点: 条带隐藏.
@@ -29,76 +31,45 @@ enum class StripFocus {
 };
 
 /// 画布下方常驻的"当前关注线段"属性带 (CONTEXT_STRIP_DESIGN.md)。
-///
-/// 单一焦点来源: 工具经 ToolHost 上报 hover / pinned 目标, 条带只负责显示与
-/// 编辑。取代原来的 SegmentEditBar + SmartPenPreInputBar 两条互斥 bar, 并让
-/// 旋转工具不再需要浮动 AngleHud (一期)。
-///
-///   Empty ──悬停──> Hover ──点击──> Pinned
-///     ↑               │              │
-///     └───移出────────┘   Esc/删除───┘
-///
-/// **Pinned 优先于 Hover**: 锁定后鼠标划过别的线不抢显示 —— 否则点中一条准备
-/// 改角度、手一抖内容就被覆盖。智能笔从不锁定 (点击 = 画线), 永远由 hover 驱动。
 class ContextStrip : public QWidget
 {
     Q_OBJECT
 
 public:
     explicit ContextStrip(cad::param::ParamDocument* paramDoc, QWidget* parent = nullptr);
+    ~ContextStrip() override;
 
     void setUndoStack(QUndoStack* stack);
     /// 焦点回落到画布的落点 (Enter 走完最后一个字段 / Esc 解除锁定时用)。
     void setCanvasView(QWidget* canvasView);
 
     // ── 连接角度会话 (CONTEXT_STRIP_DESIGN.md 二期) ──
-    /// 进入连接手势的角度编辑会话: 锁定到新连接的跟随线段, 仅角度可编辑,
-    /// 击键/单位切换/Enter/Esc 经信号回传宿主 (→ 工具 → ConnectGesture)。
-    /// attachmentId 为空 = 会话结束 (条带收起、焦点回画布)。
     void beginConnectAngleSession(const QUuid& blockId, const QUuid& segmentId,
                                   const QUuid& attachmentId, double initialAngle);
-    /// 退出连接角度会话 (收尾/取消后由宿主调用)。
     void endConnectAngleSession();
-    /// 输入合法性 (公式解析失败 → 角度框红边; 合法恢复)。
     void setConnectAngleValid(bool valid);
-    /// 会话是否激活 (测试/宿主判据)。
     [[nodiscard]] bool connectSession() const { return m_connectSession; }
 
     // ── 旋转工具锚心 (2026-12): 换向按钮在旋转会话内 = 切换锚心 ──
-    /// 旋转工具上报锚心状态: active = 旋转会话激活 (条带基准读数显示锚心端在
-    /// 前); anchorIsEnd = 锚在终点; canToggle = 当前可切换锚心 (Ready 且端点
-    /// 无连接); reason = 禁用原因。全 false + 空串 = 会话结束。
     void setRotateAnchorState(bool active, bool anchorIsEnd, bool canToggle,
                               const QString& reason);
 
     // ── 焦点上报 (MainWindow 经 ToolHost 转发) ──
-    /// 悬停候选: 节流 80ms 后生效; 任一输入框聚焦中直接忽略 (焦点保护)。
-    /// 两个 id 均为 null = 移出。Pinned 态下不改变显示。
     void setHoverTarget(const QUuid& blockId, const QUuid& segmentId);
-    /// 锁定焦点 (两个 id 均为 null = 解除锁定)。
     void setPinnedTarget(const QUuid& blockId, const QUuid& segmentId,
                          bool grabFocus = false);
-    /// 悬停移出 (Pinned 态下 no-op —— 不抢显示)。
     void clearHover();
-    /// 解除锁定: 退回 hover 候选 (有) 或 Empty。
     void clearPinned();
-    /// 创建后编辑: 锁定并记住 undo 起点 —— Esc = 撤销创建 (原 SegmentEditBar 语义)。
     void pinCreatedLine(const QUuid& blockId, const QUuid& segmentId,
                         bool grabFocus = true);
-    /// 画线过程中的只读读数 (0,0 = 收起)。显示的是"正在画的那条线"。
     void showStrokePreview(double lenCm, double angleDeg);
     void hideBar();
-    /// Re-apply theme-token driven styles after a theme change (light/dark).
     void applyTheme();
-    /// 创建后 Esc 的收口: 回退 undo 栈到创建点 —— 连同创建命令与之后的
-    /// 条带编辑一起撤销(线消失), 然后隐藏条带。由宿主接 cancelRequested
-    /// 后调用 (撤销栈归宿主所有)。
     void cancelCreation();
 
     [[nodiscard]] StripFocus focusState() const { return m_focus; }
     [[nodiscard]] QUuid blockId() const { return m_blockId; }
     [[nodiscard]] QUuid segmentId() const { return m_segmentId; }
-    /// 字段当前是否只读 (Hover / 画线预览 = true)。
     [[nodiscard]] bool readOnly() const;
 
     // ── 控件访问 (测试与宿主) ──
@@ -111,30 +82,24 @@ public:
     [[nodiscard]] QPushButton* unitAngleButton() const { return m_btnUnitAngle; }
     [[nodiscard]] QPushButton* unitArcButton() const { return m_btnUnitArc; }
     [[nodiscard]] QPushButton* unitChordButton() const { return m_btnUnitChord; }
-    /// 连接维度 拆开/重连 双面按钮 (位置维度; 与属性对话框「连接」同语义)。
     [[nodiscard]] ElaPushButton* posDetachButton() const { return m_btnPosDetach; }
-    /// 连接维度 拆开/重连 双面按钮 (角度维度; 与属性对话框「基准」同语义)。
     [[nodiscard]] ElaPushButton* angleDetachButton() const { return m_btnAngleDetach; }
-    /// 状态徽标文本 (跟随 L5 / 自由 / 曲线 / 桥线)。
     [[nodiscard]] QString badgeText() const;
-    /// 角度基准读数 (P1 → P2)。
     [[nodiscard]] QString basisText() const;
 
-    // ── 放置点专属模式与会话 ──
-    /// 选中放置点: 底部条带完全切换为放置点状态 (不显示线段状态)
+    // ── 放置点专属模式与会话 (委托给 PlacedPointStripBar) ──
     void setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId);
     void clearPlacedPoint();
 
-    /// 激活放置点工具: 底栏出现放置点输入框与基准显示
     void beginPlacePointSession(const QString& baseSegName = QString());
     void updatePlacePointValues(double distCm, double angleDeg, bool distLocked, bool angleLocked);
     void endPlacePointSession();
     void focusNextPlacedPointField();
 
-    [[nodiscard]] bool isPlacedPointMode() const { return m_isPlacedPointMode; }
+    [[nodiscard]] bool isPlacedPointMode() const;
+    [[nodiscard]] PlacedPointStripBar* placedPointBar() const { return m_placedPointBar; }
 
 signals:
-    /// Esc 由"创建后锁定"触发: 宿主撤销创建命令 (删线)。
     void cancelRequested();
 
     // ── 放置点交互信号 ──
@@ -143,55 +108,46 @@ signals:
     void placePointCommitted();
     void placedPointDeleted(const QUuid& blockId, const QUuid& pointId);
 
-    // ── 旋转会话换向 (2026-12): 旋转工具激活时, 换向 = 切换锚心 ──
-    /// 换向按钮点击 (仅旋转会话内发出): 宿主转交激活工具 (ToolRotate 切锚心)。
-    /// 普通 (非旋转) 会话的换向仍由条带直接推 ReverseSegmentCommand。
+    // ── 旋转会话换向 ──
     void reverseRequested(const QUuid& blockId, const QUuid& segmentId);
 
-    // ── 连接角度会话输入 (二期: 条带 → 宿主 → 工具 → ConnectGesture) ──
-    /// 角度输入框击键 (全文, 实时预览)。
+    // ── 连接角度会话输入 ──
     void connectAngleTextChanged(const QString& text);
-    /// ° / ⌒ 单位切换。
     void connectAngleModeChanged(cad::param::RotationMode mode);
-    /// Enter: 确认角度并收尾 (finalize)。
     void connectAngleCommitted();
-    /// Esc: 保留连接、角度回退初值并收尾。
     void connectAngleCancelled();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
-    void buildUi();
+    // ── 子分卷实现函数 ──
+    // Display (src/app/ContextStripDisplay.cpp)
+    void refreshFields();
+    void refreshChrome();
+    [[nodiscard]] QString foldedArcDisplay(const cad::param::Attachment* att) const;
+    [[nodiscard]] QString foldedChordDisplay(const cad::param::Attachment* att) const;
+
+    // Edit (src/app/ContextStripEdit.cpp)
     void applyName();
     void applyLength();
     void applyAngle();
-    /// 从模型回填全部字段; 聚焦中的字段跳过 (焦点保护, 防输入被打断)。
-    void refreshFields();
-    /// 回填与焦点无关的外围件: 徽标 / 基准 / 单位段 / 换向资格 / 描边 / 提示。
-    void refreshChrome();
-    void setReadOnlyFields(bool readOnly);
-    void commitState(cad::cmd::SegmentEditBarCommand::State st);
-    [[nodiscard]] cad::cmd::SegmentEditBarCommand::State snapshotState() const;
-    /// 驱动本段角度的跟随连接 (匹配规则同属性对话框: 挂在本段起点或终点)。
-    [[nodiscard]] const cad::param::Attachment* findEditAttachment() const;
-    /// 弧长模式的显示值 = 带符号折角弧长 (cm): 多圈弧长先落到 ±180° 侧再
-    /// 换算 (2026-08 v3 定稿, 同旧旋转 HUD currentModeValue)。
-    [[nodiscard]] QString foldedArcDisplay(const cad::param::Attachment* att) const;
-    /// 弦长/开度模式的显示值 = 带符号折角弦长 (cm)
-    [[nodiscard]] QString foldedChordDisplay(const cad::param::Attachment* att) const;
-    /// 节流到期: 真正应用待定的悬停候选。
-    void flushHover();
-    [[nodiscard]] bool inputHasFocus() const;
     void onUnitToggled(bool wantArc);
     void onUnitSelected(cad::param::RotationMode mode);
     void onReverseClicked();
-    /// 连接维度 拆开/重连 (位置维度): 拆开 = angleOnly、重连 = 位置回宿主+焊接。
     void onPosDetachClicked();
-    /// 连接维度 拆开/重连 (角度维度): 拆开 = angleIndependent、重连 = 恢复跟随。
     void onAngleDetachClicked();
     void onPasteLength();
     void onPasteAngle();
+    void commitState(cad::cmd::SegmentEditBarCommand::State st);
+    [[nodiscard]] cad::cmd::SegmentEditBarCommand::State snapshotState() const;
+    [[nodiscard]] const cad::param::Attachment* findEditAttachment() const;
+
+    // Core (src/app/ContextStrip.cpp)
+    void buildUi();
+    void setReadOnlyFields(bool readOnly);
+    void flushHover();
+    [[nodiscard]] bool inputHasFocus() const;
     void returnFocusToCanvas();
 
     cad::param::ParamDocument* m_paramDoc = nullptr;
@@ -201,20 +157,23 @@ private:
     StripFocus m_focus = StripFocus::Empty;
     QUuid m_blockId;
     QUuid m_segmentId;
-    QUuid m_hoverBlock;    ///< 待定悬停候选 (节流窗口内)。
+    QUuid m_hoverBlock;
     QUuid m_hoverSegment;
-    bool  m_creationPinned = false;  ///< 由创建触发的锁定 (Esc = 撤销创建)。
-    bool  m_strokePreview = false;   ///< 画线中读数 (非线段焦点)。
-    bool  m_connectSession = false;  ///< 连接角度会话激活 (二期, 角度直写附件).
-    QUuid m_connectAttId;            ///< 会话正在调角度的附件.
-    double m_connectInitialAngle = 0.0;  ///< 保向初值 (Esc 回退用, 宿主侧持).
-    int   m_editStartIndex = 0;      ///< 创建命令所在 undo 位置 (cancelCreation 回到此)。
+    bool  m_creationPinned = false;
+    bool  m_strokePreview = false;
+    bool  m_connectSession = false;
+    QUuid m_connectAttId;
+    double m_connectInitialAngle = 0.0;
+    int   m_editStartIndex = 0;
 
-    // ── 旋转工具锚心会话 (2026-12): 换向按钮转义为"切换锚心" ──
-    bool    m_rotateSession = false;    ///< 旋转会话激活 (条带被旋转工具锁定).
-    bool    m_rotateAnchorIsEnd = false;///< 锚心在终点 (基准读数锚心端在前).
-    bool    m_rotateCanToggle = false;  ///< 当前可切换锚心.
-    QString m_rotateReason;             ///< 锚心切换禁用原因 (tooltip).
+    // 旋转工具锚心会话状态打包
+    struct RotateAnchorState {
+        bool    active = false;
+        bool    anchorIsEnd = false;
+        bool    canToggle = false;
+        QString reason;
+    };
+    RotateAnchorState m_rotateAnchor;
 
     ElaText*       m_idLabel = nullptr;
     ElaLineEdit*   m_nameEdit = nullptr;
@@ -222,39 +181,21 @@ private:
     ElaPushButton* m_btnPasteLen = nullptr;
     ElaLineEdit*   m_angleEdit = nullptr;
     ElaPushButton* m_btnPasteAngle = nullptr;
-    QPushButton*   m_btnUnitAngle = nullptr;   ///< ° (原生 QPushButton: Ela 无 checked 渲染).
-    QPushButton*   m_btnUnitArc = nullptr;     ///< ⌒
-    QPushButton*   m_btnUnitChord = nullptr;   ///< ↔
-    QButtonGroup*  m_unitGroup = nullptr;      ///< °/⌒/↔ 互斥 (防多选).
+    QPushButton*   m_btnUnitAngle = nullptr;
+    QPushButton*   m_btnUnitArc = nullptr;
+    QPushButton*   m_btnUnitChord = nullptr;
+    QButtonGroup*  m_unitGroup = nullptr;
     ElaPushButton* m_btnReverse = nullptr;
     ElaPushButton* m_btnBasis = nullptr;
-    ElaPushButton* m_btnPosDetach = nullptr;    ///< 连接·拆开/重连 (位置维度).
-    ElaPushButton* m_btnAngleDetach = nullptr;  ///< 基准·拆开/重连 (角度维度).
+    ElaPushButton* m_btnPosDetach = nullptr;
+    ElaPushButton* m_btnAngleDetach = nullptr;
     ElaText*       m_badge = nullptr;
     ElaText*       m_hint = nullptr;
     QTimer*        m_debounce = nullptr;
     QTimer*        m_hoverTimer = nullptr;
 
-    // ── 放置点专属控件与状态 ──
-    void applyPlacedPointEdits();
-    void onDeletePlacedPointClicked();
-    void onPlacedPointDistEdited(const QString& text);
-    void onPlacedPointAngleEdited(const QString& text);
-
-    QWidget*       m_segmentBar = nullptr;
-    QWidget*       m_placedPointBar = nullptr;
-    ElaText*       m_ptSerialLabel = nullptr;
-    ElaLineEdit*   m_ptNameEdit = nullptr;
-    ElaLineEdit*   m_ptDistEdit = nullptr;
-    ElaLineEdit*   m_ptAngleEdit = nullptr;
-    ElaText*       m_ptBaseSegLabel = nullptr;
-    ElaPushButton* m_btnDeletePlacedPt = nullptr;
-    ElaText*       m_ptHint = nullptr;
-
-    bool           m_isPlacedPointMode = false;
-    bool           m_placePointSession = false;
-    QUuid          m_placedBlockId;
-    QUuid          m_placedPointId;
+    QWidget*             m_segmentBar = nullptr;
+    PlacedPointStripBar* m_placedPointBar = nullptr;
 };
 
 } // namespace cad::app

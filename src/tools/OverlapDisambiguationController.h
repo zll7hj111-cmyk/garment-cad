@@ -106,6 +106,16 @@ public:
     [[nodiscard]] const QList<Candidate>& candidates() const { return m_candidates; }
     [[nodiscard]] QString hintText() const { return QString(); }
 
+    // ── 重叠电池点击簿记与热键处理 ──
+    void recordClickedOverlap(const cad::geo::Vec2& pos, double zoom,
+                              const std::function<void(const QString&)>& toastFn = nullptr);
+    bool handleSpaceOrAltKey();
+    bool handleWOrBKey(const cad::geo::Vec2& cursorPos, double zoom);
+    [[nodiscard]] bool hasClickedOverlap() const { return !m_clickedCands.isEmpty(); }
+    [[nodiscard]] const QList<Candidate>& clickedCandidates() const { return m_clickedCands; }
+    [[nodiscard]] cad::geo::Vec2 clickedOverlapPos() const { return m_clickedPos; }
+    void clearClickedOverlap() { m_clickedCands.clear(); }
+
     /// 工具切换 / 上下文销毁: 清列表 + 隐藏 HUD + 状态栏回默认.
     void dispose();
 
@@ -124,6 +134,9 @@ private:
     ManagedItems m_managed;
     QList<Candidate> m_batteryCandidates;
     cad::geo::Vec2 m_batteryAnchor;
+
+    cad::geo::Vec2 m_clickedPos;
+    QList<Candidate> m_clickedCands;
 };
 
 } // namespace cad::tools
