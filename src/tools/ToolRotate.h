@@ -33,6 +33,14 @@ enum class RotateState {
     Rotating,   ///< Drag-rotation in progress.
 };
 
+/// Rotate tool 4-phase interaction state machine (aligned with ET CAD / CAD).
+enum class RotatePhase {
+    Selecting,      ///< 阶段 1：选图元 (复用选择工具交互：单选/框选/加减选，回车或右键确定)
+    PickingPivot,   ///< 阶段 2：定中心 (左键单击端点或空白定轴心，右键返回)
+    ReadyToRotate,  ///< 阶段 3：就绪 (轴心已定，等待长按拖拽或键盘输入角度)
+    Rotating        ///< 阶段 4：拖拽旋转中 (扇形展开，度数徽标跟随)
+};
+
 /// Rotation tool — quickly adjust the follower angle of a connected line
 /// or the world angle of a free line.
 ///
@@ -110,6 +118,7 @@ public:
     [[nodiscard]] const char* name() const override
     { return reinterpret_cast<const char*>(u8"旋转"); }
     [[nodiscard]] RotateState state() const { return m_state; }
+    [[nodiscard]] RotatePhase phase() const { return m_phase; }
 
 private:
     // ── Target selection ──
@@ -168,6 +177,7 @@ private:
 
     // ── Core tool state (single explicit gate) ──
     RotateState m_state = RotateState::Idle;
+    RotatePhase m_phase = RotatePhase::Selecting;
     bool m_selectionConfirmed = false;
 
     // ── Drag angle tracking ──

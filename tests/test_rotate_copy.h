@@ -222,5 +222,6 @@ private slots:
     // ── 多选框选与端点锚心旋转 (2026-09) ──
     void marqueeSelectionAndPivotSnapRotate();
     void adoptSelectionFromSelectToolAndRotate();
+    void singleLinePickPivotAndRotateCadFlow();
 };
 

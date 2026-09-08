@@ -1,4 +1,4 @@
-﻿/// @file test_rotate_copy_gestures.cpp
+/// @file test_rotate_copy_gestures.cpp
 /// 旋转复制高阶手势: 锚心切换、单位换算模式、D15确认门流、多选与快捷发布。
 
 #include "test_rotate_copy.h"
@@ -1654,5 +1654,98 @@ void TestRotateCopy::adoptSelectionFromSelectToolAndRotate()
     stack.undo();
     const auto* blk1 = doc.findBlock(l1.blockId);
     QVERIFY(blk1->worldPos(l1.endId).distanceTo({100.0, 0.0}) < 1e-3);
+}
+
+void TestRotateCopy::singleLinePickPivotAndRotateCadFlow()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    const LineSetup a = makeLine(doc, 100.0);   // (0,0) -> (100,0)
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    QUndoStack stack;
+    tm.setUndoStack(&stack);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setInputDispatcher(&tm);
+
+    auto* tool = dynamic_cast<cad::tools::ToolRotate*>(tm.activeTool());
+    QVERIFY(tool);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 1. 单选线段：点击线身
+    const QPoint mid = vp(50.0, 0.0);
+    sendMouse(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(tool->state(), cad::tools::RotateState::Ready);
+    QCOMPARE(tool->phase(), cad::tools::RotatePhase::Selecting);
+    QVERIFY(!tool->selectionConfirmed());
+    QVERIFY(!tool->pivotPicked());
+
+    // 2. 右键确定选区
+    sendConfirm(view);
+    QVERIFY(tool->selectionConfirmed());
+    QCOMPARE(tool->phase(), cad::tools::RotatePhase::PickingPivot);
+    QVERIFY(!tool->pivotPicked());
+
+    // 3. 点击空白处 (50, 50) 确定旋转中心，松开
+    sendMouse(QEvent::MouseButtonPress, vp(50.0, 50.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(50.0, 50.0), Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(tool->pivotPicked());
+    QVERIFY(tool->pivot().distanceTo({50.0, 50.0}) < 1e-4);
+    QCOMPARE(tool->phase(), cad::tools::RotatePhase::ReadyToRotate);
+
+    // 右键可退回定中心阶段，重新指定中心
+    QTest::mouseClick(view.viewport(), Qt::RightButton, Qt::NoModifier, vp(50.0, 50.0));
+    QTest::qWait(20);
+    QVERIFY(!tool->pivotPicked());
+    QCOMPARE(tool->phase(), cad::tools::RotatePhase::PickingPivot);
+
+    // 点击端点 (100, 0) 并松开确定中心
+    sendMouse(QEvent::MouseButtonPress, vp(100.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, vp(100.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(tool->pivotPicked());
+    QVERIFY(tool->pivot().distanceTo({100.0, 0.0}) < 1e-4);
+    QCOMPARE(tool->phase(), cad::tools::RotatePhase::ReadyToRotate);
+
+    // 4. 再次按下并拖拽旋转：从 (100, 50) 拖拽到 (50, 0)（绕 (100, 0) 逆时针 90°）
+    sendMouse(QEvent::MouseButtonPress, vp(100.0, 50.0), Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(tool->phase(), cad::tools::RotatePhase::Rotating);
+
+    // 松开提交并退出状态
+    sendMouse(QEvent::MouseButtonRelease, vp(50.0, 0.0), Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(tool->state(), cad::tools::RotateState::Idle);
+    QVERIFY(!tool->selectionConfirmed());
+
+    // 验证旋转结果：以 (100, 0) 为中心
+    const auto* blk = doc.findBlock(a.blockId);
+    QVERIFY(blk);
+    QVERIFY(blk->worldPos(a.endId).distanceTo({100.0, 0.0}) < 1e-4);
+    const double ang = worldAngleDeg(doc, a.blockId);
+    QVERIFY(std::abs(ang - 90.0) < 1e-4 || std::abs(ang - (-90.0)) < 1e-4);
+
+    // 撤销验证
+    QVERIFY(stack.canUndo());
+    stack.undo();
+    blk = doc.findBlock(a.blockId);
+    QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - 0.0) < 1e-4);
 }
 
