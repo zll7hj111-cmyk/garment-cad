@@ -7,6 +7,9 @@
 #include "ConditionEngine.h"
 #include "parametric/IntersectDebug.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
+#include "geometry/Epsilon.h"
+#include "geometry/RayCast.h"
 
 namespace cad::param {
 
@@ -68,22 +71,28 @@ bool Resolver::resolveCrossBlockIntersection(
                       .arg(pt.serial).arg(pass).arg(int(scope))
                       .arg(originWorld.x).arg(originWorld.y));
 
-    // Target segment endpoints (world). The END point may be
-    // mid-cycle in the outer fixpoint (e.g. a break endpoint whose
-    // position depends on this intersection): its cached position is
-    // used now and later iterations converge once the endpoint
-    // resolves. The START point must be resolved — it anchors the
-    // segment geometry.
+    // Target segment endpoints. The END point may be mid-cycle in the outer
+    // fixpoint (e.g. a break endpoint whose position depends on this
+    // intersection): its cached position is used now and later iterations
+    // converge once the endpoint resolves. The START point must be resolved —
+    // it anchors the segment geometry.
     const Segment* seg = block.findSegment(pt.hostSegmentId);
     if (!seg) return false;
     const ParamPoint* sp = block.findPoint(seg->startPointId);
     const ParamPoint* ep = block.findPoint(seg->endPointId);
     if (!sp || !ep || !sp->resolved) return false;
 
+    // Work in the block's LOCAL space. The transform is rigid (no scale), so
+    // the ray/segment parameters and the validity tests are identical to the
+    // world-space formulation, the hit comes back directly as the local
+    // position we store, and this pass shares ONE geometry entry point with
+    // the same-block pass (geo::raySegmentOrCurveIntersect — 审计 PAR-P0-3/U6,
+    // the old world-space copy had no curve branch and hit the CHORD).
+    const geo::Vec2 originLocal = block.transform.toLocal(originWorld);
     // 宿主段几何按"有效位置"（含端点延长尾巴，D7b：交叉点跟实际线走）。
-    geo::Vec2 w1 = block.transform.toWorld(block.effectiveLocalPos(seg->startPointId));
-    geo::Vec2 w2 = block.transform.toWorld(block.effectiveLocalPos(seg->endPointId));
-    geo::Vec2 segDir = w2 - w1;
+    geo::Vec2 spEff = block.effectiveLocalPos(seg->startPointId);
+    geo::Vec2 epEff = block.effectiveLocalPos(seg->endPointId);
+    geo::Vec2 segDir = epEff - spEff;
     double segLen = segDir.length();
     // Degenerate-segment bootstrap: only when the endpoint has NO
     // cached pose either (cold start — zero position). The cached
@@ -91,30 +100,32 @@ bool Resolver::resolveCrossBlockIntersection(
     // untouched. The seed evaluates the polar formula anchored at the
     // segment START so the intersection can fire; the fixpoint
     // re-anchors the endpoint once the aux resolves.
-    if (segLen < 1e-9 && !ep->resolved) {
+    if (segLen < cad::geo::kGeomEps && !ep->resolved) {
         geo::Vec2 seedLocal;
         if (Block::polarEndpointCycleSeed(*ep, block, *seg, *sp,
                                           params, conditioned, &ctx,
                                           seedLocal)) {
-            w2 = block.transform.toWorld(seedLocal);
-            segDir = w2 - w1;
+            epEff = seedLocal;
+            segDir = epEff - spEff;
             segLen = segDir.length();
         }
     }
-    if (segLen < 1e-9) return false;
+    if (segLen < cad::geo::kGeomEps) return false;
 
-    // Ray direction: aim-point mode (指向点) overrides the angle —
-    // the ray points straight at interAimPointId (world space).
+    // Ray direction (local). Aim-point mode (指向点) overrides the angle — the
+    // ray points straight at interAimPointId. interUseWorldAngle means the
+    // angle is measured against WORLD axes, so subtract the block rotation to
+    // express it locally.
     double theta;
     if (!pt.interAimPointId.isNull()) {
         geo::Vec2 aimWorld;
         if (!findResolvedPointWorld(blocks, block, pt.interAimPointId, aimWorld))
             return false;
-        geo::Vec2 toAim = aimWorld - originWorld;
-        if (toAim.lengthSquared() < 1e-12) return false;  // Coincident with origin.
+        const geo::Vec2 toAim = block.transform.toLocal(aimWorld) - originLocal;
+        if (toAim.lengthSquared() < cad::geo::kGeomEpsTight) return false;  // Coincident with origin.
         theta = std::atan2(toAim.y, toAim.x);
     } else {
-        double baseAngle = std::atan2(segDir.y, segDir.x);
+        const double baseAngle = std::atan2(segDir.y, segDir.x);
 
         // Evaluate angle (formula).
         double angleDeg = pt.interAngle;
@@ -123,40 +134,39 @@ bool Resolver::resolveCrossBlockIntersection(
             if (r.ok) angleDeg = r.value;
         }
         if (pt.interUseWorldAngle) {
-            theta = angleDeg * M_PI / 180.0;
+            theta = cad::geo::degToRad(angleDeg) - block.transform.rotation;
         } else {
-            theta = baseAngle + angleDeg * M_PI / 180.0;
+            theta = baseAngle + cad::geo::degToRad(angleDeg);
         }
     }
     geo::Vec2 d{std::cos(theta), std::sin(theta)};
 
-    double denom = d.cross(segDir);
-    if (std::abs(denom) < 1e-9) return false;  // Parallel.
+    // Host segment as curve spans (local): empty for a line, spansForSegment
+    // output for a Bézier — the branch this pass used to be missing.
+    std::vector<geo::BezierSpan> spans;
+    if (seg->isCurve()) {
+        spans = block.spansForSegment(*seg, /*skipUnresolvedPassPoints=*/true,
+                                      /*tolerateStaleEndpoints=*/true);
+        if (spans.empty()) return false;
+    }
 
-    geo::Vec2 w = w1 - originWorld;
-    double s = w.cross(segDir) / denom;
-    double t = w.cross(d) / denom;
-
-    constexpr double eps = 1e-6;
-    bool validT = (t >= -eps && t <= 1.0 + eps);
-    bool validS = pt.interBidirectional ? true : (s >= -eps);
-    if (!validT || !validS) {
+    const auto hit = geo::raySegmentOrCurveIntersect(
+        originLocal, d, spEff, spEff + segDir, spans, pt.interBidirectional);
+    if (!hit.hit) {
         if (idbg::enabled())
             idbg::log(QStringLiteral("[inter] MISS pt=%1 s=%2 t=%3 (bidir=%4) prior=(%5,%6)")
-                          .arg(pt.serial).arg(s).arg(t)
+                          .arg(pt.serial).arg(hit.s).arg(hit.t)
                           .arg(pt.interBidirectional ? 1 : 0)
                           .arg(pt.resolvedPos.x).arg(pt.resolvedPos.y));
         return false;
     }
 
-    geo::Vec2 hitWorld = originWorld + d * s;
-    const geo::Vec2 newLocal = block.transform.toLocal(hitWorld);
+    const geo::Vec2 newLocal = hit.point;
     if (idbg::enabled())
-        idbg::log(QStringLiteral("[inter] HIT pt=%1 hit=(%2,%3) local=(%4,%5) moved=%6")
-                      .arg(pt.serial).arg(hitWorld.x).arg(hitWorld.y)
-                      .arg(newLocal.x).arg(newLocal.y)
+        idbg::log(QStringLiteral("[inter] HIT pt=%1 local=(%2,%3) moved=%4")
+                      .arg(pt.serial).arg(newLocal.x).arg(newLocal.y)
                       .arg((pt.resolvedPos - newLocal).length()));
-    if (!pt.resolved || pt.resolvedPos.distanceSquaredTo(newLocal) > 1e-6)
+    if (!pt.resolved || pt.resolvedPos.distanceSquaredTo(newLocal) > cad::geo::kGeomEpsLoose)
         block.touchGeometry();
     const bool madeProgress = !pt.resolved;
     pt.resolvedPos = newLocal;

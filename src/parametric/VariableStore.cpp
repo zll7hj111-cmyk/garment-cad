@@ -7,6 +7,7 @@
 #include "parametric/ExpressionEvaluator.h"
 #include "geometry/Units.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -431,7 +432,7 @@ void VariableStore::recomputeFormulas(bool triggerResolve)
                         if (it == baseMap.end()) {
                             baseMap.insert(f.name, *f.actualValueCm);
                             progressed = true;
-                        } else if (qAbs(it.value() - *f.actualValueCm) > 1e-9) {
+                        } else if (qAbs(it.value() - *f.actualValueCm) > cad::geo::kGeomEps) {
                             it.value() = *f.actualValueCm;
                             progressed = true;
                         }
@@ -449,7 +450,7 @@ void VariableStore::recomputeFormulas(bool triggerResolve)
                         if (it == baseMap.end()) {
                             baseMap.insert(f.name, r.value);
                             progressed = true;
-                        } else if (qAbs(it.value() - r.value) > 1e-9) {
+                        } else if (qAbs(it.value() - r.value) > cad::geo::kGeomEps) {
                             it.value() = r.value;
                             progressed = true;
                         }

@@ -127,6 +127,9 @@ DuplicateResult duplicateBlocks(ParamDocument& doc, const QList<QUuid>& blockIds
     // ── Pass 3: clone attachments whose BOTH endpoints are inside the set ──
     // Cross-boundary attachments are dropped: the clone keeps its copied
     // transform, i.e. the current world pose is frozen.
+    // 跨选集策略：复制按块裁剪（不是逐条断开），故不接入
+    // parametric/CrossSelectionPolicy.h 的 isReleasedAcrossSelection()，
+    // 契约见 Duplicate.h:40-50（2026-12 审计 TOOL-P0-8 / U10）。
     QHash<QUuid, QList<const Attachment*>> internalPinsOfBridge;  // orig bridge id → pins
     for (const auto& att : doc.attachments()) {
         const bool fromIn = inSet.contains(att.fromBlockId);

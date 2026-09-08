@@ -12,9 +12,8 @@ LinkedVariable LinkedVariable::fromSegment(const Block& blk, const Segment& seg)
     lv.sourceBlockId   = blk.id;
     lv.sourceSegmentId = seg.id;
     lv.refName = QStringLiteral("L") + seg.serial;
-    lv.name = seg.name.isEmpty()
-        ? seg.serial + QStringLiteral("长")
-        : seg.name + QStringLiteral("长");
+    // 名称后缀「长」 (长度关联变量): 单一定义, 审计 N4 尾项.
+    lv.name = (seg.name.isEmpty() ? seg.serial : seg.name) + QStringLiteral("长");
 
     lv.value = blk.segmentEffectiveLength(seg.id);
     if (lv.value <= 1e-6) {

@@ -18,6 +18,7 @@
 #include "parametric/LayerRegistry.h"
 #include "parametric/VariableStore.h"
 #include "parametric/MeasurementStore.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -35,6 +36,14 @@ const Attachment* ParamDocument::findAttachment(const QUuid& id) const
 {
     for (const auto& a : m_attachments)
         if (a.id == id)
+            return &a;
+    return nullptr;
+}
+
+const Attachment* ParamDocument::findFollowerAttachmentOf(const QUuid& fromBlockId) const
+{
+    for (const auto& a : m_attachments)
+        if (!a.isPin && a.fromBlockId == fromBlockId)
             return &a;
     return nullptr;
 }
@@ -580,11 +589,10 @@ void ParamDocument::degradeOrphanedIntersections()
                     const ParamPoint* ep = b.findPoint(seg->endPointId);
                     double t = 0.5;
                     if (sp && ep && sp->resolved && ep->resolved && pt.resolved) {
-                        geo::Vec2 d = ep->resolvedPos - sp->resolvedPos;
-                        double len2 = d.lengthSquared();
-                        if (len2 > 1e-12) {
-                            t = (pt.resolvedPos - sp->resolvedPos).dot(d) / len2;
-                            t = std::clamp(t, 0.0, 1.0);
+                        const geo::Vec2 d = ep->resolvedPos - sp->resolvedPos;
+                        if (d.lengthSquared() > cad::geo::kGeomEpsTight) {
+                            t = geo::Vec2::closestParamOnSegment(
+                                pt.resolvedPos, sp->resolvedPos, ep->resolvedPos);
                         }
                     }
                     pt.constraint = PointConstraint::OnSegment;
@@ -636,7 +644,7 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
         if (sp && ep && sp->resolved && ep->resolved) {
             const geo::Vec2 w1 = to->transform.toWorld(sp->resolvedPos);
             const geo::Vec2 w2 = to->transform.toWorld(ep->resolvedPos);
-            if (w1.distanceTo(w2) > 1e-6) {
+            if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose) {
                 refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
             }
         }
@@ -653,7 +661,7 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
                 if (p1 && p2 && p1->resolved && p2->resolved) {
                     const geo::Vec2 w1 = ref->transform.toWorld(p1->resolvedPos);
                     const geo::Vec2 w2 = ref2->transform.toWorld(p2->resolvedPos);
-                    if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+                    if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
                 }
             } else if (!att.angleRefSegmentId.isNull()) {
                 const Segment* refSeg = ref->findSegment(att.angleRefSegmentId);
@@ -663,7 +671,7 @@ double effectiveAngleRefWorld(const ParamDocument* doc, const Attachment& att)
                     if (rsp && rep && rsp->resolved && rep->resolved) {
                         const geo::Vec2 w1 = ref->transform.toWorld(rsp->resolvedPos);
                         const geo::Vec2 w2 = ref->transform.toWorld(rep->resolvedPos);
-                        if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+                        if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
                     }
                 }
             }

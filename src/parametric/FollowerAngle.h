@@ -6,6 +6,7 @@
 #include <QList>
 
 #include "geometry/Angle.h"
+#include "geometry/Units.h"
 #include "parametric/Attachment.h"
 #include "parametric/Condition.h"
 #include "parametric/ConditionEngine.h"
@@ -26,13 +27,92 @@ class ParamDocument;
 ///                        from Block::directionAtPoint).
 /// @param refWorldRad     Leader's world reference direction (radians), i.e.
 ///                        leader.transform.rotation + leader.exitDirectionAtPoint(...).
-/// @return Follower angle in degrees, normalized to (-180, 180].
+/// @return Follower angle in degrees, **storage domain [0, 360)**
+///         (2026-12 审计 P0-2: 全库存储域收口 —— 此前返回折角 (−180,180],
+///         同一物理角经「反算」写入存储为负、经「数值输入」写入为正)。
+///         唯一例外仍是旋转手势的多圈累积路径, 不经本函数。
 inline double backSolveFollowerAngle(double followerRotRad,
                                          double localDirRad,
                                          double refWorldRad)
 {
-    return cad::geo::normalizeDeg180(cad::geo::radToDeg(
+    return cad::geo::normalizeDeg360(cad::geo::radToDeg(
         refWorldRad + cad::geo::kPi - followerRotRad - localDirRad));
+}
+
+// ─── 角度域契约 (2026-12 审计 P0-2 收口) ────────────────────────────────────
+//
+// followerAngle 有两个域，**全库唯一入口 = 下面两个函数**，禁止各处自行调用
+// normalizeDeg180 / normalizeDeg360（审计发现同一物理角 270° 在组件页签显示
+// 270.0、在角度卡显示 −90.0，用户报告「同一个物理角度显示出两个数字」）：
+//
+//   存储域 [0,360)   —— Resolver / 序列化 / 几何反算消费 (CONVENTIONS.md 角度收口)
+//   显示域 (−180,180] —— 带符号折角: 0°=折叠 / ±90°=垂直 / ±180°=开平
+//
+// 例外：旋转手势的多圈累积值是合法存储值（tests/test_rotate_strip.cpp:159 锁定
+// 1260°），不得在此归一化；显示时按折角取模（fmod 后落在同一物理角上）。
+inline double followerAngleToStorage(double deg)
+{
+    return cad::geo::normalizeDeg360(deg);
+}
+
+inline double followerAngleToDisplay(double storedDeg)
+{
+    return cad::geo::normalizeDeg180(storedDeg);
+}
+
+/// 附件当前模式的**数值**显示文本（无公式时）：角度走折角域，弧长/开度按存储值
+/// 原样显示（cm）。**禁止 arc→deg→fold→arc 往返**——弧长 > πr（等效角 >180°）
+/// 时该往返会把输入框显示成负值，与用户输入/存储值不同数（审计 P0-2）。
+inline QString attachmentValueDisplayText(const Attachment& att)
+{
+    switch (att.rotationMode) {
+    case RotationMode::ArcLength:
+        return cad::geo::Units::formatCm(att.arcLength);
+    case RotationMode::ChordLength:
+        return cad::geo::Units::formatCm(att.chordLength);
+    case RotationMode::Angle:
+    default:
+        return cad::geo::Units::formatDegValue(followerAngleToDisplay(att.followerAngle));
+    }
+}
+
+/// 旋转手势「原始角 → 连接存储字段」的**唯一写入口** (2026-12 审计 P0-4 收口)。
+///
+/// 同一手势角 rawDeg 必须同时派生三个域, 此前 RotateSession::applyAngleDeg
+/// 三分支各自 normalize, 与角度卡/徽标/状态提示的读数域漂移 (审计 P0-4)。
+/// 域契约 (与 followerAngleToStorage/ToDisplay、followerModeSwitchValues 一致):
+///   · Angle       → followerAngle = normalizeDeg360(rawDeg)   存储域 [0,360)
+///   · ArcLength   → arcLength     = degToArcMm(存储域, r)      弧长带符号, 可区分 θ 与 360−θ
+///   · ChordLength → chordLength   = degToChordMm(折角域, r)    弦长 2r·sin(θ/2) 无法区分
+///                                 θ 与 360−θ, 故必须用 (−180,180] 折角带符号表示
+/// 写入同时清空该模式的公式 (手势覆盖公式驱动值) 并设置 rotationMode。
+///
+/// @param att       目标连接 (调用方保证可写)。
+/// @param mode      本次写入的模式 (通常取自拖拽起始快照 base.rotationMode)。
+/// @param rawDeg    手势原始角 (度, 可多圈/带符号)。
+/// @param radiusMm  Follower 在连接点的线段长度 (mm)。
+/// @return 写入 followerAngle 的存储域角度 (度), 供调用方复用避免重复换算。
+inline double writeFollowerAngleForMode(Attachment& att, RotationMode mode,
+                                        double rawDeg, double radiusMm)
+{
+    const double storageDeg = followerAngleToStorage(rawDeg);
+    att.rotationMode = mode;
+    switch (mode) {
+    case RotationMode::ArcLength:
+        att.arcLength = cad::geo::degToArcMm(storageDeg, radiusMm);
+        att.arcLengthFormula.clear();
+        break;
+    case RotationMode::ChordLength:
+        att.chordLength = cad::geo::degToChordMm(followerAngleToDisplay(rawDeg), radiusMm);
+        att.chordLengthFormula.clear();
+        break;
+    case RotationMode::Angle:
+    default:
+        att.followerAngle = storageDeg;
+        att.followerAngleFormula.clear();
+        break;
+    }
+    return storageDeg;
 }
 
 /// 有效角度基准方向 (radians) —— 与 Resolver::applyAttachment 的 refWorld

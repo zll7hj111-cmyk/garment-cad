@@ -4,6 +4,7 @@
 
 #include "geometry/CurveMath.h"
 #include "geometry/Vec2.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 geo::Vec2 Block::worldPos(const QUuid& pointId) const
@@ -63,12 +64,12 @@ double Block::exitDirectionAtPoint(const QUuid& pointId) const
                     if (isEnd) {
                         // Exit at END: tangent at t=1 of last span
                         geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.back(), 1.0);
-                        if (tan.lengthSquared() > 1e-12)
+                        if (tan.lengthSquared() > cad::geo::kGeomEpsTight)
                             return std::atan2(tan.y, tan.x);
                     } else {
                         // Exit at START: negate tangent at t=0 of first span
                         geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.front(), 0.0);
-                        if (tan.lengthSquared() > 1e-12)
+                        if (tan.lengthSquared() > cad::geo::kGeomEpsTight)
                             return std::atan2(-tan.y, -tan.x);
                     }
                 }
@@ -110,7 +111,7 @@ double Block::exitDirectionAtPoint(const QUuid& pointId) const
                     entry && !entry->spans.empty()) {
                     auto proj = geo::projectPointOnCurve(pt->resolvedPos, entry->spans,
                                                          &entry->cumArcLengthMm);
-                    if (proj.valid && proj.tangent.lengthSquared() > 1e-12)
+                    if (proj.valid && proj.tangent.lengthSquared() > cad::geo::kGeomEpsTight)
                         return std::atan2(proj.tangent.y, proj.tangent.x);
                 }
             }
@@ -161,11 +162,11 @@ double Block::exitDirectionAtPoint(const QUuid& pointId,
             entry && !entry->spans.empty()) {
             if (isEnd) {
                 geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.back(), 1.0);
-                if (tan.lengthSquared() > 1e-12)
+                if (tan.lengthSquared() > cad::geo::kGeomEpsTight)
                     return std::atan2(tan.y, tan.x);
             } else {
                 geo::Vec2 tan = geo::evalBezierDerivative(entry->spans.front(), 0.0);
-                if (tan.lengthSquared() > 1e-12)
+                if (tan.lengthSquared() > cad::geo::kGeomEpsTight)
                     return std::atan2(-tan.y, -tan.x);
             }
         }

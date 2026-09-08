@@ -3,6 +3,7 @@
 #include <cmath>
 #include <deque>
 #include <algorithm>
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -12,6 +13,11 @@ constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
 /// Maximum bytecode stack depth (far beyond any realistic expression).
 constexpr int kMaxStack = 256;
+
+/// Error texts reused by several parse/execute sites (审计 N4 尾项).
+const QString kErrExprTooDeep = QStringLiteral("表达式过深");
+const QString kErrNestingTooDeep = QStringLiteral("表达式嵌套过深");
+const QString kErrMissingParen = QStringLiteral("缺少右括号 )");
 
 /// RAII recursion guard for the recursive-descent parser: pathological
 /// inputs like "((((((...1" or "-----...-1" recurse once per nesting level
@@ -195,7 +201,7 @@ ExpressionEvaluator::execute(const Compiled& code,
     for (const Instr& in : code.code) {
         switch (in.op) {
         case Op::PushNum:
-            if (sp >= kMaxStack) { r.error = QStringLiteral("表达式过深"); return r; }
+            if (sp >= kMaxStack) { r.error = kErrExprTooDeep; return r; }
             stack[sp++] = in.num;
             break;
 
@@ -237,7 +243,7 @@ ExpressionEvaluator::execute(const Compiled& code,
                     return r;
                 }
             }
-            if (sp >= kMaxStack) { r.error = QStringLiteral("表达式过深"); return r; }
+            if (sp >= kMaxStack) { r.error = kErrExprTooDeep; return r; }
             stack[sp++] = v;
             break;
         }
@@ -280,8 +286,7 @@ ExpressionEvaluator::execute(const Compiled& code,
         case Op::Atan: stack[sp - 1] = std::atan(stack[sp - 1]) / kDegToRad; break;
         case Op::Asin: {
             double a = stack[sp - 1];
-            constexpr double kEps = 1e-9;
-            if (a < -1.0 - kEps || a > 1.0 + kEps) {
+            if (a < -1.0 - cad::geo::kGeomEps || a > 1.0 + cad::geo::kGeomEps) {
                 r.error = QStringLiteral("asin 参数超出 [-1, 1]");
                 return r;
             }
@@ -291,8 +296,7 @@ ExpressionEvaluator::execute(const Compiled& code,
         }
         case Op::Acos: {
             double a = stack[sp - 1];
-            constexpr double kEps = 1e-9;
-            if (a < -1.0 - kEps || a > 1.0 + kEps) {
+            if (a < -1.0 - cad::geo::kGeomEps || a > 1.0 + cad::geo::kGeomEps) {
                 r.error = QStringLiteral("acos 参数超出 [-1, 1]");
                 return r;
             }
@@ -400,7 +404,7 @@ void ExpressionEvaluator::compile(Compiled& out)
 void ExpressionEvaluator::parseExpression(Compiled& out)
 {
     if (m_depth >= kMaxParseDepth) {
-        fail(out, QStringLiteral("表达式嵌套过深"));
+        fail(out, kErrNestingTooDeep);
         return;
     }
     const DepthGuard guard(m_depth);
@@ -449,7 +453,7 @@ void ExpressionEvaluator::parseTerm(Compiled& out)
 void ExpressionEvaluator::parseFactor(Compiled& out)
 {
     if (m_depth >= kMaxParseDepth) {
-        fail(out, QStringLiteral("表达式嵌套过深"));
+        fail(out, kErrNestingTooDeep);
         return;
     }
     const DepthGuard guard(m_depth);
@@ -491,7 +495,7 @@ void ExpressionEvaluator::parseFactor(Compiled& out)
 void ExpressionEvaluator::parsePrimary(Compiled& out)
 {
     if (m_depth >= kMaxParseDepth) {
-        fail(out, QStringLiteral("表达式嵌套过深"));
+        fail(out, kErrNestingTooDeep);
         return;
     }
     const DepthGuard guard(m_depth);
@@ -506,7 +510,7 @@ void ExpressionEvaluator::parsePrimary(Compiled& out)
         if (peek() == QLatin1Char(')')) {
             ++m_pos;
         } else {
-            fail(out, QStringLiteral("缺少右括号 )"));
+            fail(out, kErrMissingParen);
         }
         return;
     }
@@ -637,7 +641,7 @@ void ExpressionEvaluator::parsePrimary(Compiled& out)
 void ExpressionEvaluator::parseTwoArgCall(Compiled& out, const QString& name, Op op)
 {
     if (m_depth >= kMaxParseDepth) {
-        fail(out, QStringLiteral("表达式嵌套过深"));
+        fail(out, kErrNestingTooDeep);
         return;
     }
     const DepthGuard guard(m_depth);
@@ -657,7 +661,7 @@ void ExpressionEvaluator::parseTwoArgCall(Compiled& out, const QString& name, Op
         return;
     skipSpaces();
     if (peek() != QLatin1Char(')')) {
-        fail(out, QStringLiteral("缺少右括号 )"));
+        fail(out, kErrMissingParen);
         return;
     }
     ++m_pos;

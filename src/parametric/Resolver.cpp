@@ -11,23 +11,10 @@
 #include "parametric/PerfProbe.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
+#include "geometry/Epsilon.h"
+#include "parametric/ResolveDiagnostics.h"
 
 namespace cad::param {
-
-namespace {
-
-/// Append a diagnostic unless the same (kind, attachment) pair was already
-/// reported (the resolve loop visits each attachment multiple times).
-void report(std::vector<ResolveDiagnostic>* diagnostics,
-            ResolveDiagnostic::Kind kind, const QUuid& attachmentId)
-{
-    if (!diagnostics) return;
-    for (const auto& d : *diagnostics)
-        if (d.kind == kind && d.attachmentId == attachmentId) return;
-    diagnostics->push_back({kind, attachmentId});
-}
-
-} // namespace
 
 void Resolver::resolveAll(std::vector<Block>& blocks,
                           const std::vector<Attachment>& attachments,
@@ -107,7 +94,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             if (!att.fromComponentId.isNull()) continue;
             auto fromIt = blockIndex.find(att.fromBlockId);
             if (fromIt == blockIndex.end()) {
-                report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
+                appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
                 continue;
             }
             const int fi = fromIt.value();
@@ -155,7 +142,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                         angleRef2 = &blocks[ref2It.value()];
                 }
                 if (toIt == blockIndex.end()) {
-                    report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
+                    appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
                 } else {
                     applyAttachment(blocks[b], att, blocks[toIt.value()], angleRef,
                                     angleRef2,
@@ -175,7 +162,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
 
     // Step 3: settle the attachment forest.
     if (settleAttachments())
-        report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+        appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
 
     // Step 4: bridges resolve LAST.
     struct Pin { QUuid fromPointId; geo::Vec2 hostWorld; };
@@ -191,14 +178,14 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         auto toIt = blockIndex.find(att.toBlockId);
         if (toIt == blockIndex.end()) {
             if (reportIfBridge())
-                report(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
+                appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::DanglingBlock, att.id);
             continue;
         }
         const Block& host = blocks[toIt.value()];
         const ParamPoint* hp = host.findPoint(att.toPointId);
         if (!hp || !hp->resolved) {
             if (reportIfBridge())
-                report(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
+                appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
             continue;
         }
         pinsByBridge[att.fromBlockId].push_back(
@@ -221,7 +208,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             ParamPoint* pt = bridge.findPoint(pin.fromPointId);
             if (!pt) continue;
             const geo::Vec2 newPos = pin.hostWorld - bridge.transform.origin;
-            if (pt->resolvedPos.distanceSquaredTo(newPos) > 1e-6) {
+            if (pt->resolvedPos.distanceSquaredTo(newPos) > cad::geo::kGeomEpsLoose) {
                 bridge.touchGeometry();
                 bridgesMoved = true;
             }
@@ -234,7 +221,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
 
     // Step 5: attachments led BY a bridge.
     if (bridgesMoved && settleAttachments())
-        report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+        appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
 
     // Step 6/6b/6c: cross-block intersection points fixpoint.
     auto runIntersectionFixpoint = [&](bool* budgetExhausted = nullptr) -> bool {
@@ -266,7 +253,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                 for (const auto& p : block.points) {
                     if (p.constraint != PointConstraint::Interpolated) continue;
                     if (k < prevPos.size() && p.resolved
-                        && p.resolvedPos.distanceSquaredTo(prevPos[k]) > 1e-9)
+                        && p.resolvedPos.distanceSquaredTo(prevPos[k]) > cad::geo::kGeomEps)
                         progressed = true;
                     ++k;
                 }
@@ -293,9 +280,9 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         bool intersectExhausted = false;
         const bool geoProgressed = runIntersectionFixpoint(&intersectExhausted);
         if (intersectExhausted)
-            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+            appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
         if (geoProgressed && settleAttachments())
-            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+            appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
 
     // Step 7: endpoint aim constraints (终点指向).
@@ -324,7 +311,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
 
                 geo::Vec2 startWorld = block.transform.toWorld(sp->resolvedPos);
                 geo::Vec2 aim = targetWorld - startWorld;
-                if (aim.lengthSquared() < 1e-12) continue;
+                if (aim.lengthSquared() < cad::geo::kGeomEpsTight) continue;
                 double aimAngle = std::atan2(aim.y, aim.x);
 
                 double offsetDeg = block.endTargetOffset;
@@ -332,13 +319,13 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
                     auto r = ConditionEngine::evaluate(block.endTargetOffsetFormula, params, conditioned, &ctx);
                     if (r.ok) offsetDeg = r.value;
                 }
-                double offsetRad = offsetDeg * M_PI / 180.0;
+                double offsetRad = cad::geo::degToRad(offsetDeg);
 
                 geo::Vec2 localDir = ep->resolvedPos - sp->resolvedPos;
                 double localAngle = std::atan2(localDir.y, localDir.x);
 
                 const double newRotation = aimAngle + offsetRad - localAngle;
-                if (std::abs(newRotation - block.transform.rotation) > 1e-9)
+                if (std::abs(newRotation - block.transform.rotation) > cad::geo::kGeomEps)
                     rotated = true;
                 block.transform.rotation = newRotation;
             }
@@ -349,7 +336,7 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
             if (!rotated && !unsettled) { aimConverged = true; break; }
         }
         if (!aimConverged)
-            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+            appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
 
     // Step 7b: re-run the intersection fixpoint after aim rotations.
@@ -358,9 +345,9 @@ void Resolver::resolveAll(std::vector<Block>& blocks,
         bool reExhausted = false;
         const bool reProgressed = runIntersectionFixpoint(&reExhausted);
         if (reExhausted)
-            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+            appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
         if (reProgressed && settleAttachments())
-            report(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
+            appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::NotConverged, QUuid());
     }
 }
 

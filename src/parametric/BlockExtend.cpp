@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "parametric/ConditionEngine.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 geo::Vec2 Block::effectiveLocalPos(const QUuid& pointId) const
@@ -23,13 +24,13 @@ geo::Vec2 Block::effectiveLocalPos(const QUuid& pointId) const
         const bool isEnd   = (seg.endPointId == pointId);
         if (!isStart && !isEnd) continue;
         const double ext = isStart ? it->startMm : it->endMm;
-        if (std::abs(ext) < 1e-9) continue;
+        if (std::abs(ext) < cad::geo::kGeomEps) continue;
         const ParamPoint* sp = findPoint(seg.startPointId);
         const ParamPoint* ep = findPoint(seg.endPointId);
         if (!sp || !ep || !sp->resolved) return pt->resolvedPos;
         geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;
         const double len = dir.length();
-        if (len < 1e-9) return pt->resolvedPos;  // 退化段: 无出方向
+        if (len < cad::geo::kGeomEps) return pt->resolvedPos;  // 退化段: 无出方向
         dir = dir / len;
         // 出方向与 exitDirectionAtPoint 一致：终点 = start→end；起点 = end→start。
         if (isEnd)
@@ -87,12 +88,11 @@ bool Block::segmentSnapWithinBase(const QUuid& segmentId, double t) const
     if (!sp || !ep || !sp->resolved || !ep->resolved) return true;
     const double baseLen = segmentBaseLength(segmentId);
     const double effLen  = segmentEffectiveLength(segmentId);
-    if (effLen < 1e-9) return true;
+    if (effLen < cad::geo::kGeomEps) return true;
     // t 沿有效段（SnapEngine 用有效端点投影）。距本体起点的距离 =
     // t·effLen − 起点延长量；本体范围 = [0, baseLen]。
     const double along = t * effLen - segmentExtendStart(segmentId);
-    constexpr double kEps = 1e-6;
-    return along >= -kEps && along <= baseLen + kEps;
+    return along >= -cad::geo::kGeomEpsLoose && along <= baseLen + cad::geo::kGeomEpsLoose;
 }
 
 void Block::clampExtendLimits(const Segment& seg, double& inOutStartMm, double& inOutEndMm) const
@@ -169,7 +169,7 @@ void Block::clampExtendLimits(const Segment& seg, double& inOutStartMm, double& 
         // 如果两端都为负，按比例回调；否则只回调为负的那端
         if (inOutStartMm < 0.0 && inOutEndMm < 0.0) {
             const double totalNeg = (-inOutStartMm) + (-inOutEndMm);
-            if (totalNeg > 1e-9) {
+            if (totalNeg > cad::geo::kGeomEps) {
                 inOutStartMm += deficit * (-inOutStartMm / totalNeg);
                 inOutEndMm += deficit * (-inOutEndMm / totalNeg);
             }
@@ -195,7 +195,7 @@ void Block::evaluateExtendValues(const QHash<QString, double>& params,
         ConditionEngine::evaluateLengthMm(seg.extendStartFormula, params, conditioned, e.startMm, ctx);
         e.endMm = seg.extendEndMm;
         ConditionEngine::evaluateLengthMm(seg.extendEndFormula, params, conditioned, e.endMm, ctx);
-        if (std::abs(e.startMm) > 1e-9 || std::abs(e.endMm) > 1e-9)
+        if (std::abs(e.startMm) > cad::geo::kGeomEps || std::abs(e.endMm) > cad::geo::kGeomEps)
             extendEval.insert(seg.id, e);
     }
     m_extendEval = std::move(extendEval);
@@ -235,12 +235,12 @@ void Block::applyEffectivePositions()
         if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
         geo::Vec2 dir = ep->resolvedPos - sp->resolvedPos;  // start→end (本体)
         const double len = dir.length();
-        if (len < 1e-9) continue;  // 退化线段：无出方向，跳过
+        if (len < cad::geo::kGeomEps) continue;  // 退化线段：无出方向，跳过
         const geo::Vec2 u = dir / len;
 
-        if (std::abs(it->startMm) > 1e-9)
+        if (std::abs(it->startMm) > cad::geo::kGeomEps)
             eff[sp->id] = sp->resolvedPos - u * it->startMm;  // 起点往起点外（正延负缩）
-        if (std::abs(it->endMm) > 1e-9)
+        if (std::abs(it->endMm) > cad::geo::kGeomEps)
             eff[ep->id] = ep->resolvedPos + u * it->endMm;    // 终点往终点外（正延负缩）
     }
 
@@ -252,7 +252,7 @@ void Block::applyEffectivePositions()
         // 只要本帧有任何端点产生了实际外移，即视为几何变化。
         for (const auto& pt : points) {
             auto it = eff.constFind(pt.id);
-            if (it != eff.constEnd() && it.value().distanceSquaredTo(pt.resolvedPos) > 1e-6) {
+            if (it != eff.constEnd() && it.value().distanceSquaredTo(pt.resolvedPos) > cad::geo::kGeomEpsLoose) {
                 moved = true;
                 break;
             }
@@ -263,7 +263,7 @@ void Block::applyEffectivePositions()
             for (auto cit = eff.constBegin(); cit != eff.constEnd(); ++cit) {
                 auto prev = m_effectiveLocal.constFind(cit.key());
                 if (prev == m_effectiveLocal.constEnd() ||
-                    prev->distanceSquaredTo(cit.value()) > 1e-6) {
+                    prev->distanceSquaredTo(cit.value()) > cad::geo::kGeomEpsLoose) {
                     moved = true;
                     break;
                 }

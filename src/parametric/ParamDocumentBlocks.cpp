@@ -5,6 +5,7 @@
 #include <initializer_list>
 
 #include <QDebug>
+#include "geometry/Angle.h"
 
 #include "parametric/Resolver.h"
 #include "parametric/Serial.h"
@@ -18,6 +19,7 @@
 #include "parametric/LayerRegistry.h"
 #include "parametric/VariableStore.h"
 #include "parametric/MeasurementStore.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -404,14 +406,14 @@ bool ParamDocument::applyComponentTransform(Component& comp, const Attachment& a
         }
         angleRad = geo::degToRad(angleDeg);
     }
-    const double targetRot = refWorld + M_PI - angleRad - localDir;
+    const double targetRot = refWorld + cad::geo::kPi - angleRad - localDir;
     const double delta = targetRot - exposed->transform.rotation;
     const geo::Vec2 toWorld = toBlk.worldPos(att.toPointId);
     const geo::Vec2 translate = toWorld - pWorld;
 
     // 2026-09 性能: 姿态无变化 (epsilon, 与 applyAttachment 同阈值) 则整体跳过
     // — 旧实现无条件写回所有成员 transform + 触发森林重解, 每次 resolve 白跑.
-    if (std::abs(delta) < 1e-9 && translate.lengthSquared() < 1e-12)
+    if (std::abs(delta) < cad::geo::kGeomEps && translate.lengthSquared() < cad::geo::kGeomEpsTight)
         return false;
 
     for (const QUuid& mid : comp.memberBlockIds) {

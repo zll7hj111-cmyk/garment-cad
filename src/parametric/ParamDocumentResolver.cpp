@@ -18,6 +18,7 @@
 #include "parametric/LayerRegistry.h"
 #include "parametric/VariableStore.h"
 #include "parametric/MeasurementStore.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -238,6 +239,21 @@ void ParamDocument::resolveAll()
 {
     m_referenceIndexDirty = true;  // 所有引用字段变更都经全量 resolve 落地
     resolveAllInternal(true);
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+void ParamDocument::touchAndResolve(const QUuid& blockId)
+{
+    if (Block* b = findBlock(blockId))
+        b->touchGeometry();
+    resolveAll();
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+void ParamDocument::commitRawChange()
+{
+    resolveAll();
+    emit structureChanged();
 }
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -593,7 +609,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                     if (!sp || !ep || !sp->resolved || !ep->resolved) continue;
                     const geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
                     const double len = chord.length();
-                    if (len < 1e-9) continue;
+                    if (len < cad::geo::kGeomEps) continue;
                     const geo::Vec2 unitDir = chord / len;
                     const geo::Vec2 normal{-unitDir.y, unitDir.x};
                     const geo::Vec2 rel = desiredLocal - sp->resolvedPos;
@@ -608,7 +624,7 @@ void ParamDocument::resolveAllInternal(bool emitDocChanged,
                     // curve cache this frame (Block::resolve's own epoch bump already
                     // ran BEFORE this post-pass, so without this the curve would keep
                     // passing through the OLD anchor until the next resolve).
-                    if (pt.resolvedPos.distanceSquaredTo(newPos) > 1e-6) {
+                    if (pt.resolvedPos.distanceSquaredTo(newPos) > cad::geo::kGeomEpsLoose) {
                         blk.touchGeometry();
                         followMoved = true;
                     }

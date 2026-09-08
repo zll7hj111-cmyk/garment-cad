@@ -2,6 +2,9 @@
 
 namespace cad::param {
 
+const QString LayerRegistry::kDefaultAuxLayerName = QStringLiteral("辅助层");
+const QString LayerRegistry::kDefaultWorkingLayerName = QStringLiteral("图层 1");
+
 LayerRegistry::LayerRegistry(QObject* parent)
     : QObject(parent)
 {
@@ -13,11 +16,11 @@ void LayerRegistry::initDefaultLayers()
 {
     m_layers.clear();
     Layer aux;
-    aux.name = QStringLiteral("辅助层");
+    aux.name = kDefaultAuxLayerName;
     aux.type = LayerType::Auxiliary;
     m_layers.push_back(std::move(aux));
     Layer working;
-    working.name = QStringLiteral("图层 1");
+    working.name = kDefaultWorkingLayerName;
     m_layers.push_back(std::move(working));
     m_activeLayer = m_layers.back().id;
 }

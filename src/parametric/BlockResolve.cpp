@@ -4,10 +4,13 @@
 #include <cmath>
 
 #include "geometry/CurveMath.h"
+#include "geometry/RayCast.h"
 #include "geometry/Units.h"
+#include "geometry/Angle.h"
 #include "parametric/ConditionEngine.h"
 #include "parametric/ExpressionEvaluator.h"
 #include "parametric/IntersectDebug.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 void Block::resolve(const QHash<QString, double>& params,
@@ -48,7 +51,7 @@ void Block::resolve(const QHash<QString, double>& params,
     // when only the block's transform changed (drag).
     for (size_t i = 0; i < points.size(); ++i) {
         if (points[i].resolved &&
-            points[i].resolvedPos.distanceSquaredTo(prevPos[i]) > 1e-6) {
+            points[i].resolvedPos.distanceSquaredTo(prevPos[i]) > cad::geo::kGeomEpsLoose) {
             touchGeometry();
             break;
         }
@@ -120,7 +123,7 @@ bool Block::polarEndpointCycleSeed(const ParamPoint& ep, const Block& block,
                                        rep->resolvedPos.x - rsp->resolvedPos.x);
         }
     }
-    const double angleRad = baseAngle + ang * M_PI / 180.0;
+    const double angleRad = baseAngle + cad::geo::degToRad(ang);
     outLocal = sp.resolvedPos + geo::Vec2{dist * std::cos(angleRad),
                                           dist * std::sin(angleRad)};
     return true;
@@ -238,7 +241,7 @@ bool Block::resolvePolarPoint(ParamPoint& pt,
         }
     }
 
-    double angleRad = baseAngle + ang * M_PI / 180.0;
+    double angleRad = baseAngle + cad::geo::degToRad(ang);
     pt.resolvedPos = ref->resolvedPos + geo::Vec2{
         dist * std::cos(angleRad),
         dist * std::sin(angleRad)
@@ -280,7 +283,7 @@ bool Block::resolveOrthoOffsetPoint(ParamPoint& pt,
         }
     }
 
-    double axisRad = baseAngle + ang * M_PI / 180.0;
+    double axisRad = baseAngle + cad::geo::degToRad(ang);
     geo::Vec2 axisDir{std::cos(axisRad), std::sin(axisRad)};
     geo::Vec2 perpDir{axisDir.y, -axisDir.x}; // positive offset = left (+90° in screen space, Y-down)
 
@@ -324,7 +327,7 @@ bool Block::resolveIntersectionPoint(ParamPoint& pt,
     const geo::Vec2 epEff = effectiveLocalPos(seg->endPointId);
     geo::Vec2 segDir = epEff - spEff;
     double segLen = segDir.length();
-    if (segLen < 1e-9 && !ep->resolved) {
+    if (segLen < cad::geo::kGeomEps && !ep->resolved) {
         geo::Vec2 seed;
         if (polarEndpointCycleSeed(*ep, *this, *seg, *sp, params,
                                    conditioned, ctx, seed)) {
@@ -332,7 +335,7 @@ bool Block::resolveIntersectionPoint(ParamPoint& pt,
             segLen = segDir.length();
         }
     }
-    if (segLen < 1e-9) return false;  // Degenerate segment.
+    if (segLen < cad::geo::kGeomEps) return false;  // Degenerate segment.
 
     // Ray direction: aim-point mode (指向点) overrides the
     // numeric/formula angle — the ray points straight at
@@ -343,7 +346,7 @@ bool Block::resolveIntersectionPoint(ParamPoint& pt,
         const ParamPoint* aim = findPoint(pt.interAimPointId);
         if (!aim || !aim->resolved) return false;
         geo::Vec2 toAim = aim->resolvedPos - origin->resolvedPos;
-        if (toAim.lengthSquared() < 1e-12) return false;  // Coincident with origin.
+        if (toAim.lengthSquared() < cad::geo::kGeomEpsTight) return false;  // Coincident with origin.
         theta = std::atan2(toAim.y, toAim.x);
     } else {
         double baseAngle = std::atan2(segDir.y, segDir.x);
@@ -354,60 +357,43 @@ bool Block::resolveIntersectionPoint(ParamPoint& pt,
             if (r.ok) angleDeg = r.value;
         }
         if (pt.interUseWorldAngle) {
-            theta = angleDeg * M_PI / 180.0 - transform.rotation;
+            theta = cad::geo::degToRad(angleDeg) - transform.rotation;
         } else {
-            theta = baseAngle + angleDeg * M_PI / 180.0;
+            theta = baseAngle + cad::geo::degToRad(angleDeg);
         }
     }
 
     // Ray direction.
     geo::Vec2 d{std::cos(theta), std::sin(theta)};
 
-    // --- Curve target: rayCurveIntersect ---
+    // Host segment as curve spans: empty for a line, spansForSegment output for
+    // a Bézier. Both branches now go through ONE geometry entry point
+    // (geo::raySegmentOrCurveIntersect — 审计 PAR-P0-3 / U6).
+    std::vector<geo::BezierSpan> spans;
     if (seg->isCurve()) {
         // Unified span entry (single Hobby solve path). Mid-fixpoint
         // tolerance matches the old ad-hoc build: unresolved pass points are
         // skipped, a mid-cycle endpoint contributes its cached position.
         // (Curves do not support endpoint extension, so resolvedPos == the
         // effective position here — spEff/epEff only differ for lines.)
-        const auto spans = spansForSegment(*seg, /*skipUnresolvedPassPoints=*/true,
-                                           /*tolerateStaleEndpoints=*/true);
+        spans = spansForSegment(*seg, /*skipUnresolvedPassPoints=*/true,
+                                /*tolerateStaleEndpoints=*/true);
         if (spans.empty()) return false;
-
-        auto hits = geo::rayCurveIntersect(origin->resolvedPos, d, spans, pt.interBidirectional);
-        if (hits.empty()) return false;
-
-        pt.resolvedPos = hits[0].point;
-        pt.resolved = true;
-        return true;
     }
 
-    // --- Straight-line target: cross-product method ---
-    // Ray-segment intersection via cross products.
-    // Ray: R(s) = origin + s*d,  s >= 0 (or any s if bidirectional)
-    // Segment: L(t) = sp + t*segDir,  t in [0,1]
-    double denom = d.cross(segDir);
-    if (std::abs(denom) < 1e-9) {
-        // Parallel — no intersection; keep last position if available.
-        return false;
-    }
-
-    geo::Vec2 w = spEff - origin->resolvedPos;
-    double s = w.cross(segDir) / denom;  // Ray parameter.
-    double t = w.cross(d) / denom;       // Segment parameter.
-
-    // Validity check.
-    constexpr double eps = 1e-6;
-    bool validT = (t >= -eps && t <= 1.0 + eps);
-    bool validS = pt.interBidirectional ? true : (s >= -eps);
-    if (!validT || !validS) {
+    // Straight-line branch: R(s) = origin + s*d (s >= 0 unless bidirectional),
+    // L(t) = spEff + t*segDir, t in [0,1]; segDir already carries the
+    // degenerate-segment bootstrap seed when one was used.
+    const auto hit = geo::raySegmentOrCurveIntersect(
+        origin->resolvedPos, d, spEff, spEff + segDir, spans, pt.interBidirectional);
+    if (!hit.hit) {
         if (idbg::enabled())
             idbg::log(QStringLiteral("[inter-local] MISS pt=%1 s=%2 t=%3")
-                          .arg(pt.serial).arg(s).arg(t));
+                          .arg(pt.serial).arg(hit.s).arg(hit.t));
         return false;  // No valid intersection.
     }
 
-    pt.resolvedPos = origin->resolvedPos + d * s;
+    pt.resolvedPos = hit.point;
     pt.resolved = true;
     if (idbg::enabled())
         idbg::log(QStringLiteral("[inter-local] HIT pt=%1 local=(%2,%3)")
@@ -429,7 +415,7 @@ bool Block::resolveCurveAnchorPoint(ParamPoint& pt)
 
     geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
     const double len = chord.length();
-    if (len < 1e-9) {
+    if (len < cad::geo::kGeomEps) {
         // Degenerate chord — sit on the start point.
         pt.resolvedPos = sp->resolvedPos;
         pt.resolved = true;
@@ -482,7 +468,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
         // re-integrating every span.
         const std::vector<double> cumLen = geo::buildCumulativeArcLength(spans);
         const double totalArc = cumLen.back();
-        if (totalArc < 1e-9) {
+        if (totalArc < cad::geo::kGeomEps) {
             // Degenerate curve — sit on the start anchor (spans[0].p0).
             pt.resolvedPos = spans[0].p0;
             pt.resolved = true;
@@ -510,7 +496,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
         geo::Vec2 basePos = geo::evalCurve(spans, T);
         geo::Vec2 tangent = geo::evalCurveTangent(spans, T);
         double baseAngle = std::atan2(tangent.y, tangent.x);
-        if (pt.interpFromEnd) baseAngle += M_PI;  // Flip direction
+        if (pt.interpFromEnd) baseAngle += cad::geo::kPi;  // Flip direction
 
         // Offset (perpendicular to tangent)
         double offAngle = pt.interpOffsetAngle;
@@ -521,8 +507,8 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
         double offDist = pt.interpOffsetDist;
         ConditionEngine::evaluateLengthMm(pt.interpOffsetDistFormula, params, conditioned, offDist, ctx);
 
-        if (std::abs(offDist) > 1e-9) {
-            double angleRad = baseAngle + offAngle * M_PI / 180.0;
+        if (std::abs(offDist) > cad::geo::kGeomEps) {
+            double angleRad = baseAngle + cad::geo::degToRad(offAngle);
             pt.resolvedPos = basePos + geo::Vec2{
                 offDist * std::cos(angleRad),
                 offDist * std::sin(angleRad)
@@ -550,7 +536,7 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
     geo::Vec2 dir = fromEnd ? (sp->resolvedPos - ep->resolvedPos)
                             : (ep->resolvedPos - sp->resolvedPos);
     double distAB = dir.length();
-    if (distAB < 1e-9) {
+    if (distAB < cad::geo::kGeomEps) {
         // Degenerate segment — place at the reference origin.
         pt.resolvedPos = fromEnd ? ep->resolvedPos : sp->resolvedPos;
         pt.resolved = true;
@@ -596,8 +582,8 @@ bool Block::resolveInterpolatedPoint(ParamPoint& pt,
     double offDist = pt.interpOffsetDist;
     ConditionEngine::evaluateLengthMm(pt.interpOffsetDistFormula, params, conditioned, offDist, ctx);
 
-    if (std::abs(offDist) > 1e-9) {
-        double angleRad = baseAngle + offAngle * M_PI / 180.0;
+    if (std::abs(offDist) > cad::geo::kGeomEps) {
+        double angleRad = baseAngle + cad::geo::degToRad(offAngle);
         pt.resolvedPos = basePos + geo::Vec2{
             offDist * std::cos(angleRad),
             offDist * std::sin(angleRad)
@@ -617,7 +603,7 @@ void Block::resolveInterpolatedPoints(const QHash<QString, double>& params,
         if (pt.constraint != PointConstraint::Interpolated) continue;
         const geo::Vec2 oldPos = pt.resolvedPos;
         resolveInterpolatedPoint(pt, params, conditioned, ctx);
-        if (pt.resolvedPos.distanceSquaredTo(oldPos) > 1e-6)
+        if (pt.resolvedPos.distanceSquaredTo(oldPos) > cad::geo::kGeomEpsLoose)
             touchGeometry();
     }
 }

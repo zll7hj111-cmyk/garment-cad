@@ -5,6 +5,8 @@
 #include <QColor>
 #include <vector>
 
+#include "parametric/DefaultAppearance.h"
+
 namespace cad::param {
 
 /// Type of geometry a segment represents.
@@ -77,8 +79,8 @@ struct Segment {
 
     // --- Visual properties ---
     LineStyle lineStyle = LineStyle::Solid;
-    QColor    color     = QColor(30, 30, 30);
-    double    weight    = 1.2;  ///< Line thickness in pixels (cosmetic).
+    QColor    color     = defaultSegmentColor();   ///< 默认线色，见 DefaultAppearance.h（审计 P1-9 单一来源）
+    double    weight    = kDefaultSegmentWeight;   ///< Line thickness in pixels (cosmetic).
 
     bool visible   = true;
     bool showName  = false;  ///< Whether to display the segment name on canvas.

@@ -55,9 +55,8 @@ public:
     ~ParamDocument() override;
 
     // --- Global parameters (formula variables) ---
-    /// Parameters are stored in cm — the formula domain unit.
-    /// User-facing formulas (e.g. "b/4+0.6") evaluate against these cm values,
-    /// and Block::resolve() converts distance formula results back to mm.
+    /// Parameters are stored in cm; formulas (e.g. "b/4+0.6") evaluate against
+    /// these cm values and Block::resolve() converts results back to mm.
     void setParameter(const QString& name, double value);
     /// Batch-set multiple parameters with a single resolveAll() at the end.
     void setParameters(const QHash<QString, double>& nameValues);
@@ -237,6 +236,9 @@ public:
     /// addAttachment()/removeAttachment().
     [[nodiscard]] Attachment* findAttachment(const QUuid& id);
     [[nodiscard]] const Attachment* findAttachment(const QUuid& id) const;
+    /// First NON-PIN attachment whose follower is @p fromBlockId, else nullptr
+    /// (审计 P1-2 收口；点级变体如 ContextStrip::findEditAttachment 仍留在调用方).
+    [[nodiscard]] const Attachment* findFollowerAttachmentOf(const QUuid& fromBlockId) const;
 
     /// Remove every attachment that references the given block (as leader or
     /// follower) while keeping the block geometry. Returns the number of
@@ -494,15 +496,17 @@ public:
     /// Returns true if any measured value changed.
     bool measureAngleMeasureVars(bool skipAuxSource = false);
 
-    /// Blocks whose length formulas reference (exact match) a linked variable
-    /// sourced from the given block. When the source block is deleted those
-    /// lengths are baked back to plain numbers (长度固化为数值) — used by
-    /// RemoveBlockCommand to snapshot the consumers for undo.
+    /// Blocks whose length formulas reference a linked variable sourced from
+    /// the given block (baked back to numbers when it is deleted; undo snapshot).
     [[nodiscard]] QList<QUuid> linkedConsumerBlocks(const QUuid& sourceBlockId) const;
 
     // --- Resolve ---
     /// Re-resolve all blocks and attachments. Call after any parameter change.
     void resolveAll();
+    /// 单块变更提交 (U3): touchGeometry(id) + resolveAll(); 块不存在也 resolveAll。
+    void touchAndResolve(const QUuid& blockId);
+    /// 结构变更提交 (U3): resolveAll() + structureChanged() 唯一入口。
+    void commitRawChange();
     /// Re-resolve after a per-frame drag transform update (live-follow mode).
     /// Emits resolved() so the canvas syncs positions, but NOT
     /// documentChanged() — panels refresh once when the gesture commits

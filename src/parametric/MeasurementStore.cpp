@@ -7,6 +7,7 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "parametric/PerfProbe.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -152,7 +153,7 @@ bool MeasurementStore::measureLinkedVars(bool skipAuxSource)
         // 以实际线段为主：正交偏置取实际端点斜长，曲线取弧长，支持延长
         const double len = blk->segmentEffectiveLength(seg->id);
         lv.dangling = false;
-        if (std::abs(len - lv.value) > 1e-9) {
+        if (std::abs(len - lv.value) > cad::geo::kGeomEps) {
             lv.value = len;
             dirty = true;
         }
@@ -320,7 +321,7 @@ bool MeasurementStore::measureMeasureVars(bool skipAuxSource)
         }
 
         mv.dangling = false;
-        if (std::abs(dist - mv.value) > 1e-9) {
+        if (std::abs(dist - mv.value) > cad::geo::kGeomEps) {
             mv.value = dist;
             dirty = true;
         }
@@ -444,17 +445,17 @@ bool MeasurementStore::measureAngleMeasureVars(bool skipAuxSource)
         const geo::Vec2 wb1 = blkB->transform.toWorld(b1->resolvedPos);
         const double dax = wa1.x - wa0.x, day = wa1.y - wa0.y;
         const double dbx = wb1.x - wb0.x, dby = wb1.y - wb0.y;
-        if (dax * dax + day * day < 1e-12 || dbx * dbx + dby * dby < 1e-12)
+        if (dax * dax + day * day < cad::geo::kGeomEpsTight || dbx * dbx + dby * dby < cad::geo::kGeomEpsTight)
             continue;  // degenerate (zero-length) segment
-        const double dirA = std::atan2(day, dax) + (am.flipA ? M_PI : 0.0);
-        const double dirB = std::atan2(dby, dbx) + (am.flipB ? M_PI : 0.0);
+        const double dirA = std::atan2(day, dax) + (am.flipA ? cad::geo::kPi : 0.0);
+        const double dirB = std::atan2(dby, dbx) + (am.flipB ? cad::geo::kPi : 0.0);
 
         // Directed angle from A to B, same semantics as the construction
         // angle (跟随角度): normalized to (-180, 180].
         const double angleDeg = geo::normalizeDeg180(geo::radToDeg(dirB - dirA));
 
         am.dangling = false;
-        if (std::abs(angleDeg - am.value) > 1e-9) {
+        if (std::abs(angleDeg - am.value) > cad::geo::kGeomEps) {
             am.value = angleDeg;
             dirty = true;
         }

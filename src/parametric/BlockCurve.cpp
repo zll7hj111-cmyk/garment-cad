@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "geometry/CurveMath.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -63,8 +64,8 @@ bool Block::collectCurveAnchors(const Segment& seg,
     // (endpoint↔query dependency cycle, e.g. break endpoints).
     if (!sp->resolved || !ep->resolved) {
         // Never fabricate geometry from a never-resolved (zero) endpoint.
-        if (sp->resolvedPos.lengthSquared() < 1e-12 &&
-            ep->resolvedPos.lengthSquared() < 1e-12)
+        if (sp->resolvedPos.lengthSquared() < cad::geo::kGeomEpsTight &&
+            ep->resolvedPos.lengthSquared() < cad::geo::kGeomEpsTight)
             return false;
     }
 

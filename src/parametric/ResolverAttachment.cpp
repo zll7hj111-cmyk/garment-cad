@@ -7,23 +7,10 @@
 #include "ConditionEngine.h"
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
+#include "geometry/Epsilon.h"
+#include "parametric/ResolveDiagnostics.h"
 
 namespace cad::param {
-
-namespace {
-
-/// Append a diagnostic unless the same (kind, attachment) pair was already
-/// reported (the resolve loop visits each attachment multiple times).
-void report(std::vector<ResolveDiagnostic>* diagnostics,
-            ResolveDiagnostic::Kind kind, const QUuid& attachmentId)
-{
-    if (!diagnostics) return;
-    for (const auto& d : *diagnostics)
-        if (d.kind == kind && d.attachmentId == attachmentId) return;
-    diagnostics->push_back({kind, attachmentId});
-}
-
-} // namespace
 
 bool Resolver::applyAttachment(Block& from, const Attachment& att,
                                const Block& to,
@@ -38,7 +25,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // The leader's snapped point must exist and be resolved.
     const ParamPoint* toPt = to.findPoint(att.toPointId);
     if (!toPt || !toPt->resolved) {
-        report(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
+        appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
         return false;
     }
 
@@ -59,7 +46,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         if (sp && ep && sp->resolved && ep->resolved) {
             const geo::Vec2 w1 = to.transform.toWorld(sp->resolvedPos);
             const geo::Vec2 w2 = to.transform.toWorld(ep->resolvedPos);
-            if (w1.distanceTo(w2) > 1e-6) {
+            if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose) {
                 refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
             }
         }
@@ -73,7 +60,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
             if (p1 && p2 && p1->resolved && p2->resolved) {
                 const geo::Vec2 w1 = angleRef->transform.toWorld(p1->resolvedPos);
                 const geo::Vec2 w2 = ref2->transform.toWorld(p2->resolvedPos);
-                if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+                if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
             }
         } else {
             const Segment* refSeg = angleRef->findSegment(att.angleRefSegmentId);
@@ -83,7 +70,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
                 if (rsp && rep && rsp->resolved && rep->resolved) {
                     const geo::Vec2 w1 = angleRef->transform.toWorld(rsp->resolvedPos);
                     const geo::Vec2 w2 = angleRef->transform.toWorld(rep->resolvedPos);
-                    if (w1.distanceTo(w2) > 1e-6) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
+                    if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose) refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
                 }
             }
         }
@@ -93,7 +80,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // any direction lookup so dangling points short-circuit cleanly).
     const ParamPoint* fromPt = from.findPoint(att.fromPointId);
     if (!fromPt || !fromPt->resolved) {
-        report(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
+        appendDiagnostic(diagnostics, ResolveDiagnostic::Kind::DanglingPoint, att.id);
         return false;
     }
 
@@ -131,7 +118,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
             auto r = ConditionEngine::evaluate(att.followerAngleFormula, params, conditioned, ctx);
             if (r.ok) angleDeg = r.value;  // result is in degrees, no conversion
         }
-        angleRad = angleDeg * M_PI / 180.0;
+        angleRad = cad::geo::degToRad(angleDeg);
     }
 
     // Closed-base convention (闭合基准, 用户拍板 2026-08 定稿): followerAngle
@@ -139,7 +126,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // 180° = straight continuation along the leader's exit direction. The
     // world direction is therefore refWorld + π − angleRad (mirror about the
     // perpendicular), NOT refWorld + angleRad. Both rotation modes share it.
-    double newRotation = refWorld + M_PI - angleRad - localDir;
+    double newRotation = refWorld + cad::geo::kPi - angleRad - localDir;
 
     // A block whose rotation is driven by an endpoint-aim constraint (endTarget,
     // applied in Step 7) must not have its rotation overwritten by the attachment
@@ -164,7 +151,7 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // (rotation 已被上面 angleIndependent 分支保持为自身值, 这里写入同值
     // 并提前 return, 跳过位置钉点)。
     if (att.angleOnly) {
-        const bool moved = std::abs(newRotation - from.transform.rotation) > 1e-9;
+        const bool moved = std::abs(newRotation - from.transform.rotation) > cad::geo::kGeomEps;
         from.transform.rotation = newRotation;
         return moved;
     }
@@ -209,9 +196,9 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
         const geo::Vec2 newOrigin = fromPointWorld - rotatedOffset;
 
         const bool moved =
-            std::abs(newRotation - from.transform.rotation) > 1e-9 ||
-            std::abs(newOrigin.x - from.transform.origin.x) > 1e-6 ||
-            std::abs(newOrigin.y - from.transform.origin.y) > 1e-6;
+            std::abs(newRotation - from.transform.rotation) > cad::geo::kGeomEps ||
+            std::abs(newOrigin.x - from.transform.origin.x) > cad::geo::kGeomEpsLoose ||
+            std::abs(newOrigin.y - from.transform.origin.y) > cad::geo::kGeomEpsLoose;
         from.transform.rotation = newRotation;
         from.transform.origin = newOrigin;
         return moved;
@@ -235,9 +222,9 @@ bool Resolver::applyAttachment(Block& from, const Attachment& att,
     // Only report "moved" when the transform actually changed, so the outer
     // loop can detect convergence of a healthy forest.
     const bool moved =
-        std::abs(newRotation - from.transform.rotation) > 1e-9 ||
-        std::abs(newOrigin.x - from.transform.origin.x) > 1e-6 ||
-        std::abs(newOrigin.y - from.transform.origin.y) > 1e-6;
+        std::abs(newRotation - from.transform.rotation) > cad::geo::kGeomEps ||
+        std::abs(newOrigin.x - from.transform.origin.x) > cad::geo::kGeomEpsLoose ||
+        std::abs(newOrigin.y - from.transform.origin.y) > cad::geo::kGeomEpsLoose;
 
     from.transform.rotation = newRotation;
     from.transform.origin = newOrigin;

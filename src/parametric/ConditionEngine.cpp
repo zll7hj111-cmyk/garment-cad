@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "geometry/Units.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::param {
 
@@ -26,7 +27,7 @@ double ConditionEngine::applyConditions(double baseCm,
             adjust += c.amount;
         } else {
             const double base = c.lowerOn ? c.lower : 0.0;
-            if (c.step > 1e-12)
+            if (c.step > cad::geo::kGeomEpsTight)
                 adjust += std::floor((v - base) / c.step) * c.amount;
         }
     }

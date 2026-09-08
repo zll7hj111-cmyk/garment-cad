@@ -25,6 +25,14 @@ class LayerRegistry : public QObject
 public:
     explicit LayerRegistry(QObject* parent = nullptr);
 
+    /// Default layer names — the SINGLE source of truth (2026-12 审计 P1-1).
+    /// Used by initDefaultLayers() below, by DocumentSerializer's corruption
+    /// fallback (missing/empty "layers" array) and by FormatMigration's v0/v1
+    /// synthesis. UI code must read Layer::name from the model instead of
+    /// repeating these strings (see ToolSelectActions layer menu).
+    static const QString kDefaultAuxLayerName;
+    static const QString kDefaultWorkingLayerName;
+
     /// The layer registry in DISPLAY ORDER. Element 0 is always the single
     /// auxiliary calculation layer; the rest are working layers. Always
     /// contains at least two layers. Read-only view — mutation goes through
