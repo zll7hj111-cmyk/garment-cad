@@ -110,7 +110,7 @@ void TestComponent::dragComponentLeaderCurveFollowStable()
     const QUuid bId = doc.addBlock(makeLine(cad::geo::Vec2(100, 0), cad::geo::Vec2(80, 0)));
     const QUuid xId = doc.addBlock(makeLine(cad::geo::Vec2(100, -80), cad::geo::Vec2(60, 0)));
     const QUuid yId = doc.addBlock(makeLine(cad::geo::Vec2(300, -100), cad::geo::Vec2(40, 0)));
-    // 真实拖动发生在工作层 (默认 Block::layer=0=辅助层, 见 test_commands.cpp:488):
+    // 真实拖动发生在工作层 (默认 Block::layer=0=辅助层, 见 tests/test_block_commands.cpp:449):
     // 全上工作层后拖动求解才走 working 相位, post-pass 才会处理曲线锚点.
     for (const auto& b : doc.blocks())
         if (auto* mb = doc.blockById(b.id)) mb->layer = cad::test::layerIdAt(doc, 1);

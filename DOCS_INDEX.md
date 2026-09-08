@@ -3,8 +3,8 @@
 > **用途**：回答「哪个文档讲什么、何时需要看、是否过时」。
 > **主加载文档（会话常驻，唯一）= `AGENTS.md`**（约 19KB / 136 行，2026-09 重写）；其余全部**按需查阅**——先看本索引定位，再打开对应文件。
 >
-> **目录约定（2026-09 整理）**：根目录只保留 9 个活跃 md；已落地设计 → `docs/design/`；
-> 已闭环的报告 / 任务书 / 废弃方案 → `docs/archive/<年-月>/`（摘要见 `docs/archive/SUMMARY.md`）。
+> **目录约定（2026-09 整理）**：根目录只保留 9 个活跃 md；已落地设计（含 UI 原型）→ `docs/design/`；
+> 领域参考资料 → `docs/reference/`；已闭环的报告 / 任务书 / 废弃方案 → `docs/archive/<年-月>/`（摘要见 `docs/archive/SUMMARY.md`）。
 > 维护规则：新增 / 删除 / 归档文档时同步更新本索引；状态变化（落地 / 过时）时更新「状态」列。
 
 ---
@@ -41,6 +41,7 @@
 | `DESIGN.md` | 打版工作台视觉设计（piece 调色板 / 字号与圆角 token / 暗色适配） | ⚠️ 部分过时：2026-08-09 视觉稿。**视觉语言与 Rules 仍有效**（字号 / 圆角已按 `src/ui/Theme.h` 订正）；默认主题已拍板为 Light，AngleHud 已随 CONTEXT_STRIP 二期删除 |
 | `PRODUCT.md` | 产品定位与平台约束（用户画像 / 定位 / 能力与约束 / 产品原则） | ⚠️ 部分过时：**产品定位与原则仍有效**；已订正单位体系（内部 mm / 显示 cm）与删除影响九项计数；原始 critique 产物未入库 |
 | `PERF_AUDIT_REPORT.md` | 性能审计报告（重复计算 + 可维护性）：5 项重复计算 + 4 项维护性提升，带 file:line、影响面矩阵与优先级 | ⚠️ 部分实施（2026-12）：**① 分段弧长缓存 + A `runResolvePass` 收口已实现**；②③④⑤ C/D 待实施 |
+| `line-property-panel-designs.html` | 线条属性面板 UI 方案对比稿（HTML 交互原型，浏览器直接打开） | 📄 参考稿：配色/间距是当时视觉稿，现行 token 以 `src/ui/Theme.h` 为准 |
 
 ## 四、归档区（`docs/archive/`，只读参考）
 
@@ -56,7 +57,13 @@
 | `plans/` | `DETACH_SHADOW_PLAN.md`、`FILE_SPLIT_PLAN_V2.md`、`FILE_SPLIT_PLAN_V3.md`、`plan-sess_577d56c5-4238-4245-abf5-5705b4540ae4.md` | 一次性计划书 / 验收口径档案 |
 | `SUMMARY.md` | 归档化石摘要（本区唯一活跃文档） | 回顾历史方案先看这里 |
 
-## 五、仓库内技能与记忆（不属文档体系，勿当项目文档引用）
+## 五、领域参考（`docs/reference/`）
+
+| 文件 | 内容 | 说明 |
+|------|------|------|
+| `garment-formulas.txt` | 服装打版公式集（领宽 / 袖笼高 / 肩长 / 胸宽 / 省道与褶量 / 肩部修正角等 27 条） | 领域数据笔记，无源码引用；公式引擎相关推导时参考 |
+
+## 六、仓库内技能与记忆（不属文档体系，勿当项目文档引用）
 
 | 路径 | 说明 |
 |------|------|
@@ -79,3 +86,5 @@
 | 某功能的设计细节 / 权威文档 | 本索引第三节 `docs/design/` |
 | 历史方案 / 已删功能的设计 | `docs/archive/`（摘要先看 `SUMMARY.md`） |
 | 旧版 API / 架构背景 | `docs/archive/2026-07/repowiki/`（⚠️ 过时，以源码为准） |
+| 服装打版公式（领宽 / 省道 / 肩部修正等） | `docs/reference/garment-formulas.txt` |
+| 面板 UI 原型（交互/视觉参考） | `docs/design/line-property-panel-designs.html`（浏览器打开） |

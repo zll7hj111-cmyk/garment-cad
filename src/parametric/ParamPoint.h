@@ -50,8 +50,8 @@ enum class PointConstraint {
 //   · 序列化         pointConstraintStr / pointConstraintFrom DocumentSerializer.cpp:~31
 //   · 复制           Duplicate 约束检查                       Duplicate.cpp:~133
 //
-// Test hook: tests/test_commands.cpp 的约束行为测试、tests/test_serializer.cpp
-// 的 round-trip 测试会锁定每个约束的求解与序列化语义。
+// Test hook: tests/test_block_commands.cpp 与 tests/test_resolver_points.cpp 锁定约束
+// 求解/命令语义, tests/test_serializer.cpp 的 round-trip 锁定序列化语义。
 
 /// A parametric point entity. Position is computed from constraints.
 struct ParamPoint {
