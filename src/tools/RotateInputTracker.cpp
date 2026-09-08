@@ -4,6 +4,8 @@
 #include "canvas/overlay/TransientOverlay.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
+#include "geometry/Epsilon.h"
+#include "tools/InteractionTolerances.h"  // kPointSnapRadiusPx
 
 namespace cad::tools {
 
@@ -24,8 +26,8 @@ void RotateInputTracker::updateHoverSnap(CanvasScene* scene,
         hideHoverSnap();
         return;
     }
-    const double zoom = scene->currentZoom() > 1e-9 ? scene->currentZoom() : 1.0;
-    const double tol = 12.0 / zoom;
+    const double zoom = scene->safeZoom();
+    const double tol = kPointSnapRadiusPx / zoom;
     double bestDist = tol;
     cad::geo::Vec2 bestPt;
     bool found = false;

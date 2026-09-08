@@ -14,6 +14,7 @@
 #include "parametric/Block.h"
 #include "geometry/Units.h"
 #include "document/commands/BlockCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -110,10 +111,12 @@ void ToolCurveEdit::updateHandleGraphics()
     // handles orange so the user sees the corner state right on the canvas
     // (locked = cyan; only the colors change — no extra scene items).
     const bool unlocked = !pt->tangentLocked;
-    const QColor kHandleLine   = unlocked ? QColor(0xE6, 0x8A, 0x00, 120)
-                                          : QColor(0x00, 0xA8, 0xE1, 120);
-    const QColor kHandleTipPen = unlocked ? QColor(0xE6, 0x8A, 0x00, 160)
-                                          : QColor(0x00, 0xA8, 0xE1, 150);
+    const QColor handleBase = unlocked ? m_scene->style()->handleUnlockedColor
+                                       : m_scene->style()->handleLockedColor;
+    QColor kHandleLine = handleBase;
+    kHandleLine.setAlpha(120);
+    QColor kHandleTipPen = handleBase;
+    kHandleTipPen.setAlpha(unlocked ? 160 : 150);
     // 控制点填充 = 完全透明 (NoBrush) — 圈内不遮挡任何几何, 只留淡描边;
     // 圆点比原 r2.0 再缩小 (2026-09 用户两轮反馈: 实心大点不透明/太大 →
     // 纸色填充仍是"不透明补丁"盖住圈下线条 → 真透明 + 更小).
@@ -187,7 +190,10 @@ int ToolCurveEdit::handleHitTest(const cad::geo::Vec2& worldPos, double zoom) co
     const cad::geo::Vec2 inWorld  = block->transform.toWorld(pLocal - tanIn / 3.0);
     const cad::geo::Vec2 outWorld = block->transform.toWorld(pLocal + tanOut / 3.0);
 
-    const double radius = 8.0 / std::max(zoom, 1e-9);  // screen-space hit radius
+    // 2026-12 审计 TOOL-P0-10: 手柄拾取半径 = canvas 悬停 token (与 CurveAnchorDragSession 同源)。
+    const double radius = (m_scene ? m_scene->style()->hoverRadiusPx()
+                                   : CanvasStyle::fallback().hoverRadiusPx()) /
+                          std::max(zoom, cad::geo::kGeomEps);
     const double rSq = radius * radius;
     if (worldPos.distanceSquaredTo(inWorld)  < rSq) return 1;
     if (worldPos.distanceSquaredTo(outWorld) < rSq) return 2;
@@ -248,7 +254,7 @@ void ToolCurveEdit::dragHandleTo(const cad::geo::Vec2& worldPos)
         if (pt->tangentLocked) {
             const double inLen  = pt->tangentIn.length();
             const double outLen = pt->tangentOut.length();
-            if (inLen > 1e-9 && outLen > 1e-9)
+            if (inLen > cad::geo::kGeomEps && outLen > cad::geo::kGeomEps)
                 pt->tangentIn = pt->tangentOut * (inLen / outLen);  // same dir, in's length
         }
     } else {
@@ -256,7 +262,7 @@ void ToolCurveEdit::dragHandleTo(const cad::geo::Vec2& worldPos)
         if (pt->tangentLocked) {
             const double inLen  = pt->tangentIn.length();
             const double outLen = pt->tangentOut.length();
-            if (inLen > 1e-9 && outLen > 1e-9)
+            if (inLen > cad::geo::kGeomEps && outLen > cad::geo::kGeomEps)
                 pt->tangentOut = pt->tangentIn * (outLen / inLen);  // same dir, out's length
         }
     }

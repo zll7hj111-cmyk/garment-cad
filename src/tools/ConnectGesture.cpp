@@ -1,4 +1,5 @@
 #include "ConnectGesture.h"
+#include "tools/InteractionTolerances.h"  // 交互容差常量 (2026-12 审计 P1-3)
 
 #include <cmath>
 #include <utility>
@@ -26,6 +27,7 @@
 #include "document/commands/BlockCommands.h"
 #include "document/commands/ComponentCommands.h"
 #include "ui/Theme.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -34,8 +36,8 @@ namespace cad::tools {
 // 统一实现收口在 geometry/Angle.h（normalizeDeg360 / normalizeDeg180）与
 // geometry/Units.h（formatDegValue），此处不再本地复制。
 // 跨层连接 toast 文案统一在 tools/LayerFeedback.h。
-// 连接半径常量 (kConnectSnapRadius / kConnectGrabRadius) 定义于
-// ConnectGesture.h 顶部 — ToolSelect 悬停端点提示共享同一值 (2026-09)。
+// 连接半径常量 (kConnectSnapRadiusPx / kConnectGrabRadiusPx) 定义于
+// tools/InteractionTolerances.h — ToolSelect 悬停端点提示共享同一值 (2026-09)。
 
 ConnectGesture::ConnectGesture(CanvasScene* scene, cad::param::ParamDocument* doc,
                                QUndoStack* undoStack,
@@ -183,8 +185,8 @@ void ConnectGesture::removeSourcePortMarker()
 
 void ConnectGesture::move(const Vec2& pos)
 {
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    if (zoom < 1e-9) zoom = 1.0;
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
 
     if (m_state == SelectState::ConfirmTarget) {
         if (m_overlap.hasBatteryLandingPads()) {
@@ -254,7 +256,7 @@ void ConnectGesture::move(const Vec2& pos)
 
     // If not hovering a battery chip, search normal snap
     if (batteryHitIdx < 0) {
-        snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom, kConnectSnapRadius,
+        snap = m_snapEngine.findSnap(pos, m_paramDoc, zoom, kConnectSnapRadiusPx,
                                      {}, &m_connectFromBlock);
         if (snap.has_value()) {
             if (snap->blockId == m_connectFromBlock) {
@@ -267,7 +269,7 @@ void ConnectGesture::move(const Vec2& pos)
     if (snap.has_value() && !isComponentConnect()) {
         if (!m_overlap.hasBatteryLandingPads()) {
             const auto allCands = m_snapEngine.findSnapCandidates(
-                pos, m_paramDoc, zoom, kConnectSnapRadius, {}, &m_connectFromBlock);
+                pos, m_paramDoc, zoom, kConnectSnapRadiusPx, {}, &m_connectFromBlock);
             std::vector<SnapResult> pool;
             for (const auto& c : allCands) {
                 if (c.blockId == m_connectFromBlock) continue;
@@ -276,7 +278,7 @@ void ConnectGesture::move(const Vec2& pos)
             }
             std::vector<SnapResult> overlap;
             for (const auto& c : pool)
-                if (c.worldPos.distanceTo(snap->worldPos) < kSnapOverlapEps)
+                if (c.worldPos.distanceTo(snap->worldPos) < kOverlapEpsMm)
                     overlap.push_back(c);
 
             if (overlap.size() > 1) {
@@ -290,7 +292,7 @@ void ConnectGesture::move(const Vec2& pos)
     } else if (m_overlap.hasBatteryLandingPads() && batteryHitIdx < 0) {
         // If moved away from the overlap cluster, collapse landing pads
         if (!m_confirmCandidates.empty()) {
-            const double threshold = (kConnectSnapRadius / zoom) * 3.5;
+            const double threshold = (kConnectSnapRadiusPx / zoom) * 3.5;
             const auto* cb = m_paramDoc->findBlock(m_confirmCandidates.front().blockId);
             const Vec2 refWpos = cb ? cb->worldPos(m_confirmCandidates.front().pointId) : pos;
             if (pos.distanceTo(refWpos) > threshold) {
@@ -353,8 +355,8 @@ void ConnectGesture::release(const Vec2& pos)
     removeConnectHalo();
     bool connected = false;
 
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    if (zoom < 1e-9) zoom = 1.0;
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
 
     // Direct release over battery landing pad chip
     if (m_overlap.hasBatteryLandingPads()) {
@@ -384,7 +386,7 @@ void ConnectGesture::release(const Vec2& pos)
         // the intended leader segment (its endpoint on the connection spot is
         // the anchor, its id becomes toSegmentId).
         const auto allCands = m_snapEngine.findSnapCandidates(
-            pos, m_paramDoc, zoom, kConnectSnapRadius, {}, &m_connectFromBlock);
+            pos, m_paramDoc, zoom, kConnectSnapRadiusPx, {}, &m_connectFromBlock);
         std::vector<SnapResult> pool;
         for (const auto& c : allCands) {
             if (c.blockId == m_connectFromBlock) continue;
@@ -403,7 +405,7 @@ void ConnectGesture::release(const Vec2& pos)
             // Overlap set = candidates at the same spot as the nearest one.
             std::vector<SnapResult> overlap;
             for (const auto& c : pool)
-                if (c.worldPos.distanceTo(refPos) < kSnapOverlapEps)
+                if (c.worldPos.distanceTo(refPos) < kOverlapEpsMm)
                     overlap.push_back(c);
 
             if (overlap.size() > 1 && !isComponentConnect()) {
@@ -440,8 +442,8 @@ void ConnectGesture::release(const Vec2& pos)
 void ConnectGesture::pressConfirmTarget(const Vec2& pos)
 {
     if (!m_paramDoc || !m_scene) { cancel(); return; }
-    double zoom = m_scene->currentZoom();
-    if (zoom < 1e-9) zoom = 1.0;
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
 
     // Check battery chip click
     if (m_overlap.hasBatteryLandingPads()) {
@@ -503,7 +505,7 @@ void ConnectGesture::beginSourceConfirm(std::vector<ConfirmCandidate> candidates
 void ConnectGesture::pressConfirmSource(const Vec2& pos)
 {
     if (!m_paramDoc || !m_scene) { cancel(); return; }
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     const auto segSnap = m_snapEngine.findSegmentSnap(
         pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
@@ -516,7 +518,7 @@ void ConnectGesture::pressConfirmSource(const Vec2& pos)
         const auto& sel = *m_selectedSourceCandidate;
         if (const auto* blk = m_paramDoc->findBlock(sel.blockId)) {
             const Vec2 wp = blk->worldPos(sel.pointId);
-            const double worldRadius = kConnectGrabRadius / (zoom > 1e-9 ? zoom : 1.0);
+            const double worldRadius = kConnectGrabRadiusPx / cad::canvas::safeZoomOr(zoom);
             if (pos.distanceTo(wp) <= worldRadius) {
                 beginConnect(sel.blockId, sel.pointId, pos);
                 return;
@@ -622,17 +624,17 @@ bool ConnectGesture::keyPress(QKeyEvent* event)
 std::optional<SnapResult> ConnectGesture::hitPoint(const Vec2& worldPos) const
 {
     if (!m_paramDoc) return std::nullopt;
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    // Source-grab radius (kConnectGrabRadius) is deliberately more generous
+    double zoom = m_scene->safeZoom();
+    // Source-grab radius (kConnectGrabRadiusPx) is deliberately more generous
     // than the drop radius: grabbing must feel easy, dropping stays precise.
-    return m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, kConnectGrabRadius);
+    return m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, kConnectGrabRadiusPx);
 }
 
 std::vector<SnapResult> ConnectGesture::hitPointCandidates(const Vec2& worldPos) const
 {
     if (!m_paramDoc) return {};
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    return m_snapEngine.findSnapCandidates(worldPos, m_paramDoc, zoom, kConnectGrabRadius);
+    double zoom = m_scene->safeZoom();
+    return m_snapEngine.findSnapCandidates(worldPos, m_paramDoc, zoom, kConnectGrabRadiusPx);
 }
 
 } // namespace cad::tools

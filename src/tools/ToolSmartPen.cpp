@@ -40,6 +40,7 @@
 #include "LeaderCandidatePicker.h"
 #include "document/commands/BlockCommands.h"
 #include "document/commands/DocumentCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -148,7 +149,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
 
         // --- Set start point ---
         // Try snapping to existing point
-        double zoom = m_scene->currentZoom();
+        double zoom = m_scene->safeZoom();
 
         auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
         if (snap) {
@@ -171,7 +172,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         // 不再借用线段身辅助点或终点吸附（预输入 = 几何已确定）。
         if (m_strokeInput->hasConstraint()) {
             const cad::geo::Vec2 end = applyPreInputConstraints(clickPos);
-            if (m_startPoint.distanceSquaredTo(end) < 1e-10) {
+            if (m_startPoint.distanceSquaredTo(end) < cad::geo::kGeomEpsUltra) {
                 cancelLine();
                 return;
             }
@@ -190,7 +191,7 @@ void ToolSmartPen::mousePress(QGraphicsSceneMouseEvent* event)
         }
 
         // Check for end-point snap
-        double zoom = m_scene->currentZoom();
+        double zoom = m_scene->safeZoom();
         auto endSnap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
         if (endSnap) {
             // Stacked candidates at the end spot (several layers' points on
@@ -241,8 +242,8 @@ void ToolSmartPen::setupSnappedStart(const SnapResult& snap)
     // 与起点/终点吸附无关。
     double refDirDeg = 0.0;
     if (const auto* lb = m_paramDoc->findBlock(snap.blockId))
-        refDirDeg = (lb->transform.rotation
-                     + lb->exitDirectionAtPoint(snap.pointId)) * 180.0 / M_PI;
+        refDirDeg = cad::geo::radToDeg(lb->transform.rotation
+                     + lb->exitDirectionAtPoint(snap.pointId));
     // Multiple segments may meet here (coincident points stack across
     // blocks). Collect them as leader candidates and auto-pick the
     // candidate ON THE SNAPPED POINT — the attachment target follows the
@@ -463,7 +464,7 @@ void ToolSmartPen::keyRelease(QKeyEvent* event)
 void ToolSmartPen::commitLine(const cad::geo::Vec2& end,
                               const std::optional<SnapResult>& endSnap)
 {
-    if (m_startPoint.distanceSquaredTo(end) < 1e-10) {
+    if (m_startPoint.distanceSquaredTo(end) < cad::geo::kGeomEpsUltra) {
         cancelLine();
         return;
     }
@@ -591,12 +592,12 @@ cad::geo::Vec2 ToolSmartPen::applyAngleSnap(const cad::geo::Vec2& raw) const
 {
     const cad::geo::Vec2 delta = raw - m_startPoint;
     const double dist = delta.length();
-    if (dist < 1e-12) return raw;
+    if (dist < cad::geo::kGeomEpsTight) return raw;
 
     // Work in construction-angle space: angle relative to the leader segment.
     // refDirDeg == 0 for a free line, so this degenerates to the world angle.
     const double refDirDeg = m_leaderPicker->refDirDeg();
-    const double rawWorldDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
+    const double rawWorldDeg = cad::geo::radToDeg(std::atan2(delta.y, delta.x));
     const double relDeg      = rawWorldDeg - refDirDeg;
 
     // 显示约定（2026-08 v3 定稿，与旋转工具 HUD 一致）：
@@ -617,7 +618,7 @@ cad::geo::Vec2 ToolSmartPen::applyAngleSnap(const cad::geo::Vec2& raw) const
 
     const double snappedRel = std::round(relDeg / 45.0) * 45.0;
     m_snapAngleDeg          = displayOf(snappedRel);
-    const double rad        = (snappedRel + refDirDeg) * M_PI / 180.0;
+    const double rad        = cad::geo::degToRad(snappedRel + refDirDeg);
     return m_startPoint + cad::geo::Vec2(std::cos(rad) * dist, std::sin(rad) * dist);
 }
 
@@ -632,11 +633,11 @@ void ToolSmartPen::updatePreview(const cad::geo::Vec2& effectiveEnd)
     if (!m_hud || !m_scene) return;
 
     const double lenMm = m_startPoint.distanceTo(effectiveEnd);
-    QString text = cad::geo::Units::formatLength(lenMm, 1);
+    QString text = cad::geo::Units::formatLength(lenMm);
     // Show the follower angle: always when attached to a leader segment,
     // otherwise only while Shift angle-snap is active.
     if (m_startSnap || m_angleSnap) {
-        text += QStringLiteral("  %1°").arg(m_snapAngleDeg, 0, 'f', 0);
+        text += QStringLiteral("  %1°").arg(cad::geo::Units::formatDegValue(m_snapAngleDeg));
     }
     if (m_currentSnap) {
         text += QStringLiteral("  → %1").arg(
@@ -658,7 +659,7 @@ void ToolSmartPen::updateSnapIndicator(const cad::geo::Vec2& worldPos)
 {
     if (!m_snapIndicator) return;
 
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    double zoom = m_scene->safeZoom();
 
     auto snap = m_snapEngine.findSnap(worldPos, m_paramDoc, zoom);
     m_currentSnap = snap;
@@ -681,7 +682,7 @@ void ToolSmartPen::updateSegMarker(const cad::geo::Vec2& worldPos,
     m_segSnap.reset();
     if (!m_scene || !m_paramDoc) { hideSegMarker(); return; }
 
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     // Point snap wins: no X while the cursor would snap to an endpoint.
     // When the caller already ran findSnap() this frame (Drawing state runs

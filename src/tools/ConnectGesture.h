@@ -14,6 +14,7 @@
 #include "tools/SelectState.h"
 #include "tools/ConnectConfirm.h"       // ConfirmCandidate (阶段 3 拆分)
 #include "tools/ConnectOverlapResolver.h"  // m_overlap (阶段 3 拆分)
+#include "tools/InteractionTolerances.h"  // 交互容差常量 (2026-12 审计 P1-3)
 
 class QKeyEvent;
 class QGraphicsEllipseItem;
@@ -26,16 +27,6 @@ class ParamDocument;
 }
 
 namespace cad::tools {
-/// Connection snap reach (user units): the target-DROP magnet radius — also
-/// drives the halo and target-ring visuals (WYSIWYG 铁律: 光环/目标环 = 吸附
-/// 范围). Shared by ConnectGesture and ToolSelect (hover endpoint hint).
-inline constexpr double kConnectSnapRadius = 7.5;
-/// Source-GRAB radius (用户拍板 2026-09): grabbing an endpoint to START a
-/// connection is deliberately more generous than the drop radius — grabbing
-/// must feel easy (10px), dropping must stay precise (7.5px). ToolSelect's
-/// hover endpoint hint uses the same value.
-inline constexpr double kConnectGrabRadius = 10.0;
-
 /// Connection gesture of the selection tool: dragging from an endpoint to
 /// establish a new attachment, with snap-ring feedback, overlapping-target
 /// disambiguation (ConfirmTarget) and the live angle/arc HUD (AngleInput).

@@ -13,6 +13,7 @@
 #include "parametric/Block.h"
 #include "geometry/Units.h"
 #include "document/commands/BlockCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -26,7 +27,7 @@ void ToolCurveEdit::updateCurvePointPreview(const cad::geo::Vec2& worldPos,
     m_segSnap.reset();
     if (!m_scene || !m_paramDoc) { hideCurvePointPreview(); return; }
 
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     // Curve-point snap wins: no placement dot while the cursor is over a
     // curve-relevant point (a curve anchor/endpoint under the cursor is grabbed
@@ -59,7 +60,7 @@ void ToolCurveEdit::updateCurvePointPreview(const cad::geo::Vec2& worldPos,
         constexpr double r = 2.2;
         m_curvePtPreview = new QGraphicsEllipseItem(-r, -r, r * 2.0, r * 2.0);
         m_curvePtPreview->setPen(Qt::NoPen);
-        m_curvePtPreview->setBrush(QColor(0xE9, 0x1E, 0x63));  // ETCAD pink cue
+        m_curvePtPreview->setBrush(m_scene->style()->curveAnchorColor);  // ETCAD pink cue
         m_curvePtPreview->setZValue(103.0);
         m_scene->addItem(m_curvePtPreview);
         m_managed.own(m_curvePtPreview, &m_curvePtPreview);
@@ -171,13 +172,13 @@ void ToolCurveEdit::dragCurveAnchorTo(const cad::geo::Vec2& worldPos)
     m_paramDoc->resolveForDrag(QList<QUuid>{block->id});
 
     // --- Snap indicator: show green circle when cursor is near another point ---
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    double zoom = m_scene->safeZoom();
     auto snap = m_snapEngine.findSnap(worldPos, m_paramDoc, zoom, -1.0, m_dragPointId);
     if (snap && snap->pointId != m_dragPointId) {
         if (!m_snapIndicator) {
             constexpr double r = 7.0;
             m_snapIndicator = new QGraphicsEllipseItem(-r, -r, r * 2.0, r * 2.0);
-            QPen pen(QColor(0x4C, 0xAF, 0x50), 2.0);  // green
+            QPen pen(m_scene->style()->snapIndicatorColor, 2.0);  // 吸附绿 (审计 P0-1 统一)
             pen.setCosmetic(true);
             m_snapIndicator->setPen(pen);
             m_snapIndicator->setBrush(Qt::NoBrush);
@@ -197,14 +198,14 @@ void ToolCurveEdit::endCurveAnchorDrag()
     if (auto* block = m_paramDoc->findBlock(m_dragBlockId)) {
         if (auto* pt = block->findPoint(m_dragPointId)) {
             const bool moved =
-                std::abs(pt->interpPercent - m_dragOldPercent) > 1e-9 ||
-                std::abs(pt->interpOffsetDist - m_dragOldOffset) > 1e-9;
+                std::abs(pt->interpPercent - m_dragOldPercent) > cad::geo::kGeomEps ||
+                std::abs(pt->interpOffsetDist - m_dragOldOffset) > cad::geo::kGeomEps;
 
             // --- Snap-connect: check if the cursor is near another point ---
             // If so, establish a parametric follow connection so this curve
             // point tracks the target point when it moves.
             if (moved && pt->resolved) {
-                double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+                double zoom = m_scene->safeZoom();
                 // Use the last cursor position (not the resolved point pos)
                 // so snap feels responsive to where the user actually pointed.
                 auto snap = m_snapEngine.findSnap(m_dragLastCursor, m_paramDoc, zoom,
@@ -317,7 +318,7 @@ bool ToolCurveEdit::chordParams(const cad::param::Block& block,
 
     const cad::geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
     const double len = chord.length();
-    if (len < 1e-9) return false;
+    if (len < cad::geo::kGeomEps) return false;
 
     const cad::geo::Vec2 unitDir = chord / len;
     const cad::geo::Vec2 normal{-unitDir.y, unitDir.x};  // left of start→end

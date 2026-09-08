@@ -77,8 +77,8 @@ public:
     /// 能否切换 (Ready 且端点无连接) 以及禁用原因。active=false 且其余全空 =
     /// 会话结束 (条带恢复普通换向语义)。非虚 (无头单测桩不实现也能编译)。
     virtual void setRotateAnchorState(bool active, bool anchorIsEnd, bool canToggle,
-                                      const QString& reason)
-    { (void)active; (void)anchorIsEnd; (void)canToggle; (void)reason; }
+                                      const QString& reason, double baseAngleDeg = 0.0)
+    { (void)active; (void)anchorIsEnd; (void)canToggle; (void)reason; (void)baseAngleDeg; }
 
     /// 放置点专属状态上报
     virtual void setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId)

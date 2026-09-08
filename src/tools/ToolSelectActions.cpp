@@ -14,6 +14,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/DomainViews.h"
+#include "parametric/LayerRegistry.h"
 #include "document/commands/ComponentCommands.h"
 #include "document/commands/LayerCommands.h"
 #include "document/commands/BlockCommands.h"
@@ -28,12 +29,16 @@
 #include "geometry/Units.h"
 #include "geometry/CurveMath.h"
 #include "parametric/Serial.h"
+#include "tools/InteractionTolerances.h"  // kConnectGrabRadiusPx
 
 #include <QGraphicsSceneMouseEvent>
 #include <QMenu>
 #include <QAction>
 #include <QCursor>
 #include <limits>
+#include "geometry/Epsilon.h"
+#include "document/CommandTexts.h"
+#include "ui/UiStrings.h"
 
 namespace cad::tools {
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -50,7 +55,7 @@ void ToolSelect::createComponentFromSelection()
             members.append(b.id);
     if (members.size() < 2) return;
 
-    const QString name = QStringLiteral("组件 %1")
+    const QString name = cad::ui::str::kComponentFmt
         .arg(m_paramDoc->components().size() + 1);
     if (m_undoStack)
         m_undoStack->push(new cad::cmd::MakeComponentCommand(m_paramDoc, members, name));
@@ -77,7 +82,7 @@ void ToolSelect::moveSelectionToLayer(const QUuid& targetLayerId)
         }
     }
     if (targetName.isEmpty())
-        targetName = QStringLiteral("其他图层");
+        targetName = cad::cmd::texts::kOtherLayers;
 
     const QList<QUuid> blockIds = m_selection.values();
     if (m_undoStack) {
@@ -124,82 +129,7 @@ void ToolSelect::deleteSelectedBlocks()
     clearSelectionAndIdle();
 }
 
-void ToolSelect::quickDetachSelection()
-{
-    if (!m_paramDoc || m_selection.isEmpty()) return;
 
-    QList<QUuid> toDetachAngleOnly;
-    QList<QUuid> toRemoveAux;
-
-    // 1. Follower perspective: attachments where the selected block is the follower.
-    for (const QUuid& blockId : m_selection) {
-        for (const auto& att : m_paramDoc->attachments()) {
-            if (att.fromBlockId != blockId || att.isPin) continue;
-            if (att.angleOnly) continue;
-
-            const auto* toBlk = m_paramDoc->findBlock(att.toBlockId);
-            const auto* toPt = toBlk ? toBlk->findPoint(att.toPointId) : nullptr;
-            const auto* fromBlk = m_paramDoc->findBlock(att.fromBlockId);
-            const auto* fromPt = fromBlk ? fromBlk->findPoint(att.fromPointId) : nullptr;
-            if ((toPt && toPt->isAuxiliary) || (fromPt && fromPt->isAuxiliary)) {
-                if (!toRemoveAux.contains(att.id))
-                    toRemoveAux.append(att.id);
-            } else {
-                if (!toDetachAngleOnly.contains(att.id))
-                    toDetachAngleOnly.append(att.id);
-            }
-            break;
-        }
-    }
-
-    // 2. Leader perspective: incoming attachments anchored at auxiliary points of the selected block.
-    for (const QUuid& blockId : m_selection) {
-        const auto* blk = m_paramDoc->findBlock(blockId);
-        if (!blk) continue;
-        for (const auto& pt : blk->points) {
-            if (!pt.isAuxiliary) continue;
-            for (const auto& att : m_paramDoc->attachments()) {
-                if (att.isPin) continue;
-                if (att.toBlockId == blockId && att.toPointId == pt.id) {
-                    if (!toRemoveAux.contains(att.id)) {
-                        toRemoveAux.append(att.id);
-                    }
-                }
-            }
-        }
-    }
-
-    const int totalCount = toDetachAngleOnly.size() + toRemoveAux.size();
-    if (totalCount == 0) {
-        showToast(QString::fromUtf8("选中线没有可拆开的连接"));
-        return;
-    }
-
-    if (m_undoStack) {
-        m_undoStack->beginMacro(QStringLiteral("拆开 %1 个连接").arg(totalCount));
-        for (const QUuid& id : toRemoveAux) {
-            m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(m_paramDoc, id));
-        }
-        for (const QUuid& id : toDetachAngleOnly) {
-            m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
-                m_paramDoc, id, /*angleOnly=*/true));
-        }
-        m_undoStack->endMacro();
-    } else {
-        for (const QUuid& id : toRemoveAux)
-            m_paramDoc->removeAttachment(id);
-        for (const QUuid& id : toDetachAngleOnly)
-            m_paramDoc->setAttachmentAngleOnly(id, true);
-    }
-
-    if (!toRemoveAux.isEmpty()) {
-        showToast(QStringLiteral("已彻底释放 %1 个辅助点挂载连接").arg(toRemoveAux.size()));
-    } else {
-        showToast(QStringLiteral("已拆开 %1 个连接（保留角度）").arg(toDetachAngleOnly.size()));
-    }
-
-    m_scene->refreshAllBlockItems();
-}
 
 void ToolSelect::showContextMenu(QGraphicsSceneMouseEvent* event)
 {
@@ -297,10 +227,16 @@ void ToolSelect::showContextMenu(QGraphicsSceneMouseEvent* event)
             }
 
             const QUuid auxId = m_paramDoc->layersView().auxLayerId();
+            const cad::param::Layer* auxLayer = m_paramDoc->layersView().byId(auxId);
             if (!auxId.isNull() && auxId != activeLayerId) {
                 if (!layerActions.isEmpty())
                     layerMenu->addSeparator();
-                auto* act = layerMenu->addAction(QString::fromUtf8("辅助层"));
+                // 2026-12 审计 P1-1: 菜单标签取模型里的层名 — 用户重命名辅助层后
+                // 与图层面板一致 (此前写死 "辅助层")。
+                const QString auxLabel = auxLayer
+                    ? auxLayer->name
+                    : cad::param::LayerRegistry::kDefaultAuxLayerName;
+                auto* act = layerMenu->addAction(auxLabel);
                 QObject::connect(act, &QAction::triggered, [this, auxId, &layerMoved]() {
                     if (!layerMoved) {
                         layerMoved = true;
@@ -387,8 +323,8 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
 
     const QPointF up = event->scenePos();
     const cad::geo::Vec2 clickPos(up.x(), up.y());
-    double zoom = m_scene->currentZoom();
-    if (zoom < 1e-9) zoom = 1.0;
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
 
     // 1. Check if a placed point was double-clicked (via SnapEngine with generous radius)
     SnapEngine snapEngine;
@@ -412,8 +348,8 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
     if (blockId.isNull()) return;
     cad::param::Block* block = m_paramDoc->findBlock(blockId);
     if (!block || block->segments.empty()) return;
-    constexpr double kTolerancePx = 8.0;
-    const double tolerance = kTolerancePx / zoom;
+    // 拾取容差 = 画布统一的悬停半径 token（CAN-P0-5：不得再复制 8px 字面量）。
+    const double tolerance = m_scene->style()->hoverRadiusPx() / zoom;
 
     QUuid bestSegId;
     double bestDist = std::numeric_limits<double>::max();
@@ -454,9 +390,9 @@ void ToolSelect::updateHoverEndpointRing(const cad::geo::Vec2& pos)
         hideHoverEndpointRing();
         return;
     }
-    double zoom = m_scene->currentZoom();
-    if (zoom < 1e-9) zoom = 1.0;
-    const double worldR = 10.0 / zoom;
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
+    const double worldR = kConnectGrabRadiusPx / zoom;  // 端点悬停抓取半径
     cad::geo::Vec2 ptPos;
     if (m_hoverCtl.findEndpointNear(m_paramDoc, pos, worldR, &ptPos)) {
         overlays()->showEndpointHover(ptPos);

@@ -6,10 +6,13 @@
 #include <QPen>
 
 #include "canvas/CanvasScene.h"
+#include "canvas/CanvasStyle.h"
 #include "canvas/BlockItem.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Component.h"
 #include "geometry/Units.h"
+#include "geometry/Epsilon.h"
+#include "tools/HitTester.h"  // isInteractiveBlock（影子/图层过滤唯一规则源）
 
 namespace cad::tools {
 
@@ -28,7 +31,7 @@ bool segmentIntersectsRect(const cad::geo::Vec2& p1, const cad::geo::Vec2& p2,
     const double q[4] = {p1.x - r.left(), r.right() - p1.x,
                          p1.y - r.top(),  r.bottom() - p1.y};
     for (int i = 0; i < 4; ++i) {
-        if (std::abs(p[i]) < 1e-12) {
+        if (std::abs(p[i]) < cad::geo::kGeomEpsTight) {
             if (q[i] < 0) return false;   // parallel and outside
         } else {
             const double rr = q[i] / p[i];
@@ -75,10 +78,11 @@ void MarqueeGesture::begin(const cad::geo::Vec2& pos, const QSet<QUuid>& baseSel
 
     m_item = new QGraphicsRectItem();
     m_managed.own(m_item, &m_item);
-    QPen pen(QColor(0, 120, 215), 0);      // cosmetic 1px dash
+    const QColor marquee = m_scene->style()->marqueeColor;   // 审计 P0-1: 与 TransientOverlay 同源
+    QPen pen(marquee, 0);      // cosmetic 1px dash
     pen.setStyle(Qt::DashLine);
     m_item->setPen(pen);
-    m_item->setBrush(QColor(0, 120, 215, 25));
+    m_item->setBrush(QColor(marquee.red(), marquee.green(), marquee.blue(), 25));
     m_item->setZValue(9999);
     m_scene->addItem(m_item);
     m_item->setRect(QRectF());
@@ -120,8 +124,9 @@ QSet<QUuid> MarqueeGesture::hitsIn(const QRectF& rectUser) const
     if (!m_doc) return result;
 
     for (const auto& blk : m_doc->blocks()) {
-        // Marquee only selects blocks on the active layer.
-        if (blk.layer != m_doc->activeLayer()) continue;
+        // 框选资格 = 与点选同一谓词（活动层 + 非影子）；原先只比 layer，
+        // 导致影子块能被框选却点不中（TOOL-P1-12）。
+        if (!isInteractiveBlock(blk, *m_doc)) continue;
         for (const auto& seg : blk.segments) {
             const auto* sp = blk.findPoint(seg.startPointId);
             const auto* ep = blk.findPoint(seg.endPointId);

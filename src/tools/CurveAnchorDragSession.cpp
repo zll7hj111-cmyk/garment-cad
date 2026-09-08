@@ -1,11 +1,13 @@
 ﻿#include "CurveAnchorDragSession.h"
 
+#include "canvas/CanvasStyle.h"  // hoverRadiusPx (2026-12 审计 TOOL-P0-10)
 #include "geometry/Vec2.h"
 #include "parametric/Block.h"
 #include "parametric/ParamDocument.h"
 
 #include <QUndoStack>
 #include <cmath>
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -15,7 +17,10 @@ std::optional<std::pair<QUuid, QUuid>> CurveAnchorDragSession::hitAt(
 {
     if (!m_paramDoc || selection.isEmpty()) return std::nullopt;
 
-    const double radius = 10.0 / std::max(zoom, 1e-9);  // 10px screen radius
+    // 2026-12 审计 TOOL-P0-10: 曲线点拾取半径与 ToolCurveEditHandles 手柄
+    // 拾取统一到 canvas 悬停 token (此前本处 10px / 手柄 8px, 同一点两值)。
+    const double radius =
+        CanvasStyle::fallback().hoverRadiusPx() / std::max(zoom, cad::geo::kGeomEps);
     const double rSq = radius * radius;
 
     for (const QUuid& blockId : selection) {

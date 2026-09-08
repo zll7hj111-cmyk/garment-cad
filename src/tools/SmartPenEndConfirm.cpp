@@ -1,5 +1,6 @@
 ﻿#include "ToolSmartPen.h"
 #include "ToolManager.h"
+#include "tools/InteractionTolerances.h"  // kOverlapEpsMm (2026-12 审计 P1-3)
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsLineItem>
@@ -52,13 +53,13 @@ std::vector<SnapResult> ToolSmartPen::overlapPool(
 {
     std::vector<SnapResult> out;
     if (!m_paramDoc) return out;
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    double zoom = m_scene->safeZoom();
     // findSnapCandidates applies the same layer policy as findSnap
     // (layerSnappable) — only LEGAL attachment targets ever enter the pool,
     // so a switch can never propose a rejected cross-layer attachment.
     const auto cands = m_snapEngine.findSnapCandidates(spot, m_paramDoc, zoom);
     for (const auto& c : cands)
-        if (c.worldPos.distanceTo(snap.worldPos) <= kSnapOverlapEps)
+        if (c.worldPos.distanceTo(snap.worldPos) <= kOverlapEpsMm)
             out.push_back(c);
     return out;
 }
@@ -118,7 +119,7 @@ void ToolSmartPen::handleConfirmEndPress(const cad::geo::Vec2& clickPos)
     if (!m_endAutoPick) { cancelLine(); return; }
 
     std::optional<SnapResult> confirmed;
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    double zoom = m_scene->safeZoom();
     const auto segSnap = m_snapEngine.findSegmentSnap(
         clickPos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());
     if (segSnap) {
@@ -174,7 +175,7 @@ bool ToolSmartPen::trySwitchStartPoint(const LeaderCandidate& cand, int candInde
 void ToolSmartPen::updateEndConfirmHighlight(const cad::geo::Vec2& worldPos)
 {
     if (!m_paramDoc || !m_scene) return;
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     QUuid hitBlock, hitSeg;
     const auto segSnap = m_snapEngine.findSegmentSnap(

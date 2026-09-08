@@ -12,18 +12,15 @@
 #include "parametric/DomainViews.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"           // Coord::toScene
-#include "tools/ConnectGesture.h"    // kConnectSnapRadius (吸附环半径常量)
+#include "tools/ConnectGesture.h"
+#include "tools/HitTester.h"              // isConnectTargetBlock (2026-12 审计 P0-5)
+#include "tools/InteractionTolerances.h"  // kConnectSnapRadiusPx / kSourcePortRadiusPx / kOverlapEpsMm
 #include "canvas/OverlapBatteryHud.h"
 #include <QGraphicsView>
 #include "ui/Theme.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
-
-namespace {
-
-constexpr double kSourcePortRadiusPx = 5.0;
-
-}
 
 void ConnectOverlapResolver::dispose()
 {
@@ -39,16 +36,16 @@ std::vector<ConfirmCandidate> ConnectOverlapResolver::collectConfirmCandidates(
     if (!m_paramDoc) return out;
     for (const auto& block : m_paramDoc->blocks()) {
         if (block.id == fromBlockId) continue;
-        if (block.isShadow) continue;  // 影子不可作为连接目标 (R4, 拆开影子基准)
+        if (!isConnectTargetBlock(block)) continue;  // 影子不可作为连接目标 (R4)
         const Vec2 local = block.transform.toLocal(connWorldPos);
         for (const auto& seg : block.segments) {
             const auto* sp = block.findPoint(seg.startPointId);
             const auto* ep = block.findPoint(seg.endPointId);
             if (sp && sp->resolved
-                && sp->resolvedPos.distanceTo(local) < kSnapOverlapEps)
+                && sp->resolvedPos.distanceTo(local) < kOverlapEpsMm)
                 out.push_back({block.id, seg.id, sp->id});
             if (ep && ep->resolved
-                && ep->resolvedPos.distanceTo(local) < kSnapOverlapEps)
+                && ep->resolvedPos.distanceTo(local) < kOverlapEpsMm)
                 out.push_back({block.id, seg.id, ep->id});
         }
     }
@@ -64,6 +61,7 @@ ConnectOverlapResolver::collectComponentSwitchCandidates(
     if (!m_paramDoc || componentId.isNull()) return out;
     for (const auto& block : m_paramDoc->blocks()) {
         if (block.id == fromBlockId) continue;
+        if (!isConnectTargetBlock(block)) continue;  // 影子不可作为连接目标 (R4)
         if (const auto* bcomp = m_paramDoc->componentsView().ofBlock(block.id);
             bcomp && bcomp->id == componentId)
             continue;
@@ -73,9 +71,9 @@ ConnectOverlapResolver::collectComponentSwitchCandidates(
             const auto* ep = block.findPoint(seg.endPointId);
             const QUuid hit =
                 (sp && sp->resolved
-                 && sp->resolvedPos.distanceTo(local) < kSnapOverlapEps) ? sp->id
+                 && sp->resolvedPos.distanceTo(local) < kOverlapEpsMm) ? sp->id
               : (ep && ep->resolved
-                 && ep->resolvedPos.distanceTo(local) < kSnapOverlapEps) ? ep->id
+                 && ep->resolvedPos.distanceTo(local) < kOverlapEpsMm) ? ep->id
               : QUuid();
             if (hit.isNull()) continue;
             if (block.id == curBlockId && seg.id == curSegId) continue;
@@ -109,7 +107,8 @@ void ConnectOverlapResolver::highlightCandidate(const QUuid& blockId, const QUui
     if (!m_confirmHighlight) {
         m_confirmHighlight = new QGraphicsPathItem();
         m_managed.own(m_confirmHighlight, &m_confirmHighlight);
-        QPen pen(QColor(0xF39C12), 3.0);
+        const CanvasStyle& st = *m_scene->style();
+        QPen pen(st.confirmHighlightColor, 3.0);
         pen.setCosmetic(true);
         m_confirmHighlight->setPen(pen);
         m_confirmHighlight->setBrush(Qt::NoBrush);
@@ -135,7 +134,7 @@ void ConnectOverlapResolver::updateHighlightAt(
     const Vec2& pos, const std::vector<ConfirmCandidate>& candidates)
 {
     if (!m_paramDoc || !m_scene) return;
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     QUuid hitBlock, hitSeg;
     if (const auto segSnap = m_snapEngine.findSegmentSnap(
@@ -173,7 +172,9 @@ void ConnectOverlapResolver::setSourcePortMarker(const ConfirmCandidate& cand)
         m_sourcePortMarker = new QGraphicsEllipseItem();
         m_managed.own(m_sourcePortMarker, &m_sourcePortMarker);
         m_sourcePortMarker->setPen(QPen(cad::ui::Theme::tokens().accent, 2.0));
-        m_sourcePortMarker->setBrush(QColor(47, 111, 237, 120));
+        QColor portWash = cad::ui::Theme::tokens().accent;   // 与描边同源 (审计 P0-1)
+        portWash.setAlpha(120);
+        m_sourcePortMarker->setBrush(portWash);
         m_sourcePortMarker->setZValue(100.0);
         m_scene->addItem(m_sourcePortMarker);
     }
@@ -196,19 +197,20 @@ void ConnectOverlapResolver::removeSourcePortMarker()
 void ConnectOverlapResolver::showConnectMarker(const Vec2& worldPos)
 {
     if (!m_scene) return;
-    double zoom = m_scene->currentZoom();
-    if (zoom < 1e-9) zoom = 1.0;
-    const double r = kConnectSnapRadius / zoom;
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
+    const double r = kConnectSnapRadiusPx / zoom;
     const QPointF c = cad::geo::Coord::toScene(worldPos.x, worldPos.y);
 
     if (!m_connectMarker) {
         m_connectMarker = new QGraphicsEllipseItem();
         m_managed.own(m_connectMarker, &m_connectMarker);
-        QPen pen(QColor(38, 166, 154));          // teal: "release = connect"
+        const QColor teal = m_scene->style()->snapNodeColor;   // "release = connect"
+        QPen pen(teal);
         pen.setWidthF(2.0);
         pen.setCosmetic(true);
         m_connectMarker->setPen(pen);
-        m_connectMarker->setBrush(QColor(38, 166, 154, 50));
+        m_connectMarker->setBrush(QColor(teal.red(), teal.green(), teal.blue(), 50));
         m_connectMarker->setZValue(9999);
         m_scene->addItem(m_connectMarker);
     }
@@ -226,21 +228,22 @@ void ConnectOverlapResolver::removeConnectMarker()
 void ConnectOverlapResolver::updateConnectHalo(const Vec2& fromPointWorld)
 {
     if (!m_scene) return;
-    double zoom = m_scene->currentZoom();
-    if (zoom < 1e-9) zoom = 1.0;
-    const double r = kConnectSnapRadius / zoom;  // halo == connect reach
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
+    const double r = kConnectSnapRadiusPx / zoom;  // halo == connect reach
     const QPointF c = cad::geo::Coord::toScene(fromPointWorld.x,
                                                fromPointWorld.y);
 
     if (!m_connectHalo) {
         m_connectHalo = new QGraphicsEllipseItem();
         m_managed.own(m_connectHalo, &m_connectHalo);
-        QPen pen(QColor(38, 166, 154));
+        const QColor teal = m_scene->style()->snapNodeColor;
+        QPen pen(teal);
         pen.setWidthF(1.5);
         pen.setCosmetic(true);
         pen.setStyle(Qt::DashLine);
         m_connectHalo->setPen(pen);
-        m_connectHalo->setBrush(QColor(38, 166, 154, 20));
+        m_connectHalo->setBrush(QColor(teal.red(), teal.green(), teal.blue(), 20));
         m_connectHalo->setZValue(9998);           // under the snap ring
         m_scene->addItem(m_connectHalo);
     }

@@ -66,7 +66,7 @@ void ToolCurveEdit::mousePress(QGraphicsSceneMouseEvent* event)
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
 
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     // 1) Grab a tangent handle of the active curve anchor (highest priority).
     if (!m_handleBlockId.isNull()) {

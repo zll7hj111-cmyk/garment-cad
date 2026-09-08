@@ -61,7 +61,7 @@ public:
                                 const QUuid& attachmentId, double initialAngle) override;
     void setConnectAngleValidity(bool valid) override;
     void setRotateAnchorState(bool active, bool anchorIsEnd, bool canToggle,
-                              const QString& reason) override;
+                              const QString& reason, double baseAngleDeg = 0.0) override;
     void setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId) override;
     void setPlacePointSession(bool active, const QString& baseSegName) override;
     void updatePlacePointSession(double distCm, double angleDeg, bool distLocked, bool angleLocked) override;
@@ -125,7 +125,7 @@ signals:
     /// 编排 ContextStrip::setRotateAnchorState (基准读数锚心端在前 + 换向
     /// 按钮转义为切锚心)。
     void rotateAnchorStateChanged(bool active, bool anchorIsEnd, bool canToggle,
-                                  const QString& reason);
+                                  const QString& reason, double baseAngleDeg = 0.0);
 
 private:
     /// Create the tool instance on first use, then keep it (P2/L5).

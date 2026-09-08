@@ -19,6 +19,7 @@
 #include "document/commands/BreakCommands.h"
 #include "document/commands/BlockCommands.h"
 #include "ui/QuickAuxDialog.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -69,7 +70,7 @@ void ToolBreak::mousePress(QGraphicsSceneMouseEvent* event)
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
 
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     // Priority 1: click on a breakable point → break immediately.
     auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
@@ -120,7 +121,7 @@ void ToolBreak::updateHover(const cad::geo::Vec2& worldPos)
     m_hoverSeg.reset();
     m_hoverBreakable = false;
 
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     // Try point snap first.
     auto snap = m_snapEngine.findSnap(worldPos, m_paramDoc, zoom);
@@ -242,7 +243,7 @@ bool ToolBreak::isBreakable(const QUuid& blockId, const QUuid& pointId) const
         return false;
 
     // Must have no perpendicular offset.
-    if (std::abs(pt->interpOffsetDist) > 1e-9)
+    if (std::abs(pt->interpOffsetDist) > cad::geo::kGeomEps)
         return false;
     if (!pt->interpOffsetDistFormula.isEmpty())
         return false;

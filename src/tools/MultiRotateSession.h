@@ -3,6 +3,7 @@
 #include <QUuid>
 #include <QSet>
 #include <QHash>
+#include <QList>
 #include <vector>
 
 #include "geometry/Vec2.h"
@@ -61,6 +62,8 @@ private:
     double m_accumulatedAngleDeg = 0.0;
     QHash<QUuid, MultiBlockBase> m_multiBaseTf;
     std::vector<cad::param::Attachment> m_multiReleasedAtts;
+    /// 跨选集释放的连接 id：会话期间只从解算中忽略，不真删（TOOL-P1-32）。
+    QList<QUuid> m_releasedAttIds;
 };
 
 } // namespace cad::tools

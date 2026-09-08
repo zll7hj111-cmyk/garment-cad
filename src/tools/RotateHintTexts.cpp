@@ -1,6 +1,7 @@
 ﻿#include "tools/RotateHintTexts.h"
 #include "tools/ToolRotate.h"
 #include "geometry/Units.h"
+#include "parametric/FollowerAngle.h"
 #include "tools/HitTester.h"
 #include "canvas/CanvasScene.h"
 #include "ui/LinePropertyDialog.h"
@@ -33,7 +34,11 @@ QString buildStatusHint(const RotateHintSnapshot& snap)
         return QString();
     }
     if (snap.state == RotateState::Rotating) {
-        return QString::fromUtf8("旋转中 · %1 · 松手提交 · Esc 回位").arg(modeStr);
+        return QString::fromUtf8("旋转中 · 基准: %1° · 角度: %2° · %3 · 松手提交 · Esc 回位")
+            .arg(cad::geo::Units::formatDegValue(snap.baseAngleDeg),
+                 // 2026-12 审计 P0-4: 姿态角一律显示域 (−180,180], 与徽标/角度卡一致
+                 cad::geo::Units::formatDegValue(cad::param::followerAngleToDisplay(snap.currentAngleDeg)),
+                 modeStr);
     }
     if (snap.state == RotateState::Ready) {
         if (!snap.selectionConfirmed) {

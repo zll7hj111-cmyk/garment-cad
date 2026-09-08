@@ -1,5 +1,7 @@
 #include "tools/MultiRotateSession.h"
 
+#include "tools/HitTester.h"  // isInteractiveBlock（TOOL-P1-12）
+
 #include <cmath>
 #include <QUndoStack>
 #include "canvas/CanvasScene.h"
@@ -7,8 +9,9 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/Attachment.h"
-#include "parametric/ParamDocumentRaw.h"
+#include "parametric/CrossSelectionPolicy.h"
 #include "document/commands/BlockTransformCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -19,6 +22,7 @@ void MultiRotateSession::clear()
     m_accumulatedAngleDeg = 0.0;
     m_multiBaseTf.clear();
     m_multiReleasedAtts.clear();
+    m_releasedAttIds.clear();
 }
 
 void MultiRotateSession::adoptSelection(cad::param::ParamDocument* doc, const QSet<QUuid>& blockIds)
@@ -27,7 +31,7 @@ void MultiRotateSession::adoptSelection(cad::param::ParamDocument* doc, const QS
     if (!doc) return;
     for (const QUuid& id : blockIds) {
         if (const auto* blk = doc->findBlock(id)) {
-            if (!blk->isBridge) {
+            if (!blk->isBridge && isInteractiveBlock(*blk, *doc)) {
                 m_selection.insert(id);
             }
         }
@@ -53,21 +57,26 @@ void MultiRotateSession::captureBase(cad::param::ParamDocument* doc)
         }
     }
 
+    m_releasedAttIds.clear();
     for (const auto& a : doc->attachments()) {
         const bool fromIn = m_selection.contains(a.fromBlockId);
         const bool toIn   = m_selection.contains(a.toBlockId);
-        if (((fromIn && !toIn) || (!fromIn && toIn)) && !a.isPin) {
-            m_multiReleasedAtts.push_back(a);
-            if (auto* child = doc->findBlock(a.fromBlockId)) {
-                child->preservedBenchmarkAngle = a.followerAngle;
-            }
+        // 跨选集连接策略唯一来源（2026-12 审计 TOOL-P0-8 / U10）：旋转释放
+        // 非 pin 的跨边界连接；桥接 pin 保持被动拉伸（桥接线不进旋转选集）。
+        if (!cad::param::isReleasedAcrossSelection(
+                fromIn, toIn, a.isPin, cad::param::CrossSelectionOp::Rotate)) {
+            continue;
+        }
+        m_multiReleasedAtts.push_back(a);
+        m_releasedAttIds.append(a.id);
+        if (auto* child = doc->findBlock(a.fromBlockId)) {
+            child->preservedBenchmarkAngle = a.followerAngle;
         }
     }
-    for (const auto& a : m_multiReleasedAtts) {
-        doc->removeAttachment(a.id);
-    }
-    if (!m_multiReleasedAtts.empty()) {
-        doc->resolveAll();
+    // 会话期间不真删：只从解算中忽略（TOOL-P1-32，与 SelectDragController 的
+    // ignoredAttachments 同一机制）——序列化/观察者仍看到连接存在。
+    if (!m_releasedAttIds.isEmpty()) {
+        doc->resolveForDrag({}, m_releasedAttIds);
     }
 }
 
@@ -85,10 +94,9 @@ void MultiRotateSession::restoreBase(cad::param::ParamDocument* doc, CanvasScene
             }
         }
     }
-    for (const auto& a : m_multiReleasedAtts) {
-        cad::param::RawModelAccess::addAttachmentRaw(*doc, a);
-    }
+    // 会话期间从未真删，只需清空忽略列表（TOOL-P1-32）。
     m_multiReleasedAtts.clear();
+    m_releasedAttIds.clear();
     doc->resolveAll();
     if (scene) scene->refreshAllBlockItems();
 }
@@ -108,7 +116,7 @@ void MultiRotateSession::applyModeValue(cad::param::ParamDocument* doc,
         b->transform.origin = pivot + (base.tf.origin - pivot).rotated(deltaRad);
         b->touchGeometry();
     }
-    if (doc) doc->resolveForDrag(m_selection.values());
+    if (doc) doc->resolveForDrag(m_selection.values(), m_releasedAttIds);
     if (scene) scene->syncBlockPositions();
 }
 
@@ -122,8 +130,8 @@ bool MultiRotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undo
         if (!blk || !m_multiBaseTf.contains(bId)) continue;
         const auto& base = m_multiBaseTf[bId];
         const auto curTf = blk->transform;
-        if (std::abs(curTf.rotation - base.tf.rotation) > 1e-9 ||
-            curTf.origin.distanceTo(base.tf.origin) > 1e-6) {
+        if (std::abs(curTf.rotation - base.tf.rotation) > cad::geo::kGeomEps ||
+            curTf.origin.distanceTo(base.tf.origin) > cad::geo::kGeomEpsLoose) {
             anyChanged = true;
         }
         snapshots.push_back({
@@ -148,9 +156,8 @@ bool MultiRotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undo
             b->touchGeometry();
         }
     }
-    for (const auto& a : m_multiReleasedAtts) {
-        cad::param::RawModelAccess::addAttachmentRaw(*doc, a);
-    }
+    // 连接仍在文档中（会话期间只忽略解算）：直接交给命令在 redo() 里删除、
+    // undo() 里恢复 —— 不再需要先 addAttachmentRaw 补回（TOOL-P1-32）。
     undoStack->push(new cad::cmd::RotateBlocksCommand(
         doc, snapshots, m_multiReleasedAtts));
 

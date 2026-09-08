@@ -25,6 +25,7 @@
 #include "document/commands/DocumentCommands.h"
 
 #include "ui/LayerFeedback.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -107,7 +108,7 @@ void LineFactory::createFreeLine(const Vec2& start, const Vec2& end,
 
         ? opts.displayAngleDeg
 
-        : std::atan2(delta.y, delta.x) * 180.0 / M_PI;
+        : cad::geo::radToDeg(std::atan2(delta.y, delta.x));
 
     cad::param::ParamPoint ptEnd;
 
@@ -253,7 +254,7 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
 
     const double dist = opts.hasLength ? opts.lengthMm : delta.length();
 
-    const double angleDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
+    const double angleDeg = cad::geo::radToDeg(std::atan2(delta.y, delta.x));
 
     cad::param::ParamPoint ptEnd;
 
@@ -315,7 +316,7 @@ void LineFactory::createAttachedLine(const SnapResult& snapStart, const Vec2& en
 
     } else {
 
-        followerAngle = cad::geo::normalizeDeg360(180.0 - (angleDeg - refWorldRad * 180.0 / M_PI));
+        followerAngle = cad::geo::normalizeDeg360(180.0 - (angleDeg - cad::geo::radToDeg(refWorldRad)));
 
     }
 
@@ -406,7 +407,7 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
 
         endWorld = hb->worldPos(snapEnd.pointId);
 
-    if (startWorld.distanceSquaredTo(endWorld) < 1e-10)
+    if (startWorld.distanceSquaredTo(endWorld) < cad::geo::kGeomEpsUltra)
 
         return;  // Both points on the same spot — nothing to draw.
 
@@ -440,7 +441,7 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
 
     const double lenMm = delta.length();
 
-    const double worldAngleDeg = std::atan2(delta.y, delta.x) * 180.0 / M_PI;
+    const double worldAngleDeg = cad::geo::radToDeg(std::atan2(delta.y, delta.x));
 
     cad::param::Block block;
 
@@ -449,7 +450,7 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
 
     block.transform.origin = startWorld;
 
-    block.transform.rotation = worldAngleDeg * M_PI / 180.0;
+    block.transform.rotation = cad::geo::degToRad(worldAngleDeg);
 
     // The measurement belongs to this bridge line: deleting the line deletes
 
@@ -533,9 +534,9 @@ void LineFactory::createBridgeLine(const SnapResult& snapStart,
 
         const double refWorldRad = cad::param::effectiveAngleRefWorld(m_paramDoc, att);
 
-        att.followerAngle = cad::geo::normalizeDeg180(180.0
+        att.followerAngle = cad::param::followerAngleToStorage(180.0
 
-            - (worldAngleDeg - refWorldRad * 180.0 / M_PI));
+            - (worldAngleDeg - cad::geo::radToDeg(refWorldRad)));
 
         followAtt = std::move(att);
 

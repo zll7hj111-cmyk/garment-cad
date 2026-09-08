@@ -18,15 +18,9 @@
 #include "document/commands/VariableCommands.h"
 #include "ui/MeasureResultDialog.h"
 #include "canvas/HudItem.h"
+#include "tools/InteractionTolerances.h"  // kAxisZeroEpsMm (2026-12 审计 P1-3)
 
 namespace cad::tools {
-
-namespace {
-/// Two points are considered "coincident on the measured axis" when the span
-/// is below this epsilon (mm). Below the 0.1 mm display precision the result
-/// would read 0.00 cm — refuse instead of publishing a useless measure.
-constexpr double kAxisZeroEps = 0.05;
-} // namespace
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -87,7 +81,7 @@ void ToolMeasure::mousePress(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     auto snap = m_snapEngine.findSnap(clickPos, m_paramDoc, zoom);
     if (!snap) return;
@@ -130,7 +124,7 @@ void ToolMeasure::mouseMove(QGraphicsSceneMouseEvent* event)
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
     m_lastCursor = cursorPos;
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     updateHover(cursorPos, zoom);
     if (m_state == State::SelectB)
@@ -243,8 +237,8 @@ double ToolMeasure::spanValue(const cad::geo::Vec2& a, const cad::geo::Vec2& b) 
 bool ToolMeasure::axisCoincident(const cad::geo::Vec2& a, const cad::geo::Vec2& b) const
 {
     switch (m_kind) {
-        case cad::param::MeasureKind::Horizontal: return std::abs(b.x - a.x) < kAxisZeroEps;
-        case cad::param::MeasureKind::Vertical:   return std::abs(b.y - a.y) < kAxisZeroEps;
+        case cad::param::MeasureKind::Horizontal: return std::abs(b.x - a.x) < kAxisZeroEpsMm;
+        case cad::param::MeasureKind::Vertical:   return std::abs(b.y - a.y) < kAxisZeroEpsMm;
         case cad::param::MeasureKind::Distance:   break;
     }
     return false;
@@ -303,7 +297,7 @@ void ToolMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
 
     if (!m_previewLine) {
         m_previewLine = new QGraphicsLineItem();
-        QPen pen(QColor(0xFF, 0x98, 0x00), 1.4);  // amber
+        QPen pen(m_scene->style()->measureColor, 1.4);  // amber
         pen.setCosmetic(true);
         pen.setStyle(Qt::DashLine);
         m_previewLine->setPen(pen);

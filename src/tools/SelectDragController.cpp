@@ -3,13 +3,17 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "parametric/AttachmentGraph.h"
+#include "parametric/CrossSelectionPolicy.h"
 #include "parametric/DomainViews.h"
-#include "tools/ConnectGesture.h"   // kConnectSnapRadius (重挂吸附半径)
+#include "tools/ConnectGesture.h"
+#include "tools/InteractionTolerances.h"  // kConnectSnapRadiusPx (重挂吸附半径)
 #include "document/commands/BlockCommands.h"
 #include "document/commands/AttachmentCommands.h"
 
 #include <QUndoStack>
 #include <cmath>
+#include "geometry/Epsilon.h"
+#include "document/CommandTexts.h"
 
 namespace cad::tools {
 
@@ -45,8 +49,11 @@ void SelectDragController::begin(const cad::geo::Vec2& pos,
     for (const auto& att : m_paramDoc->attachments()) {
         const bool fromIn = dragSet.contains(att.fromBlockId);
         const bool toIn   = dragSet.contains(att.toBlockId);
-        // 只要一端在选集中、另一端不在选集中（无论是母线被拖走还是子线被拖走），直接脆弱化断开
-        if ((fromIn && !toIn) || (!fromIn && toIn)) {
+        // 跨选集连接策略唯一来源：拖动即断（含 pin，用户拍板 2026-09）——
+        // 无论是母线被拖走还是子线被拖走，见 parametric/CrossSelectionPolicy.h
+        // （2026-12 审计 TOOL-P0-8 / U10）。
+        if (cad::param::isReleasedAcrossSelection(
+                fromIn, toIn, att.isPin, cad::param::CrossSelectionOp::Move)) {
             if (!m_detachedAttachments.contains(att.id)) {
                 m_detachedAttachments.append(att.id);
             }
@@ -111,7 +118,7 @@ bool SelectDragController::tryReattachOnDragEnd(const cad::geo::Vec2& pos)
     // 拖动释放点与画布当前缩放绑定, 这里沿用会话上下文记录的 zoom （ToolSelect
     // 注入）。
     const auto snap = m_snapEngine.findSnap(
-        pos, m_paramDoc, m_zoom, kConnectSnapRadius, {}, &att->fromBlockId);
+        pos, m_paramDoc, m_zoom, kConnectSnapRadiusPx, {}, &att->fromBlockId);
     if (!snap || snap->blockId == att->fromBlockId)
         return false;
 
@@ -128,7 +135,7 @@ bool SelectDragController::tryReattachOnDragEnd(const cad::geo::Vec2& pos)
     // 连接以影子为基准 (挂载态跟随线拖离影子) —— 挂回本体 = ⑤ 删影子+活引用;
     // 挂到其他线 = ③ 影子挂载链 (Att1 反算保向 + Att2 重新焊接)。
     const bool toMaster = (snap->blockId == curTo->shadowMasterBlockId);
-    m_undoStack->beginMacro(QStringLiteral("重新挂接"));
+    m_undoStack->beginMacro(cad::cmd::texts::kReattach);
     if (toMaster) {
         m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
             m_paramDoc, att->id, /*angleOnly=*/false, snap->pointId, segId));
@@ -152,8 +159,9 @@ bool SelectDragController::end(const cad::geo::Vec2& pos, double zoom)
 
     // A pure click (press + release without moving) is NOT a drag: keep the
     // selection — 按住移动才是拖动, 几乎没动的拖动按单击回退 (2026-09;
-    // 双击编辑保持完好).
-    if (delta.lengthSquared() <= 1e-10) {
+    // 双击编辑保持完好). 阈值与 press 阈值同源 (2026-12 审计 TOOL-P0-7 / U9
+    // 收口: 原为绝对 1e-10 mm²，与 zoom 无关、量纲错).
+    if (!isDrag(delta, zoom, /*selectionEstablished=*/true)) {
         return true;
     }
 
@@ -161,8 +169,18 @@ bool SelectDragController::end(const cad::geo::Vec2& pos, double zoom)
         m_undoStack->beginMacro(QStringLiteral(
             "\xe7\xa7\xbb\xe5\x8a\xa8 %1 \xe4\xb8\xaa\xe5\xaf\xb9\xe8\xb1\xa1").arg(m_blockIds.size()));
         for (const QUuid& attId : m_detachedAttachments) {
-            m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(
-                m_paramDoc, attId));
+            const auto* att = m_paramDoc->attachmentsView().byId(attId);
+            if (!att) continue;
+            const auto* toBlk = m_paramDoc->findBlock(att->toBlockId);
+            const auto* toPt = toBlk ? toBlk->findPoint(att->toPointId) : nullptr;
+            const auto* fromBlk = m_paramDoc->findBlock(att->fromBlockId);
+            const auto* fromPt = fromBlk ? fromBlk->findPoint(att->fromPointId) : nullptr;
+            if ((toPt && toPt->isAuxiliary) || (fromPt && fromPt->isAuxiliary)) {
+                m_undoStack->push(new cad::cmd::RemoveAttachmentCommand(m_paramDoc, attId));
+            } else if (!att->angleOnly) {
+                m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
+                    m_paramDoc, attId, /*angleOnly=*/true));
+            }
         }
         // 滑轨模式 (抽屉式滑动): 拖动沿滑轨走了 —— 自由轴坐标 old→new 与
         // 移动一起入栈 (undo 整体回到拖前滑轨位置).
@@ -171,8 +189,8 @@ bool SelectDragController::end(const cad::geo::Vec2& pos, double zoom)
             const cad::param::Attachment* att = m_paramDoc->attachmentsView().byId(it.key());
             if (!att) continue;
             const auto [oldAlong, oldPerp] = it.value();
-            if (std::abs(att->slideAlongMm - oldAlong) <= 1e-9
-                && std::abs(att->slidePerpMm - oldPerp) <= 1e-9) continue;
+            if (std::abs(att->slideAlongMm - oldAlong) <= cad::geo::kGeomEps
+                && std::abs(att->slidePerpMm - oldPerp) <= cad::geo::kGeomEps) continue;
             m_undoStack->push(new cad::cmd::SetSlideOffsetsCommand(
                 m_paramDoc, it.key(), oldAlong, oldPerp,
                 att->slideAlongMm, att->slidePerpMm));

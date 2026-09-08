@@ -8,6 +8,7 @@
 #include "parametric/Block.h"
 #include "parametric/PerfProbe.h"
 #include "geometry/CurveMath.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -25,7 +26,7 @@ std::optional<SnapResult> SnapEngine::findSnap(
 
     // Convert screen-space radius to world-space
     const double radius = (radiusPx > 0.0) ? radiusPx : snapRadius;
-    double worldRadius = (zoom > 1e-9) ? (radius / zoom) : radius;
+    double worldRadius = (zoom > cad::geo::kGeomEps) ? (radius / zoom) : radius;
     double bestDistSq = worldRadius * worldRadius;
     std::optional<SnapResult> best;
 
@@ -35,10 +36,10 @@ std::optional<SnapResult> SnapEngine::findSnap(
     // wins — the user is working in that layer and sees its point, and the
     // HUD/ring must agree with the eventual attachment. Everything else
     // stays pure nearest-distance (a meaningfully closer point of another
-    // layer still wins). kTieDistSq is (1e-6 mm)² — float noise at
+    // layer still wins). kTieDistSq is (cad::geo::kGeomEpsLoose mm)² — float noise at
     // SCENE_BOUND scale, far below any visually meaningful difference.
     const QUuid activeLayer = paramDoc->activeLayer();
-    constexpr double kTieDistSq = 1e-12;
+    constexpr double kTieDistSq = cad::geo::kGeomEpsTight;
     bool bestIsActive = false;
 
     pruneSnapCaches(paramDoc);
@@ -122,7 +123,7 @@ std::vector<SnapResult> SnapEngine::findSnapCandidates(
     if (!paramDoc) return out;
 
     const double radius = (radiusPx > 0.0) ? radiusPx : snapRadius;
-    const double worldRadius = (zoom > 1e-9) ? (radius / zoom) : radius;
+    const double worldRadius = (zoom > cad::geo::kGeomEps) ? (radius / zoom) : radius;
     const double radiusSq = worldRadius * worldRadius;
 
     pruneSnapCaches(paramDoc);
@@ -173,7 +174,7 @@ std::optional<SnapResult> SnapEngine::findCurvePointSnap(
     if (!paramDoc) return std::nullopt;
 
     const double radius = (radiusPx > 0.0) ? radiusPx : snapRadius;
-    const double worldRadius = (zoom > 1e-9) ? (radius / zoom) : radius;
+    const double worldRadius = (zoom > cad::geo::kGeomEps) ? (radius / zoom) : radius;
     double bestDistSq = worldRadius * worldRadius;
     std::optional<SnapResult> best;
 
@@ -227,8 +228,8 @@ std::optional<SegmentSnapResult> SnapEngine::findSegmentSnap(
     if (!paramDoc) return std::nullopt;
 
     // Convert screen-space radius to world-space
-    const double radius = (radiusPx > 0.0) ? radiusPx : snapRadius;
-    const double worldRadius = (zoom > 1e-9) ? (radius / zoom) : radius;
+    const double radius = (radiusPx > 0.0) ? radiusPx : segmentSnapRadius;
+    const double worldRadius = (zoom > cad::geo::kGeomEps) ? (radius / zoom) : radius;
     double bestDist = worldRadius;
     std::optional<SegmentSnapResult> best;
 
@@ -293,7 +294,7 @@ std::optional<SegmentSnapResult> SnapEngine::findSegmentSnap(
                     // (entry->arcLengthMm) — re-summing spans per acceptance
                     // is pure waste (same value, same function).
                     const double totalArc = entry->arcLengthMm;
-                    double arcRatio = (totalArc > 1e-9) ? proj.s / totalArc : 0.0;
+                    double arcRatio = (totalArc > cad::geo::kGeomEps) ? proj.s / totalArc : 0.0;
 
                     best = SegmentSnapResult{
                         .worldPos  = worldProj,
@@ -311,18 +312,15 @@ std::optional<SegmentSnapResult> SnapEngine::findSegmentSnap(
             const double ax = seg.a.x, ay = seg.a.y;
             const double bx = seg.b.x, by = seg.b.y;
 
-            // Perpendicular projection of the cursor onto [a, b].
-            const double abx = bx - ax, aby = by - ay;
-            const double lenSq = abx * abx + aby * aby;
-            if (lenSq < 1e-12) continue;  // degenerate segment
-            double t = ((worldPos.x - ax) * abx + (worldPos.y - ay) * aby) / lenSq;
-            t = std::clamp(t, 0.0, 1.0);
-            const double projX = ax + abx * t;
-            const double projY = ay + aby * t;
+            // Perpendicular projection of the cursor onto [a, b] (U5: shared helper).
+            const cad::geo::Vec2 pa{ax, ay};
+            const cad::geo::Vec2 pb{bx, by};
+            if ((pb - pa).lengthSquared() < cad::geo::kGeomEpsTight) continue;  // degenerate segment
+            const double t = cad::geo::Vec2::closestParamOnSegment(worldPos, pa, pb);
+            const double projX = ax + (bx - ax) * t;
+            const double projY = ay + (by - ay) * t;
 
-            const double dx = worldPos.x - projX;
-            const double dy = worldPos.y - projY;
-            const double dist = std::sqrt(dx * dx + dy * dy);
+            const double dist = worldPos.distanceTo({projX, projY});
             if (dist < bestDist) {
                 bestDist = dist;
                 best = SegmentSnapResult{

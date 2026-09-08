@@ -8,16 +8,11 @@
 #include <vector>
 
 #include "geometry/Vec2.h"
+#include "tools/InteractionTolerances.h"  // kPointSnapRadiusPx / kBodySnapRadiusPx
 
 namespace cad::param { class ParamDocument; class Block; }
 
 namespace cad::tools {
-
-/// Two snap candidates "stack on the same spot" when their world positions
-/// are within this distance (mm). Drives the overlap disambiguation in the
-/// connect gesture (ConfirmTarget) and the smart pen's start/end point
-/// confirm flow (点选线段确认落点). Single shared source of truth.
-inline constexpr double kSnapOverlapEps = 0.5;  // mm
 
 /// Result of a successful snap operation.
 struct SnapResult {
@@ -44,8 +39,13 @@ struct SegmentSnapResult {
 class SnapEngine
 {
 public:
-    /// Snap radius in scene pixels (default 12px).
-    double snapRadius = 12.0;
+    /// 点/端点吸附半径 (px)：见 InteractionTolerances.h kPointSnapRadiusPx。
+    double snapRadius = kPointSnapRadiusPx;
+
+    /// 线身吸附半径 (px)：见 InteractionTolerances.h kBodySnapRadiusPx
+    /// （= 画布悬停半径，高亮什么就吸附什么）。findSegmentSnap 在
+    /// radiusPx <= 0 时用它，不再借用点吸附的 snapRadius。
+    double segmentSnapRadius = kBodySnapRadiusPx;
 
     /// Find the nearest snappable point within the radius of the given world position.
     /// @param worldPos   Cursor position in user/world coordinates (+Y up).
@@ -107,7 +107,7 @@ public:
     /// @param worldPos         Cursor position in user/world coordinates (+Y up).
     /// @param paramDoc         The parametric document to search.
     /// @param zoom             Current view zoom factor (screen-space radius conversion).
-    /// @param radiusPx         Screen-space radius in pixels; <= 0 uses snapRadius.
+    /// @param radiusPx         Screen-space radius in pixels; <= 0 uses segmentSnapRadius.
     /// @param excludeSegments  Optional segment IDs to skip (e.g. the smart pen's
     ///                         leader candidates, whose body click switches the
     ///                         reference instead of creating an aux point).

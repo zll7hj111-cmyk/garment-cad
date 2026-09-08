@@ -98,7 +98,7 @@ private:
 
     // --- 落点确认 (stacked-point disambiguation, 2026-08) ---
     /// All snappable candidates at the SAME spot as @p snap (within
-    /// kSnapOverlapEps), nearest first. Empty when the spot is unambiguous.
+    /// kOverlapEpsMm), nearest first. Empty when the spot is unambiguous.
     /// findSnapCandidates applies the same layer policy as findSnap, so the
     /// pool only ever contains LEGAL attachment targets.
     [[nodiscard]] std::vector<SnapResult> overlapPool(

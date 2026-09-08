@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include "geometry/Angle.h"
+#include "geometry/Units.h"
 #include "parametric/FollowerAngle.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
@@ -58,6 +59,22 @@ double computeDragTargetDeg(const DragSample& sample)
     return target;
 }
 
+QString formatRotationBadge(double deg, RotateBadgeQuantity quantity)
+{
+    switch (quantity) {
+    case RotateBadgeQuantity::Delta:
+        if (std::abs(deg) <= 0.01) return QString();
+        return cad::geo::Units::formatDegTrimmed(deg);
+    case RotateBadgeQuantity::Fold:
+        return cad::geo::Units::formatDegTrimmed(cad::geo::normalizeDeg180(deg));
+    case RotateBadgeQuantity::World:
+    default:
+        // 2026-12 审计 UI-P0-1: 自由段姿态 = 世界方向, 0..360, 与角度卡
+        // 「= 世界角度 N°」同数。
+        return cad::geo::Units::formatDegTrimmed(cad::geo::normalizeDeg360(deg));
+    }
+}
+
 GizmoPose computeGizmoPose(const GizmoPoseInput& in)
 {
     GizmoPose out;
@@ -89,14 +106,17 @@ GizmoPose computeGizmoPose(const GizmoPoseInput& in)
     }
 
     if (in.isRotating) {
-        if (in.isMultiOrMarquee) {
-            if (std::abs(out.deltaDeg) > 0.01)
-                out.badgeText = QString::asprintf("%.1f°", std::abs(out.deltaDeg));
-        } else if (in.isConnected) {
-            out.badgeText = QString::asprintf("%.1f°", cad::geo::normalizeDeg180(in.currentAngleDeg));
-        } else {
-            out.badgeText = QString::asprintf("%.1f°", cad::geo::normalizeDeg360(in.currentAngleDeg));
-        }
+        // 2026-12 审计 P0-4 / UI-P0-1: 唯一格式化入口, 物理量决定显示域。
+        // RotateSession::currentAngleDeg 的返回值随分支换物理量: 连接段 = 折角,
+        // 自由段 = 世界方向, 复制手势 = 相对旋转量 —— 此处必须按物理量选域。
+        if (in.isMultiOrMarquee)
+            out.badgeText = formatRotationBadge(out.deltaDeg, RotateBadgeQuantity::Delta);
+        else if (in.isCopyGestureActive)
+            out.badgeText = formatRotationBadge(in.currentAngleDeg, RotateBadgeQuantity::Delta);
+        else if (in.isConnected)
+            out.badgeText = formatRotationBadge(in.currentAngleDeg, RotateBadgeQuantity::Fold);
+        else
+            out.badgeText = formatRotationBadge(in.currentAngleDeg, RotateBadgeQuantity::World);
     }
     return out;
 }

@@ -138,7 +138,6 @@ private:
     // ── Component / legacy helpers ──
     void createComponentFromSelection();
     void deleteSelectedBlocks();
-    void quickDetachSelection();
     void showContextMenu(QGraphicsSceneMouseEvent* event);
 
     // ── Core state ──

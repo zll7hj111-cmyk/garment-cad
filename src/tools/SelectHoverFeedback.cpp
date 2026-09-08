@@ -2,16 +2,12 @@
 
 #include "parametric/Block.h"
 #include "parametric/DomainViews.h"
+#include "tools/InteractionTolerances.h"  // 拖动阈值 / 端点抓取半径 (2026-12 审计 P1-3)
 
 #include <algorithm>
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
-
-namespace {
-
-constexpr double kConnectGrabRadius = 10.0;  ///< 端点悬停抓取半径 (px).
-
-}
 
 void SelectHoverFeedback::beginPending(const cad::geo::Vec2& pos,
                                        const QUuid& blockId, bool wasSelected)
@@ -32,7 +28,7 @@ void SelectHoverFeedback::cancelPending()
 double SelectHoverFeedback::thresholdUserUnits(double zoom) const
 {
     return (m_wasSelected ? kDragThresholdSelectedPx : kDragThresholdPx)
-           / (zoom > 1e-9 ? zoom : 1.0);
+           / cad::canvas::safeZoomOr(zoom);
 }
 
 Qt::CursorShape SelectHoverFeedback::cursorShapeFor(
@@ -40,7 +36,7 @@ Qt::CursorShape SelectHoverFeedback::cursorShapeFor(
     const cad::geo::Vec2& pos, double zoom, bool ctrlHeld) const
 {
     if (ctrlHeld && !blockHit.isNull()) return Qt::DragCopyCursor;
-    const double worldR = kConnectGrabRadius / (zoom > 1e-9 ? zoom : 1.0);
+    const double worldR = kConnectGrabRadiusPx / cad::canvas::safeZoomOr(zoom);
     if (findEndpointNear(doc, pos, worldR))
         return Qt::CrossCursor;
     if (!blockHit.isNull())

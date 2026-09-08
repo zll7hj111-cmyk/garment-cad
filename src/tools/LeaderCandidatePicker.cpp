@@ -10,7 +10,10 @@
 #include "parametric/Block.h"
 #include "geometry/Angle.h"
 #include "canvas/CanvasScene.h"
+#include "canvas/CanvasStyle.h"
 #include "canvas/BlockItem.h"
+#include "tools/HitTester.h"  // isConnectTargetBlock (2026-12 审计 P0-5 / TOOL-P0-11)
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -26,8 +29,7 @@ void LeaderCandidatePicker::collect(const SnapResult& snap)
     clear();
     if (!m_paramDoc || !m_scene) return;
 
-    double zoom = m_scene->currentZoom();
-    if (std::abs(zoom) < 1e-9) zoom = 1.0;
+    const double zoom = m_scene->safeZoom();
     // Same reach as the snap itself: what looks like one point may be several
     // coincident points from different blocks stacked on the same spot, and
     // every segment incident to any of them is a valid angle reference.
@@ -41,9 +43,16 @@ void LeaderCandidatePicker::collect(const SnapResult& snap)
     QSet<QUuid> seenSegments;
 
     for (const auto& block : m_paramDoc->blocks()) {
+        // 2026-12 审计 P0-5 / TOOL-P0-11：影子 / 不可选点（锚点）不得成为角度
+        // 参考目标；位置取 worldPos（含延伸尾巴），与 HitTester 命中几何一致。
+        // 注意：这里**不**做活动层过滤 —— 候选列表同时承担“点击线身切换起点”
+        // 的命中面（ToolSmartPen::trySwitchStartPoint），跨层候选是既有特性；
+        // 连接合法性由 m_startPool（findSnapCandidates 的图层策略）单独把关，
+        // 非活动层候选点了也不会被切换（tests/test_smartpen_aux.cpp:1055）。
+        if (!isConnectTargetBlock(block)) continue;
         for (const auto& pt : block.points) {
-            if (!pt.resolved) continue;
-            const Vec2 wp = block.transform.toWorld(pt.resolvedPos);
+            if (!pt.resolved || !pt.selectable) continue;
+            const Vec2 wp = block.worldPos(pt.id);
             if (wp.distanceTo(snap.worldPos) > tol) continue;
 
             for (const auto& seg : block.segments) {
@@ -103,9 +112,8 @@ void LeaderCandidatePicker::setIndex(int index)
     // on the new leader's exit direction.
     if (m_paramDoc) {
         if (const auto* lb = m_paramDoc->findBlock(cand.blockId))
-            m_refDirDeg = (lb->transform.rotation
-                           + lb->exitDirectionAtPoint(cand.pointId, cand.segmentId))
-                          * 180.0 / M_PI;
+            m_refDirDeg = cad::geo::radToDeg(lb->transform.rotation
+                           + lb->exitDirectionAtPoint(cand.pointId, cand.segmentId));
     }
 }
 
@@ -123,10 +131,11 @@ void LeaderCandidatePicker::clear()
 int LeaderCandidatePicker::candidateAt(const Vec2& worldPos, double zoom) const
 {
     if (!m_paramDoc) return -1;
-    if (std::abs(zoom) < 1e-9) zoom = 1.0;
+    zoom = cad::canvas::safeZoomOr(zoom);
     // Same pick tolerance as segment hover — the two gestures should feel
     // identical (hoverRadiusPx is the shared interaction token).
-    const double tol = (m_scene ? m_scene->style()->hoverRadiusPx() : 8.0) / zoom;
+    const double tol = (m_scene ? m_scene->style()->hoverRadiusPx()
+                                : CanvasStyle::fallback().hoverRadiusPx()) / zoom;
 
     int best = -1;
     double bestDist = tol;

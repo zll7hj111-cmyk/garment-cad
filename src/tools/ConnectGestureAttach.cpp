@@ -26,6 +26,8 @@
 #include "document/commands/BlockCommands.h"
 #include "document/commands/ComponentCommands.h"
 #include "ui/Theme.h"
+#include "geometry/Epsilon.h"
+#include "document/CommandTexts.h"
 
 namespace cad::tools {
 
@@ -114,7 +116,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
         if (sp && ep && sp->resolved && ep->resolved) {
             const geo::Vec2 w1 = toBlk->transform.toWorld(sp->resolvedPos);
             const geo::Vec2 w2 = toBlk->transform.toWorld(ep->resolvedPos);
-            if (w1.distanceTo(w2) > 1e-6)
+            if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose)
                 refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
         }
     }
@@ -124,6 +126,7 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
     double angleDeg = 0.0;
     if (fromBlk->preservedBenchmarkAngle.has_value()) {
         angleDeg = *fromBlk->preservedBenchmarkAngle;
+        fromBlk->preservedBenchmarkAngle.reset();
     } else {
         const double localDir = fromBlk->directionAtPoint(m_connectFromPoint);
         angleDeg = cad::param::backSolveFollowerAngle(
@@ -295,8 +298,8 @@ bool ConnectGesture::reattachShadowBased(const QUuid& attId,
     const bool toMaster = (toBlockId == shadow.shadowMasterBlockId);
 
     if (m_undoStack) {
-        m_undoStack->beginMacro(toMaster ? QStringLiteral("重新挂接")
-                                         : QStringLiteral("影子挂载"));
+        m_undoStack->beginMacro(toMaster ? cad::cmd::texts::kReattach
+                                         : cad::cmd::texts::kShadowMount);
         if (toMaster) {
             m_undoStack->push(new cad::cmd::SetAttachmentAngleOnlyCommand(
                 m_paramDoc, attId, /*angleOnly=*/false, toPointId, toSegmentId));
@@ -344,7 +347,7 @@ bool ConnectGesture::componentCanConnect() const
 void ConnectGesture::pressAngleTarget(const Vec2& pos)
 {
     if (m_componentSwitchCandidates.empty() || !m_paramDoc || !m_scene) return;
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     const auto segSnap = m_snapEngine.findSegmentSnap(
         pos, m_paramDoc, zoom, m_scene->style()->hoverRadiusPx());

@@ -17,10 +17,7 @@
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockTransformCommands.h"
 #include "tools/RotateCopyGesture.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -210,7 +207,8 @@ QUuid RotateSession::anchorPointAt(const cad::param::ParamDocument* doc,
     const cad::param::Block* blk = doc->findBlock(m_blockId);
     if (!blk || blk->segments.empty()) return QUuid();
 
-    const double tol = 8.0 / (zoom > 1e-9 ? zoom : 1.0);
+    // 2026-12 审计 P1-3: 端点拾取半径 = canvas 悬停 token (本类无 scene, 用 fallback)。
+    const double tol = CanvasStyle::fallback().hoverRadiusPx() / cad::canvas::safeZoomOr(zoom);
     for (const QUuid& pid : {blk->segments.front().startPointId,
                              blk->segments.front().endPointId}) {
         const cad::param::ParamPoint* p = blk->findPoint(pid);
@@ -252,28 +250,14 @@ void RotateSession::applyAngleDeg(cad::param::ParamDocument* doc,
         if (m_shadow.active()) {
             applyShadowAngleDeg(doc, deg, dragAngle0);
         } else if (auto* a = editableAttachment(doc)) {
-            const double alpha = cad::geo::normalizeDeg360(deg);
-            if (m_base.rotationMode == cad::param::RotationMode::ArcLength) {
-                const double radius = segmentRadius(doc);
-                a->arcLength = cad::geo::degToArcMm(alpha, radius);
-                a->arcLengthFormula.clear();
-                a->rotationMode = cad::param::RotationMode::ArcLength;
-            } else if (m_base.rotationMode == cad::param::RotationMode::ChordLength) {
-                const double radius = segmentRadius(doc);
-                const double foldDeg = cad::geo::normalizeDeg180(deg);
-                a->chordLength = cad::geo::degToChordMm(foldDeg, radius);
-                a->chordLengthFormula.clear();
-                a->rotationMode = cad::param::RotationMode::ChordLength;
-            } else {
-                a->followerAngle = alpha;
-                a->followerAngleFormula.clear();
-            }
+            // 2026-12 审计 P0-4: 三分支写域收口到 FollowerAngle.h 唯一入口
+            cad::param::writeFollowerAngleForMode(*a, m_base.rotationMode, deg, segmentRadius(doc));
         }
     } else {
         cad::param::Block* blk = doc->findBlock(m_blockId);
         if (!blk) return;
-        const double anchorOffsetRad = m_anchor.isEnd ? M_PI : 0.0;
-        const double newRot = deg * M_PI / 180.0 - anchorOffsetRad - m_localDir;
+        const double anchorOffsetRad = m_anchor.isEnd ? cad::geo::kPi : 0.0;
+        const double newRot = cad::geo::degToRad(deg) - anchorOffsetRad - m_localDir;
         blk->transform.rotation = newRot;
         blk->transform.origin = m_pivot - m_anchorLocal.rotated(newRot);
     }
@@ -290,10 +274,11 @@ void RotateSession::applyShadowAngleDeg(cad::param::ParamDocument* doc,
 {
     if (!doc) return;
     const double deltaDeg = cad::geo::normalizeDeg180(dragAngle0 - deg);
-    const double deltaRad = deltaDeg * M_PI / 180.0;
+    const double deltaRad = cad::geo::degToRad(deltaDeg);
     if (m_shadow.isMounted) {
         if (auto* att1 = doc->findAttachment(m_shadow.att1Id))
-            att1->followerAngle = cad::geo::normalizeDeg180(m_shadow.shadowDelta0 - deltaDeg);
+            att1->followerAngle = cad::param::followerAngleToStorage(
+                m_shadow.shadowDelta0 - deltaDeg);
     } else {
         if (auto* sh = doc->findBlock(m_shadow.shadowId))
             sh->transform.rotation = m_shadow.shadowRot0 + deltaRad;
@@ -323,7 +308,7 @@ void RotateSession::applyModeValue(cad::param::ParamDocument* doc,
         if (auto* a = editableAttachment(doc)) {
             double chordMm = cad::geo::Units::cmToMm(value);
             const double radius = segmentRadius(doc);
-            if (radius > 1e-9) chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
+            if (radius > cad::geo::kGeomEps) chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
             a->chordLength = chordMm;
             a->chordLengthFormula.clear();
         }
@@ -356,7 +341,7 @@ double RotateSession::currentModeValue(const cad::param::ParamDocument* doc,
                 a->arcLengthFormula, doc->parameters(), doc->conditions(), arcMm);
         }
         const double radius = segmentRadius(doc);
-        const double alphaDeg = (radius > 1e-9)
+        const double alphaDeg = (radius > cad::geo::kGeomEps)
             ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
         const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
         return cad::geo::Units::mmToCm(cad::geo::degToArcMm(foldDeg, radius));
@@ -370,7 +355,7 @@ double RotateSession::currentModeValue(const cad::param::ParamDocument* doc,
                 a->chordLengthFormula, doc->parameters(), doc->conditions(), chordMm);
         }
         const double radius = segmentRadius(doc);
-        const double alphaDeg = (radius > 1e-9)
+        const double alphaDeg = (radius > cad::geo::kGeomEps)
             ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
         const double foldDeg = cad::geo::normalizeDeg180(alphaDeg);
         return cad::geo::Units::mmToCm(cad::geo::degToChordMm(foldDeg, radius));
@@ -408,7 +393,7 @@ double RotateSession::currentAngleDeg(const cad::param::ParamDocument* doc,
             (void)cad::param::ConditionEngine::evaluateLengthMm(
                 a->arcLengthFormula, doc->parameters(), doc->conditions(), arcMm);
             const double radius = segmentRadius(doc);
-            double deg = (radius > 1e-9)
+            double deg = (radius > cad::geo::kGeomEps)
                 ? cad::geo::arcMmToDeg(arcMm, radius) : 0.0;
             return cad::geo::normalizeDeg180(deg);
         }
@@ -417,7 +402,7 @@ double RotateSession::currentAngleDeg(const cad::param::ParamDocument* doc,
             (void)cad::param::ConditionEngine::evaluateLengthMm(
                 a->chordLengthFormula, doc->parameters(), doc->conditions(), chordMm);
             const double radius = segmentRadius(doc);
-            double deg = (radius > 1e-9)
+            double deg = (radius > cad::geo::kGeomEps)
                 ? cad::geo::chordMmToDeg(chordMm, radius) : 0.0;
             return cad::geo::normalizeDeg180(deg);
         }
@@ -437,7 +422,7 @@ double RotateSession::currentAngleDeg(const cad::param::ParamDocument* doc,
     if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
     const cad::geo::Vec2 w1 = blk->transform.toWorld(sp->resolvedPos);
     const cad::geo::Vec2 w2 = blk->transform.toWorld(ep->resolvedPos);
-    double deg = (w2 - w1).angle() * 180.0 / M_PI;
+    double deg = cad::geo::radToDeg((w2 - w1).angle());
     if (m_anchor.isEnd) deg += 180.0;
     deg = cad::geo::normalizeDeg360(deg);
     return deg;
@@ -506,7 +491,7 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
                 auto* att1 = doc->findAttachment(m_shadow.att1Id);
                 if (!att1) return false;
                 const double curDelta = att1->followerAngle;
-                if (std::abs(curDelta - m_shadow.shadowDelta0) <= 1e-9)
+                if (std::abs(curDelta - m_shadow.shadowDelta0) <= cad::geo::kGeomEps)
                     return false;
                 att1->followerAngle = m_shadow.shadowDelta0;
                 undoStack->push(new cad::cmd::SetFollowerAngleCommand(
@@ -520,10 +505,10 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
                 const auto shNew = shBlk->transform;
                 const auto blkNew = blk->transform;
                 const bool changed =
-                    std::abs(shNew.rotation - m_shadow.shadowTf0.rotation) > 1e-9
-                    || shNew.origin.distanceTo(m_shadow.shadowTf0.origin) > 1e-6
-                    || std::abs(blkNew.rotation - m_shadow.followerTf0.rotation) > 1e-9
-                    || blkNew.origin.distanceTo(m_shadow.followerTf0.origin) > 1e-6;
+                    std::abs(shNew.rotation - m_shadow.shadowTf0.rotation) > cad::geo::kGeomEps
+                    || shNew.origin.distanceTo(m_shadow.shadowTf0.origin) > cad::geo::kGeomEpsLoose
+                    || std::abs(blkNew.rotation - m_shadow.followerTf0.rotation) > cad::geo::kGeomEps
+                    || blkNew.origin.distanceTo(m_shadow.followerTf0.origin) > cad::geo::kGeomEpsLoose;
                 if (!changed) return false;
                 shBlk->transform = m_shadow.shadowTf0;
                 blk->transform = m_shadow.followerTf0;
@@ -548,12 +533,12 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
         const double curChord = att->chordLength;
         const QString curChordFormula = att->chordLengthFormula;
 
-        const bool changed = std::abs(curAngle - m_base.baseAngle) > 1e-9
+        const bool changed = std::abs(curAngle - m_base.baseAngle) > cad::geo::kGeomEps
                           || curFormula != m_base.baseFormula
                           || curMode != m_base.rotationMode
-                          || std::abs(curArc - m_base.baseArcLength) > 1e-6
+                          || std::abs(curArc - m_base.baseArcLength) > cad::geo::kGeomEpsLoose
                           || curArcFormula != m_base.baseArcFormula
-                          || std::abs(curChord - m_base.baseChordLength) > 1e-6
+                          || std::abs(curChord - m_base.baseChordLength) > cad::geo::kGeomEpsLoose
                           || curChordFormula != m_base.baseChordFormula;
         if (!changed) return false;
 
@@ -583,8 +568,8 @@ bool RotateSession::commit(cad::param::ParamDocument* doc, QUndoStack* undoStack
         const cad::param::Transform2D curTf = blk->transform;
         const QUuid curEndBlock = blk->endTargetBlockId;
         const QUuid curEndPoint = blk->endTargetPointId;
-        const bool changed = std::abs(curTf.rotation - m_base.baseTf.rotation) > 1e-9
-                          || curTf.origin.distanceTo(m_base.baseTf.origin) > 1e-6
+        const bool changed = std::abs(curTf.rotation - m_base.baseTf.rotation) > cad::geo::kGeomEps
+                          || curTf.origin.distanceTo(m_base.baseTf.origin) > cad::geo::kGeomEpsLoose
                           || curEndBlock != m_base.baseEndTargetBlock
                           || curEndPoint != m_base.baseEndTargetPoint
                           || m_anchor.releaseAttHeld;
@@ -629,7 +614,7 @@ double RotateSession::originalWorldRotDeg(const cad::param::ParamDocument* doc) 
             if (const auto* a = editableAttachment(doc))
                 alpha = a->followerAngle;
         }
-        return (m_refWorldRad + M_PI - alpha * M_PI / 180.0) * 180.0 / M_PI;
+        return cad::geo::radToDeg(m_refWorldRad + cad::geo::kPi - cad::geo::degToRad(alpha));
     }
     double baseDeg = 0.0;
     if (doc) {
@@ -642,7 +627,7 @@ double RotateSession::originalWorldRotDeg(const cad::param::ParamDocument* doc) 
                 const cad::geo::Vec2 wd =
                     blk->transform.toWorld(ep->resolvedPos)
                     - blk->transform.toWorld(sp->resolvedPos);
-                baseDeg = wd.angle() * 180.0 / M_PI;
+                baseDeg = cad::geo::radToDeg(wd.angle());
             }
         }
     }
@@ -667,14 +652,14 @@ RotateSession::GizmoAngles RotateSession::calculateGizmoAngles(
     GizmoAngles out{};
     if (m_connected) {
         if (m_shadow.active() && !m_shadow.isMounted) {
-            const double curRad = deg * M_PI / 180.0;
+            const double curRad = cad::geo::degToRad(deg);
             if (isRotating) {
-                const double dragStartRad = dragAngle0 * M_PI / 180.0;
+                const double dragStartRad = cad::geo::degToRad(dragAngle0);
                 out.dashRad = dragStartRad;
                 out.arcStart = dragStartRad;
                 double span = curRad - out.arcStart;
-                while (span >  M_PI) span -= 2.0 * M_PI;
-                while (span < -M_PI) span += 2.0 * M_PI;
+                while (span >  cad::geo::kPi) span -= 2.0 * cad::geo::kPi;
+                while (span < -cad::geo::kPi) span += 2.0 * cad::geo::kPi;
                 out.arcEnd = out.arcStart + span;
             } else {
                 out.dashRad = curRad;
@@ -683,23 +668,23 @@ RotateSession::GizmoAngles RotateSession::calculateGizmoAngles(
             }
             return out;
         }
-        out.dashRad = m_refWorldRad + M_PI;
-        const double aRad = cad::geo::normalizeDeg360(deg) * M_PI / 180.0;
-        out.arcStart = m_refWorldRad + M_PI - aRad;
+        out.dashRad = m_refWorldRad + cad::geo::kPi;
+        const double aRad = cad::geo::degToRad(cad::geo::normalizeDeg360(deg));
+        out.arcStart = m_refWorldRad + cad::geo::kPi - aRad;
         out.arcEnd = out.dashRad;
         double span = out.arcEnd - out.arcStart;
-        while (span >  M_PI) span -= 2.0 * M_PI;
-        while (span < -M_PI) span += 2.0 * M_PI;
+        while (span >  cad::geo::kPi) span -= 2.0 * cad::geo::kPi;
+        while (span < -cad::geo::kPi) span += 2.0 * cad::geo::kPi;
         out.arcEnd = out.arcStart + span;
     } else {
-        const double curRad = deg * M_PI / 180.0;
+        const double curRad = cad::geo::degToRad(deg);
         if (isRotating) {
-            const double dragStartRad = dragAngle0 * M_PI / 180.0;
+            const double dragStartRad = cad::geo::degToRad(dragAngle0);
             out.dashRad = dragStartRad;
             out.arcStart = dragStartRad;
             double span = curRad - out.arcStart;
-            while (span >  M_PI) span -= 2.0 * M_PI;
-            while (span < -M_PI) span += 2.0 * M_PI;
+            while (span >  cad::geo::kPi) span -= 2.0 * cad::geo::kPi;
+            while (span < -cad::geo::kPi) span += 2.0 * cad::geo::kPi;
             out.arcEnd = out.arcStart + span;
         } else {
             out.dashRad = curRad;

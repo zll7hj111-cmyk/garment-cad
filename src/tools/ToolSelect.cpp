@@ -19,6 +19,7 @@
 
 #include "canvas/CanvasScene.h"
 #include "HitTester.h"
+#include "InteractionTolerances.h"  // isDrag (2026-12 审计 TOOL-P0-6 / U9)
 #include "canvas/BlockItem.h"
 #include "canvas/HudItem.h"
 #include "parametric/ParamDocument.h"
@@ -31,14 +32,9 @@
 #include "CopyDragController.h"
 #include "MarqueeGesture.h"
 #include "document/commands/EndpointCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
-
-namespace {
-
-constexpr double kOverlapSelectThresholdPx = 5.0;  ///< 重叠集群激活阈值.
-
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Lifecycle
@@ -391,7 +387,7 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
     // ── 检查是否点击了电池 HUD (展开态点击切换选中) ──
     if (m_overlapCtl && m_overlapCtl->hasBattery()
         && m_overlapCtl->batteryMode() == cad::canvas::OverlapBatteryHud::DisplayMode::Expanded) {
-        const double zoom = m_scene->currentZoom();
+        const double zoom = m_scene->safeZoom();
         int hitIdx = m_overlapCtl->hitBatteryCandidateAtWorld(pos, zoom);
         if (hitIdx >= 0 && hitIdx < m_overlapCtl->batteryCandidateCount()) {
             const auto cand = m_overlapCtl->batteryCandidateAt(hitIdx);
@@ -429,15 +425,15 @@ void ToolSelect::mousePress(QGraphicsSceneMouseEvent* event)
 
     // ── 记录点击位置处的重叠点，供快捷键 (W/B) 随时打开电池组 ──
     if (m_overlapCtl) {
-        double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-        if (zoom < 1e-9) zoom = 1.0;
+        double zoom = m_scene->safeZoom();
+        if (zoom < cad::geo::kGeomEps) zoom = 1.0;
         m_overlapCtl->recordClickedOverlap(pos, zoom, [this](const QString& msg) { showToast(msg); });
     }
 
     // ── Placed point press: 单击选中放置点 ──
     SnapEngine snapEngine;
-    double zoom = m_scene->currentZoom();
-    if (zoom < 1e-9) zoom = 1.0;
+    double zoom = m_scene->safeZoom();
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
     auto snap = snapEngine.findSnap(pos, m_paramDoc, zoom, 12.0, {}, nullptr, true);
     if (snap) {
         if (auto* blk = m_paramDoc->findBlock(snap->blockId)) {
@@ -544,7 +540,7 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
 
     // 长按拖动判定
     if (m_hoverCtl.pending()) {
-        double zoom = m_scene->currentZoom();
+        double zoom = m_scene->safeZoom();
         if (pos.distanceTo(m_hoverCtl.pos()) > m_hoverCtl.thresholdUserUnits(zoom)) {
             const cad::geo::Vec2 startPos = m_hoverCtl.pos();
             const QUuid pendingBlock = m_hoverCtl.blockId();
@@ -578,7 +574,7 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
         updateHoverEndpointRing(pos);
 
         const QPointF scenePt = cad::geo::Coord::toScene(pos.x, pos.y);
-        const double zoom = m_scene->currentZoom();
+        const double zoom = m_scene->safeZoom();
 
         // 1. 悬停在展开的电池 HUD 上时的交互
         if (m_overlapCtl && m_overlapCtl->hasBattery()
@@ -591,7 +587,7 @@ void ToolSelect::mouseMove(QGraphicsSceneMouseEvent* event)
                 return;
             }
             const double dist = pos.distanceTo(m_overlapCtl->batteryAnchor());
-            if (dist > (250.0 / (zoom > 1e-9 ? zoom : 1.0))) {
+            if (dist > (250.0 / cad::canvas::safeZoomOr(zoom))) {
                 m_overlapCtl->hideBattery();
             }
         }
@@ -672,11 +668,14 @@ void ToolSelect::mouseRelease(QGraphicsSceneMouseEvent* event)
         hideHoverEndpointRing();
         if (m_marqueeGesture) {
             const QSet<QUuid> boxed = m_marqueeGesture->end(pos);
-            const double moveDist = pos.distanceTo(m_marqueeGesture->startPos());
-            double zoom = m_scene->currentZoom();
-            if (zoom < 1e-9) zoom = 1.0;
+            const cad::geo::Vec2 dragDelta = pos - m_marqueeGesture->startPos();
+            double zoom = m_scene->safeZoom();
+            if (zoom < cad::geo::kGeomEps) zoom = 1.0;
             // 若位移极小且没有框到任何东西，视为单纯单击空白处 -> 取消全部选中
-            if (moveDist < 4.0 / zoom && boxed.isEmpty()) {
+            // 点击 vs 拖动唯一判定（2026-12 审计 TOOL-P0-6 / U9 收口：
+            // 原 4.0/zoom 与 CopyDragController 的 5.0/zoom 不一致）。
+            if (!isDrag(dragDelta, zoom, /*selectionEstablished=*/false)
+                && boxed.isEmpty()) {
                 clearSelectionAndIdle();
             } else {
                 // 框选加选与反向减选 (XOR)
@@ -695,7 +694,7 @@ void ToolSelect::mouseRelease(QGraphicsSceneMouseEvent* event)
     }
     case SelectState::Dragging: {
         hideHoverEndpointRing();
-        const double zoom = m_scene->currentZoom();
+        const double zoom = m_scene->safeZoom();
         if (m_dragCtl->end(pos, zoom))
             return;
         m_scene->refreshAllBlockItems();
@@ -748,16 +747,12 @@ void ToolSelect::keyPress(QKeyEvent* event)
         deleteSelectedBlocks();
     } else if (event->key() == Qt::Key_W || event->key() == Qt::Key_B) {
         if (m_overlapCtl) {
-            double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-            if (zoom < 1e-9) zoom = 1.0;
+            double zoom = m_scene->safeZoom();
+            if (zoom < cad::geo::kGeomEps) zoom = 1.0;
             m_overlapCtl->handleWOrBKey(m_lastCursorPos, zoom);
         }
         event->accept();
         return;
-    } else if (event->key() == Qt::Key_D
-               && !(m_connectGesture && m_connectGesture->active())) {
-        quickDetachSelection();
-        event->accept();
     } else if (event->key() == Qt::Key_Escape) {
         if (!m_selectedPlacedPointId.isNull()) {
             clearPlacedPointSelection();

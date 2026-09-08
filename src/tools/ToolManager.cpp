@@ -177,11 +177,12 @@ void ToolManager::setConnectAngleValidity(bool valid)
 }
 
 void ToolManager::setRotateAnchorState(bool active, bool anchorIsEnd,
-                                       bool canToggle, const QString& reason)
+                                       bool canToggle, const QString& reason,
+                                       double baseAngleDeg)
 {
     // 上下文属性条 (2026-12): 旋转工具锚心状态 → 条带基准读数锚心端在前 +
     // 换向按钮转义为切锚心。
-    emit rotateAnchorStateChanged(active, anchorIsEnd, canToggle, reason);
+    emit rotateAnchorStateChanged(active, anchorIsEnd, canToggle, reason, baseAngleDeg);
 }
 
 void ToolManager::setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId)

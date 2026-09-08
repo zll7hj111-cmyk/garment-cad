@@ -6,6 +6,7 @@
 #include "canvas/CanvasScene.h"
 #include "document/commands/BlockCommands.h"
 #include "parametric/ParamDocumentRaw.h"
+#include "tools/InteractionTolerances.h"  // isDrag (2026-12 审计 TOOL-P0-6 / U9)
 
 namespace cad::tools {
 
@@ -85,9 +86,9 @@ void CopyDragController::release(const Vec2& pos)
     // < 5 screen px) drops the copy — an exact overlap of the original would
     // be invisible or create ghost duplicate geometry.
     removeCopyPreview();
-    const double zoom = m_scene ? m_scene->currentZoom() : 1.0;
-    const double thresh = 5.0 / (zoom > 1e-9 ? zoom : 1.0);
-    if (delta.length() > thresh && m_undoStack) {
+    const double zoom = m_scene->safeZoom();
+    // 点击 vs 拖动唯一判定（2026-12 审计 TOOL-P0-6 / U9 收口：原 5.0 裸字面量）。
+    if (isDrag(delta, zoom, /*selectionEstablished=*/false) && m_undoStack) {
         for (auto& b : m_copyResult.blocks)
             b.transform.origin = b.transform.origin + delta;
         m_undoStack->push(new cad::cmd::DuplicateBlocksCommand(

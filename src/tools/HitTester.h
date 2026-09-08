@@ -14,6 +14,23 @@ class QGraphicsItem;
 
 namespace cad::tools {
 
+/// 交互资格规则 —— 全仓唯一规则源（2026-12 审计 P0-5 / TOOL-P0-9/11）。
+/// 影子块（Block::isShadow）永不参与交互（R4，拆开影子基准）：不可命中、不可
+/// 选中、不可悬停、不可作为重叠候选 / 角度参考 / 连接目标。跨层重叠一律靠
+/// 活动层过滤区分（活动层为空时视为无块可交互，与 blockHitsAtScene 既有语义一致）。
+inline bool isInteractiveBlock(const cad::param::Block& blk,
+                               const cad::param::ParamDocument& doc)
+{
+    return !blk.isShadow && blk.layer == doc.activeLayer();
+}
+
+/// 连接目标资格：跨层连接是既有特性（带 crossLayerToast / crossLayerBadge
+/// 反馈，见 src/ui/LayerFeedback.h），故**不**做活动层过滤，只排除影子块。
+inline bool isConnectTargetBlock(const cad::param::Block& blk)
+{
+    return !blk.isShadow;
+}
+
 /// 场景点上的单个块命中（TOOL_SYSTEM_AUDIT P1/M7+L2，2026-08-29 收口）。
 struct SceneBlockHit
 {
@@ -44,8 +61,7 @@ inline std::vector<SceneBlockHit> blockHitsAtScene(
         seen.insert(bi->blockId());
         const auto* blk = doc.blocksView().byId(bi->blockId());
         if (!blk) continue;
-        if (blk->isShadow) continue;  // 影子不可命中/选中/悬停 (R4, 拆开影子基准)
-        if (blk->layer != doc.activeLayer()) continue;
+        if (!isInteractiveBlock(*blk, doc)) continue;
         SceneBlockHit h;
         h.blockId = bi->blockId();
         h.segmentId = bi->hitSegmentAtScene(scenePt);

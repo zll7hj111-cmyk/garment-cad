@@ -154,6 +154,7 @@ private:
     void applyModeValue(double value);
     void restoreBase();
     [[nodiscard]] double currentAngleDeg() const;
+    [[nodiscard]] double baseAngleDeg() const;
     [[nodiscard]] double currentModeValue() const;
     [[nodiscard]] double segmentRadius() const;
     [[nodiscard]] bool isAngleLocked() const;

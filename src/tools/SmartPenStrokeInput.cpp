@@ -7,6 +7,7 @@
 #include "parametric/ParamDocument.h"
 
 #include <cmath>
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -40,7 +41,7 @@ void SmartPenStrokeInput::capture(const LinePreInput& preInput)
 
     const QString angText = preInput.angleDeg.trimmed();
     if (!angText.isEmpty()) {
-        const auto parsed = cad::geo::parseNumberOrFormula(angText);
+        const auto parsed = cad::geo::parseAngleText(angText);
         if (parsed.isNumber) {
             m_hasAngle = true;
             m_displayAngleDeg = parsed.value;
@@ -68,7 +69,7 @@ cad::geo::Vec2 SmartPenStrokeInput::applyToCursor(
 
     if (m_hasAngle) {
         // 角度已定: 光标沿固定方向射线投影, 第二击只决定长度。
-        const double rad = worldAngleDeg() * M_PI / 180.0;
+        const double rad = cad::geo::degToRad(worldAngleDeg());
         const cad::geo::Vec2 dir(std::cos(rad), std::sin(rad));
         double t = (cursor - startPoint).dot(dir);
         if (t < 0.0) t = 0.0;
@@ -79,7 +80,7 @@ cad::geo::Vec2 SmartPenStrokeInput::applyToCursor(
     // 长度已定: 沿用 (可 Shift 吸附的) 光标方向, 距离固定。
     const cad::geo::Vec2 delta = angleSnapped - startPoint;
     const double dist = delta.length();
-    if (dist > 1e-12)
+    if (dist > cad::geo::kGeomEpsTight)
         return startPoint + delta * (m_lengthMm / dist);
     return angleSnapped;
 }
@@ -87,7 +88,7 @@ cad::geo::Vec2 SmartPenStrokeInput::applyToCursor(
 cad::geo::Vec2 SmartPenStrokeInput::fixedEnd(const cad::geo::Vec2& startPoint) const
 {
     // 长度+角度皆确定: 唯一端点 (m_displayAngleDeg 已是输入域角)。
-    const double rad = m_displayAngleDeg * M_PI / 180.0;
+    const double rad = cad::geo::degToRad(m_displayAngleDeg);
     return startPoint
         + cad::geo::Vec2(std::cos(rad), std::sin(rad)) * m_lengthMm;
 }

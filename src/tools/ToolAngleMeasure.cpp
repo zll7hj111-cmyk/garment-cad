@@ -18,6 +18,7 @@
 #include "geometry/Units.h"
 #include "canvas/HudItem.h"
 #include "document/commands/VariableCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -72,7 +73,7 @@ void ToolAngleMeasure::mousePress(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     auto snap = m_snapEngine.findSegmentSnap(clickPos, m_paramDoc, zoom);
     if (!snap) return;
@@ -102,7 +103,7 @@ void ToolAngleMeasure::mouseMove(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     updateHover(cursorPos, zoom);
     if (m_state == State::SelectB)
@@ -152,7 +153,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
     // Highlight the committed reference line A (amber).
     if (!m_highlightA) {
         m_highlightA = new QGraphicsLineItem();
-        QPen pen(QColor(0xFF, 0x98, 0x00), 2.4);  // amber
+        QPen pen(m_scene->style()->measureColor, 2.4);  // amber
         pen.setCosmetic(true);
         m_highlightA->setPen(pen);
         m_highlightA->setZValue(101.0);
@@ -196,7 +197,7 @@ void ToolAngleMeasure::updatePreview(const cad::geo::Vec2& cursorPos)
     if (hasB) {
         const auto res = calculateRayAngle(*m_snapA, *m_hoverSnap);
         if (res.valid) {
-            m_hud->setText(QStringLiteral("%1\u00B0").arg(res.angleDeg, 0, 'f', 1));
+            m_hud->setText(cad::geo::Units::formatDegTrimmed(res.angleDeg));
             QGraphicsView* view = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
             m_hud->moveToPoint(cursorPos, view, HudItem::kCursorOffset);
             m_hud->setVisible(true);
@@ -248,7 +249,7 @@ ToolAngleMeasure::RayAngleResult ToolAngleMeasure::calculateRayAngle(
     const cad::geo::Vec2 db = b1 - b0;
     const double lenSqA = da.lengthSquared();
     const double lenSqB = db.lengthSquared();
-    if (lenSqA < 1e-12 || lenSqB < 1e-12)
+    if (lenSqA < cad::geo::kGeomEpsTight || lenSqB < cad::geo::kGeomEpsTight)
         return res;
 
     // Line intersection: cross product of direction vectors
@@ -256,7 +257,7 @@ ToolAngleMeasure::RayAngleResult ToolAngleMeasure::calculateRayAngle(
     bool flipA = false;
     bool flipB = false;
 
-    if (std::abs(denom) > 1e-9) {
+    if (std::abs(denom) > cad::geo::kGeomEps) {
         // Intersecting lines: find intersection pivot V
         // V = a0 + t * da
         const double t = ((b0.x - a0.x) * db.y - (b0.y - a0.y) * db.x) / denom;
@@ -264,20 +265,20 @@ ToolAngleMeasure::RayAngleResult ToolAngleMeasure::calculateRayAngle(
 
         // Vector from pivot towards pick point A
         cad::geo::Vec2 va = a.worldPos - pivot;
-        if (va.lengthSquared() < 1e-8) {
+        if (va.lengthSquared() < cad::geo::kGeomEpsSq) {
             // Picked exactly at pivot, fall back to segment midpoint
             va = (a0 + a1) * 0.5 - pivot;
         }
-        if (va.lengthSquared() >= 1e-8) {
+        if (va.lengthSquared() >= cad::geo::kGeomEpsSq) {
             flipA = (va.x * da.x + va.y * da.y < 0.0);
         }
 
         // Vector from pivot towards pick point B
         cad::geo::Vec2 vb = b.worldPos - pivot;
-        if (vb.lengthSquared() < 1e-8) {
+        if (vb.lengthSquared() < cad::geo::kGeomEpsSq) {
             vb = (b0 + b1) * 0.5 - pivot;
         }
-        if (vb.lengthSquared() >= 1e-8) {
+        if (vb.lengthSquared() >= cad::geo::kGeomEpsSq) {
             flipB = (vb.x * db.x + vb.y * db.y < 0.0);
         }
     } else {
@@ -287,8 +288,8 @@ ToolAngleMeasure::RayAngleResult ToolAngleMeasure::calculateRayAngle(
         flipB = false;
     }
 
-    const double dirA = std::atan2(da.y, da.x) + (flipA ? M_PI : 0.0);
-    const double dirB = std::atan2(db.y, db.x) + (flipB ? M_PI : 0.0);
+    const double dirA = std::atan2(da.y, da.x) + (flipA ? cad::geo::kPi : 0.0);
+    const double dirB = std::atan2(db.y, db.x) + (flipB ? cad::geo::kPi : 0.0);
     const double angleDeg = cad::geo::normalizeDeg180(cad::geo::radToDeg(dirB - dirA));
 
     res.valid = true;

@@ -11,6 +11,7 @@
 #include "tools/ToolRotate.h"
 #include "canvas/CanvasScene.h"
 #include "document/commands/BlockCommands.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -153,14 +154,14 @@ void RotateCopyGesture::convert(const Vec2& pos)
     // 姿态，须用 m_baseTf + 首段局部方向计算（与 begin() 的
     // originalWorldRotDeg() 等价）。挂接点出口方向取 base 姿态旋转角
     // （exitDirectionAtPoint 返回局部方向，与姿态无关）。
-    double baseOrigRotDeg = o.m_session.base().baseTf.rotation * 180.0 / M_PI;
+    double baseOrigRotDeg = cad::geo::radToDeg(o.m_session.base().baseTf.rotation);
     if (!blk->segments.empty()) {
         const auto& seg0 = blk->segments.front();
         const auto* sp = blk->findPoint(seg0.startPointId);
         const auto* ep = blk->findPoint(seg0.endPointId);
         if (sp && ep && sp->resolved && ep->resolved) {
             const cad::geo::Vec2 d = ep->resolvedPos - sp->resolvedPos;  // 局部方向
-            baseOrigRotDeg += std::atan2(d.y, d.x) * 180.0 / M_PI;
+            baseOrigRotDeg += cad::geo::radToDeg(std::atan2(d.y, d.x));
         }
     }
     double baseBenchmarkRad = o.m_session.base().baseTf.rotation;
@@ -169,7 +170,7 @@ void RotateCopyGesture::convert(const Vec2& pos)
         const auto* ep = blk->findPoint(seg->endPointId);
         if (sp && ep && sp->resolved && ep->resolved) {
             const cad::geo::Vec2 d = ep->resolvedPos - sp->resolvedPos;
-            if (d.lengthSquared() > 1e-12)
+            if (d.lengthSquared() > cad::geo::kGeomEpsTight)
                 baseBenchmarkRad += std::atan2(d.y, d.x);
         }
     }
@@ -287,12 +288,12 @@ double RotateCopyGesture::relToWorldRad(double relDeg) const
     // 复制 HUD 画外弧/整圈）。followerAngle = 180 − (baseOffset + rel)，
     // 世界角 = attachExit + π − followerAngle = attachExit + baseOffset +
     // rel = 原线朝向 + rel，恒等。
-    return m_attachExitRad + (m_baseOffsetDeg + relDeg) * M_PI / 180.0;
+    return m_attachExitRad + cad::geo::degToRad(m_baseOffsetDeg + relDeg);
 }
 
 double RotateCopyGesture::worldRadToRel(double worldRad) const
 {
-    return (worldRad - m_attachExitRad) * 180.0 / M_PI - m_baseOffsetDeg;
+    return cad::geo::radToDeg(worldRad - m_attachExitRad) - m_baseOffsetDeg;
 }
 
 double RotateCopyGesture::currentWorldRad() const

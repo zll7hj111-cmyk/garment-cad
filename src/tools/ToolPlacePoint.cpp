@@ -8,6 +8,7 @@
 #include <QBrush>
 #include <QUndoStack>
 #include <cmath>
+#include "geometry/Angle.h"
 
 #include "canvas/CanvasScene.h"
 #include "geometry/Units.h"
@@ -16,6 +17,7 @@
 #include "parametric/Serial.h"
 #include "document/commands/EndpointCommands.h"
 #include "ui/Theme.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -91,7 +93,7 @@ void ToolPlacePoint::mousePress(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     if (m_state == State::PickRef) {
         handlePickRefPress(clickPos, zoom);
@@ -110,7 +112,7 @@ void ToolPlacePoint::mouseMove(QGraphicsSceneMouseEvent* event)
     const bool shiftPressed = (event->modifiers() & Qt::ShiftModifier) != 0;
 
     if (m_state == State::PickRef) {
-        double zoom = m_scene->currentZoom();
+        double zoom = m_scene->safeZoom();
         auto snap = m_snap.findSnap(cursorWorld, m_paramDoc, zoom, -1.0, {}, nullptr, true);
         if (snap) {
             reportHintOverride(QString::fromUtf8("放置点: 点击选择基准点 %1").arg(snap->pointName));
@@ -159,7 +161,7 @@ void ToolPlacePoint::keyPress(QKeyEvent* event)
 void ToolPlacePoint::placePointDistInput(double distCm, bool locked)
 {
     m_distLocked = locked;
-    m_lockedDist = distCm * 10.0;
+    m_lockedDist = cad::geo::Units::cmToMm(distCm);
     if (m_state == State::SetOffset) {
         updatePreview(m_lastRawCursor, false);
     }
@@ -209,7 +211,7 @@ void ToolPlacePoint::handlePickRefPress(const cad::geo::Vec2& clickPos, double z
                     const cad::geo::Vec2 spWorld = blk->transform.toWorld(sp->resolvedPos);
                     const cad::geo::Vec2 epWorld = blk->transform.toWorld(ep->resolvedPos);
                     cad::geo::Vec2 v = epWorld - spWorld;
-                    if (v.length() > 1e-9) {
+                    if (v.length() > cad::geo::kGeomEps) {
                         m_baseDir = v.normalized();
                     }
                 }
@@ -249,7 +251,7 @@ void ToolPlacePoint::handlePickRefPress(const cad::geo::Vec2& clickPos, double z
                 const cad::geo::Vec2 spWorld = blk->transform.toWorld(sp->resolvedPos);
                 const cad::geo::Vec2 epWorld = blk->transform.toWorld(ep->resolvedPos);
                 cad::geo::Vec2 v = epWorld - spWorld;
-                if (v.length() > 1e-9) {
+                if (v.length() > cad::geo::kGeomEps) {
                     m_baseDir = v.normalized();
                 }
                 m_refPointId = sp->id;
@@ -272,7 +274,7 @@ void ToolPlacePoint::updatePreview(const cad::geo::Vec2& cursorWorld, bool shift
     double dist = v.length();
     const double cursorAngleRad = std::atan2(v.y, v.x);
     const double baseAngleRad = std::atan2(m_baseDir.y, m_baseDir.x);
-    double diffDeg = (cursorAngleRad - baseAngleRad) * 180.0 / M_PI;
+    double diffDeg = cad::geo::radToDeg(cursorAngleRad - baseAngleRad);
 
     while (diffDeg > 180.0) diffDeg -= 360.0;
     while (diffDeg <= -180.0) diffDeg += 360.0;
@@ -286,7 +288,7 @@ void ToolPlacePoint::updatePreview(const cad::geo::Vec2& cursorWorld, bool shift
     if (m_distLocked) {
         dist = m_lockedDist;
     } else if (m_angleLocked) {
-        const double rayRad = baseAngleRad + diffDeg * M_PI / 180.0;
+        const double rayRad = baseAngleRad + cad::geo::degToRad(diffDeg);
         const cad::geo::Vec2 rayDir(std::cos(rayRad), std::sin(rayRad));
         dist = std::max(0.0, v.dot(rayDir));
     }
@@ -295,10 +297,10 @@ void ToolPlacePoint::updatePreview(const cad::geo::Vec2& cursorWorld, bool shift
     m_currentDist = dist;
 
     // Report real-time values to context strip
-    reportPlacePointSessionUpdate(m_currentDist / 10.0, m_currentAngle, m_distLocked, m_angleLocked);
+    reportPlacePointSessionUpdate(cad::geo::Units::mmToCm(m_currentDist), m_currentAngle, m_distLocked, m_angleLocked);
 
     // Compute preview point and corner point for orthogonal elbow line
-    const double rad = diffDeg * M_PI / 180.0;
+    const double rad = cad::geo::degToRad(diffDeg);
     const cad::geo::Vec2 u = m_baseDir.normalized();
     const cad::geo::Vec2 n(-u.y, u.x);
     const double dParallel = dist * std::cos(rad);
@@ -365,8 +367,8 @@ void ToolPlacePoint::updatePreview(const cad::geo::Vec2& cursorWorld, bool shift
     else if (m_angleLocked) lockInfo = QString::fromUtf8(" [角度已锁]");
 
     reportHintOverride(QString::fromUtf8("放置点: 偏置距离 %1 cm | 偏置角度 %2°%3 (Tab切换输入框，点击或Enter确认，Esc取消)")
-                           .arg(dist / 10.0, 0, 'f', 1)
-                           .arg(diffDeg, 0, 'f', 1)
+                           .arg(cad::geo::Units::formatCm(dist))
+                           .arg(cad::geo::Units::formatDegValue(diffDeg))
                            .arg(lockInfo));
 }
 

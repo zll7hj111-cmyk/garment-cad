@@ -26,6 +26,7 @@
 #include "document/commands/BlockCommands.h"
 #include "document/commands/ComponentCommands.h"
 #include "ui/Theme.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -60,15 +61,15 @@ void ConnectGesture::commitConnectMove()
         }
     }
     const bool offsetsChanged = slideAlive &&
-        (std::abs(curSlideAlong - m_connectOldSlideAlong) > 1e-9 ||
-         std::abs(curSlidePerp - m_connectOldSlidePerp) > 1e-9);
+        (std::abs(curSlideAlong - m_connectOldSlideAlong) > cad::geo::kGeomEps ||
+         std::abs(curSlidePerp - m_connectOldSlidePerp) > cad::geo::kGeomEps);
 
     // Restore the pre-drag state, then replay through the undo stack so the
     // whole gesture (move / slide) is one undo step.
     blk->transform.origin   = m_connectOrigOrigin;
     blk->transform.rotation = m_connectOrigRotation;
 
-    if (m_undoStack && (offsetsChanged || delta.lengthSquared() > 1e-10)) {
+    if (m_undoStack && (offsetsChanged || delta.lengthSquared() > cad::geo::kGeomEpsUltra)) {
         m_undoStack->beginMacro(m_connectSlideAttId.isNull()
             ? QStringLiteral("\xe7\xa7\xbb\xe5\x8a\xa8")  // 移动
             : QStringLiteral("\xe6\xbb\x91\xe5\x8a\xa8\xe5\xb9\xb6\xe7\xa7\xbb\xe5\x8a\xa8"));  // 滑动并移动
@@ -77,7 +78,7 @@ void ConnectGesture::commitConnectMove()
                 m_paramDoc, m_connectSlideAttId,
                 m_connectOldSlideAlong, m_connectOldSlidePerp,
                 curSlideAlong, curSlidePerp));
-        if (delta.lengthSquared() > 1e-10) {
+        if (delta.lengthSquared() > cad::geo::kGeomEpsUltra) {
             QList<QUuid> moveBlocks{m_connectFromBlock};
             m_undoStack->push(new cad::cmd::MoveBlockCommand(
                 m_paramDoc, moveBlocks, delta));
@@ -145,14 +146,14 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
         m_angleMode = cad::param::RotationMode::Angle;
         m_angleValid = true;
     } else {
-        const auto parsed = cad::geo::parseNumberOrFormula(t);
+        const auto parsed = cad::geo::parseAngleText(t);
         if (parsed.isNumber) {
             const double numVal = parsed.value;
             if (m_angleMode == cad::param::RotationMode::ArcLength) {
                 // 输入 = 带符号折角弧长（v3 定稿）→ 存储 α ∈ [0, 360°) 弧长。
                 const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
                 const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
-                const double foldDeg = (radius > 1e-9)
+                const double foldDeg = (radius > cad::geo::kGeomEps)
                     ? cad::geo::arcMmToDeg(cad::geo::Units::cmToMm(numVal), radius) : 0.0;
                 const double alphaDeg = cad::geo::normalizeDeg360(foldDeg);
                 att->rotationMode = cad::param::RotationMode::ArcLength;
@@ -163,7 +164,7 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
                 const cad::param::Block* blk = m_paramDoc->findBlock(att->fromBlockId);
                 const double radius = blk ? blk->segmentLengthAtPoint(att->fromPointId) : 0.0;
                 double chordMm = cad::geo::Units::cmToMm(numVal);
-                if (radius > 1e-9) {
+                if (radius > cad::geo::kGeomEps) {
                     chordMm = std::clamp(chordMm, -2.0 * radius, 2.0 * radius);
                 }
                 att->rotationMode = cad::param::RotationMode::ChordLength;
@@ -172,7 +173,7 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
             } else {
                 // 输入 = 带符号折角 → 存储 α（v3 定稿）。
                 att->rotationMode = cad::param::RotationMode::Angle;
-                att->followerAngle = cad::geo::normalizeDeg360(numVal);
+                att->followerAngle = cad::param::followerAngleToStorage(numVal);
                 att->followerAngleFormula.clear();
             }
             m_angleValid = true;
@@ -190,7 +191,7 @@ void ConnectGesture::onAngleTextChanged(const QString& text)
                     att->chordLengthFormula = parsed.formula;
                 } else {
                     att->rotationMode = cad::param::RotationMode::Angle;
-                    att->followerAngle = r.value;
+                    att->followerAngle = cad::param::followerAngleToStorage(r.value);
                     att->followerAngleFormula = parsed.formula;
                 }
                 m_angleValid = true;

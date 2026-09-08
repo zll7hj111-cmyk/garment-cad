@@ -16,6 +16,7 @@
 #include "geometry/Units.h"
 #include "geometry/Angle.h"
 #include "tools/HitTester.h"
+#include "tools/InteractionTolerances.h"  // kDragThresholdPx
 #include "tools/MarqueeGesture.h"
 #include "tools/RotateCopyGesture.h"
 #include "tools/RotateGizmo.h"
@@ -23,10 +24,7 @@
 #include "tools/RotateHintTexts.h"
 #include "parametric/ParamDocumentRaw.h"
 #include "parametric/FollowerAngle.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -258,7 +256,7 @@ void ToolRotate::mouseMove(QGraphicsSceneMouseEvent* event)
     if (m_state != RotateState::Rotating || m_input.pressPending()) {
         if (m_input.pressPending()) {
             const double zoom = currentZoom();
-            if ((pos - m_input.pressPos()).length() > 5.0 / zoom) {
+            if ((pos - m_input.pressPos()).length() > kDragThresholdPx / zoom) {
                 m_input.setPressPending(false);
                 m_input.setPivotPicked(true);
                 const bool hasSingleDefaultAnchor = !isMultiSelect() && !m_multi.isMarqueeSelected() && !m_session.blockId().isNull();
@@ -312,7 +310,7 @@ void ToolRotate::handleMarqueeRelease(const cad::geo::Vec2& pos, QGraphicsSceneM
     const double dist = (pos - m_marqueeGesture->startPos()).length();
     QSet<QUuid> hits = m_marqueeGesture->end(pos);
 
-    if (dist < 3.0 / zoom) {
+    if (dist < kDragThresholdPx / zoom) {  // 同一「点击 vs 拖动」量纲，统一 5px
         if (!(event->modifiers() & Qt::ShiftModifier)) {
             clearTarget();
         }
@@ -320,7 +318,8 @@ void ToolRotate::handleMarqueeRelease(const cad::geo::Vec2& pos, QGraphicsSceneM
     }
     for (auto it = hits.begin(); it != hits.end(); ) {
         const auto* blk = m_paramDoc ? m_paramDoc->findBlock(*it) : nullptr;
-        if (!blk || blk->isBridge || blk->segments.empty()) {
+        if (!blk || blk->isBridge || blk->segments.empty()
+            || !isInteractiveBlock(*blk, *m_paramDoc)) {
             it = hits.erase(it);
         } else {
             ++it;
@@ -716,6 +715,14 @@ double ToolRotate::currentAngleDeg() const {
         return m_multi.accumulatedAngleDeg();
     return m_session.currentAngleDeg(m_paramDoc, m_copyGesture.get());
 }
+double ToolRotate::baseAngleDeg() const {
+    if (m_session.blockId().isNull() || !m_paramDoc) return 0.0;
+    if (m_session.isConnected())
+        return cad::geo::normalizeDeg180(cad::geo::radToDeg(m_session.refWorldRad()));
+    double orig = originalWorldRotDeg();
+    if (m_session.anchor().isEnd) orig += 180.0;
+    return cad::geo::normalizeDeg180(orig);
+}
 bool ToolRotate::isAngleLocked() const { return m_session.isAngleLocked(m_copyGesture.get()); }
 
 void ToolRotate::reportStripTarget() {
@@ -739,7 +746,7 @@ void ToolRotate::reportRotateAnchorState() {
             }
         }
     }
-    m_host->setRotateAnchorState(active, m_session.anchor().isEnd, canToggle, reason);
+    m_host->setRotateAnchorState(active, m_session.anchor().isEnd, canToggle, reason, active ? baseAngleDeg() : 0.0);
 }
 void ToolRotate::onReverseRequested(const QUuid&, const QUuid&) { toggleAnchor(); }
 
@@ -755,12 +762,14 @@ void ToolRotate::updateStatusHint() {
         .anchorTag = m_session.anchorTag(m_paramDoc),
         .pivotPicked = m_input.pivotPicked(),
         .isAngleLocked = isAngleLocked(),
+        .baseAngleDeg = baseAngleDeg(),
+        .currentAngleDeg = currentAngleDeg(),
     };
     reportHintOverride(buildStatusHint(snap));
 }
 
 double ToolRotate::currentZoom() const {
-    return (m_scene && m_scene->currentZoom() > 1e-9) ? m_scene->currentZoom() : 1.0;
+    return m_scene ? m_scene->safeZoom() : 1.0;
 }
 
 cad::geo::Vec2 ToolRotate::endpointAtAngle(double angleDeg) const {

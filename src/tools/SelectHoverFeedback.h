@@ -14,7 +14,7 @@ namespace cad::tools {
 ///     beginDrag (锚点 = press 位置); release 未触发 = 单击语义。已选块 / 未
 ///     选块两套阈值 (M6): press 已选中的块意图就是拖、误拖代价高 → 阈值
 ///     放宽到 10px。
-///   · 无按钮悬停光标形状: 已选块端点 (kConnectGrabRadius 内) = 十字 (可连接),
+///   · 无按钮悬停光标形状: 已选块端点 (kConnectGrabRadiusPx 内) = 十字 (可连接),
 ///     线身 = 抓手 (可拖动), Ctrl 悬停 = 快捷复制提示, 空白 = 箭头。
 /// 本控制器只做判定, 不碰选择集 / HUD / reportHoverTarget / 重叠提示 ——
 /// 光标 viewport 与状态栏回调仍由 ToolSelect 主循环持有。
@@ -23,11 +23,7 @@ class SelectHoverFeedback
 public:
     SelectHoverFeedback() = default;
 
-    // ── 长按拖动判定 (M6 分档阈值) ──
-    /// press 未选中的块。
-    static constexpr double kDragThresholdPx = 5.0;
-    /// press 已选中的块 (误拖代价更高)。
-    static constexpr double kDragThresholdSelectedPx = 10.0;
+    // ── 长按拖动判定 (M6 分档阈值，常量见 tools/InteractionTolerances.h) ──
 
     void beginPending(const cad::geo::Vec2& pos, const QUuid& blockId,
                       bool wasSelected);

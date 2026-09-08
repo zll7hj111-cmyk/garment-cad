@@ -26,7 +26,7 @@ public:
     CurveAnchorDragSession(cad::param::ParamDocument* doc, QUndoStack* undo)
         : m_paramDoc(doc), m_undoStack(undo) {}
 
-    /// 当前选择的曲线块里、距 worldPos < 10px 的最近可拖 pass point。
+    /// 当前选择的曲线块里、距 worldPos < CanvasStyle::hoverRadiusPx() 的最近可拖 pass point。
     /// 返回 {blockId, pointId}; 选择为空 / 无非 CurveAnchor 候选 = nullopt。
     /// CurveAnchor 由 SmartPen 参数化驱动, 此处不响应其拖拽 (会转成 Free
     /// 破坏弦链接)。

@@ -7,9 +7,12 @@
 #include "parametric/DomainViews.h"
 #include "geometry/Vec2.h"
 #include "geometry/Units.h"
+#include "tools/HitTester.h"             // isInteractiveBlock (2026-12 审计 P0-5)
+#include "tools/InteractionTolerances.h"  // kOverlapEpsMm (2026-12 审计 P1-3)
 
 #include <QGraphicsView>
 #include <algorithm>
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -52,10 +55,9 @@ OverlapDisambiguationController::collectPoints(const cad::geo::Vec2& worldPos, d
 {
     QList<Candidate> out;
     if (!m_scene || !m_paramDoc) return out;
-    if (zoom < 1e-9) zoom = 1.0;
+    if (zoom < cad::geo::kGeomEps) zoom = 1.0;
 
-    const double reach = 10.0 / zoom;  // 10px 抓取半径转用户单位
-    const QUuid activeLayer = m_paramDoc->activeLayer();
+    const double reach = kConnectGrabRadiusPx / zoom;  // 端点抓取半径 → 用户单位
 
     struct PtEntry {
         const cad::param::Block* block = nullptr;
@@ -65,8 +67,7 @@ OverlapDisambiguationController::collectPoints(const cad::geo::Vec2& worldPos, d
     std::vector<PtEntry> nearby;
 
     for (const auto& blk : m_paramDoc->blocks()) {
-        if (!activeLayer.isNull() && blk.layer != activeLayer)
-            continue;
+        if (!isInteractiveBlock(blk, *m_paramDoc)) continue;  // 2026-12 审计 P0-5
         for (const auto& pt : blk.points) {
             if (!pt.resolved) continue;
             const cad::geo::Vec2 wp = blk.worldPos(pt.id);
@@ -84,10 +85,9 @@ OverlapDisambiguationController::collectPoints(const cad::geo::Vec2& worldPos, d
     });
 
     const cad::geo::Vec2 refPos = nearby.front().wpos;
-    constexpr double kOverlapEps = 0.5; // mm 容差内视为同一重叠点
 
     for (const auto& entry : nearby) {
-        if (entry.wpos.distanceTo(refPos) <= kOverlapEps) {
+        if (entry.wpos.distanceTo(refPos) <= kOverlapEpsMm) {
             out.append(makePointCandidate(*entry.block, entry.pt));
         }
     }
@@ -125,7 +125,7 @@ OverlapDisambiguationController::makeCandidate(const cad::param::Block& blk,
     if (seg) {
         if (const auto* ep = blk.findPoint(seg->endPointId)) {
             isOrtho = (ep->constraint == cad::param::PointConstraint::OrthoOffset &&
-                       (std::abs(ep->orthoOffsetDist) > 1e-6 || !ep->orthoOffsetDistFormula.isEmpty()));
+                       (std::abs(ep->orthoOffsetDist) > cad::geo::kGeomEpsLoose || !ep->orthoOffsetDistFormula.isEmpty()));
         }
     }
     c.roleText = (isOrtho ? QString::fromUtf8("偏置") : QString())

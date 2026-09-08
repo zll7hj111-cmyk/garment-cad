@@ -26,6 +26,8 @@ struct RotateHintSnapshot {
     QString anchorTag;
     bool pivotPicked = false;
     bool isAngleLocked = false;
+    double baseAngleDeg = 0.0;
+    double currentAngleDeg = 0.0;
 };
 
 /// 约束模式标签

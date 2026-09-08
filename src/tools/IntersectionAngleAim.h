@@ -4,7 +4,6 @@
 #include "geometry/Angle.h"
 #include <optional>
 #include <cmath>
-#include <numbers>
 
 namespace cad::tools {
 
@@ -25,12 +24,12 @@ inline AimAngleResult computeAimAngles(
     double worldDeg = 0.0;
     if (aimPos) {
         cad::geo::Vec2 toAim = *aimPos - originPos;
-        worldDeg = std::atan2(toAim.y, toAim.x) * 180.0 / std::numbers::pi;
+        worldDeg = cad::geo::radToDeg(std::atan2(toAim.y, toAim.x));
     } else {
         cad::geo::Vec2 toCursor = cursorPos - originPos;
-        worldDeg = std::atan2(toCursor.y, toCursor.x) * 180.0 / std::numbers::pi;
+        worldDeg = cad::geo::radToDeg(std::atan2(toCursor.y, toCursor.x));
     }
-    double segAngleDeg = segAngleRad * 180.0 / std::numbers::pi;
+    double segAngleDeg = cad::geo::radToDeg(segAngleRad);
 
     // Display angle depends on the aiming mode; Shift snaps in that mode
     // (never while borrowing a point — the direction must stay exact).

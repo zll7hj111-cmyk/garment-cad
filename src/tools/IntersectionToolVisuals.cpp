@@ -212,7 +212,7 @@ void IntersectionToolVisuals::updateAimHud(HudItem* hud,
     if (hasAimPos) {
         text = QString::fromUtf8("指向点 %1 = %2°")
             .arg(aimLabel.isEmpty() ? QString::fromUtf8("(点)") : aimLabel,
-                 QString::number(displayDeg, 'f', 1));
+                 cad::geo::Units::formatDegValue(displayDeg));
         if (isBorrowAim)
             text += QString::fromUtf8(" | ⚠ 无交点，射线未穿过线段");
         else
@@ -222,10 +222,10 @@ void IntersectionToolVisuals::updateAimHud(HudItem* hud,
             ? QString::fromUtf8("绝对角度")
             : QString::fromUtf8("跟随角度");
         text = QString::fromUtf8("%1 = %2°")
-            .arg(modeLabel, QString::number(displayDeg, 'f', 1));
+            .arg(modeLabel, cad::geo::Units::formatDegValue(displayDeg));
     }
     if (hasHit) {
-        text += QString::fromUtf8(" | t = %1").arg(QString::number(t, 'f', 3));
+        text += QString::fromUtf8(" | t = %1").arg(cad::geo::Units::formatNumberTrimmed(t, 3));
     } else {
         text += QString::fromUtf8(" | ⚠ 无交点（点击无效）");
     }

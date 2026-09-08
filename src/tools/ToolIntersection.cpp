@@ -4,6 +4,7 @@
 #include <QGraphicsView>
 #include <QKeyEvent>
 #include <cmath>
+#include "geometry/Angle.h"
 
 #include "canvas/CanvasScene.h"
 #include "canvas/CanvasStyle.h"
@@ -13,6 +14,7 @@
 #include "document/commands/BlockCommands.h"
 #include "geometry/RayCast.h"
 #include "tools/IntersectionAngleAim.h"
+#include "geometry/Epsilon.h"
 
 namespace cad::tools {
 
@@ -77,7 +79,7 @@ void ToolIntersection::mousePress(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 clickPos(sp.x(), sp.y());
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
 
     switch (m_state) {
     case State::SelectLine:  handleSelectLinePress(clickPos, zoom);  break;
@@ -93,7 +95,7 @@ void ToolIntersection::mouseMove(QGraphicsSceneMouseEvent* event)
 
     const QPointF sp = event->scenePos();
     const cad::geo::Vec2 cursorPos(sp.x(), sp.y());
-    double zoom = m_scene->currentZoom();
+    double zoom = m_scene->safeZoom();
     m_lastZoom = zoom;
 
     switch (m_state) {
@@ -154,7 +156,7 @@ void ToolIntersection::keyRelease(QKeyEvent* event)
 void ToolIntersection::handleSelectLinePress(const cad::geo::Vec2& pos, double zoom)
 {
     auto segSnap = m_snapEngine.findSegmentSnap(
-        pos, m_paramDoc, zoom, m_snapEngine.snapRadius, nullptr,
+        pos, m_paramDoc, zoom, -1.0, nullptr,
         /*ignoreLayerFilter=*/true);
     if (!segSnap) return;
 
@@ -181,7 +183,7 @@ void ToolIntersection::updateLineHover(const cad::geo::Vec2& pos, double zoom)
 {
     m_hoverSeg.reset();
     auto segSnap = m_snapEngine.findSegmentSnap(
-        pos, m_paramDoc, zoom, m_snapEngine.snapRadius, nullptr,
+        pos, m_paramDoc, zoom, -1.0, nullptr,
         /*ignoreLayerFilter=*/true);
     if (segSnap) {
         m_hoverSeg = segSnap;
@@ -314,7 +316,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
     cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
     cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
     cad::geo::Vec2 segDir = w2 - w1;
-    if (segDir.length() < 1e-9) return;
+    if (segDir.length() < cad::geo::kGeomEps) return;
     double segAngleRad = std::atan2(segDir.y, segDir.x);
     TargetGeometry targetGeom{block, seg, w1, w2, segDir, segAngleRad};
 
@@ -349,7 +351,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
     double t = 0.0;
     auto hit = computeIntersection(m_currentAngleDeg, &t, &targetGeom);
 
-    double theta = segAngleRad + m_currentAngleDeg * M_PI / 180.0;
+    double theta = segAngleRad + cad::geo::degToRad(m_currentAngleDeg);
     m_visuals.showRayAndHit(m_originPos, hit, theta);
 
     if (aimPos) {
@@ -399,13 +401,13 @@ std::optional<cad::geo::Vec2> ToolIntersection::computeIntersection(
         w1 = block->transform.toWorld(sp->resolvedPos);
         cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
         segDir = w2 - w1;
-        if (segDir.length() < 1e-9) return std::nullopt;
+        if (segDir.length() < cad::geo::kGeomEps) return std::nullopt;
 
         baseAngle = std::atan2(segDir.y, segDir.x);
     }
     if (!block || !seg) return std::nullopt;
 
-    double theta = baseAngle + angleDeg * M_PI / 180.0;
+    double theta = baseAngle + cad::geo::degToRad(angleDeg);
     cad::geo::Vec2 d{std::cos(theta), std::sin(theta)};
 
     // --- Curve target: use rayVsCurveSpans ---

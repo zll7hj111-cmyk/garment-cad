@@ -72,6 +72,26 @@ struct GizmoPose {
     QString badgeText;
 };
 
+/// 旋转 HUD 徽标显示的物理量 (2026-12 审计 P0-4 / UI-P0-1 收口)。
+///
+/// 旋转手势里的「角度」是**三个不同的物理量**, 每个量只有一个显示域; 此前
+/// computeGizmoPose 按连接状态各自选域, 同一姿态连接段显示 −90.0°、自由段
+/// 显示 270.0° (审计 P0-4/UI-P0-1)。域由物理量决定, 且与该段的卡片读数同数:
+///   · Delta —— 旋转量 (多选/框选累积角, 或旋转复制的相对角): 不是姿态角,
+///              不折叠, 带符号以区分顺/逆时针
+///   · Fold  —— 连接段姿态 = 跟随折角: (−180,180], 与角度卡「跟随角」
+///              / FollowerAngle.h 契约一致 (0 = 折叠、±180 = 直行)
+///   · World —— 自由段姿态 = 世界方向: 0..360 (normalizeDeg360, 行业默认),
+///              与角度卡「= 世界角度 N°」同数
+enum class RotateBadgeQuantity {
+    Delta,
+    Fold,
+    World
+};
+
+/// 旋转 HUD 徽标文本的唯一入口 (返回空串 = 不显示)。
+[[nodiscard]] QString formatRotationBadge(double deg, RotateBadgeQuantity quantity);
+
 /// 计算 Gizmo 角度与位姿
 GizmoPose computeGizmoPose(const GizmoPoseInput& in);
 

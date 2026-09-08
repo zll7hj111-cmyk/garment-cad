@@ -55,7 +55,7 @@ void ToolSelect::notifyEditTarget()
 
 bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
 {
-    double zoom = m_scene ? m_scene->currentZoom() : 1.0;
+    double zoom = m_scene->safeZoom();
 
     // Curve anchor first: press near a pass point of any SELECTED curve.
     if (!m_selection.isEmpty() && m_anchorDrag) {
@@ -121,7 +121,7 @@ bool ToolSelect::tryPointOperation(const cad::geo::Vec2& pos)
         const cad::geo::Vec2 refPos = validCands.front().worldPos;
         std::vector<SnapResult> overlap;
         for (const auto& c : validCands)
-            if (c.worldPos.distanceTo(refPos) < kSnapOverlapEps)
+            if (c.worldPos.distanceTo(refPos) < kOverlapEpsMm)
                 overlap.push_back(c);
 
         if (overlap.size() > 1) {
