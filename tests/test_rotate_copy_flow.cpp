@@ -1,5 +1,6 @@
 ﻿#include "test_rotate_helpers.h"
 #include "parametric/FollowerAngle.h"
+#include "tools/CircleFactory.h"
 
 class TestRotateCopyFlow : public QObject
 {
@@ -11,6 +12,7 @@ private slots:
     void dragJitterDoesNotReleaseUntilPhysicalRelease();
     void gizmoDisplayConsistencyAcrossModes();
     void gizmoConnectedAnchorPointsAtBody();
+    void gizmoCircleUsesRadiusDirection();
 };
 void TestRotateCopyFlow::rotateCopyAutoPublishesParentParameter()
 {
@@ -368,6 +370,97 @@ void TestRotateCopyFlow::gizmoConnectedAnchorPointsAtBody()
     QVERIFY2(std::abs(dragEnd.currentOff + 30.0) < 1e-3, "拖动中终点锚心: 黄弧活动边应相对静息线体 −30°");
     QVERIFY2(std::abs(dragStart.sweep + 30.0) < 1e-3, "拖动中起点锚心: 黄弧跨度应为 −30°");
     QVERIFY2(std::abs(dragEnd.sweep + 30.0) < 1e-3, "拖动中终点锚心: 黄弧跨度应为 −30°");
+}
+
+// m01404「圆的旋转辅助显示好像没有做单独的适配。比如旋转的黄色虚线、灰色虚线，
+// 黄圈效果」：整圆两端点同为接缝点 ⇒ start→end 弦向恒 (0,0) ⇒ 姿态角恒 0° ⇒
+// 黄虚线压住灰虚线（世界 0°）、黄弧跨度为 0、徽标恒 0°。圆段姿态必须取
+// 「圆心→接缝」半径方向（与圆心虚线标注同源），旋转量才只算一次。
+void TestRotateCopyFlow::gizmoCircleUsesRadiusDirection()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    QUndoStack stack;
+    cad::tools::CircleFactory factory(&doc, &stack);
+    // 接缝（起点）落在 (0, 50) ⇒ 半径方向 = 世界 90°，与弦向退化值 0° 可区分。
+    const QUuid circleId = factory.createCircle({0.0, 0.0}, 50.0, 90.0);
+    QVERIFY(!circleId.isNull());
+    doc.resolveAll();
+
+    CanvasView view(&scene);
+    view.resize(900, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QTest::qWait(80);
+
+    cad::tools::ToolManager tm(&scene);
+    tm.setParamDocument(&doc);
+    tm.setUndoStack(&stack);
+    StripBridge bridge(&doc, tm);
+    tm.switchTool(cad::tools::ToolType::Rotate);
+    view.setInputDispatcher(&tm);
+
+    auto vp = [&](double x, double y) { return view.mapFromScene(QPointF(x, -y)); };
+    auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton btn,
+                         Qt::KeyboardModifiers mods) {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        QMouseEvent ev(type, pos, global, btn,
+                       btn == Qt::LeftButton ? Qt::LeftButton : Qt::NoButton, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    };
+
+    // 弧上 315° 处（避开 interpPercent 0.25/0.5/0.75 的三个粉色锚点）。
+    const QPoint onArc = vp(35.355, -35.355);
+    sendMouse(QEvent::MouseButtonPress, onArc, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseButtonRelease, onArc, Qt::LeftButton, Qt::NoModifier);
+    sendConfirm(view);
+
+    auto* tool = dynamic_cast<cad::tools::ToolRotate*>(tm.activeTool());
+    QVERIFY(tool);
+    const auto* gz = tool->gizmo();
+    QVERIFY(gz);
+
+    // 1. 就绪态：起手姿态 = 圆心→接缝半径方向 = 90°（旧实现恒 0°）
+    QVERIFY(gz->isArcEmpty());
+    QVERIFY2(std::abs(gz->startPoseRad() - cad::geo::kPi / 2.0) < 1e-4,
+             "就绪态黄虚线必须是圆的半径方向 90°，不是退化的 0°");
+    QVERIFY(std::abs(gz->currentPoseRad() - cad::geo::kPi / 2.0) < 1e-4);
+
+    // 2. 拖动 −45°：黄虚线冻结在起手姿态 90°，黄弧活动边 = 当前姿态 45°
+    sendMouse(QEvent::MouseButtonPress, onArc, Qt::LeftButton, Qt::NoModifier);
+    sendMouse(QEvent::MouseMove, vp(-35.355, -35.355), Qt::NoButton, Qt::NoModifier);
+    QVERIFY2(!gz->isArcEmpty(), "圆拖动中黄弧必须非空（旧实现起手 = 当前 = 0°）");
+    QVERIFY2(std::abs(gz->startPoseRad() - cad::geo::kPi / 2.0) < 1e-4,
+             "拖动中黄虚线必须冻结在起手半径方向 90°");
+    QVERIFY2(std::abs(gz->currentPoseRad() - cad::geo::kPi / 4.0) < 0.02,
+             "黄弧活动边 = 当前半径方向 45°（90° − 45°）");
+    // 徽标文本与状态提示同源（updateGizmo → updateStatusHint），此处读状态提示校验
+    // 显示读数：基准 = 圆的半径方向 90°（旧实现为退化的 0°），当前 = 45°。
+    auto hintDeg = [&](const QString& label) {
+        const int i = bridge.hint.indexOf(label);
+        if (i < 0) return -1e9;
+        return bridge.hint.mid(i + label.size()).section(QChar(0x00B0), 0, 0).toDouble();
+    };
+    QVERIFY2(std::abs(hintDeg(QString::fromUtf8("基准: ")) - 90.0) < 0.5,
+             qPrintable(QStringLiteral("状态提示基准角应为半径方向 90°, 实得: %1").arg(bridge.hint)));
+    QVERIFY2(std::abs(hintDeg(QString::fromUtf8("角度: ")) - 45.0) < 1.0,
+             qPrintable(QStringLiteral("状态提示当前角应为 45°, 实得: %1").arg(bridge.hint)));
+
+    sendMouse(QEvent::MouseButtonRelease, vp(-35.355, -35.355), Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(gz->isArcEmpty());
+
+    // 3. 提交后：块旋转 −45°，块内 a₀ 保持 90° ⇒ 世界半径方向 = 45°
+    const Block* blk = doc.findBlock(circleId);
+    QVERIFY(blk);
+    QVERIFY(!blk->segments.empty());
+    const Segment& seg = blk->segments.front();
+    QVERIFY(seg.fitKind == cad::param::FitKind::Circle);
+    QVERIFY2(std::abs(cad::geo::radToDeg(blk->transform.rotation) + 45.0) < 1.0,
+             "圆块旋转量应为 −45°");
+    QVERIFY2(std::abs(blk->circleStartAngleDeg(seg) - 90.0) < 1e-6,
+             "块内 a₀ 不随旋转改变");
 }
 
 QTEST_MAIN(TestRotateCopyFlow)

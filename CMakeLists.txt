@@ -665,6 +665,28 @@ target_include_directories(test_resolver_curve_arc PRIVATE ${GCAD_SRC})
 target_link_libraries(test_resolver_curve_arc PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_resolver_curve_arc COMMAND test_resolver_curve_arc)
 
+# ── Test: 画圆拟合 (M1, docs/design/CIRCLE_TOOL_DESIGN.md) ──
+add_executable(test_circle_fit tests/test_circle_fit.cpp)
+target_include_directories(test_circle_fit PRIVATE ${GCAD_SRC})
+target_link_libraries(test_circle_fit PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_circle_fit COMMAND test_circle_fit)
+
+# ── Test: 圆编辑面板 + 解析绘制 (M2, docs/design/CIRCLE_TOOL_DESIGN.md) ──
+add_executable(test_circle_edit tests/test_circle_edit.cpp)
+target_include_directories(test_circle_edit PRIVATE ${GCAD_SRC})
+target_link_libraries(test_circle_edit PRIVATE
+    gcad_canvas gcad_tools gcad_ui gcad_document gcad_parametric gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_circle_edit COMMAND test_circle_edit)
+
+# ── Test: 解除圆约束 D14 (docs/design/CIRCLE_TOOL_DESIGN.md §17) ──
+add_executable(test_circle_detach tests/test_circle_detach.cpp)
+target_include_directories(test_circle_detach PRIVATE ${GCAD_SRC})
+target_link_libraries(test_circle_detach PRIVATE
+    gcad_document gcad_parametric gcad_tools gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_circle_detach COMMAND test_circle_detach)
+
 add_executable(test_resolver_diag_misc tests/test_resolver_diag_misc.cpp)
 target_include_directories(test_resolver_diag_misc PRIVATE ${GCAD_SRC})
 target_link_libraries(test_resolver_diag_misc PRIVATE gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
@@ -715,6 +737,35 @@ add_executable(test_break_follower tests/test_break_follower.cpp)
 target_include_directories(test_break_follower PRIVATE ${GCAD_SRC})
 target_link_libraries(test_break_follower PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_break_follower COMMAND test_break_follower)
+
+add_executable(test_break_circle tests/test_break_circle.cpp)
+target_include_directories(test_break_circle PRIVATE ${GCAD_SRC})
+target_link_libraries(test_break_circle PRIVATE gcad_document gcad_parametric gcad_tools Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME test_break_circle COMMAND test_break_circle)
+
+# ── Test: 圆段作角度基准 (docs/design/CIRCLE_TOOL_DESIGN.md §20, D9) ──
+add_executable(test_circle_attach tests/test_circle_attach.cpp)
+target_include_directories(test_circle_attach PRIVATE ${GCAD_SRC})
+target_link_libraries(test_circle_attach PRIVATE
+    gcad_canvas gcad_tools gcad_document gcad_parametric gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_circle_attach COMMAND test_circle_attach)
+
+# ── Test: ToolCircle 两种绘制手势 + W 模式切换 (docs/design/CIRCLE_TOOL_DESIGN.md §5, D5) ──
+add_executable(test_circle_tool tests/test_circle_tool.cpp)
+target_include_directories(test_circle_tool PRIVATE ${GCAD_SRC})
+target_link_libraries(test_circle_tool PRIVATE
+    gcad_canvas gcad_tools gcad_document gcad_parametric gcad_geometry
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_circle_tool COMMAND test_circle_tool)
+
+# ── Test: 圆专属底部条带 CircleStripBar (CIRCLE_TOOL_DESIGN.md §6.1, 2026-12) ──
+add_executable(test_circle_strip tests/test_circle_strip.cpp)
+target_include_directories(test_circle_strip PRIVATE ${GCAD_SRC})
+target_link_libraries(test_circle_strip PRIVATE
+    gcad_app gcad_document gcad_parametric gcad_tools
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
+add_test(NAME test_circle_strip COMMAND test_circle_strip)
 
 # ── Test: intersection point + aux ref point ──
 add_executable(test_intersection tests/test_intersection.cpp)
@@ -835,7 +886,7 @@ add_test(NAME test_measure COMMAND test_measure)
 add_executable(test_context_strip tests/test_context_strip.cpp)
 target_include_directories(test_context_strip PRIVATE ${GCAD_SRC})
 target_link_libraries(test_context_strip PRIVATE
-    gcad_app gcad_document gcad_parametric
+    gcad_app gcad_document gcad_parametric gcad_tools
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
 add_test(NAME test_context_strip COMMAND test_context_strip)
 

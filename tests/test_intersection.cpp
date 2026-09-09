@@ -70,6 +70,24 @@ private slots:
     /// curve branch at all, so the hit landed on the chord.
     void curveHostCrossBlock();
 
+    /// §16: fitted-circle host, same block. A full circle's chord is
+    /// degenerate (start == end), which used to bail out before the spans
+    /// branch was ever reached.
+    void circleHostAimSameBlock();
+
+    /// §16: the relative-angle base direction of a circle host is the CCW
+    /// tangent at the segment start (there is no chord direction).
+    void circleHostRelativeAngleUsesStartTangent();
+
+    /// §16: world-angle mode against a circle host is independent of the base.
+    void circleHostWorldAngleSameBlock();
+
+    /// §16: circle host in ANOTHER block (Resolver cross-block pass).
+    void circleHostCrossBlock();
+
+    /// §16: the intersection stays parametric — changing the radius moves it.
+    void circleHostRadiusChangeMovesHit();
+
 private:
     /// Helper: create a block with a horizontal segment from (0,0) to (100,0) mm.
     static Block makeHorizontalSegment()
@@ -134,6 +152,58 @@ private:
         const QUuid ppId = pp.id;
         b.addPoint(std::move(pp));
         seg.passPointIds = {ppId};
+
+        b.addSegment(std::move(seg));
+        return b;
+    }
+
+    /// Helper: fitted circle (CIRCLE_TOOL_DESIGN.md §16) centred at the block
+    /// origin — center Free + start/end Polar (a1 = a0 + 360°) + three quadrant
+    /// CurveAnchors. Mirrors tools/CircleFactory so the engine path exercised
+    /// here is the real one (full circle ⇒ degenerate chord).
+    static Block makeCircle(double radiusMm, double startAngleDeg = 0.0)
+    {
+        Block b;
+        ParamPoint center;
+        center.constraint = PointConstraint::Free;
+        center.freePos = Vec2(0.0, 0.0);
+        const QUuid centerId = center.id;
+        b.addPoint(std::move(center));
+
+        ParamPoint start;
+        start.constraint = PointConstraint::Polar;
+        start.refPointId = centerId;
+        start.distance = radiusMm;
+        start.angle = startAngleDeg;
+        const QUuid startId = start.id;
+        b.addPoint(std::move(start));
+
+        ParamPoint end;
+        end.constraint = PointConstraint::Polar;
+        end.refPointId = centerId;
+        end.distance = radiusMm;
+        end.angle = startAngleDeg + 360.0;
+        end.visible = false;
+        end.selectable = false;
+        const QUuid endId = end.id;
+        b.addPoint(std::move(end));
+
+        Segment seg;
+        seg.type = SegmentType::Bezier;
+        seg.fitKind = FitKind::Circle;
+        seg.role = SegmentRole::Auxiliary;
+        seg.startPointId = startId;
+        seg.endPointId = endId;
+        const QUuid segId = seg.id;
+
+        for (const double pct : {0.25, 0.50, 0.75}) {
+            ParamPoint anchor;
+            anchor.constraint = PointConstraint::CurveAnchor;
+            anchor.hostSegmentId = segId;
+            anchor.interpPercent = pct;
+            seg.passPointIds.push_back(anchor.id);
+            b.addPoint(std::move(anchor));
+        }
 
         b.addSegment(std::move(seg));
         return b;
@@ -722,6 +792,191 @@ void TestIntersection::curveHostCrossBlock()
     QVERIFY(!expected.empty());
     QVERIFY((r->resolvedPos - expected[0].point).length() < 1e-6);
     QVERIFY(std::abs(r->resolvedPos.y) > 5.0);   // chord hit would be y = 0
+}
+
+void TestIntersection::circleHostAimSameBlock()
+{
+    Block b = makeCircle(10.0);
+    const QUuid segId = b.segments[0].id;
+
+    // Origin A left of the circle, aim B right of it: the ray A→B runs along
+    // +X and crosses the circle on its left side first.
+    ParamPoint a;
+    a.constraint = PointConstraint::Free;
+    a.freePos = Vec2(-30.0, 0.0);
+    b.addPoint(a);
+
+    ParamPoint aim;
+    aim.constraint = PointConstraint::Free;
+    aim.freePos = Vec2(30.0, 0.0);
+    b.addPoint(aim);
+
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.refPointA = a.id;
+    ix.hostSegmentId = segId;
+    ix.interAimPointId = aim.id;
+    ix.interBidirectional = false;
+    b.addPoint(ix);
+    const QUuid ixId = ix.id;
+
+    b.resolve();
+
+    const ParamPoint* r = b.findPoint(ixId);
+    QVERIFY2(r && r->resolved,
+             "full-circle host must resolve (degenerate chord must not bail)");
+    QVERIFY(std::abs(r->resolvedPos.x + 10.0) < 0.02);
+    QVERIFY(std::abs(r->resolvedPos.y) < 0.02);
+
+    // Honest cross-check: the shared span helper must produce the same hit —
+    // the FIRST crossing along the ray. The circle is crossed twice (span 2 at
+    // (-10,0), span 0 at (10,0)) and rayCurveIntersect returns span order, so
+    // pick the smallest x (the ray runs along +X) instead of hits[0].
+    const auto spans = b.spansForSegment(b.segments[0], true, true);
+    QVERIFY(!spans.empty());
+    const auto all = cad::geo::rayCurveIntersect(
+        Vec2(-30.0, 0.0), Vec2(1.0, 0.0), spans, false);
+    QVERIFY(!all.empty());
+    const auto nearest = std::min_element(
+        all.begin(), all.end(),
+        [](const cad::geo::CurveHit& l, const cad::geo::CurveHit& r) {
+            return l.point.x < r.point.x;
+        });
+    QVERIFY((r->resolvedPos - nearest->point).length() < 1e-9);
+}
+
+void TestIntersection::circleHostRelativeAngleUsesStartTangent()
+{
+    Block b = makeCircle(10.0);   // start (10,0) ⇒ CCW tangent at start = +Y (90°)
+    const QUuid segId = b.segments[0].id;
+
+    ParamPoint a;
+    a.constraint = PointConstraint::Free;
+    a.freePos = Vec2(10.0, 20.0);
+    b.addPoint(a);
+
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.refPointA = a.id;
+    ix.hostSegmentId = segId;
+    ix.interAngle = 135.0;   // 90° (start tangent) + 135° = 225° world
+    ix.interBidirectional = false;
+    b.addPoint(ix);
+    const QUuid ixId = ix.id;
+
+    b.resolve();
+
+    const ParamPoint* r = b.findPoint(ixId);
+    QVERIFY2(r && r->resolved, "relative angle against a circle host must resolve");
+    // base = start tangent (90°) + 135° ⇒ 225°: from (10,20) the ray meets the
+    // circle at (0,10). A chord-based base (0°) would aim 135° and miss.
+    QVERIFY(std::abs(r->resolvedPos.x - 0.0) < 0.02);
+    QVERIFY(std::abs(r->resolvedPos.y - 10.0) < 0.02);
+}
+
+void TestIntersection::circleHostWorldAngleSameBlock()
+{
+    Block b = makeCircle(10.0);
+    const QUuid segId = b.segments[0].id;
+
+    ParamPoint a;
+    a.constraint = PointConstraint::Free;
+    a.freePos = Vec2(10.0, 20.0);
+    b.addPoint(a);
+
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.refPointA = a.id;
+    ix.hostSegmentId = segId;
+    ix.interUseWorldAngle = true;
+    ix.interAngle = 225.0;   // world direction (−cos45, −sin45)
+    ix.interBidirectional = false;
+    b.addPoint(ix);
+    const QUuid ixId = ix.id;
+
+    b.resolve();
+
+    const ParamPoint* r = b.findPoint(ixId);
+    QVERIFY(r && r->resolved);
+    QVERIFY(std::abs(r->resolvedPos.x - 0.0) < 0.02);
+    QVERIFY(std::abs(r->resolvedPos.y - 10.0) < 0.02);
+}
+
+void TestIntersection::circleHostCrossBlock()
+{
+    // Same circle host, ray origin in ANOTHER block → Resolver cross-block pass
+    // (the second place that bailed on the degenerate chord).
+    Block b1 = makeCircle(10.0);
+    const QUuid segId = b1.segments[0].id;
+
+    Block b2;
+    ParamPoint a;
+    a.constraint = PointConstraint::Free;
+    a.freePos = Vec2(10.0, 20.0);
+    b2.addPoint(a);
+    const QUuid originId = a.id;
+
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.refPointA = originId;   // on b2
+    ix.hostSegmentId = segId;  // on b1
+    ix.interAngle = 135.0;
+    ix.interBidirectional = false;
+    ix.isAuxiliary = true;
+    b1.addPoint(ix);
+    const QUuid ixId = ix.id;
+
+    std::vector<Block> blocks;
+    blocks.push_back(b1);
+    blocks.push_back(b2);
+    std::vector<Attachment> attachments;
+    Resolver::resolveAll(blocks, attachments);
+
+    const Block& rb1 = blocks[0];
+    const ParamPoint* r = rb1.findPoint(ixId);
+    QVERIFY2(r && r->resolved, "cross-block circle intersection must resolve");
+    QVERIFY(std::abs(r->resolvedPos.x - 0.0) < 0.02);
+    QVERIFY(std::abs(r->resolvedPos.y - 10.0) < 0.02);
+}
+
+void TestIntersection::circleHostRadiusChangeMovesHit()
+{
+    Block b = makeCircle(10.0);
+    const QUuid segId = b.segments[0].id;
+
+    ParamPoint a;
+    a.constraint = PointConstraint::Free;
+    a.freePos = Vec2(-30.0, 0.0);
+    b.addPoint(a);
+
+    ParamPoint aim;
+    aim.constraint = PointConstraint::Free;
+    aim.freePos = Vec2(30.0, 0.0);
+    b.addPoint(aim);
+
+    ParamPoint ix;
+    ix.constraint = PointConstraint::Intersection;
+    ix.refPointA = a.id;
+    ix.hostSegmentId = segId;
+    ix.interAimPointId = aim.id;
+    b.addPoint(ix);
+    const QUuid ixId = ix.id;
+
+    b.resolve();
+    QVERIFY(std::abs(b.findPoint(ixId)->resolvedPos.x + 10.0) < 0.02);
+
+    // The radius lives on the start point's Polar distance; the circle-fit sync
+    // mirrors it onto the end point.
+    for (auto& pt : b.points) {
+        if (pt.constraint == PointConstraint::Polar && std::abs(pt.angle) < 1e-9)
+            pt.distance = 20.0;
+    }
+    b.resolve();
+
+    const ParamPoint* r = b.findPoint(ixId);
+    QVERIFY(r && r->resolved);
+    QVERIFY(std::abs(r->resolvedPos.x + 20.0) < 0.03);
+    QVERIFY(std::abs(r->resolvedPos.y) < 0.03);
 }
 
 QTEST_GUILESS_MAIN(TestIntersection)

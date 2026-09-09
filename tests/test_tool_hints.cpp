@@ -30,10 +30,10 @@ namespace {
 /// describe().hintText 的编码一致。
 [[nodiscard]] const char* u8c(const char8_t* s) { return reinterpret_cast<const char*>(s); }
 
-/// 8 个 ToolType 全集。
+/// 9 个 ToolType 全集。
 ///
-/// N6 (TOOL_SYSTEM_AUDIT 复核 2026-08-29): 这个文件手写 8 项, 光靠它
-/// **拦不住** "新增了第 9 个 ToolType 却忘了补进数组" —— 数组少一项既不
+/// N6 (TOOL_SYSTEM_AUDIT 复核 2026-08-29): 这个文件手写 9 项, 光靠它
+/// **拦不住** "新增了第 10 个 ToolType 却忘了补进数组" —— 数组少一项既不
 /// 编译失败也不断言失败, 新工具就悄悄逃出了守卫 (旧注释的说法不准确)。
 /// 真正的兜底是下面的 kExpectedRegistered + registry.order().size() 断言:
 /// 注册序多一个工具 → 数量对不上 → 立刻红。两处一起用才闭环。
@@ -42,10 +42,11 @@ const ToolType kAllTypes[] = {
     ToolType::Rotate,  ToolType::Break,      ToolType::Intersection,
     ToolType::PlacePoint,
     ToolType::Measure, ToolType::AngleMeasure,
+    ToolType::Circle,
 };
 
 /// 注册序预期规模 —— 新增工具必须同步 +1, 否则 registryOrderCoversEveryTool 红。
-constexpr int kExpectedRegistered = 9;
+constexpr int kExpectedRegistered = 10;
 
 } // namespace
 
@@ -104,6 +105,7 @@ void TestToolHints::hintsAreDistinctAndSelfNamed()
         { ToolType::Intersection, u8c(u8"交点") },
         { ToolType::Measure,      u8c(u8"测量") },
         { ToolType::AngleMeasure, u8c(u8"角度测量") },
+        { ToolType::Circle,       u8c(u8"画圆") },
     };
     for (const auto& e : expect) {
         const QString hint = toolHintText(e.type);
@@ -113,7 +115,7 @@ void TestToolHints::hintsAreDistinctAndSelfNamed()
         seen.insert(hint);
     }
     // 角度测量曾复用「选择」提示 —— 互异断言让同类错配无处藏身。
-    QCOMPARE(seen.size(), 8);
+    QCOMPARE(seen.size(), 9);
 }
 
 void TestToolHints::rotateHintDescribesConfirmGate()

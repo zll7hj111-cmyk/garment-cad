@@ -18,6 +18,7 @@
 #include "canvas/CanvasView.h"
 #include "tools/ToolManager.h"
 #include "tools/ToolCurveEdit.h"
+#include "tools/CircleFactory.h"
 #include "parametric/ParamDocument.h"
 #include "TestHelpers.h"
 
@@ -34,6 +35,7 @@ private slots:
     void altDragHandleBreaksLock();
     void plainDragKeepsLock();
     void altDragUndoRestoresLock();
+    void circleSegmentsAreLocked();
 };
 
 namespace {
@@ -264,6 +266,150 @@ void TestCurveEdit::altDragUndoRestoresLock()
              "redo 必须重放拖后切线");
     QVERIFY2(pt->tangentIn.distanceTo(tanInBefore) < 1e-6,
              "redo 对侧切线保持断锁前材料化值");
+}
+
+// ---------------------------------------------------------------------------
+// D8: 曲线编辑对圆段置灰 (CIRCLE_TOOL_DESIGN.md D8)
+// ---------------------------------------------------------------------------
+
+/// 圆段 fixture：r=40、a0=0°、圆心在原点 → 三个象限锚在 90°/180°/270°，
+/// 两端点重合于 0°。所有坐标都经 block.transform 取世界值 (不假设恒等变换)。
+struct CircleLockHarness {
+    ParamDocument doc;
+    CanvasScene scene;
+    CanvasView view;
+    cad::tools::ToolManager tm;
+    QUndoStack stack;
+    QUuid blockId;
+    QUuid segId;
+    QUuid anchorId;        ///< 90° 象限锚 (passPointIds.front())。
+    Vec2  anchorWorld;     ///< 该锚的世界坐标 → view.mapFromScene 可直接用。
+    Vec2  bodyWorld;       ///< 圆周 45° 处：距最近的点 30.6mm > 12mm 吸附半径。
+    double radiusMm = 40.0;
+
+    CircleLockHarness()
+        : scene(&doc)
+        , view(&scene)
+        , tm(&scene)
+    {
+        doc.setActiveLayer(layerIdAt(doc, 1));
+        cad::tools::CircleFactory factory(&doc, doc.undoStack());
+        blockId = factory.createCircle(Vec2(0.0, 0.0), radiusMm, 0.0);
+        QVERIFY(!blockId.isNull());
+        doc.resolveAll();
+
+        const Block* blk = doc.findBlock(blockId);
+        QVERIFY(blk);
+        QCOMPARE(blk->segments.size(), std::size_t(1));
+        const Segment& seg = blk->segments.front();
+        segId = seg.id;
+        QCOMPARE(seg.fitKind, FitKind::Circle);
+        QCOMPARE(seg.passPointIds.size(), std::size_t(3));
+        anchorId = seg.passPointIds.front();
+        const ParamPoint* ap = blk->findPoint(anchorId);
+        QVERIFY(ap && ap->resolved);
+        anchorWorld = blk->transform.toWorld(ap->resolvedPos);
+        const double d45 = radiusMm * 0.7071067811865476;
+        bodyWorld = blk->transform.toWorld(Vec2(d45, d45));
+
+        view.resize(900, 600);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+        QTest::qWait(80);
+
+        tm.setParamDocument(&doc);
+        tm.setUndoStack(&stack);
+        tm.switchTool(cad::tools::ToolType::CurveEdit);
+        view.setInputDispatcher(&tm);
+    }
+
+    /// 世界/场景坐标 → 视口像素 (harness 里的点已是场景坐标，不再翻转 y)。
+    QPoint vpScene(const Vec2& p) const
+    {
+        return view.mapFromScene(QPointF(p.x, p.y));
+    }
+
+    void sendMouse(QEvent::Type type, const QPoint& pos,
+                   Qt::MouseButton btn, Qt::KeyboardModifiers mods)
+    {
+        const QPoint global = view.viewport()->mapToGlobal(pos);
+        const Qt::MouseButtons buttons = (type == QEvent::MouseButtonRelease)
+            ? Qt::NoButton
+            : (btn == Qt::NoButton ? Qt::LeftButton : btn);
+        QMouseEvent ev(type, pos, global, btn, buttons, mods);
+        QApplication::sendEvent(view.viewport(), &ev);
+        QTest::qWait(20);
+    }
+
+    void clickAt(const Vec2& p, Qt::KeyboardModifiers mods = Qt::NoModifier)
+    {
+        const QPoint px = vpScene(p);
+        sendMouse(QEvent::MouseButtonPress, px, Qt::LeftButton, mods);
+        sendMouse(QEvent::MouseButtonRelease, px, Qt::LeftButton, mods);
+    }
+
+    void dragAt(const Vec2& from, const Vec2& to,
+                Qt::KeyboardModifiers mods = Qt::NoModifier)
+    {
+        sendMouse(QEvent::MouseButtonPress, vpScene(from), Qt::LeftButton, mods);
+        sendMouse(QEvent::MouseMove, vpScene((from + to) * 0.5), Qt::NoButton, mods);
+        sendMouse(QEvent::MouseMove, vpScene(to), Qt::NoButton, mods);
+        sendMouse(QEvent::MouseButtonRelease, vpScene(to), Qt::LeftButton, mods);
+    }
+};
+
+// 圆段在曲线编辑里三种手势 (拖锚 / Shift 删锚 / Ctrl 加点) 全部无效：
+// 几何逐点不变、不产生任何 undo 命令；改形必须走「解除圆约束」。
+void TestCurveEdit::circleSegmentsAreLocked()
+{
+    CircleLockHarness h;
+
+    const Block* blk = h.doc.findBlock(h.blockId);
+    QVERIFY(blk);
+    const Segment* seg = blk->findSegment(h.segId);
+    QVERIFY(seg);
+    const int baseCmds = h.stack.count();
+    const ParamPoint* ap = blk->findPoint(h.anchorId);
+    QVERIFY(ap);
+    const double pctBefore = ap->interpPercent;
+    const Vec2 posBefore = ap->resolvedPos;
+
+    // ① 拖象限锚 → 不进入拖拽 (interpPercent / 解算位置 / 命令数全不变)。
+    h.dragAt(h.anchorWorld, h.anchorWorld + Vec2(25.0, 25.0));
+    blk = h.doc.findBlock(h.blockId);
+    QVERIFY(blk);
+    ap = blk->findPoint(h.anchorId);
+    QVERIFY(ap);
+    QVERIFY2(std::abs(ap->interpPercent - pctBefore) < 1e-12,
+             "D8: 圆段象限锚不得被曲线编辑拖动");
+    QVERIFY2(ap->resolvedPos.distanceTo(posBefore) < 1e-9,
+             "D8: 拖拽后象限锚的解算位置必须不变");
+    QCOMPARE(h.stack.count(), baseCmds);
+
+    // ② Shift+点象限锚 → 不删除锚点。
+    h.clickAt(h.anchorWorld, Qt::ShiftModifier);
+    blk = h.doc.findBlock(h.blockId);
+    QVERIFY(blk);
+    QVERIFY2(blk->findPoint(h.anchorId) != nullptr,
+             "D8: 圆段象限锚不得被 Shift+点删除");
+    QCOMPARE(blk->findSegment(h.segId)->passPointIds.size(), std::size_t(3));
+    QCOMPARE(h.stack.count(), baseCmds);
+
+    // ③ Ctrl+点圆身 (45°) → 不加曲线点。
+    h.clickAt(h.bodyWorld, Qt::ControlModifier);
+    blk = h.doc.findBlock(h.blockId);
+    QVERIFY(blk);
+    QCOMPARE(blk->findSegment(h.segId)->passPointIds.size(), std::size_t(3));
+    QCOMPARE(h.stack.count(), baseCmds);
+
+    // ④ 圆几何不变：半径 / 包角 / 圆度。
+    seg = blk->findSegment(h.segId);
+    QVERIFY(seg);
+    QVERIFY2(std::abs(blk->circleRadiusMm(*seg) - h.radiusMm) < 1e-9,
+             "D8: 圆半径必须保持 40mm");
+    QVERIFY2(std::abs(blk->circleSweepDeg(*seg) - 360.0) < 1e-9,
+             "D8: 整圆包角必须保持 360°");
+    QCOMPARE(seg->tension, 0.0);
 }
 
 QTEST_MAIN(TestCurveEdit)

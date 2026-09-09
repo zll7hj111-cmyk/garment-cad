@@ -1,5 +1,8 @@
 ﻿#include "test_rotate_helpers.h"
 
+#include "tools/CircleFactory.h"
+#include "tools/RotateInputTracker.h"
+
 class TestRotatePivotMulti : public QObject
 {
     Q_OBJECT
@@ -8,6 +11,7 @@ private slots:
     void marqueeSelectionAndPivotSnapRotate();
     void adoptSelectionFromSelectToolAndRotate();
     void singleLinePickPivotAndRotateCadFlow();
+    void pivotSnapFindsCircleCenter();
 };
 void TestRotatePivotMulti::marqueeSelectionAndPivotSnapRotate()
 {
@@ -307,6 +311,37 @@ void TestRotatePivotMulti::singleLinePickPivotAndRotateCadFlow()
     stack.undo();
     blk = doc.findBlock(a.blockId);
     QVERIFY(std::abs(worldAngleDeg(doc, a.blockId) - 0.0) < 1e-4);
+}
+
+// m01094 ⑤: 旋转枢轴必须能吸附到圆心。圆心既不是段的起点也不是终点 (段端点
+// 是绕它的 Polar 接缝点), 旧实现只遍历 {seg.startPointId, seg.endPointId},
+// 圆心永远进不了候选 —— 用户报告「选择旋转中心也捕捉不到圆心」。
+void TestRotatePivotMulti::pivotSnapFindsCircleCenter()
+{
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 1));
+    CanvasScene scene(&doc);
+    QUndoStack stack;
+    cad::tools::CircleFactory factory(&doc, &stack);
+    const QUuid circleId = factory.createCircle({0.0, 0.0}, 50.0);
+    QVERIFY(!circleId.isNull());
+    doc.resolveAll();
+
+    cad::tools::RotateInputTracker tracker;
+    // 圆心附近 (偏 2mm): 必须吸附到圆心。
+    tracker.updateHoverSnap(&scene, &doc, Vec2{2.0, 0.0});
+    QVERIFY2(tracker.hoverSnapped(), "圆心必须进入旋转枢轴吸附候选");
+    QVERIFY(tracker.hoverSnapPoint().distanceTo(Vec2{0.0, 0.0}) < 1e-6);
+
+    // 既有的「吸附到端点」不能丢: 接缝起点 (50, 0)。
+    tracker.updateHoverSnap(&scene, &doc, Vec2{50.0, 1.0});
+    QVERIFY(tracker.hoverSnapped());
+    QVERIFY(tracker.hoverSnapPoint().distanceTo(Vec2{50.0, 0.0}) < 1e-6);
+
+    // 远离任何点 → 不吸附。
+    tracker.updateHoverSnap(&scene, &doc, Vec2{25.0, 25.0});
+    QVERIFY(!tracker.hoverSnapped());
+    tracker.teardown();
 }
 
 QTEST_MAIN(TestRotatePivotMulti)

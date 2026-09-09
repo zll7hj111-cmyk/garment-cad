@@ -146,6 +146,11 @@ private slots:
     /// An INTERPOLATED auxiliary point (smart-pen line-body aux point) can
     /// also be borrowed as the ray aim.
     void auxPointOnSegmentCanBeBorrowed();
+
+    /// 整圆宿主 (§16): the circle's chord is degenerate, so the tool used to
+    /// bail out before its span preview/hit path. Selecting a circle and
+    /// borrowing an aim point must commit an intersection ON the circle.
+    void circleHostAimCreatesIntersection();
 };
 
 void TestToolIntersection::aimPointCreatesIntersection()
@@ -605,6 +610,108 @@ void TestToolIntersection::auxPointOnSegmentCanBeBorrowed()
     QVERIFY(ix->resolved);
     QVERIFY(std::abs(ix->resolvedPos.x - 50.0) < 1e-6);
     QVERIFY(std::abs(ix->resolvedPos.y - 0.0) < 1e-6);
+}
+
+void TestToolIntersection::circleHostAimCreatesIntersection()
+{
+    // 整圆宿主 (CIRCLE_TOOL_DESIGN.md §16): 圆的弦退化为零长度, 工具过去在
+    // segDir 早退处直接放弃 —— 现在必须能选中圆、预览并借点求交。
+    ParamDocument doc;
+    doc.setActiveLayer(layerIdAt(doc, 0));
+    Block block;
+    block.layer = layerIdAt(doc, 0);
+
+    ParamPoint center;
+    center.constraint = PointConstraint::Free;
+    center.freePos = Vec2(0.0, 0.0);
+    const QUuid centerId = center.id;
+    block.addPoint(std::move(center));
+
+    ParamPoint start;
+    start.constraint = PointConstraint::Polar;
+    start.refPointId = centerId;
+    start.distance = 50.0;
+    start.angle = 0.0;
+    const QUuid startId = start.id;
+    block.addPoint(std::move(start));
+
+    ParamPoint end;
+    end.constraint = PointConstraint::Polar;
+    end.refPointId = centerId;
+    end.distance = 50.0;
+    end.angle = 360.0;
+    end.visible = false;
+    end.selectable = false;
+    const QUuid endId = end.id;
+    block.addPoint(std::move(end));
+
+    Segment seg;
+    seg.type = SegmentType::Bezier;
+    seg.fitKind = FitKind::Circle;
+    seg.role = SegmentRole::Auxiliary;
+    seg.startPointId = startId;
+    seg.endPointId = endId;
+    const QUuid segId = seg.id;
+    for (const double pct : {0.25, 0.50, 0.75}) {
+        ParamPoint anchor;
+        anchor.constraint = PointConstraint::CurveAnchor;
+        anchor.hostSegmentId = segId;
+        anchor.interpPercent = pct;
+        seg.passPointIds.push_back(anchor.id);
+        block.addPoint(std::move(anchor));
+    }
+    block.addSegment(std::move(seg));
+
+    ParamPoint origin;
+    origin.constraint = PointConstraint::Free;
+    origin.freePos = Vec2(-80.0, 0.0);
+    block.addPoint(std::move(origin));
+
+    ParamPoint aim;
+    aim.constraint = PointConstraint::Free;
+    aim.freePos = Vec2(80.0, 0.0);
+    block.addPoint(std::move(aim));
+
+    const QUuid blockId = block.id;
+    doc.addBlock(std::move(block));
+    doc.resolveAll();
+
+    CanvasScene scene{&doc};
+    CanvasView view{&scene};
+    cad::tools::ToolIntersection tool;
+    tool.activate(scene, &doc);
+
+    auto press = [&](double x, double y) {
+        QGraphicsSceneMouseEvent e(QEvent::GraphicsSceneMousePress);
+        e.setScenePos(QPointF(x, y));
+        e.setButton(Qt::LeftButton);
+        e.setButtons(Qt::LeftButton);
+        tool.mousePress(&e);
+    };
+    auto move = [&](double x, double y) {
+        QGraphicsSceneMouseEvent e(QEvent::GraphicsSceneMouseMove);
+        e.setScenePos(QPointF(x, y));
+        tool.mouseMove(&e);
+    };
+
+    move(0.0, 50.0);
+    press(0.0, 50.0);       // select the circle (top of the body)
+    move(-80.0, 0.0);
+    press(-80.0, 0.0);      // ray origin A
+    move(80.0, 0.0);
+    press(80.0, 0.0);       // borrow aim B → create immediately
+
+    QCOMPARE(intersectionCount(doc), 1);
+    const Block* rb = doc.blockById(blockId);
+    QVERIFY(rb);
+    const ParamPoint* ix = nullptr;
+    for (const auto& pt : rb->points)
+        if (pt.constraint == PointConstraint::Intersection) ix = &pt;
+    QVERIFY(ix);
+    QVERIFY2(ix->resolved, "circle-host intersection must resolve");
+    // Ray A→B runs along +X: the first crossing is the circle's left side.
+    QVERIFY(std::abs(ix->resolvedPos.x + 50.0) < 1e-3);
+    QVERIFY(std::abs(ix->resolvedPos.y) < 1e-3);
 }
 
 QTEST_MAIN(TestToolIntersection)
