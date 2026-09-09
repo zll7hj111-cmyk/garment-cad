@@ -67,6 +67,21 @@ struct BreakState {
     // --- 端点延长线 (EXTEND_LINE_DESIGN.md D8) ---
     double  origExtendEndMm = 0.0;
     QString origExtendEndFormula;
+
+    // --- 圆段（FitKind::Circle）角度分割分支 (CIRCLE_TOOL_DESIGN.md D7) ---
+    // 整圆两端点重合 ⇒ 弦长路径（segLenMm）退化，必须走角度分割：分割点成为
+    // 前段终点 / 后段起点，两段都保持 fitKind=Circle 且各自持有半径（初始 = r）。
+    bool isCircle = false;
+    QUuid circleCenterId;                    // 前段圆心点 id（原块内）
+    double circleRadiusMm = 0.0;             // 半径（sp->distance 为唯一权威）
+    QString circleRadiusFormula;             // sp->distanceFormula 副本
+    double circleSplitAngleDeg = 0.0;        // 分割点角度（前段局部系，几何值）
+    double circleFrontSweepDeg = 0.0;        // 前段包角（几何域）
+    double circleBackSweepGeomDeg = 0.0;     // 后段包角（几何域，辅助点折算用）
+    double circleBackSweepRawDeg = 0.0;      // 后段包角（raw 域：ep.angle-sp.angle）
+    std::vector<QUuid> circleAnchorIds;      // 原锚点（除分割点），按角序
+    QHash<QUuid, double> circleAnchorOffsetDeg;  // 锚点 → 相对起点的角向偏移
+    QHash<QUuid, double> circleAuxOffsetDeg;     // 非分割点辅助点角向偏移
 };
 
 } // namespace cad::cmd

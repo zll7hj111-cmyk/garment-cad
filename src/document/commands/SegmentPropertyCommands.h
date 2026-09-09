@@ -102,6 +102,16 @@ public:
         QString lengthFormula;
         double distance = 0.0;         ///< End-point distance (polar), mm.
         QString distanceFormula;       ///< End-point distance formula.
+        double endAngle = 0.0;         ///< End-point angle (polar), deg.
+        QString endAngleFormula;       ///< End-point angle formula.
+        /// Start-point polar fields. 圆拟合段 (FitKind::Circle) 的半径/基准
+        /// 角度权威都在 start 点上 (R=sp->distance, a0=sp->angle) —— 不收进
+        /// 本命令则面板里改半径/基准角 Ctrl+Z 撤不掉 (M2)。
+        double startDistance = 0.0;    ///< Start-point distance (polar), mm.
+        QString startDistanceFormula;  ///< Start-point distance formula.
+        double startAngle = 0.0;       ///< Start-point angle (polar), deg.
+        QString startAngleFormula;     ///< Start-point angle formula.
+        double tension = 0.0;          ///< Curve tension / circle roundness.
         QString startName, startAnno;
         bool startShowName = false;
         QString endName, endAnno;
@@ -144,6 +154,12 @@ public:
     struct State {
         QString segName;
         QString lengthFormula;
+        // Start point (Polar) — 圆区段的半径 / 基准角唯一权威落在起点
+        // (CIRCLE_TOOL_DESIGN.md D2/D18)，条带改半径必须能写回这里。
+        double startDistance = 0.0;
+        QString startDistanceFormula;
+        double startAngle = 0.0;
+        QString startAngleFormula;
         QString endDistanceFormula;
         double endDistance = 0.0;
         double endAngle = 0.0;

@@ -294,6 +294,8 @@ add_library(gcad_document STATIC
     src/document/commands/ReverseSegmentCommand.cpp
     src/document/commands/CurveCommands.h
     src/document/commands/CurveCommands.cpp
+    src/document/commands/CircleCommands.h
+    src/document/commands/CircleCommands.cpp
     src/document/commands/EndpointCommands.h
     src/document/commands/EndpointCommands.cpp
     src/document/commands/CommandIds.h
@@ -315,6 +317,7 @@ add_library(gcad_document STATIC
     src/document/commands/AttachmentSlideCommands.cpp
     src/document/commands/VariableCommands.h
     src/document/commands/VariableCommands.cpp
+    src/document/commands/LinkedVariableCommands.h
     src/document/commands/DocumentCommands.h
     src/document/commands/DocumentCommands.cpp
     src/document/commands/BreakState.h

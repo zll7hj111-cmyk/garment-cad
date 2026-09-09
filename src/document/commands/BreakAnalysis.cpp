@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "parametric/ParamDocument.h"
 #include "parametric/ConditionEngine.h"
@@ -102,6 +103,80 @@ bool gatherBreakGeometry(cad::param::ParamDocument& doc, const QUuid& blockId,
     const auto* startPt = block->findPoint(seg->startPointId);
     const auto* endPt = block->findPoint(seg->endPointId);
     if (!startPt || !endPt || !startPt->resolved || !endPt->resolved) return false;
+
+    // --- 圆段：角度分割分支 (CIRCLE_TOOL_DESIGN.md D7) ---
+    // 整圆两端点重合 ⇒ 弦长 segLenMm 退化，断点位置只能按圆周角描述。
+    // 两段都保持 fitKind=Circle，共用圆心、各自持半径（初始都 = r）。
+    if (seg->fitKind == cad::param::FitKind::Circle) {
+        const auto* center = block->circleCenterPoint(*seg);
+        if (!center || !center->resolved || !auxPt->resolved) return false;
+        const cad::geo::Vec2 v0 = startPt->resolvedPos - center->resolvedPos;
+        const cad::geo::Vec2 vb = auxPt->resolvedPos - center->resolvedPos;
+        const cad::geo::Vec2 v1 = endPt->resolvedPos - center->resolvedPos;
+        const double radiusMm = v0.length();
+        if (radiusMm < cad::geo::kGeomEps) return false;
+        const double a0Geom = std::atan2(v0.y, v0.x);
+        double sweepGeom = cad::geo::normalizeRad(std::atan2(v1.y, v1.x) - a0Geom);
+        if (sweepGeom <= cad::geo::kGeomEps) sweepGeom += 2.0 * cad::geo::kPi;  // 整圆
+        double frontSweep = cad::geo::normalizeRad(std::atan2(vb.y, vb.x) - a0Geom);
+        if (frontSweep < 0.0) frontSweep += 2.0 * cad::geo::kPi;
+        // 断点必须严格落在弧内（端点或弧外交点都无法二分）。
+        if (frontSweep < 1e-6 || frontSweep > sweepGeom - 1e-6) return false;
+
+        st.isCircle = true;
+        st.isCurve = false;
+        st.circleCenterId = center->id;
+        st.circleRadiusMm = radiusMm;
+        st.circleRadiusFormula = startPt->distanceFormula;
+        st.circleSplitAngleDeg = cad::geo::radToDeg(std::atan2(vb.y, vb.x));
+        st.circleFrontSweepDeg = cad::geo::radToDeg(frontSweep);
+        st.circleBackSweepGeomDeg = cad::geo::radToDeg(sweepGeom - frontSweep);
+        // raw 域包角与 Resolver 的 sweepDeg 约定一致（≤eps 则 +360，不做上界归一）。
+        double sweepRaw = endPt->angle - startPt->angle;
+        if (sweepRaw <= 1e-9) sweepRaw += 360.0;
+        st.circleBackSweepRawDeg = sweepRaw * (sweepGeom - frontSweep) / sweepGeom;
+        // 后段只平移、与原地坐标系同向 ⇒ rotToLocal = 0。
+        st.worldAngleRad = block->transform.rotation;
+        st.localAngleDeg = st.circleSplitAngleDeg;
+        st.frontDistMm = radiusMm;
+        st.backDistMm = radiusMm;
+        st.frontFormula.clear();
+        st.backFormula.clear();
+        st.origFormula.clear();
+        // 圆上切向连续 ⇒ 断点处附件无需角度补偿。
+        st.refDeltaRad = 0.0;
+        st.breakWorld = block->transform.toWorld(auxPt->resolvedPos);
+        st.mode = BreakMode::Freeze;  // 圆段不发布长度变量（modifyFrontBlock 有守卫）
+
+        const auto offsetDeg = [&](const cad::geo::Vec2& v) {
+            double off = cad::geo::normalizeRad(std::atan2(v.y, v.x) - a0Geom);
+            if (off < 0.0) off += 2.0 * cad::geo::kPi;
+            return cad::geo::radToDeg(off);
+        };
+        // 原锚点（除分割点）按角序登记，供前段重新四等分复用。
+        std::vector<std::pair<double, QUuid>> anchors;
+        for (const QUuid& pid : seg->passPointIds) {
+            if (pid == auxPtId) continue;
+            const auto* pp = block->findPoint(pid);
+            if (!pp || !pp->resolved) continue;
+            const double off = offsetDeg(pp->resolvedPos - center->resolvedPos);
+            anchors.emplace_back(off, pid);
+            st.circleAnchorOffsetDeg.insert(pid, off);
+        }
+        std::sort(anchors.begin(), anchors.end(),
+                  [](const std::pair<double, QUuid>& a, const std::pair<double, QUuid>& b) {
+                      return a.first < b.first;
+                  });
+        for (const auto& entry : anchors) st.circleAnchorIds.push_back(entry.second);
+        // 非分割点辅助点按角向偏移分配前/后段（redistributeAuxPoints 用）。
+        for (const QUuid& aid : seg->auxPointIds) {
+            if (aid == auxPtId) continue;
+            const auto* ap = block->findPoint(aid);
+            if (!ap || !ap->resolved) continue;
+            st.circleAuxOffsetDeg.insert(aid, offsetDeg(ap->resolvedPos - center->resolvedPos));
+        }
+        return true;
+    }
 
     st.segLenMm = startPt->resolvedPos.distanceTo(endPt->resolvedPos);
     if (st.segLenMm < cad::geo::kGeomEps) return false;  // degenerate segment

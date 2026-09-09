@@ -190,6 +190,7 @@ QJsonObject segmentJson(const Segment& s) {
         {"name", s.name},
         {"annotation", s.annotation},  // Optional since v12 (便利贴注释, 缺省空串)
         {"type", segmentTypeStr(s.type)},
+        {"fitKind", fitKindStr(s.fitKind)},  // Optional (缺省 None, 老档零迁移)
         {"role", segmentRoleStr(s.role)},
         {"startPointId", uuidStr(s.startPointId)},
         {"endPointId", uuidStr(s.endPointId)},
@@ -222,6 +223,7 @@ Segment segmentFrom(const QJsonObject& o, QStringList* warnings = nullptr) {
     s.annotation = o["annotation"].toString();  // Optional, 老档缺省空串
     bool recType = true, recRole = true, recStyle = true;
     s.type = segmentTypeFrom(o["type"].toString(), &recType);
+    s.fitKind = fitKindFrom(o["fitKind"].toString());  // Optional, 老档缺省 None
     s.role = segmentRoleFrom(o["role"].toString(), &recRole);
     s.startPointId = uuidFrom(o["startPointId"].toString());
     s.endPointId = uuidFrom(o["endPointId"].toString());

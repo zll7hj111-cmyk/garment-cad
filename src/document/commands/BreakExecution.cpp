@@ -45,7 +45,15 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
         p->interBidirectional = false;
     };
 
-    if (st.mode == BreakMode::RefChain && !st.polarRefId.isNull()) {
+    if (st.isCircle) {
+        // 圆段（D7）：分割点变成绕圆心的 Polar 端点；半径/圆心沿用原段权威。
+        clearInterpFields(auxPt);
+        auxPt->refPointId = st.circleCenterId;
+        auxPt->distance = st.circleRadiusMm;
+        auxPt->distanceFormula = st.circleRadiusFormula;
+        auxPt->angle = st.circleSplitAngleDeg;
+        auxPt->isAuxiliary = false;
+    } else if (st.mode == BreakMode::RefChain && !st.polarRefId.isNull()) {
         auxPt->refPointId = st.polarRefId;
         auxPt->distance = st.refOffsetMm;
         auxPt->distanceFormula = st.refOffsetFormula;
@@ -78,12 +86,12 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
 
     seg = block->findSegment(segId);  // re-acquire
     seg->endPointId = auxPtId;
-    seg->lengthFormula = st.frontFormula;
+    seg->lengthFormula = st.isCircle ? QString() : st.frontFormula;
     seg->auxPointIds = st.frontAuxIds;
     seg->extendEndMm = 0.0;
     seg->extendEndFormula.clear();
 
-    if (st.mode == BreakMode::RefChain || st.mode == BreakMode::Freeze) {
+    if (!st.isCircle && (st.mode == BreakMode::RefChain || st.mode == BreakMode::Freeze)) {
         if (auto* lv = doc.findLinkedBySource(blockId, segId)) {
             publishedRefName = lv->refName;
         } else {
@@ -187,6 +195,48 @@ void modifyFrontBlock(cad::param::ParamDocument& doc, const QUuid& blockId,
                 pts.end());
         }
         block->rebuildPointIndex();
+        block->touchGeometry();
+    }
+
+    if (st.isCircle) {
+        // 前段锚点（D7）：原锚点（除分割点）按角序就近复用，重新四等分包角；
+        // 候选不足则新建。位置完全由 interpPercent 决定，切向由圆拟合重算。
+        std::vector<QUuid> anchorIds;
+        std::vector<bool> used(st.circleAnchorIds.size(), false);
+        for (int k = 0; k < 3; ++k) {
+            const double target = st.circleFrontSweepDeg * 0.25 * (k + 1);
+            int best = -1;
+            double bestDist = 1e18;
+            for (std::size_t i = 0; i < st.circleAnchorIds.size(); ++i) {
+                if (used[i]) continue;
+                const double off = st.circleAnchorOffsetDeg.value(st.circleAnchorIds[i], 1e18);
+                const double dist = std::abs(off - target);
+                if (dist < bestDist) { bestDist = dist; best = static_cast<int>(i); }
+            }
+            if (best >= 0) {
+                used[static_cast<std::size_t>(best)] = true;
+                auto* pp = block->findPoint(st.circleAnchorIds[static_cast<std::size_t>(best)]);
+                if (pp) {
+                    pp->interpPercent = 0.25 * (k + 1);
+                    pp->interpPercentFormula.clear();
+                    pp->interpOffsetDist = 0.0;
+                    pp->interpOffsetDistFormula.clear();
+                    anchorIds.push_back(pp->id);
+                    continue;
+                }
+            }
+            cad::param::ParamPoint anchor;
+            anchor.constraint = cad::param::PointConstraint::CurveAnchor;
+            anchor.hostSegmentId = segId;
+            anchor.interpPercent = 0.25 * (k + 1);
+            anchor.interpOffsetDist = 0.0;
+            anchor.serial = doc.newPointSerial();
+            const QUuid newId = anchor.id;
+            block->addPoint(std::move(anchor));
+            anchorIds.push_back(newId);
+        }
+        seg = block->findSegment(segId);  // addPoint 后重新取
+        if (seg) seg->passPointIds = anchorIds;
         block->touchGeometry();
     }
 

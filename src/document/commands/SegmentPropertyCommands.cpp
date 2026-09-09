@@ -174,6 +174,14 @@ void applyEditStripState(cad::param::ParamDocument& doc,
     seg->lengthFormula = s.lengthFormula;
     // The owned measure variable's display name follows the segment name.
     doc.setOwnerMeasureName(blockId, s.segName);
+    // 起点 (Polar): 圆区段的半径 / 基准角唯一权威 (CIRCLE_TOOL_DESIGN.md
+    // D2/D18)。直线段这些字段由快照原样带回 → 写入即幂等。
+    if (auto* sp = b->findPoint(seg->startPointId)) {
+        sp->distance = s.startDistance;
+        sp->distanceFormula = s.startDistanceFormula;
+        sp->angle = s.startAngle;
+        sp->angleFormula = s.startAngleFormula;
+    }
     if (auto* ep = b->findPoint(seg->endPointId)) {
         ep->distance = s.endDistance;
         ep->distanceFormula = s.endDistanceFormula;
@@ -211,6 +219,12 @@ SegmentEditBarCommand::State SegmentEditBarCommand::State::captureFrom(
 
     s.segName = seg->name;
     s.lengthFormula = seg->lengthFormula;
+    if (const auto* sp = b->findPoint(seg->startPointId)) {
+        s.startDistance = sp->distance;
+        s.startDistanceFormula = sp->distanceFormula;
+        s.startAngle = sp->angle;
+        s.startAngleFormula = sp->angleFormula;
+    }
     if (const auto* ep = b->findPoint(seg->endPointId)) {
         s.endDistance = ep->distance;
         s.endDistanceFormula = ep->distanceFormula;
@@ -283,6 +297,11 @@ bool SetLinePropertiesCommand::Props::operator==(const Props& o) const
         && lineStyle == o.lineStyle && weight == o.weight
         && lengthFormula == o.lengthFormula
         && distance == o.distance && distanceFormula == o.distanceFormula
+        && endAngle == o.endAngle && endAngleFormula == o.endAngleFormula
+        && startDistance == o.startDistance
+        && startDistanceFormula == o.startDistanceFormula
+        && startAngle == o.startAngle && startAngleFormula == o.startAngleFormula
+        && tension == o.tension
         && startName == o.startName && startAnno == o.startAnno
         && startShowName == o.startShowName
         && endName == o.endName && endAnno == o.endAnno
@@ -310,15 +329,22 @@ bool SetLinePropertiesCommand::apply(cad::param::ParamDocument* doc,
     upd(s->lineStyle, p.lineStyle);
     upd(s->weight, p.weight);
     upd(s->lengthFormula, p.lengthFormula);
+    upd(s->tension, p.tension);
     upd(b->lengthAuto, p.lengthAuto);   // 块级长度模式 (2026-09 审核收口)
     if (auto* ep = b->findPoint(s->endPointId)) {
         upd(ep->distance, p.distance);
         upd(ep->distanceFormula, p.distanceFormula);
+        upd(ep->angle, p.endAngle);
+        upd(ep->angleFormula, p.endAngleFormula);
         upd(ep->name, p.endName);
         upd(ep->showName, p.endShowName);
         upd(ep->annotation, p.endAnno);
     }
     if (auto* sp = b->findPoint(s->startPointId)) {
+        upd(sp->distance, p.startDistance);
+        upd(sp->distanceFormula, p.startDistanceFormula);
+        upd(sp->angle, p.startAngle);
+        upd(sp->angleFormula, p.startAngleFormula);
         upd(sp->name, p.startName);
         upd(sp->showName, p.startShowName);
         upd(sp->annotation, p.startAnno);

@@ -14,6 +14,101 @@
 
 namespace cad::cmd {
 
+namespace {
+
+/// 圆段后块（CIRCLE_TOOL_DESIGN.md D7）：与原地坐标系同向（只平移），圆心
+/// Free、起/终点绕圆心 Polar（半径 = 原半径），3 个象限锚点重新四等分后段包角。
+cad::param::Block buildCircleBackBlock(cad::param::ParamDocument& doc,
+                                       const cad::param::Block& block,
+                                       const cad::param::Segment& seg,
+                                       BreakState& st)
+{
+    cad::param::Block backBlock;
+    backBlock.layer = block.layer;
+    backBlock.transform.origin = st.breakWorld;
+    backBlock.transform.rotation = block.transform.rotation;
+
+    const auto* center = block.findPoint(st.circleCenterId);
+    if (!center || !center->resolved) return backBlock;
+    const cad::geo::Vec2 centerLocal =
+        backBlock.transform.toLocal(block.transform.toWorld(center->resolvedPos));
+
+    cad::param::ParamPoint cp;
+    cp.constraint = cad::param::PointConstraint::Free;
+    cp.freePos = centerLocal;
+    cp.serial = doc.newPointSerial();
+    const QUuid centerId = cp.id;
+
+    // 后段起点 = 断点，局部坐标 (0,0) ⇒ 绕圆心的 Polar 角由圆心反向推得。
+    const cad::geo::Vec2 toSplit = cad::geo::Vec2::zero() - centerLocal;
+    const double startAngleDeg = cad::geo::radToDeg(std::atan2(toSplit.y, toSplit.x));
+
+    cad::param::ParamPoint bpStart;
+    bpStart.constraint = cad::param::PointConstraint::Polar;
+    bpStart.refPointId = centerId;
+    bpStart.distance = st.circleRadiusMm;
+    bpStart.distanceFormula = st.circleRadiusFormula;
+    bpStart.angle = startAngleDeg;
+    bpStart.visible = false;
+    bpStart.selectable = false;
+    bpStart.serial = doc.newPointSerial();
+    st.bpStartId = bpStart.id;
+
+    cad::param::ParamPoint bpEnd;
+    bpEnd.constraint = cad::param::PointConstraint::Polar;
+    bpEnd.refPointId = centerId;
+    bpEnd.distance = st.circleRadiusMm;
+    bpEnd.distanceFormula = st.circleRadiusFormula;
+    bpEnd.angle = startAngleDeg + st.circleBackSweepRawDeg;
+    if (const auto* origEnd = block.findPoint(seg.endPointId)) {
+        bpEnd.visible = origEnd->visible;
+        bpEnd.selectable = origEnd->selectable;
+    }
+    bpEnd.serial = doc.newPointSerial();
+    st.bpEndId = bpEnd.id;
+
+    backBlock.addPoint(std::move(cp));
+    backBlock.addPoint(std::move(bpStart));
+    backBlock.addPoint(std::move(bpEnd));
+
+    cad::param::Segment backSeg;
+    backSeg.startPointId = st.bpStartId;
+    backSeg.endPointId = st.bpEndId;
+    backSeg.type = cad::param::SegmentType::Bezier;
+    backSeg.fitKind = cad::param::FitKind::Circle;
+    backSeg.role = seg.role;
+    backSeg.lineStyle = seg.lineStyle;
+    backSeg.color = seg.color;
+    backSeg.weight = seg.weight;
+    backSeg.visible = seg.visible;
+    backSeg.showName = false;
+    backSeg.showLength = seg.showLength;
+    backSeg.constructAngle = 0.0;
+    backSeg.serial = doc.newLineSerial();
+    backSeg.tension = seg.tension;
+    backSeg.extendStartMm = 0.0;
+    backSeg.extendStartFormula.clear();
+    backSeg.extendEndMm = st.origExtendEndMm;
+    backSeg.extendEndFormula = st.origExtendEndFormula;
+    st.backSegId = backSeg.id;
+
+    for (int k = 0; k < 3; ++k) {
+        cad::param::ParamPoint anchor;
+        anchor.constraint = cad::param::PointConstraint::CurveAnchor;
+        anchor.hostSegmentId = st.backSegId;
+        anchor.interpPercent = 0.25 * (k + 1);
+        anchor.interpOffsetDist = 0.0;
+        anchor.serial = doc.newPointSerial();
+        const QUuid anchorId = anchor.id;
+        backSeg.passPointIds.push_back(anchorId);
+        backBlock.addPoint(std::move(anchor));
+    }
+    backBlock.addSegment(std::move(backSeg));
+    return backBlock;
+}
+
+}  // namespace
+
 cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
                                  const QUuid& blockId, const QUuid& segId,
                                  const QUuid& auxPtId, BreakState& st,
@@ -30,6 +125,9 @@ cad::param::Block buildBackBlock(cad::param::ParamDocument& doc,
     backBlock.transform.rotation = st.worldAngleRad;
 
     st.rotToLocal = block->transform.rotation - st.worldAngleRad;
+
+    if (st.isCircle)
+        return buildCircleBackBlock(doc, *block, *seg, st);
 
     cad::param::ParamPoint bpStart;
     bpStart.constraint = cad::param::PointConstraint::Free;

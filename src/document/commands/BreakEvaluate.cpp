@@ -24,6 +24,17 @@ void evaluateBreakPosition(cad::param::ParamDocument& doc, const QUuid& blockId,
     st.mode = determineBreakMode(*block, *seg, *auxPt);
     st.origFormula = seg->lengthFormula;  // 打断前的原长度公式（可能空）
 
+    // 圆段（D7）：分割点绕圆心，前/后段半径都等于 r；位置信息已由
+    // gatherBreakGeometry 填好，此处只需回填断点世界坐标。
+    if (st.isCircle) {
+        st.frontDistMm = st.circleRadiusMm;
+        st.backDistMm = st.circleRadiusMm;
+        st.frontFormula.clear();
+        st.backFormula.clear();
+        st.breakWorld = block->transform.toWorld(auxPt->resolvedPos);
+        return;
+    }
+
     const auto* startPt = block->findPoint(seg->startPointId);
     const auto* endPt = block->findPoint(seg->endPointId);
     if (!startPt || !endPt || !startPt->resolved || !endPt->resolved) return;
@@ -139,6 +150,31 @@ void redistributeAuxPoints(cad::param::ParamDocument& doc, const QUuid& blockId,
     auto* block = doc.findBlock(blockId);
     auto* seg = block ? block->findSegment(segId) : nullptr;
     if (!block || !seg) return;
+
+    // 圆段（D7）：按角向偏移划分前/后段，后段辅助点按后段包角折算 interpPercent。
+    if (st.isCircle) {
+        const double frontSweep = st.circleFrontSweepDeg;
+        const double backSweep = st.circleBackSweepGeomDeg;
+        for (const QUuid& auxId : seg->auxPointIds) {
+            if (auxId == auxPtId) continue;
+            const auto* otherAux = block->findPoint(auxId);
+            if (!otherAux) continue;
+            const double off = st.circleAuxOffsetDeg.value(auxId, -1.0);
+            if (off < 0.0 || off <= frontSweep + cad::geo::kGeomEps) {
+                st.frontAuxIds.push_back(auxId);  // 未知位置 → 留在前段（最保守）
+                continue;
+            }
+            cad::param::ParamPoint moved = *otherAux;
+            moved.interpPercent = (backSweep > cad::geo::kGeomEps)
+                ? (off - frontSweep) / backSweep : 0.0;
+            moved.interpPercentFormula.clear();
+            moved.interpConstant = 0.0;
+            moved.interpConstantFormula.clear();
+            moved.interpFromEnd = false;
+            st.backAuxPoints.push_back(std::move(moved));
+        }
+        return;
+    }
 
     const auto* startPt = block->findPoint(seg->startPointId);
     const auto* endPt = block->findPoint(seg->endPointId);

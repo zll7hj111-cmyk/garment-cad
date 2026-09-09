@@ -25,6 +25,7 @@ inline const QString kOtherLayers = QStringLiteral("其他图层");
 inline const QString kDeletePlacedPoint = QStringLiteral("删除放置点");
 inline const QString kDeleteVariable = QStringLiteral("删除变量");
 inline const QString kToLine = QStringLiteral("转为直线");
+inline const QString kDetachCircle = QStringLiteral("解除圆约束");
 inline const QString kBakeToOperationLayer = QStringLiteral("烘焙到操作层");
 
 } // namespace cad::cmd::texts
