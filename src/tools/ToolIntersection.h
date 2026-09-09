@@ -71,6 +71,19 @@ private:
         double baseAngle = 0.0;
     };
 
+    /// Resolve the target segment's ray base direction (world space).
+    /// Returns nullopt for a degenerate line. A fitted circle has a degenerate
+    /// chord by construction, so its base direction is the CCW tangent at the
+    /// start point (CIRCLE_TOOL_DESIGN.md §16) — the host is otherwise consumed
+    /// through its curve spans.
+    [[nodiscard]] static std::optional<TargetGeometry> targetGeometry(
+        const cad::param::Block& block, const cad::param::Segment& seg);
+
+    /// Highlight the target segment: curve spans (circle / Bézier) as a path,
+    /// straight segments as their chord.
+    void showTargetHighlight(const cad::param::Block& block,
+                             const cad::param::Segment& seg, bool hover);
+
     [[nodiscard]] std::optional<cad::geo::Vec2> computeIntersection(
         double angleDeg, double* outT = nullptr,
         const TargetGeometry* cachedGeom = nullptr) const;

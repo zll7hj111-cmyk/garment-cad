@@ -10,6 +10,7 @@ class HudItem;
 class QGraphicsLineItem;
 class QGraphicsEllipseItem;
 class QGraphicsPathItem;
+class QPainterPath;
 
 namespace cad::tools {
 
@@ -21,6 +22,9 @@ public:
     void setScene(CanvasScene* scene);
 
     void showSegHighlight(const cad::geo::Vec2& w1, const cad::geo::Vec2& w2, bool hover);
+    /// Highlight an arbitrary scene-space path (curve/circle targets: their
+    /// spans are not a chord, so a straight highlight would lie).
+    void showCurveHighlight(const QPainterPath& scenePath, bool hover);
     void hideSegHighlight();
 
     void showOriginMarker(const cad::geo::Vec2& originPos);
@@ -50,7 +54,7 @@ private:
     QGraphicsPathItem*    m_noHitMarker  = nullptr;
     QGraphicsEllipseItem* m_originMarker = nullptr;
     QGraphicsEllipseItem* m_aimMarker    = nullptr;
-    QGraphicsLineItem*    m_segHighlight = nullptr;
+    QGraphicsPathItem*    m_segHighlight = nullptr;
     ManagedItems          m_managed;
 };
 

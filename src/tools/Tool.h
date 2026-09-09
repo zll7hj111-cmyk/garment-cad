@@ -88,6 +88,15 @@ public:
     virtual void updatePlacePointSession(double distCm, double angleDeg, bool distLocked, bool angleLocked)
     { (void)distCm; (void)angleDeg; (void)distLocked; (void)angleLocked; }
     virtual void focusNextPlacedPointField() {}
+
+    /// 圆绘制会话 (CIRCLE_TOOL_DESIGN.md §5.5, 一期补充): 圆心已落、半径未定
+    /// 的会话期 —— 条带切到「绘制」态 (半径框可编辑 + 直径只读联动)。
+    /// active=false = 会话结束 (提交/取消/切模式/切工具都要上报)。非虚 ——
+    /// 与 setHintOverride 同款, 无头单测桩不实现也能编译。
+    virtual void setCircleSession(bool active) { (void)active; }
+    /// 会话内实时半径 (cm 域) + 是否已被输入锁定 (锁定后画布不再跟随光标)。
+    virtual void updateCircleSession(double radiusCm, bool locked)
+    { (void)radiusCm; (void)locked; }
 };
 
 /// 工具内部"模式"的显示描述 (2026-08-29: W 键模式切换的持久化显示标识)。
@@ -198,6 +207,17 @@ public:
     virtual void placePointAngleInput(double angleDeg, bool locked) { (void)angleDeg; (void)locked; }
     virtual void placePointCommitted() {}
 
+    // ── 圆绘制会话输入 (一期补充, CIRCLE_TOOL_DESIGN.md §5.5) ──
+    // 与放置点同款: 条带是纯输入面, 落圆语义全部留在 ToolCircle 的会话里。
+    // 默认 no-op; 只有 ToolCircle 覆盖。MainWindow → ToolManager::forward*
+    // → 本组虚函数。
+    /// 半径输入框 (cm 域): 数值/公式求值成功都算「锁定」。
+    virtual void circleRadiusInput(double radiusCm, bool locked) { (void)radiusCm; (void)locked; }
+    /// Enter: 以当前半径 (锁定值或光标半径) 落圆。
+    virtual void circleCommitted() {}
+    /// Esc: 丢弃橡皮筋, 不落圆。
+    virtual void circleCancelled() {}
+
     /// Tool display name.
     [[nodiscard]] virtual const char* name() const = 0;
 
@@ -253,6 +273,17 @@ protected:
     void reportPlacePointFocusNextField()
     {
         if (m_host) m_host->focusNextPlacedPointField();
+    }
+
+    /// 上报圆绘制会话开关 (一期补充): 圆心已落 → true; 提交/取消/切模式 → false。
+    void reportCircleSession(bool active)
+    {
+        if (m_host) m_host->setCircleSession(active);
+    }
+    /// 上报会话内实时半径 (cm 域) 与锁定态。
+    void reportCircleValues(double radiusCm, bool locked)
+    {
+        if (m_host) m_host->updateCircleSession(radiusCm, locked);
     }
 
     /// 上报连接角度会话 (二期): 四个参数全 null = 会话结束。

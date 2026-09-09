@@ -9,6 +9,7 @@
 #include "ToolPlacePoint.h"
 #include "ToolMeasure.h"
 #include "ToolAngleMeasure.h"
+#include "ToolCircle.h"
 
 namespace cad::tools {
 
@@ -26,6 +27,7 @@ ToolRegistry::ToolRegistry()
     registerTool<ToolPlacePoint>();
     registerTool<ToolMeasure>();
     registerTool<ToolAngleMeasure>();
+    registerTool<ToolCircle>();
 }
 
 ToolRegistry& ToolRegistry::instance()

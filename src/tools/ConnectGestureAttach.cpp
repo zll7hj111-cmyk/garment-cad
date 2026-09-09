@@ -108,18 +108,13 @@ bool ConnectGesture::attachToTarget(const QUuid& toBlockId, const QUuid& toPoint
 
     att.fromBlockId = m_connectFromBlock;
 
-    // 母线直线基准（用户拍板 2026-09: 直接自动取母线端点1到端点2的直线向量，无视曲线弯曲与进出）
-    double refWorld = toBlk->transform.rotation;
-    if (const auto* toSeg = toBlk->findSegment(att.toSegmentId)) {
-        const auto* sp = toBlk->findPoint(toSeg->startPointId);
-        const auto* ep = toBlk->findPoint(toSeg->endPointId);
-        if (sp && ep && sp->resolved && ep->resolved) {
-            const geo::Vec2 w1 = toBlk->transform.toWorld(sp->resolvedPos);
-            const geo::Vec2 w2 = toBlk->transform.toWorld(ep->resolvedPos);
-            if (w1.distanceTo(w2) > cad::geo::kGeomEpsLoose)
-                refWorld = std::atan2(w2.y - w1.y, w2.x - w1.x);
-        }
-    }
+    // 角度基准方向：与解析器 (ResolverAttachment) / 面板重连 / SmartPen 建线同源
+    // （D9 修正 2026-12）。原此处用「块 rotation + 弦覆盖」的旧公式：整圆两端点
+    // 位置重合 ⇒ 弦长为 0 ⇒ 基准退化为块 rotation（与圆周无关的垃圾值）⇒ 首次
+    // resolveAll() 后跟随线跳变。effectiveAngleRefWorld 以 exitDirectionAtPoint
+    // 为基（曲线段取端点切向，圆段 = 接缝切线），再按母线弦覆盖 —— 对直线宿主
+    // 与旧公式逐位相同，故存量行为不变。att 的独立角度基准字段此刻为空。
+    const double refWorld = cad::param::effectiveAngleRefWorld(m_paramDoc, att);
 
     // 保持原基准角度（用户拍板 2026-09）:
     // 连接新线段时不会重新建立/反算基准，而是保持原基准

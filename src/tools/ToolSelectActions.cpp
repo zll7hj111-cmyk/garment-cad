@@ -339,6 +339,20 @@ void ToolSelect::mouseDoubleClick(QGraphicsSceneMouseEvent* event)
                     dlg->show();
                     return;
                 }
+                // 圆段的圆心不在弧上 (到弧距离 = 半径 ≫ 拾取容差), 所以双击圆心
+                // 走不到下面的「段命中」分支 —— 这里显式识别圆心并打开圆属性面板
+                // (用户报告 m01094 ⑤: 「双击圆心是打不开面板的」)。圆心不是段的
+                // 端点 (端点是绕它的 Polar 接缝点), 必须走 circleCenterPoint。
+                for (const auto& seg : blk->segments) {
+                    if (seg.fitKind != cad::param::FitKind::Circle) continue;
+                    const cad::param::ParamPoint* center = blk->circleCenterPoint(seg);
+                    if (!center || center->id != snap->pointId) continue;
+                    QWidget* parentWidget = m_scene->views().isEmpty() ? nullptr : m_scene->views().first();
+                    auto* dlg = new cad::ui::LinePropertyDialog(snap->blockId, seg.id,
+                                                               m_paramDoc, m_scene, parentWidget);
+                    dlg->show();
+                    return;
+                }
             }
         }
     }

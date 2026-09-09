@@ -23,6 +23,7 @@ enum class ToolType {
     PlacePoint,
     Measure,
     AngleMeasure,
+    Circle,
 };
 
 /// 工具静态元数据 (TOOL_SYSTEM_AUDIT P3): 每个工具经 static describe()

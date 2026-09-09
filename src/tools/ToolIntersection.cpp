@@ -3,6 +3,7 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
 #include <QKeyEvent>
+#include <QPainterPath>
 #include <cmath>
 #include "geometry/Angle.h"
 
@@ -12,11 +13,34 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "document/commands/BlockCommands.h"
+#include "geometry/CurveMath.h"
 #include "geometry/RayCast.h"
+#include "geometry/Units.h"
 #include "tools/IntersectionAngleAim.h"
 #include "geometry/Epsilon.h"
 
 namespace cad::tools {
+
+namespace {
+
+/// Scene-space painter path for a curve segment's cached spans (circle / Bézier
+/// target highlight). Spans are block-local: map through the block transform
+/// and the scene Y-flip (Coord::toScene) — CurveMath never flips Y itself.
+QPainterPath curveHighlightPath(const cad::param::Block& block,
+                                const std::vector<cad::geo::BezierSpan>& spans)
+{
+    QPainterPath path;
+    if (spans.empty()) return path;
+    const auto toScene = [&block](const cad::geo::Vec2& p) {
+        return cad::geo::Coord::toScene(block.transform.toWorld(p));
+    };
+    path.moveTo(toScene(spans.front().p0));
+    for (const auto& s : spans)
+        path.cubicTo(toScene(s.ctrl1), toScene(s.ctrl2), toScene(s.p3));
+    return path;
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -166,13 +190,9 @@ void ToolIntersection::handleSelectLinePress(const cad::geo::Vec2& pos, double z
     const auto* block = m_paramDoc->findBlock(m_targetBlockId);
     const auto* seg = block ? block->findSegment(m_targetSegmentId) : nullptr;
     if (!block || !seg) return;
-    const auto* sp = block->findPoint(seg->startPointId);
-    const auto* ep = block->findPoint(seg->endPointId);
-    if (!sp || !ep || !sp->resolved || !ep->resolved) return;
+    if (!targetGeometry(*block, *seg)) return;  // Degenerate line: no usable target.
 
-    cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-    cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-    m_visuals.showSegHighlight(w1, w2, /*hover=*/false);
+    showTargetHighlight(*block, *seg, /*hover=*/false);
 
     clearHoverMarkers();
     setState(State::SelectPoint);
@@ -190,13 +210,7 @@ void ToolIntersection::updateLineHover(const cad::geo::Vec2& pos, double zoom)
         const auto* block = m_paramDoc->findBlock(segSnap->blockId);
         const auto* seg = block ? block->findSegment(segSnap->segmentId) : nullptr;
         if (block && seg) {
-            const auto* sp = block->findPoint(seg->startPointId);
-            const auto* ep = block->findPoint(seg->endPointId);
-            if (sp && ep && sp->resolved && ep->resolved) {
-                cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-                cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-                m_visuals.showSegHighlight(w1, w2, /*hover=*/true);
-            }
+            showTargetHighlight(*block, *seg, /*hover=*/true);
         }
         if (!m_scene->views().isEmpty())
             m_scene->views().first()->setCursor(Qt::CrossCursor);
@@ -302,6 +316,58 @@ void ToolIntersection::handleBorrowAimPress(const cad::geo::Vec2& pos, double zo
     commitIntersection();
 }
 
+std::optional<ToolIntersection::TargetGeometry> ToolIntersection::targetGeometry(
+    const cad::param::Block& block, const cad::param::Segment& seg)
+{
+    const auto* sp = block.findPoint(seg.startPointId);
+    const auto* ep = block.findPoint(seg.endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) return std::nullopt;
+
+    TargetGeometry g;
+    g.block = &block;
+    g.seg = &seg;
+    g.w1 = block.transform.toWorld(sp->resolvedPos);
+    g.w2 = block.transform.toWorld(ep->resolvedPos);
+    g.segDir = g.w2 - g.w1;
+    if (seg.fitKind == cad::param::FitKind::Circle) {
+        // Full circle: the chord is degenerate, so there is no chord direction
+        // to measure the ray angle against. Anchor on the CCW tangent at the
+        // segment start (CIRCLE_TOOL_DESIGN.md §16) — continuous in sweep and
+        // defined for 360°. World space here: the tool's base angle is world.
+        g.baseAngle = std::atan2(g.segDir.y, g.segDir.x);
+        if (const auto* center = block.findPoint(sp->refPointId);
+            center && center->resolved) {
+            g.baseAngle = cad::geo::degToRad(cad::geo::circleCcwTangentDeg(
+                g.w1, block.transform.toWorld(center->resolvedPos)));
+        }
+        return g;
+    }
+    if (g.segDir.length() < cad::geo::kGeomEps) return std::nullopt;
+    g.baseAngle = std::atan2(g.segDir.y, g.segDir.x);
+    return g;
+}
+
+void ToolIntersection::showTargetHighlight(const cad::param::Block& block,
+                                           const cad::param::Segment& seg,
+                                           bool hover)
+{
+    if (seg.isCurve()) {
+        const cad::param::CurveSpanEntry* entry = block.curveSpanEntry(seg.id);
+        if (entry && !entry->spans.empty()) {
+            m_visuals.showCurveHighlight(curveHighlightPath(block, entry->spans), hover);
+            return;
+        }
+    }
+    const auto* sp = block.findPoint(seg.startPointId);
+    const auto* ep = block.findPoint(seg.endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) {
+        m_visuals.hideSegHighlight();
+        return;
+    }
+    m_visuals.showSegHighlight(block.transform.toWorld(sp->resolvedPos),
+                               block.transform.toWorld(ep->resolvedPos), hover);
+}
+
 void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double zoom)
 {
     if (!m_paramDoc) return;
@@ -309,16 +375,10 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
     const auto* block = m_paramDoc->findBlock(m_targetBlockId);
     const auto* seg = block ? block->findSegment(m_targetSegmentId) : nullptr;
     if (!block || !seg) return;
-    const auto* sp = block->findPoint(seg->startPointId);
-    const auto* ep = block->findPoint(seg->endPointId);
-    if (!sp || !ep || !sp->resolved || !ep->resolved) return;
 
-    cad::geo::Vec2 w1 = block->transform.toWorld(sp->resolvedPos);
-    cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-    cad::geo::Vec2 segDir = w2 - w1;
-    if (segDir.length() < cad::geo::kGeomEps) return;
-    double segAngleRad = std::atan2(segDir.y, segDir.x);
-    TargetGeometry targetGeom{block, seg, w1, w2, segDir, segAngleRad};
+    const auto targetGeom = targetGeometry(*block, *seg);
+    if (!targetGeom) return;
+    const double segAngleRad = targetGeom->baseAngle;
 
     m_lastCursorPos = cursorPos;
 
@@ -349,7 +409,7 @@ void ToolIntersection::updateAimPreview(const cad::geo::Vec2& cursorPos, double 
     m_currentAngleDeg = angles.storageDeg;
 
     double t = 0.0;
-    auto hit = computeIntersection(m_currentAngleDeg, &t, &targetGeom);
+    auto hit = computeIntersection(m_currentAngleDeg, &t, &*targetGeom);
 
     double theta = segAngleRad + cad::geo::degToRad(m_currentAngleDeg);
     m_visuals.showRayAndHit(m_originPos, hit, theta);
@@ -394,16 +454,11 @@ std::optional<cad::geo::Vec2> ToolIntersection::computeIntersection(
         seg = block ? block->findSegment(m_targetSegmentId) : nullptr;
         if (!block || !seg) return std::nullopt;
 
-        const auto* sp = block->findPoint(seg->startPointId);
-        const auto* ep = block->findPoint(seg->endPointId);
-        if (!sp || !ep || !sp->resolved || !ep->resolved) return std::nullopt;
-
-        w1 = block->transform.toWorld(sp->resolvedPos);
-        cad::geo::Vec2 w2 = block->transform.toWorld(ep->resolvedPos);
-        segDir = w2 - w1;
-        if (segDir.length() < cad::geo::kGeomEps) return std::nullopt;
-
-        baseAngle = std::atan2(segDir.y, segDir.x);
+        const auto g = targetGeometry(*block, *seg);
+        if (!g) return std::nullopt;
+        w1 = g->w1;
+        segDir = g->segDir;
+        baseAngle = g->baseAngle;
     }
     if (!block || !seg) return std::nullopt;
 

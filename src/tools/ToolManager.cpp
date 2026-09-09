@@ -205,6 +205,17 @@ void ToolManager::focusNextPlacedPointField()
     emit placePointFocusNextField();
 }
 
+void ToolManager::setCircleSession(bool active)
+{
+    // 圆绘制会话 (一期补充): 圆心已落 → 条带切「绘制」态。
+    emit circleSessionChanged(active);
+}
+
+void ToolManager::updateCircleSession(double radiusCm, bool locked)
+{
+    emit circleSessionUpdated(radiusCm, locked);
+}
+
 void ToolManager::forwardConnectAngleText(const QString& text)
 {
     if (m_activeTool) m_activeTool->connectAngleTextChanged(text);
@@ -238,6 +249,21 @@ void ToolManager::forwardPlacePointAngle(double angleDeg, bool locked)
 void ToolManager::forwardPlacePointCommit()
 {
     if (m_activeTool) m_activeTool->placePointCommitted();
+}
+
+void ToolManager::forwardCircleRadius(double radiusCm, bool locked)
+{
+    if (m_activeTool) m_activeTool->circleRadiusInput(radiusCm, locked);
+}
+
+void ToolManager::forwardCircleCommit()
+{
+    if (m_activeTool) m_activeTool->circleCommitted();
+}
+
+void ToolManager::forwardCircleCancel()
+{
+    if (m_activeTool) m_activeTool->circleCancelled();
 }
 
 void ToolManager::forwardReverseRequest(const QUuid& blockId, const QUuid& segmentId)

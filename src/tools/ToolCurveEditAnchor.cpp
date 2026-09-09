@@ -14,8 +14,32 @@
 #include "geometry/Units.h"
 #include "document/commands/BlockCommands.h"
 #include "geometry/Epsilon.h"
+#include "ui/UiStrings.h"
 
 namespace cad::tools {
+
+// ---------------------------------------------------------------------------
+// D8: 圆段置灰
+// ---------------------------------------------------------------------------
+
+bool ToolCurveEdit::belongsToCircleSegment(const cad::param::Block& block,
+                                           const cad::param::ParamPoint& pt)
+{
+    for (const auto& seg : block.segments) {
+        if (seg.fitKind != cad::param::FitKind::Circle) continue;
+        if (seg.startPointId == pt.id || seg.endPointId == pt.id) return true;
+        if (std::find(seg.passPointIds.begin(), seg.passPointIds.end(), pt.id)
+            != seg.passPointIds.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ToolCurveEdit::notifyCircleLocked()
+{
+    if (m_scene) m_scene->showToast(cad::ui::str::kCircleCurveLockedHint);
+}
 
 // ---------------------------------------------------------------------------
 // Curve point placement preview
@@ -47,6 +71,9 @@ void ToolCurveEdit::updateCurvePointPreview(const cad::geo::Vec2& worldPos,
 
     // Bridge lines (桥接线) must stay straight — no curve points on them.
     if (blk->isBridge) { hideCurvePointPreview(); return; }
+
+    // D8: 圆段置灰 —— 不加曲线点 (也不显示预览点)。
+    if (seg->fitKind == cad::param::FitKind::Circle) { hideCurvePointPreview(); return; }
 
     // Ctrl is REQUIRED to place a curve point — unified for both straight and
     // curve segments (the old "first point needs no shortcut" exception caused
@@ -86,6 +113,7 @@ QUuid ToolCurveEdit::placeCurvePoint(const SegmentSnapResult& segSnap)
     auto* seg = block ? block->findSegment(segSnap.segmentId) : nullptr;
     if (!block || !seg) return {};
     if (block->isBridge) return {};  // 桥接线必须保持直线
+    if (seg->fitKind == cad::param::FitKind::Circle) return {};  // D8: 圆段不加锚
 
     const cad::geo::Vec2 localPos = block->transform.toLocal(segSnap.worldPos);
     double percent = 0.5, offset = 0.0;
@@ -122,6 +150,7 @@ void ToolCurveEdit::startAnchorDrag(const QUuid& blockId, const QUuid& pointId)
     auto* block = m_paramDoc->findBlock(blockId);
     auto* pt = block ? block->findPoint(pointId) : nullptr;
     if (!pt || pt->constraint != cad::param::PointConstraint::CurveAnchor) return;
+    if (belongsToCircleSegment(*block, *pt)) return;  // D8: 圆段置灰
 
     m_state = State::DraggingCurvePoint;
     m_dragBlockId = blockId;
@@ -285,6 +314,7 @@ void ToolCurveEdit::deleteCurvePoint(const SnapResult& snap)
     auto* block = m_paramDoc->findBlock(snap.blockId);
     auto* pt = block ? block->findPoint(snap.pointId) : nullptr;
     if (!block || !pt) return;
+    if (belongsToCircleSegment(*block, *pt)) return;  // D8: 圆段置灰
 
     const QUuid segId = pt->hostSegmentId;
     if (m_undoStack) {

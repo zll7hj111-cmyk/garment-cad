@@ -29,6 +29,10 @@ namespace cad::tools {
 ///   - Shift + click a curve point    → delete it (reverts to a line when it was
 ///     the only curve point).
 ///   - Esc                            → cancel the in-progress drag / handle edit.
+///
+/// D8: 圆段（`Segment::fitKind == FitKind::Circle`）整体置灰 —— 它的点既不能
+/// 拖动 / 删除，也不能加新的曲线点（圆恒为 4 跨 3 锚）。改形走显式
+/// 「解除圆约束」命令（D14）后再编辑。
 class ToolCurveEdit : public Tool
 {
 public:
@@ -94,6 +98,14 @@ private:
                                    const cad::param::Segment& seg,
                                    const cad::geo::Vec2& localPos,
                                    double* percent, double* offset) const;
+
+    /// D8 圆段置灰: 该点是否属于块内某条 `FitKind::Circle` 段
+    /// （两端 Polar 或任一象限锚）。圆段的点全部由拟合重写 —— 拖动 /
+    /// 删除 / 加点都会破圆，改形必须走「解除圆约束」命令。
+    [[nodiscard]] static bool belongsToCircleSegment(
+        const cad::param::Block& block, const cad::param::ParamPoint& pt);
+    /// D8 反馈: 画布 toast 说明圆段为何不可编辑 (文案取 ui/UiStrings.h)。
+    void notifyCircleLocked();
 
     /// Release all transient graphics (preview dot + handles).
     void clearGraphics();

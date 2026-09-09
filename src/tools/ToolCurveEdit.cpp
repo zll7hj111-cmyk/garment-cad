@@ -82,6 +82,14 @@ void ToolCurveEdit::mousePress(QGraphicsSceneMouseEvent* event)
     if (snap) {
         const auto* blk = m_paramDoc->findBlock(snap->blockId);
         const auto* pt  = blk ? blk->findPoint(snap->pointId) : nullptr;
+        // D8: 圆段的点（象限锚 + 两端）一律置灰 —— 拖 / 删都会破圆，
+        // 改形走「解除圆约束」命令 (CircleGeometrySection 按钮)。
+        if (blk && pt && belongsToCircleSegment(*blk, *pt)) {
+            hideCurvePointPreview();
+            hideHandles();
+            notifyCircleLocked();
+            return;
+        }
         if (pt && pt->constraint == cad::param::PointConstraint::CurveAnchor) {
             hideCurvePointPreview();
             if (event->modifiers() & Qt::ShiftModifier) {
@@ -110,11 +118,17 @@ void ToolCurveEdit::mousePress(QGraphicsSceneMouseEvent* event)
         const auto* seg = blk ? blk->findSegment(segSnap->segmentId) : nullptr;
         const bool ctrl = event->modifiers() & Qt::ControlModifier;
         if (seg && ctrl) {
-            hideCurvePointPreview();
-            const QUuid newPt = placeCurvePoint(*segSnap);
-            if (!newPt.isNull()) {
-                startAnchorDrag(segSnap->blockId, newPt);
-                showHandles(segSnap->blockId, newPt);
+            // D8: 圆段不接收新的曲线点（圆恒为 4 跨 / 3 象限锚）。
+            if (seg->fitKind == cad::param::FitKind::Circle) {
+                hideCurvePointPreview();
+                notifyCircleLocked();
+            } else {
+                hideCurvePointPreview();
+                const QUuid newPt = placeCurvePoint(*segSnap);
+                if (!newPt.isNull()) {
+                    startAnchorDrag(segSnap->blockId, newPt);
+                    showHandles(segSnap->blockId, newPt);
+                }
             }
         }
         return;

@@ -28,13 +28,21 @@ void IntersectionToolVisuals::showSegHighlight(const cad::geo::Vec2& w1,
                                                const cad::geo::Vec2& w2,
                                                bool hover)
 {
+    QPainterPath path;
+    path.moveTo(cad::geo::Coord::toScene(w1));
+    path.lineTo(cad::geo::Coord::toScene(w2));
+    showCurveHighlight(path, hover);
+}
+
+void IntersectionToolVisuals::showCurveHighlight(const QPainterPath& scenePath, bool hover)
+{
     if (!m_scene) return;
     if (m_segHighlight) {
         QPen pen(m_scene->style()->previewLineColor, hover ? 2.0 : 2.5);
         pen.setCosmetic(true);
         m_segHighlight->setPen(pen);
     } else {
-        m_segHighlight = new QGraphicsLineItem();
+        m_segHighlight = new QGraphicsPathItem();
         QPen pen(m_scene->style()->previewLineColor, hover ? 2.0 : 2.5);
         pen.setCosmetic(true);
         m_segHighlight->setPen(pen);
@@ -42,8 +50,7 @@ void IntersectionToolVisuals::showSegHighlight(const cad::geo::Vec2& w1,
         m_scene->addItem(m_segHighlight);
         m_managed.own(m_segHighlight, &m_segHighlight);
     }
-    m_segHighlight->setLine(QLineF(cad::geo::Coord::toScene(w1),
-                                   cad::geo::Coord::toScene(w2)));
+    m_segHighlight->setPath(scenePath);
     m_segHighlight->setVisible(true);
 }
 

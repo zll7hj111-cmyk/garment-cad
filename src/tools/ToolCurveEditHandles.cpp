@@ -86,6 +86,11 @@ void ToolCurveEdit::anchorTangents(const cad::param::Block& block,
 
 void ToolCurveEdit::showHandles(const QUuid& blockId, const QUuid& pointId)
 {
+    // D8: 圆段的点没有可拖的切向手柄 —— 圆段由拟合重写，直接不显示。
+    if (const auto* block = m_paramDoc ? m_paramDoc->findBlock(blockId) : nullptr) {
+        const auto* pt = block->findPoint(pointId);
+        if (pt && belongsToCircleSegment(*block, *pt)) { hideHandles(); return; }
+    }
     m_handleBlockId = blockId;
     m_handlePointId = pointId;
     updateHandleGraphics();
@@ -97,6 +102,7 @@ void ToolCurveEdit::updateHandleGraphics()
     auto* block = m_paramDoc->findBlock(m_handleBlockId);
     auto* pt = block ? block->findPoint(m_handlePointId) : nullptr;
     if (!block || !pt || !pt->resolved) { hideHandles(); return; }
+    if (belongsToCircleSegment(*block, *pt)) { hideHandles(); return; }  // D8
 
     cad::geo::Vec2 tanIn, tanOut;
     anchorTangents(*block, *pt, &tanIn, &tanOut);
