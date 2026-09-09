@@ -48,5 +48,7 @@ inline const QString kSwapInOut = QStringLiteral("调换进/出");
 inline const QString kAlignPoint = QStringLiteral("对齐点");
 inline const QString kComponentFmt = QStringLiteral("组件 %1");
 inline const QString kStartToEndTip = QStringLiteral("起点 → 终点。换向后修改长度/角度将驱动对端。");
+inline const QString kCircleCurveLockedHint =
+    QStringLiteral("圆段不可编辑曲线点，请先「解除圆约束」");
 
 } // namespace cad::ui::str

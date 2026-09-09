@@ -31,6 +31,7 @@
 #include "ui/LineEndpointSection.h"
 #include "ui/LineAppearanceSection.h"
 #include "ui/LineGeometrySection.h"
+#include "ui/CircleGeometrySection.h"
 #include "geometry/Epsilon.h"
 #include "ui/UiStrings.h"
 
@@ -251,6 +252,18 @@ void LinePropertyDialog::buildPage1(ElaTabWidget* tabs)
     connect(m_geometrySection, &LineGeometrySection::sceneRefreshRequested, this, &LinePropertyDialog::refreshScene);
     layout->addWidget(m_geometrySection);
 
+    // ─── 圆的几何 (FitKind::Circle): 与上面的长度/曲线区互斥显示 ───
+    m_circleSection = new CircleGeometrySection(m_paramDoc, m_scene, page);
+    m_circleSection->setTarget(m_blockId, m_segmentId);
+    connect(m_circleSection, &CircleGeometrySection::liveUpdated, this, &LinePropertyDialog::onLiveUpdate);
+    connect(m_circleSection, &CircleGeometrySection::sceneRefreshRequested, this, &LinePropertyDialog::refreshScene);
+    // D14 解除圆约束: fitKind 已变 None → 重填以隐藏圆区、让线段区/角度卡接管。
+    connect(m_circleSection, &CircleGeometrySection::detachRequested, this, [this]() {
+        populateFromModel();
+    });
+    m_circleSection->setVisible(false);
+    layout->addWidget(m_circleSection);
+
     // ─── 连接/端点 (2026-xx §3): 端点组内集成「连接到 + 拆开/重连」 ───
     m_lblConnHint = new ElaText(QString(), 12, page);
     m_lblConnHint->setStyleSheet(dimMono);
@@ -351,6 +364,18 @@ void LinePropertyDialog::populateFromModel()
     if (m_geometrySection)
         m_geometrySection->populateFromModel(*block, *seg);
 
+    // 圆拟合段 (CIRCLE_TOOL_DESIGN.md D21): 专属圆区接管尺寸/角度, 长度+曲线区
+    // 与角度卡让位 —— 角度卡的「角度」写的是终点 Polar 角度, 对圆而言那是
+    // **包角**而非基准角 (a0 由圆区自己写起点), 同时复用会把整圆写成 0° 包角。
+    const bool isCircle = seg->fitKind == cad::param::FitKind::Circle;
+    if (m_geometrySection)
+        m_geometrySection->setVisible(!isCircle);
+    if (m_circleSection) {
+        m_circleSection->setVisible(isCircle);
+        if (isCircle)
+            m_circleSection->populateFromModel(*block, *seg);
+    }
+
     // 锚点 Tab
     const bool isCurve = seg->isCurve();
     if (m_anchorTab && m_tabs) {
@@ -369,6 +394,7 @@ void LinePropertyDialog::populateFromModel()
     if (m_connCard)  m_connCard->setTarget(m_blockId, m_segmentId);
     if (m_refCard)   m_refCard->setTarget(m_blockId, m_segmentId);
     if (m_angleCard) m_angleCard->setTarget(m_blockId, m_segmentId);
+    if (m_angleCard) m_angleCard->setVisible(!isCircle);
 
     if (m_endpointSection)
         m_endpointSection->populateFromModel(*block, *seg);
@@ -475,6 +501,9 @@ void LinePropertyDialog::applyToModel()
     if (m_geometrySection)
         m_geometrySection->applyToModel(block, seg);
 
+    if (m_circleSection)
+        m_circleSection->applyToModel(block, seg);
+
     if (m_endpointSection)
         m_endpointSection->applyToModel(block, seg);
 }
@@ -497,6 +526,7 @@ void LinePropertyDialog::refreshScene()
         if (m_paramDoc) m_paramDoc->resolveAll();
         if (m_scene) m_scene->refreshAllBlockItems();
         refreshActualLengthLabel();
+        if (m_circleSection) m_circleSection->refreshDerived();
     });
 }
 

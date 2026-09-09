@@ -50,6 +50,10 @@ void LinePropertySession::takeSnapshot(cad::param::ParamDocument* doc,
         m_snapshot.endPoint.showName = ep->showName;
     }
     if (const auto* sp = block->findPoint(seg->startPointId)) {
+        m_snapshot.startDistance = sp->distance;
+        m_snapshot.startDistanceFormula = sp->distanceFormula;
+        m_snapshot.startAngle = sp->angle;
+        m_snapshot.startAngleFormula = sp->angleFormula;
         m_snapshot.startPoint.name = sp->name;
         m_snapshot.startPoint.annotation = sp->annotation;
         m_snapshot.startPoint.showName = sp->showName;
@@ -83,8 +87,15 @@ bool LinePropertySession::commit(cad::param::ParamDocument* doc,
     oldProps.weight = m_snapshot.weight;
     oldProps.lengthAuto = m_snapshot.lengthAuto;
     oldProps.lengthFormula = m_snapshot.lengthFormula;
+    oldProps.tension = m_snapshot.tension;
     oldProps.distance = m_snapshot.distance;
     oldProps.distanceFormula = m_snapshot.distanceFormula;
+    oldProps.endAngle = m_snapshot.angle;
+    oldProps.endAngleFormula = m_snapshot.angleFormula;
+    oldProps.startDistance = m_snapshot.startDistance;
+    oldProps.startDistanceFormula = m_snapshot.startDistanceFormula;
+    oldProps.startAngle = m_snapshot.startAngle;
+    oldProps.startAngleFormula = m_snapshot.startAngleFormula;
     oldProps.startName = m_snapshot.startPoint.name;
     oldProps.startAnno = m_snapshot.startPoint.annotation;
     oldProps.startShowName = m_snapshot.startPoint.showName;
@@ -106,14 +117,21 @@ bool LinePropertySession::commit(cad::param::ParamDocument* doc,
             newProps.weight = s->weight;
             newProps.lengthAuto = b->lengthAuto;
             newProps.lengthFormula = s->lengthFormula;
+            newProps.tension = s->tension;
             if (const auto* ep = b->findPoint(s->endPointId)) {
                 newProps.distance = ep->distance;
                 newProps.distanceFormula = ep->distanceFormula;
+                newProps.endAngle = ep->angle;
+                newProps.endAngleFormula = ep->angleFormula;
                 newProps.endName = ep->name;
                 newProps.endShowName = ep->showName;
                 newProps.endAnno = ep->annotation;
             }
             if (const auto* sp = b->findPoint(s->startPointId)) {
+                newProps.startDistance = sp->distance;
+                newProps.startDistanceFormula = sp->distanceFormula;
+                newProps.startAngle = sp->angle;
+                newProps.startAngleFormula = sp->angleFormula;
                 newProps.startName = sp->name;
                 newProps.startShowName = sp->showName;
                 newProps.startAnno = sp->annotation;
@@ -174,6 +192,10 @@ void LinePropertySession::rollback(cad::param::ParamDocument* doc,
                 ep->annotation = m_snapshot.endPoint.annotation;
             }
             if (auto* sp = block->findPoint(seg->startPointId)) {
+                sp->distance = m_snapshot.startDistance;
+                sp->distanceFormula = m_snapshot.startDistanceFormula;
+                sp->angle = m_snapshot.startAngle;
+                sp->angleFormula = m_snapshot.startAngleFormula;
                 sp->name = m_snapshot.startPoint.name;
                 sp->showName = m_snapshot.startPoint.showName;
                 sp->annotation = m_snapshot.startPoint.annotation;

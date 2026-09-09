@@ -39,6 +39,13 @@ struct LinePropertySnapshot
     QString distanceFormula;
     double angle = 0.0;
     QString angleFormula;
+    /// Start-point polar fields. 圆拟合段 (FitKind::Circle) 的半径与基准角度
+    /// 权威都落在 start 点上 (R = sp->distance, a0 = sp->angle, D18/D2)，只
+    /// 快照 end 点会让面板里的半径/基准角改动逃出 undo 与取消回滚。
+    double startDistance = 0.0;
+    QString startDistanceFormula;
+    double startAngle = 0.0;
+    QString startAngleFormula;
     cad::param::PointConstraint constraint = cad::param::PointConstraint::Free;
     QUuid refPointId;
     double orthoOffsetDist = 0.0;

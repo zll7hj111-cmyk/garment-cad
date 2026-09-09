@@ -422,6 +422,8 @@ add_library(gcad_ui STATIC
     src/ui/LineAppearanceSection.cpp
     src/ui/LineGeometrySection.h
     src/ui/LineGeometrySection.cpp
+    src/ui/CircleGeometrySection.h
+    src/ui/CircleGeometrySection.cpp
     src/ui/LineOrthoOffsetCard.h
     src/ui/LineOrthoOffsetCard.cpp
     src/ui/SegmentAnchorTab.h

@@ -50,6 +50,7 @@ class PointRefEdit;
 class LineEndpointSection;
 class LineAppearanceSection;
 class LineGeometrySection;
+class CircleGeometrySection;
 class SegmentAnchorTab;
 class SegmentAuxTab;
 
@@ -183,6 +184,9 @@ private:
 
     // Page 1 widgets — 几何 (extracted to LineGeometrySection)
     LineGeometrySection*   m_geometrySection   = nullptr;
+
+    // Page 1 widgets — 圆的几何 (FitKind::Circle 专属, 与几何区互斥显示)
+    CircleGeometrySection* m_circleSection     = nullptr;
 
     // Page 1 widgets — 端点 (extracted to LineEndpointSection)
     LineEndpointSection* m_endpointSection = nullptr;

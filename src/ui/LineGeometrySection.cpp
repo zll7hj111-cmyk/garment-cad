@@ -335,6 +335,11 @@ void LineGeometrySection::applyToModel(cad::param::Block* block,
 {
     if (!block || !seg) return;
 
+    // 圆拟合段 (FitKind::Circle): 半径/基准角/包角/圆度全部归 CircleGeometrySection,
+    // 本区的长度框/张力框即使隐藏也还留着旧文本, 不早退会把它们写回模型
+    // (长度框会写终点距离, 张力框会写圆度)。
+    if (seg->fitKind == cad::param::FitKind::Circle) return;
+
     const auto parsedLen = cad::geo::parseNumberOrFormula(m_editLength->text());
     if (parsedLen.isNumber) {
         double numMm = cad::geo::Units::cmToMm(parsedLen.value);
