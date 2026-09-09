@@ -50,15 +50,18 @@
 
 
 ```bash
-ctest -C RelWithDebInfo -R <test名>   # 【日常首选·秒级】只跑受影响的特定单测（如 ctest -C RelWithDebInfo -R test_select_wkey）
-ctest -C RelWithDebInfo               # 【收尾验收专用】跑全量 64 个用例（56 功能测试 + 8 守卫，耗时 1~2 分钟，仅在交付收尾时执行）
+tools\test.bat -R <test名>           # 【日常首选·秒级】只跑受影响的特定单测（等价 ctest -C RelWithDebInfo -R <名>）
+tools\test.bat all                   # 【收尾验收专用】全量并行 -j（上限 12，perf 测试 RUN_SERIAL 独占；2026-12 实测 15s vs 串行 53s）
+tools\test.bat -N                    # 列出当前注册用例（测试拆分/改名后以此为准）
 ```
+裸跑 `tools\test.bat` 或无过滤 `ctest` 被脚本门禁拒绝；直连等价命令：`cd build\out-reldeb && ctest -C RelWithDebInfo [-R <名>]`。
 
 - 统一构建与验证目录为 `build/out-reldeb`（RelWithDebInfo 模式，开启 /O2 优化 + 保留 PDB 符号表，1200 FPS 极速运行，消除 Debug 模式拖拽卡顿）。历史目录 `build/out`（Debug）、`build/out-rel`（Release）仅由 `tools\build.bat debug` / `release` 分支在特殊排查时写入，日常禁用。
-- **【构建与测试硬红线】日常迭代严禁无脑全量构建与全量测试**：
-  - 日常修改代码验证主程序：`tools\build.bat WildWindPattern`（~0.3s，跳过全部 56 个测试的重链）；
-  - 日常调试单测：`tools\build.bat <test名>`，随后单跑 `ctest -C RelWithDebInfo -R <test名>`；
-  - 只有在任务彻底完工、交付收尾时，才允许执行一次全量构建与全量 `ctest`。
+- **【构建与测试硬红线 = 脚本门禁（2026-12 起），不再仅靠文档自觉】**：
+  - 日常修改代码验证主程序：`tools\build.bat WildWindPattern`（~0.3s，跳过全部测试的重链）；
+  - 日常调试单测：`tools\build.bat <test名>`，随后单跑 `tools\test.bat -R <test名>`；
+  - 全量构建唯一入口 `tools\build.bat all`（裸跑 / 仅 preset 会被脚本拒绝）；全量跑测唯一入口 `tools\test.bat all`；
+  - 只有在任务彻底完工、交付收尾时，才允许执行一次全量构建与全量测试。
 - ctest 共 **64** 个用例（56 个功能测试 + 8 个自动化守卫；测试 exe 共 59 个——另有 test_realdoc_perf/test_realdoc_full/test_nav_smoke 不进 ctest）；原 `test_commands` 已拆分为 `test_block_commands` / `test_attachment_shadow` / `test_attachment_slide` / `test_attachment_angle` / `test_variable_layer_commands` / `test_reverse_segment_commands` 6 套；**既有基线红 = 0（2026-09-02 修复两条基线红：test_serializer::bridgeAuxPointSnappableAndAttachable = Resolver Step 5 桥跟随者重解被 205a229 删除未恢复；test_component::dragComponentLeaderCurveFollowStable 31.4798mm = followResettle 后缺组件沉降，见 TROUBLESHOOTING 第 5 组）**；**环境漂移红已消除（2026-09 复核）**：test_intersection_update 8 个用例已全部改用合成档 `CrossLayerDoc`（tests/test_intersection_update.cpp:12,38,253-260），不读 `E:/3.gcad`、无 QSKIP；test_extend 原 `savedDocFormulaStartExtendRenders` 已改名 `formulaStartExtendEvaluatesAndMovesStart`（tests/test_extend.cpp:737，同步改合成档）；**test_hold_show 已根治（2026-09-04，不再列入漂移红）**：真失败 = `renderNonWhitePixels` 隔行/隔列采样在 100% DPI 把 10px 长度标签（约 161 物理像素）测成 36，低于按 125% DPI 校准的 50px 阈值 → `forceLengthRevealsLengthLabels` 假红；「空输出 exit 1」是 Qt 6.11.1 debug 版全局现象（连纯 test_curve/通过的测试也 0 字节），非失败信号，判据与修复见 TROUBLESHOOTING 第 5 组；修复后 7 用例全绿（tests/test_hold_show.cpp:76-86）；**GUI 时序抖动**：test_dialog_tabs_switch::switchBackAfterTyping（interpPercent 断言）/ test_aux_layer / test_rotate_copy_* / **test_select_wkey** / **test_component::junctionComponentConnectGesture + componentConnectOverlapSwitchTarget** 在整批 ctest 压力下偶发失败，单测复跑即过，勿误判回归。**test_canvas_perf 的 singleCurveFrame 曾为 Debug 段错误存量问题**（疑似环境/软渲染），当前 Ninja Debug 下通过；复现时用基线对照法排查，勿误判回归（详见 `TROUBLESHOOTING.md` 第 5 组）。
 - **按影响面选测试（2026-12 用户拍板，替代"默认全量"）**：`ctest` 全量是**收尾/跨模块大改**的最终验证，**不是每个任务必跑**。日常按改动影响面选相关测试，测试文件增多后全量耗时不可接受。分级约定：
   - 纯 `geometry` 数学（Vec2/Units/Angle/CurveMath）→ `test_curve` + `test_expression`；

@@ -5,9 +5,11 @@
 ## 一键启动
 
 ```bat
-tools\build.bat          :: 默认一键：vcvars64 + configure + build（RelWithDebInfo，binaryDir=build/out-reldeb，1200 FPS极速+保留PDB符号表）
-tools\build.bat release  :: Release（binaryDir=build/out-rel）
+tools\build.bat all         :: 一键全量：vcvars64 + configure + build（RelWithDebInfo，binaryDir=build/out-reldeb，1200 FPS极速+保留PDB符号表）
+tools\build.bat release all :: Release 全量（binaryDir=build/out-rel）
 ```
+
+注意：裸跑 `tools\build.bat` 会被脚本门禁拒绝（防全量重链风暴误触）；日常增量构建用 `tools\build.bat WildWindPattern` 或 `tools\build.bat <test名>`。
 
 **环境变量清单**（构建前需就绪）：
 
@@ -19,11 +21,23 @@ tools\build.bat release  :: Release（binaryDir=build/out-rel）
 
 构建脚本内部先 call vcvars64.bat；普通 PowerShell 直接跑 cmake 找不到 cl.exe 时会失败，请走脚本或 Developer PowerShell。
 
+## 环境要求
+
+| 依赖 | 要求 |
+|------|------|
+| Qt | 6.x（推荐 6.5+），组件：Widgets、Svg、Test、OpenGLWidgets |
+| 编译器 | MSVC 2022（Visual Studio 17，x64，`/std:c++latest` + `/permissive-` + `/FS`） |
+| CMake | ≥ 3.25 |
+| C++ 标准 | C++23（`CMAKE_CXX_STANDARD_REQUIRED ON`） |
+
+Qt 安装与 QT_DIR 配置见上方环境变量清单（方式一：Qt 官方安装器，QT_DIR 指向 msvc2022_64；方式二：vcpkg manifest + toolchain file，二选一）。外部中间件清单（miniz / ElaWidgetTools / spdlog / Tracy）见 `ARCHITECTURE.md`。
+
 ## 如何运行测试
 
 ```bat
-cd build\out-reldeb
-ctest
+tools\test.bat -R <test名>   :: 日常首选：只跑受影响单测（秒级；裸跑被门禁拒绝）
+tools\test.bat all           :: 收尾验收：全量并行（-j≤12，perf 测试独占串行，实测 ~15s）
+tools\test.bat -N            :: 列出当前注册的全部用例名
 ```
 
 - 全量 ctest 是收尾/跨模块大改的最终验证；日常按影响面选测（纯几何 → test_curve + test_expression；parametric 引擎 → test_resolver_points / _attachment / _curve_arc / _diag_misc + test_block_commands + test_attachment_shadow / _slide / _angle + test_variable_layer_commands + test_reverse_segment_commands + test_serializer + test_migration；工具/UI → test_select_wkey / test_rotate_copy_* / test_context_strip / test_dialog_tabs_* 等）。

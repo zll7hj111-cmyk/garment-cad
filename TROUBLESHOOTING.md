@@ -579,6 +579,7 @@ QWidget 有合成刷新风险。③**切工具必须撤下**：角标归场景�
     4. 将 `LineGeometrySectionDart.cpp`（719行）瘦身为拐角偏置面板（当时文件 `LineGeometrySectionOrtho.cpp`，250行；**该文件名已不存在——2026-12 后再拆为 `src/ui/LineOrthoOffsetCard.h/.cpp` + `src/ui/LineGeometrySection.cpp`**），面板保留纯净的拐角偏置行（无/左/右、数值公式、基准轴显隐、斜长解耦标签）；
     5. 测试集迁移为 `tests/test_ortho_offset.cpp`，专注保障偏置几何与交互。
   - **验证**：全量 42/42 ctest（含七大 guard）100% 绿灯通过。
+- **剪贴板用例环境红：OpenClipboard 0x800401d0（2026-12 实测）**：全量 ctest 偶发 `test_formula_groups::compoundChipClickCopyAndDblClickEdit` 红，日志含 `OleSetClipboard: Failed to set mime data (text/plain) ... COM error 0x800401d0: OpenClipboard 拒绝访问`——Windows 剪贴板被同会话其他进程（远控 / 同步软件 / 后台探针）持有导致，**非代码回归**。判据：单跑 `ctest -R "^test_formula_groups$"` 必绿（0.56s）。处理：归入「环境漂移红」，勿改代码；全量跑见红先单跑复核。
 
 
 

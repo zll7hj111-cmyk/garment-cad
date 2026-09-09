@@ -2,18 +2,17 @@
 
 > **主加载文档（会话常驻）**。其余文档全部按需查阅——先看 `DOCS_INDEX.md` 定位，再打开对应文件。
 > 全文分布：用户拍板决策 → `DECISIONS.md`；开发规范与验证基线 → `CONVENTIONS.md`；架构评审档案 → `ARCHIVE.md`；踩坑经验 → `TROUBLESHOOTING.md`；已落地设计 → `docs/design/`。本文件只保留压缩版规则。
+> 低频参考（不注入会话）：环境要求（Qt/MSVC/CMake 版本、QT_DIR 配置）→ `README.md`；外部中间件清单（Qt/miniz/ElaWidgetTools/spdlog/Tracy/图标）→ `ARCHITECTURE.md`；Git 提交规范与远程 → `CONTRIBUTING.md`。
+
+WildWind Pattern（野风帖）——参数化服装 CAD 系统，C++23 / Qt6：参数化引擎（ParamPoint/Segment/Block/Attachment/FormulaVariable）+ 约束求解（Resolver + ConditionEngine）+ 交互制图工具链 + 文档持久化（ZIP via miniz）。
 
 ## 经验库规则
 
 - **修 bug 前**：先 grep `TROUBLESHOOTING.md` 相关关键词，避免重踩已知坑；改快捷键前必查第 0 组登记表。
 - **修完清单外的新 bug**：根因 + 修复验证后追加到 `TROUBLESHOOTING.md` 对应主题分组。
-- **任务收尾防过时**：本任务若触碰了本文件 / `TROUBLESHOOTING.md` / `DECISIONS.md` / `CONVENTIONS.md` 中声明的事实（常量 / 命令 / 路径 / 文件 / 用例数），收尾时必须核对源码并更新对应条目；事实性条目应带源码引用（file:line）。
+- **任务收尾防过时**：本任务若触碰了本文件 / `TROUBLESHOOTING.md` / `DECISIONS.md` / `CONVENTIONS.md` 中声明的事实（常量 / 命令 / 路径 / 文件），收尾时必须核对源码并更新对应条目；事实性条目应带源码引用（file:line）。**注定漂移的计数（用例数 / 文件数）一律写「以 `ctest -N` / 实扫为准」，禁止在常驻文档写死**。
 - **约定变更须同步**：改动了本文件「架构原则 / 领域建模决策」声明的行为时，同步修订对应条目（决策属用户拍板，翻案前先确认）。
 - **文档状态维护**：新增 / 删除 / 归档文档时同步更新 `DOCS_INDEX.md`；设计文档落地后把状态标记改为「已落地」。
-
-## 项目简介
-
-WildWind Pattern（野风帖）——参数化服装 CAD 系统，C++23 / Qt6。参数化建模引擎（ParamPoint/Segment/Block/Attachment/FormulaVariable）+ 约束求解（Resolver + ConditionEngine）+ 交互制图工具链 + 文档持久化（DocumentSerializer，ZIP via miniz）。
 
 ## 模块边界
 
@@ -43,14 +42,14 @@ WildWind Pattern（野风帖）——参数化服装 CAD 系统，C++23 / Qt6。
 tools\build.bat WildWindPattern      # 【日常首选·极速】增量构建主程序（~0.3s，跳过全部测试的链接风暴）
 tools\build.bat <test_name>          # 【单测首选·极速】增量构建单个测试 target（如 tools\build.bat test_select_wkey）
 tools\build.bat reconfig             # 强制重跑 CMake Configure（日常增删修改代码无需运行，Ninja 自动感知）
-tools\build.bat reldeb               # 【收尾验收专用】构建全量所有目标（主程序 + 全部 57 个测试可执行文件重新链接）
-tools\build.bat release              # 纯 Release（产物 build/out-rel，无调试符号）
-tools\build.bat debug                # 纯 Debug（产物 build/out，未优化慢速，常规开发跑测禁止使用）
+tools\build.bat all                  # 【收尾验收专用】全量构建所有 target（主程序 + 全部测试重链；release all / debug all 换 preset）
 ```
 
-- **【铁律·极速迭代】日常严禁无脑全量构建**：改完业务代码只验证编译或跑主程序 → `tools\build.bat WildWindPattern`；调试单测 → 精准指定该测试 target（如 `tools\build.bat test_select_wkey`）。无参数 `tools\build.bat` 会触发全部测试重新链接（含全部 `test_*` 目标的 `/INCREMENTAL:NO` 全量胖重链），CPU / 磁盘 I/O 拥塞 30~60 秒。
+> **门禁（2026-12 起）**：裸跑 / 仅 preset（如 `tools\build.bat`、`tools\build.bat reldeb`）会被脚本直接拒绝——全量构建唯一入口 = 显式 `all`。
+
+- **【铁律·极速迭代】日常严禁无脑全量构建**：改完业务代码只验证编译或跑主程序 → `tools\build.bat WildWindPattern`；调试单测 → 精准指定该测试 target（如 `tools\build.bat test_select_wkey`）。无参数裸跑已被门禁拒绝；全量会触发全部测试重新链接（含全部 `test_*` 目标的 `/INCREMENTAL:NO` 全量胖重链），CPU / 磁盘 I/O 拥塞 30~60 秒。
 - **【全局统一构建目录】`build/out-reldeb`**（RelWithDebInfo：`/O2` + 完整 PDB，杜绝 Debug 拖拽卡顿）。`tools\build.bat` 默认走它；`debug`/`release` 分支写入的 `build/out`、`build/out-rel` 仅供特殊排查，日常禁用。
-- **构建 / 跑测环境**：Ninja 生成器需要 MSVC 环境，一律走 `tools\build.bat`（内部按需 vcvars64）或 Developer PowerShell。长日志建议 `*> x.log` 落盘再读，避免截断。
+- **构建 / 跑测环境**：Ninja 生成器需要 MSVC 环境，一律走 `tools\build.bat` / `tools\test.bat`（内部按需 vcvars64）或 Developer PowerShell——绕开直连 `ninja -C ...` 缺 INCLUDE/LIB 会报 LNK1181（见 TROUBLESHOOTING 第 1 组）。长日志建议 `*> x.log` 落盘再读，避免截断。
 - **模块静态库**：源文件按模块目录归入 7 个静态库，分层单向依赖 `gcad_geometry` → `gcad_parametric` → `gcad_canvas`/`gcad_document` → `gcad_ui` → `gcad_tools` → `gcad_app`；主程序与全部测试通过链接库获得源码。
 - **PDB 治理 / 链接完整性**：**全部 `test_*` 目标**在 `CMakeLists.txt` 末尾按 `BUILDSYSTEM_TARGETS` 统一强制 `/INCREMENTAL:NO`（勿删；`.ilk` 陈旧时增量链接可能产出半更新映像），主程序 WildWindPattern 保留增量（详情见 CONVENTIONS.md）。
 - `compile_commands.json` 由 Ninja 自动导出到 `build/out-reldeb`，clangd 直接使用；增删源文件后只需重跑构建脚本。
@@ -58,12 +57,13 @@ tools\build.bat debug                # 纯 Debug（产物 build/out，未优化�
 ## 验证命令
 
 ```bash
-ctest -C RelWithDebInfo -R <test名>   # 【日常首选·秒级】只跑受影响的特定单测（如 ctest -C RelWithDebInfo -R test_select_wkey）
-ctest -C RelWithDebInfo               # 【收尾验收专用】全量 64 个用例（56 功能测试 + 8 守卫，耗时 1~2 分钟）
-ctest -N                              # 列出当前实际注册的全部用例名（测试拆分/改名后以此为准）
+tools\test.bat -R <test名>           # 【日常首选·秒级】只跑受影响单测（等价 ctest -C RelWithDebInfo -R <名>；裸跑/无过滤被门禁拒绝）
+tools\test.bat all                   # 【收尾验收专用】全量并行 -j（上限 12，perf 测试 RUN_SERIAL 独占；实测 ~15s vs 串行 ~53s）
+tools\test.bat -N                    # 列出当前注册用例名（测试拆分/改名后以此为准）
 ```
+直连等价：`cd build\out-reldeb && ctest -C RelWithDebInfo ...`；数量一律以 `ctest -N` 实测为准。
 
-- **【铁律·按影响面跑测】日常严禁无过滤 `ctest`**：全量含真实 GUI 事件循环模拟与全像素渲染扫描，且反向倒逼全量重链；单步修改 / 单点 bug 修复必须 `-R <名>`，全量仅在任务彻底完工、收尾交付前的最后一轮执行 1 次。
+- **【铁律·按影响面跑测】日常严禁无过滤跑测**：全量含真实 GUI 事件循环模拟与全像素渲染扫描，且反向倒逼全量重链；单步修改 / 单点 bug 修复必须 `tools\test.bat -R <名>`，全量仅在任务彻底完工、收尾交付前的最后一轮执行 1 次。
 - **按影响面选测试**：纯 geometry → `test_curve` + `test_expression`；parametric 引擎 → `test_resolver_*` + `test_block_commands` + `test_attachment_*` + `test_variable_layer_commands` + `test_reverse_segment_commands` + `test_serializer` + `test_migration` + `test_ortho_offset`；序列化 → `test_serializer` + `test_migration`；工具/UI → `test_select_wkey` / `test_rotate_copy_*` / `test_context_strip` / `test_dialog_tabs_*` 等；跨模块大改 / 收尾 → 全量 ctest。
 - **回归基线（判"是不是我引入的红"先看这里）**：既有基线红 = 0。已知非回归项（环境漂移红、GUI 时序抖动）与**测试拆分改名对照表**见 `CONVENTIONS.md` 验证命令区——`test_rotate_copy` 已拆为 `test_rotate_copy_semantics/_shadow/_endtarget`，`test_dialog_tabs` 已拆为 `test_dialog_tabs_switch/_angle_conn/_aux`，`test_resolver` 已拆为 `test_resolver_points/_attachment/_curve_arc/_diag_misc`，`test_attachment_commands` 已拆为 `test_attachment_shadow/_slide/_angle`；判红前先 `ctest -N` 确认用例名。
 - 不进 ctest 需手动跑：`test_realdoc_perf`、`test_realdoc_full`（env `GCAD_DOC`）、`test_nav_smoke`。
@@ -72,23 +72,6 @@ ctest -N                              # 列出当前实际注册的全部用例�
 - **磁盘格式版本与迁移**：`kFormatVersion` 唯一定义点在 `src/document/FormatMigration.h`；改格式 = bump 常量 + 写 migrateVNToVN+1 + registry() 加一行；链路有缺口拒绝加载。回归：`test_migration` + `test_serializer`。
 - **性能探针**：`src/parametric/PerfProbe.h`，运行时 `GCAD_PROFILE=1` 启用，按逻辑帧统计并打印到 stderr（每 120 帧一行）。
 - **新增 .cpp**：加入其模块库源列表（七库之一）；测试 target 源列表只放 `tests/*.cpp`，切勿加项目头文件（AUTOMOC 重复定义 LNK2005）。
-
-## 环境要求
-
-| 依赖 | 要求 |
-|------|------|
-| Qt | 6.x（推荐 6.5+），组件：Widgets、Svg、Test、OpenGLWidgets |
-| 编译器 | MSVC 2022（Visual Studio 17，x64，`/std:c++latest` + `/permissive-` + `/FS`） |
-| CMake | ≥ 3.25 |
-| C++ 标准 | C++23（`CMAKE_CXX_STANDARD_REQUIRED ON`） |
-
-Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指向 msvc2022_64）/ 方式二（vcpkg manifest + toolchain file），两种方式无需同时使用。
-
-## 依赖管理
-
-- FetchContent 内嵌于 CMakeLists.txt：miniz 3.0.2 / ElaWidgetTools（GIT_TAG `aa1856b8`，`third_party/elawidgettools_qt69_patch.cmake` 6 个 Part 幂等，LNK4217 正常）/ spdlog v1.17.0 / Tracy v0.14.0（TRACY_ON_DEMAND=ON）。
-- Qt6 组件：Widgets Svg OpenGLWidgets Test；AUTOMOC/AUTORCC/AUTOUIC 已启用。
-- 图标：Phosphor Icons SVG（MIT），resources/icons/ + icons.qrc（前缀 `:/icons/`），统一经 `src/ui/IconHelper.h`。
 
 ## 开发规范
 
@@ -103,26 +86,24 @@ Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指�
 - **连接角度会话**：条带是纯输入面，连接语义全在 ConnectGesture；会话内条带绝不 push 命令；°/⌒ 切换 = 数值几何保持换算 + 公式原样搬移（不乘系数）；° /⌒ 按钮必须原生 QPushButton + chipButtonStyle + QButtonGroup 互斥；输入锁定只认真桥线 `block->isBridge`。
 - **约束类型分派点登记表**（ParamPoint.h）：改 PointConstraint 枚举必须逐层同步 **13 处**（登记表见 `src/parametric/ParamPoint.h:37-51`，全文见 CONVENTIONS.md）；序列化映射已表驱动（DocumentSerializer.cpp 四组枚举表）。
 - **删除影响报告**：新删善后分支必须同步更新 `deleteImpactReport` 与测试（九项计数，2026-09 下线省道线 dartLinesDegraded 后收敛）。
-- **卡片抽取范式**：子卡片持 doc 指针 + 目标 id，setTarget/refresh 双入口，模型变更经 `changed(ChangeKind)` 信号回报。
-- **卡片基类 CardBase**：五张虚拟列表卡片继承 CardBase；改卡片骨架先改 CardBase 再改派生；indexLabel 固定 objectName（varIndex/cardIndex/linkedIndex/measureIndex/angleIndex）是测试契约勿改。
+- **卡片范式 + CardBase**：子卡片持 doc 指针 + 目标 id，setTarget/refresh 双入口，模型变更经 `changed(ChangeKind)` 信号回报；五张虚拟列表卡片继承 CardBase，改骨架先改基类；indexLabel 固定 objectName（varIndex/cardIndex/linkedIndex/measureIndex/angleIndex）是测试契约勿改。
 - **角度工具收口**：存储域归一化 `normalizeDeg360`/`normalizeDeg180`、显示格式化 `formatDegValue`/`formatDegTrimmed`、弧长↔角度换算 `arcMmToDeg`/`degToArcMm`、双模切换 `followerModeSwitchValues`——统一在 `src/geometry/Angle.h`、`src/geometry/Units.h`、`src/parametric/FollowerAngle.h`，改角度约定只改这几处。
 - **跨层连接反馈**：`crossLayerToast`/`crossLayerBadge` 统一在 `src/ui/LayerFeedback.h`（cad::ui），改文案只改这一个头文件。
-- **表单骨架 + 圆角纪律**：共享骨架在 `src/ui/FormScaffold.h`（makeFormGroupHeader/applyFormGrid/makeFormButtonBar/makeFormTitleBar）；新增 chrome 圆角勿超 4px（RadiusBadge 恒 4px）；输入框与数值微调框统一为无底边横杠纯胶囊输入框（ElaWidgetTools 补丁收口，全包围高亮边框）。
-- **卡片竖线色/字号**：卡片左竖线 = 类型色（变量 piece1/公式 piece2/测量 piece3/关联 piece4），由 `CardBase::setAccentRole` 驱动；字号阶梯 FontXs 10/FontSm 11/FontMd 12/FontBase 13/FontLg 15/FontXl 18（`src/ui/Theme.h`）。
+- **表单骨架 + 圆角纪律**：共享骨架在 `src/ui/FormScaffold.h`（makeFormGroupHeader/applyFormGrid/makeFormButtonBar/makeFormTitleBar）；新增 chrome 圆角勿超 4px；输入框与数值微调框统一为无底边横杠纯胶囊输入框。
+- **卡片竖线色/字号**：左竖线 = 类型色（`CardBase::setAccentRole` 驱动），字号阶梯 FontXs~FontXl——细节见 `src/ui/Theme.h` 与 CONVENTIONS.md。
 - **Qt 性能**：每帧同步槽里禁止 setStyleSheet；setText 同值短路；批量操作禁用布局避免 O(N²)。
 - **性能断言抗噪声**：Debug 性能波动 30%+，断言用宽松边界（≤2.0x），勿用严格排序。
-- **测量工作流**：测量发布 MeasureVariable（refName M_xxx，cm 域）；W 键循环 距离/水平/垂直；水平/垂直轴重合时第二击拒绝；"烘焙到操作层"=复制非移动；跨层附着单向；角度测量严格禁止跨图层（方案 A），基于交点与光标点选位置推导射线方向（flipA/flipB 持久化稳定）。
-- **公式引擎符号集**：`+ - * / ^`、一元 ±、括号归一化、小写函数与任意名字变量（含中文）；单参 `cos/sin/tan/sqrt/abs/atan/asin/acos/floor/ceil/round`（可裸参）、双参 `atan2(y,x)/pow/min/max`（必须括号+逗号）；三角函数参数与结果均为度制；`^` 右结合优先于一元负号；无 `√` 用 `sqrt(...)`；域错误返回错误而非 NaN。
+- **测量工作流**：测量发布 MeasureVariable（refName M_xxx，cm 域）；跨层附着单向，角度测量严格禁跨图层（方案 A）；细节全文见 CONVENTIONS.md。
+- **公式引擎符号集**：函数清单 / 度制约定 / `^` 右结合 / 域错误返回错误而非 NaN——全文见 CONVENTIONS.md 开发规范区。
+- **图标**：统一经 `src/ui/IconHelper.h`（Phosphor SVG，qrc 前缀 `:/icons/`）。
 
 ## 领域建模决策（用户拍板，勿翻案）
 
-> **全文在 `DECISIONS.md`——按需 grep 查阅，不注入会话。** 改动了本区声明的行为时，同步修订 `DECISIONS.md` 对应条目（决策属用户拍板，翻案前先确认）。
->
-> **拆开影子基准**：拆开 = 复制隐藏影子块（`Block::isShadow`）作为角度基准——本体旋转不再影响跟随线（R1）、offset 含公式原样保留（R2）、影子挂新宿主链式随动（R3，L3→影子→L2 双连接链，零新增 Resolver 逻辑）；挂回本体 = 删影子 + 活引用。权威设计 `docs/design/DETACH_SHADOW_DESIGN.md`。（2026-09 补充拍板：新建挂载默认焊接锁定跟随；重连缓存只缓存上次连接对象，从新宿主拆开后重连回到新宿主而非旧本体；辅助点挂载拆开语义 = 彻底释放连接 RemoveAttachmentCommand，使线段转为自由线段可随时重新吸附/连接；右键菜单全图元穿透提供就地拆开；D 键快拆与面板辅助点 Tab 均彻底释放数据。）
->
-> **线段正交拐角偏置（OrthoOffset，2026-09 拍板）**：沿主轴前进基准长折 90° 左右偏置直连端点（YX 局部直角坐标系模型，FMA 纯浮点乘加 $O(1)$ 求解保 1200 FPS；屏幕系向左法向 $(\sin\theta, -\cos\theta)$ 纠偏左右按钮；首次开启锁死当前几何基准角与基准长，主长度框与 ContextStrip 回填基准长，斜长独立标签解耦防膨胀；ContextStrip 保持 OrthoOffset 约束禁退化；输入数值自动切方向，左右切换基准角恒定）；画布中心参考虚线（showOrthoAxis）与「👁 基准轴」开关；在 `src/ui/LineOrthoOffsetCard.h/.cpp` + `LineGeometrySection.cpp` 面板无缝集成；经用户拍板取消镜像线段与复杂开度逻辑，保持单线轻量稳健。详见 `DECISIONS.md`。
->
-> **端点连接跟随角度直线弦长/开度模式（ChordLength，2026-09 拍板）**：端点跟随体系（Attachment）新增「直线弦长 / 开度模式」（`RotationMode::ChordLength`，界面图标 `[↔]`），专用于服装制图省道展开、褶裥开度等场景。支持直接输入开度物理直线距离（如 `3.0 cm` 或公式 `D_dart`），以 $O(1)$ 几何反算展开角 $\theta = 2\arcsin\left(\frac{C}{2R}\right)$（超限平滑钳制 $180^\circ$ 直行绝不 NaN）；三模零跳变几何换算（角度 $\leftrightarrow$ 弧长 $\leftrightarrow$ 弦长/开度）；ContextStrip 扩充为 `[°] [⌒] [↔]` 三键互斥胶囊组，SegmentAngleCard 支持循环切换；持久化向前向下完全兼容。详见 `DECISIONS.md`。
+> **全文在 `DECISIONS.md`——按需 grep 查阅，不注入会话。** 改动对应行为前须先与用户确认。最新三大拍板：
+
+- **拆开影子基准**：拆开 = 复制隐藏影子块（`Block::isShadow`）作为角度基准；挂回本体 = 删影子 + 活引用。权威设计 `docs/design/DETACH_SHADOW_DESIGN.md`。
+- **线段正交拐角偏置（OrthoOffset，2026-09 拍板）**：沿主轴前进基准长折 90° 左右偏置直连端点，$O(1)$ 求解保 1200 FPS；面板集成于 `LineOrthoOffsetCard` + `LineGeometrySection`；已拍板取消镜像线段与复杂开度逻辑。详见 `DECISIONS.md`。
+- **端点跟随直线弦长/开度模式（ChordLength，2026-09 拍板）**：`RotationMode::ChordLength`（图标 `[↔]`），直接输入开度直线距离，$O(1)$ 反算展开角（超限钳制 180° 绝不 NaN）；`[°][⌒][↔]` 三模零跳变几何换算。详见 `DECISIONS.md`。
 
 ## 关键约束
 
@@ -133,7 +114,6 @@ Qt 安装与 QT_DIR 配置见环境方式一（Qt 官方安装器，QT_DIR 指�
 - **文案唯一出处**：命令/动作文案 `src/document/CommandTexts.h`（`cad::cmd::texts`，document 层，供 ui/tools/app 共用）、纯 UI 文案 `src/ui/UiStrings.h`（`cad::ui::str`）——禁止裸 `QStringLiteral` 副本（2026-12 审计 N4 收口）。
 - **Block 刚体模型**：Block 是刚体变换单元，内部点相对位置固定，整体支持平移/旋转。
 - **画布缩放**：ZOOM_MIN=0.2（20%）/ ZOOM_MAX=10.0（1000%）/ SCENE_BOUND=±10,000mm（浮点精度安全）——常量定义于 `src/canvas/CanvasView.h:100-103`。
-- **Git 远程**：origin = https://github.com/zll7hj111-cmyk/garment-cad.git，主分支 main；本地身份 林林 <2274789227@qq.com>。
 
 ## 架构决策记录（2026-08 全量评审档案）
 
