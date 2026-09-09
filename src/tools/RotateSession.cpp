@@ -17,6 +17,7 @@
 #include "document/commands/AttachmentCommands.h"
 #include "document/commands/BlockTransformCommands.h"
 #include "tools/RotateCopyGesture.h"
+#include "tools/RotateDragMath.h"
 #include "geometry/Epsilon.h"
 
 namespace cad::tools {
@@ -260,9 +261,11 @@ void RotateSession::applyAngleDeg(cad::param::ParamDocument* doc,
         const auto* sp = blk->findPoint(seg.startPointId);
         const auto* ep = blk->findPoint(seg.endPointId);
         if (!sp || !ep || !sp->resolved || !ep->resolved) return;
-        // 局部弦向（start→end）在旋转下不变，可现读；世界向 = baseTf.rotation + 局部弦向。
+        // 局部姿态方向（圆 = 圆心→接缝半径方向，其它 = 弦向）在旋转下不变，可
+        // 现读；世界向 = baseTf.rotation + 局部姿态方向。圆若沿用弦向则恒为 0，
+        // 拖动 delta 会多算 a₀（圆多转一个起始角）。
         const double baseWorldDeg = cad::geo::radToDeg(m_base.baseTf.rotation)
-            + cad::geo::radToDeg((ep->resolvedPos - sp->resolvedPos).angle());
+            + cad::geo::radToDeg(localPoseDirRad(*blk, seg));
         const double deltaRad = cad::geo::degToRad(deg - baseWorldDeg);
         blk->transform.rotation = m_base.baseTf.rotation + deltaRad;
         blk->transform.origin = m_pivot
@@ -427,11 +430,12 @@ double RotateSession::currentAngleDeg(const cad::param::ParamDocument* doc,
     const auto* sp = blk->findPoint(seg.startPointId);
     const auto* ep = blk->findPoint(seg.endPointId);
     if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
-    const cad::geo::Vec2 w1 = blk->transform.toWorld(sp->resolvedPos);
-    const cad::geo::Vec2 w2 = blk->transform.toWorld(ep->resolvedPos);
-    double deg = cad::geo::radToDeg((w2 - w1).angle());
-    // 2026-09 拍板 D1：自由段姿态 = 世界方向角（start→end），统一 [0,360)，
-    // 不再因「锚心在终点」加 180°（旧式让同一个姿态在两条入口下差 180°）。
+    // 2026-09 拍板 D1：自由段姿态 = 世界方向角，统一 [0,360)，不再因「锚心在
+    // 终点」加 180°（旧式让同一个姿态在两条入口下差 180°）。
+    // 2026-12：姿态方向走 localPoseDirRad —— 圆段 = 圆心→接缝半径方向，
+    // 整圆弦向退化会让黄虚线/黄弧/徽标全部塌到世界 0°。
+    const double deg = cad::geo::radToDeg(blk->transform.rotation)
+        + cad::geo::radToDeg(localPoseDirRad(*blk, seg));
     return cad::geo::normalizeDeg360(deg);
 }
 
@@ -623,9 +627,10 @@ double RotateSession::originalWorldRotDeg(const cad::param::ParamDocument* doc) 
         }
         return cad::geo::radToDeg(m_refWorldRad + cad::geo::kPi - cad::geo::degToRad(alpha));
     }
-    // 自由线起手姿态：世界向 = 快照 rotation + 局部弦向（局部弦向在旋转下不变，
-    // 可现读）。2026-09 统一：禁止现读文档姿态 —— 拖动期文档已被实时改写，
-    // 现读得到「当前」姿态（黄圈把起点也一起转，用户点 1）。
+    // 自由段起手姿态：世界向 = 快照 rotation + 局部姿态方向（局部姿态方向在
+    // 旋转下不变，可现读）。2026-09 统一：禁止现读文档姿态 —— 拖动期文档已被
+    // 实时改写，现读得到「当前」姿态（黄圈把起点也一起转，用户点 1）。
+    // 2026-12：局部姿态方向走 localPoseDirRad（圆 = 半径方向）。
     double baseDeg = 0.0;
     if (doc) {
         if (const auto* blk = doc->findBlock(m_blockId);
@@ -635,7 +640,7 @@ double RotateSession::originalWorldRotDeg(const cad::param::ParamDocument* doc) 
             const auto* ep = blk->findPoint(seg.endPointId);
             if (sp && ep && sp->resolved && ep->resolved) {
                 baseDeg = cad::geo::radToDeg(m_base.baseTf.rotation)
-                    + cad::geo::radToDeg((ep->resolvedPos - sp->resolvedPos).angle());
+                    + cad::geo::radToDeg(localPoseDirRad(*blk, seg));
             }
         }
     }

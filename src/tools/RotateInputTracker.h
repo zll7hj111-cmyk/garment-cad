@@ -12,7 +12,8 @@ class ParamDocument;
 
 namespace cad::tools {
 
-/// Tracks hover snapping to endpoints and press-pending drag state for ToolRotate.
+/// Tracks hover snapping to snappable points (segment endpoints, auxiliary
+/// points, circle centers) and press-pending drag state for ToolRotate.
 class RotateInputTracker
 {
 public:

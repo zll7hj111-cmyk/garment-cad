@@ -156,19 +156,11 @@ void RotateCopyGesture::convert(const Vec2& pos)
 
     // 复制基准 = 原线旋转前（base 姿态）的世界朝向（相对 0° = 与原线 base
     // 姿态重叠）——此时原块尚未回弹（仍处于旋转后的姿态），不能读 live
-    // 姿态，须用 m_baseTf + 首段局部方向计算（与 begin() 的
-    // originalWorldRotDeg() 等价）。挂接点出口方向取 base 姿态旋转角
-    // （exitDirectionAtPoint 返回局部方向，与姿态无关）。
-    double baseOrigRotDeg = cad::geo::radToDeg(o.m_session.base().baseTf.rotation);
-    if (!blk->segments.empty()) {
-        const auto& seg0 = blk->segments.front();
-        const auto* sp = blk->findPoint(seg0.startPointId);
-        const auto* ep = blk->findPoint(seg0.endPointId);
-        if (sp && ep && sp->resolved && ep->resolved) {
-            const cad::geo::Vec2 d = ep->resolvedPos - sp->resolvedPos;  // 局部方向
-            baseOrigRotDeg += cad::geo::radToDeg(std::atan2(d.y, d.x));
-        }
-    }
+    // 姿态，统一走 session 的 originalWorldRotDeg()（= baseTf.rotation +
+    // localPoseDirRad；圆段取圆心→接缝半径方向）。旧式在此内联重算弦向，
+    // 圆段两端点重合会算出 0，与 begin() 的同一基准不一致。挂接点出口方向取
+    // base 姿态旋转角（exitDirectionAtPoint 返回局部方向，与姿态无关）。
+    const double baseOrigRotDeg = o.originalWorldRotDeg();
     double baseBenchmarkRad = o.m_session.base().baseTf.rotation;
     if (const auto* seg = blk->findSegment(m_leaderSegmentId)) {
         const auto* sp = blk->findPoint(seg->startPointId);

@@ -52,7 +52,7 @@ QString buildStatusHint(const RotateHintSnapshot& snap)
                 .arg(snap.selectionSize);
         }
         if (!snap.pivotPicked) {
-            return QString::fromUtf8("【已确认】请指定旋转中心（锚点）：点击端点或画布任意位置 | Esc返回选区");
+            return QString::fromUtf8("【已确认】请指定旋转中心（锚点）：点击端点/圆心或画布任意位置 | Esc返回选区");
         }
         if (snap.isAngleLocked) {
             return QString::fromUtf8("旋转：锚心 %1 · 角度由变量/公式驱动，已锁定（移除公式后可旋转）")

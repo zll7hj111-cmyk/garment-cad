@@ -6,10 +6,21 @@
 #include "geometry/Vec2.h"
 
 namespace cad::param {
+class Block;
 class ParamDocument;
+struct Segment;
 }
 
 namespace cad::tools {
+
+/// 段在**块内坐标系**下的「姿态方向」（弧度，旋转不变）。2026-12 用户报告
+/// 「圆的旋转辅助显示没做适配」：整圆两端点重合 ⇒ start→end 弦向恒为 (0,0) ⇒
+/// atan2(0,0)=0 ⇒ 姿态恒 0°，黄虚线压灰虚线、黄弧跨度 0、徽标恒 0°。
+/// 圆段姿态取「圆心 → 接缝」半径方向（= 块内 a₀，与 §26 虚线标注同源）；
+/// 其它段取 start→end 弦向（未解析回退 0）。
+/// 世界姿态 = transform.rotation + 本值（自由段全链路唯一口径）。
+[[nodiscard]] double localPoseDirRad(const cad::param::Block& blk,
+                                     const cad::param::Segment& seg);
 
 /// 角度约束模式（Shift 键循环切换）
 enum class RotateConstraintMode {

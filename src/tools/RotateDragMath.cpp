@@ -11,6 +11,19 @@
 
 namespace cad::tools {
 
+double localPoseDirRad(const cad::param::Block& blk, const cad::param::Segment& seg)
+{
+    if (seg.fitKind == cad::param::FitKind::Circle) {
+        // 圆：姿态 = 圆心→接缝半径方向（块内 a₀）。整圆 start/end 同为接缝点，
+        // 弦向退化为 (0,0)，继续用弦向会让姿态恒 0°（黄虚线压灰虚线、黄弧空）。
+        return cad::geo::degToRad(blk.circleStartAngleDeg(seg));
+    }
+    const auto* sp = blk.findPoint(seg.startPointId);
+    const auto* ep = blk.findPoint(seg.endPointId);
+    if (!sp || !ep || !sp->resolved || !ep->resolved) return 0.0;
+    return (ep->resolvedPos - sp->resolvedPos).angle();
+}
+
 DragStepResult computeDragStep(const cad::geo::Vec2& cursorWorld,
                                const cad::geo::Vec2& pivotWorld,
                                double prevCursorAngle)

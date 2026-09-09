@@ -9,6 +9,7 @@
 #include "parametric/ParamDocument.h"
 #include "parametric/Block.h"
 #include "tools/RotateCopyGesture.h"
+#include "tools/RotateDragMath.h"
 #include "tools/InteractionTolerances.h"  // kAimSearchRadiusPx / kAimAlignTolDeg
 #include "geometry/Epsilon.h"
 
@@ -54,9 +55,9 @@ FreeAimTip freeAimTip(const cad::param::ParamDocument* doc,
     }
     if (!farPt) return tip;
 
-    const cad::geo::Vec2 w1 = blk->transform.toWorld(sp0->resolvedPos);
-    const cad::geo::Vec2 w2 = blk->transform.toWorld(ep0->resolvedPos);
-    tip.curDirRad = (w2 - w1).angle();
+    // 姿态方向 = 世界旋转 + 局部姿态方向（圆段 = 圆心→接缝半径方向）。圆沿用
+    // 弦向时两端点重合 ⇒ 弦向恒 0 ⇒ 瞄准端增量与姿态增量差一个 a₀。
+    tip.curDirRad = blk->transform.rotation + localPoseDirRad(*blk, seg0);
     tip.pos = blk->transform.toWorld(farPt->resolvedPos);
     tip.dirOffsetRad = (tip.pos - pivot).angle() - tip.curDirRad;
     tip.valid = true;
@@ -101,6 +102,11 @@ cad::geo::Vec2 RotateAimSnap::endpointAtAngle(
                 const auto* ep = blk->findPoint(seg.endPointId);
                 if (sp && ep && sp->resolved && ep->resolved) {
                     segLen = std::max(segLen, sp->resolvedPos.distanceTo(ep->resolvedPos));
+                }
+                // 圆段两端点同为接缝点 ⇒ 弦长 0 ⇒ 瞄准端塌到枢轴。取「过接缝的
+                // 直径另一端」：长度 = 直径，方向 = 圆姿态方向（relToWorldRad）。
+                if (seg.fitKind == cad::param::FitKind::Circle) {
+                    segLen = std::max(segLen, 2.0 * blk->circleRadiusMm(seg));
                 }
             }
         }
