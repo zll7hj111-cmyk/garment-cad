@@ -1,4 +1,5 @@
 ﻿#include "ContextStrip.h"
+#include "CircleStripBar.h"
 #include "PlacedPointStripBar.h"
 
 #include <QUndoStack>
@@ -27,8 +28,12 @@ void ContextStrip::setUndoStack(QUndoStack* stack)
     if (m_placedPointBar) {
         m_placedPointBar->setUndoStack(stack);
     }
+    if (m_circleBar) {
+        m_circleBar->setUndoStack(stack);
+    }
     if (!stack) return;
     connect(stack, &QUndoStack::indexChanged, this, [this](int) {
+        if (m_circleBar && m_circleBar->hasTarget()) m_circleBar->refresh();
         if (m_focus == StripFocus::Empty || m_strokePreview) return;
         if (m_paramDoc && m_paramDoc->findBlock(m_blockId)) {
             refreshFields();
@@ -54,6 +59,10 @@ void ContextStrip::beginConnectAngleSession(const QUuid& blockId, const QUuid& s
     m_connectAttId = attachmentId;
     m_connectInitialAngle = initialAngle;
     m_hoverTimer->stop();
+
+    // 连接角度会话只服务于线段条带的角度槽: 圆条带必须让位。
+    if (m_circleBar) m_circleBar->clearTarget();
+    if (m_segmentBar) m_segmentBar->show();
 
     setReadOnlyFields(true);
     m_angleEdit->setReadOnly(false);
@@ -115,6 +124,8 @@ void ContextStrip::showStrokePreview(double lenCm, double angleDeg)
     m_blockId = QUuid();
     m_segmentId = QUuid();
     m_idLabel->setText(QString::fromUtf8("新线"));
+    if (m_circleBar) m_circleBar->clearTarget();
+    if (m_segmentBar) m_segmentBar->show();
 
     const QSignalBlocker nb(m_nameEdit);
     m_nameEdit->clear();

@@ -561,6 +561,8 @@ add_library(gcad_app STATIC
     src/app/ContextStripEdit.cpp
     src/app/PlacedPointStripBar.h
     src/app/PlacedPointStripBar.cpp
+    src/app/CircleStripBar.h
+    src/app/CircleStripBar.cpp
 )
 target_include_directories(gcad_app PUBLIC ${GCAD_SRC})
 target_link_libraries(gcad_app PUBLIC

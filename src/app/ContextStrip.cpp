@@ -1,4 +1,5 @@
 #include "ContextStrip.h"
+#include "CircleStripBar.h"
 #include "PlacedPointStripBar.h"
 
 #include <QApplication>
@@ -51,6 +52,7 @@ ContextStrip::ContextStrip(cad::param::ParamDocument* paramDoc, QWidget* parent)
     if (m_paramDoc) {
         connect(m_paramDoc, &cad::param::ParamDocument::resolved,
                 this, [this] {
+                    if (m_circleBar && m_circleBar->hasTarget()) m_circleBar->refresh();
                     if (m_focus != StripFocus::Empty && !m_strokePreview) {
                         refreshFields();
                         refreshChrome();
@@ -86,10 +88,11 @@ void ContextStrip::buildUi()
     lay->addWidget(m_idLabel);
 
     auto addField = [this, lay](const QString& caption, ElaLineEdit*& edit, int width,
-                                const QString& placeholder) {
+                                const QString& placeholder, ElaText** outLabel = nullptr) {
         auto* label = new ElaText(caption, 11, m_segmentBar);
         label->setObjectName(QStringLiteral("stripField"));
         label->setStyleSheet(QStringLiteral("font-size: 11px;"));
+        if (outLabel) *outLabel = label;
         lay->addWidget(label);
         if (!edit) {
             edit = new ElaLineEdit(m_segmentBar);
@@ -103,7 +106,7 @@ void ContextStrip::buildUi()
 
     addField(QString::fromUtf8("名称:"), m_nameEdit, 75, QString::fromUtf8("如: 侧缝"));
 
-    addField(QString::fromUtf8("长度:"), m_lenEdit, 65, QString::fromUtf8("0.0"));
+    addField(QString::fromUtf8("长度:"), m_lenEdit, 65, QString::fromUtf8("0.0"), &m_lenLabel);
     m_btnPasteLen = new ElaPushButton(QString::fromUtf8("粘贴"), m_segmentBar);
     m_btnPasteLen->setFixedSize(40, kFieldH);
     m_btnPasteLen->setStyleSheet(QStringLiteral("font-size: 11px;"));
@@ -124,7 +127,7 @@ void ContextStrip::buildUi()
         false));
     addField(QString::fromUtf8("基准:"), m_baseAngleEdit, 60, QString::fromUtf8("0.0"));
 
-    addField(QString::fromUtf8("角度:"), m_angleEdit, 65, QString::fromUtf8("0.0"));
+    addField(QString::fromUtf8("角度:"), m_angleEdit, 65, QString::fromUtf8("0.0"), &m_angleLabel);
     m_btnPasteAngle = new ElaPushButton(QString::fromUtf8("粘贴"), m_segmentBar);
     m_btnPasteAngle->setFixedSize(40, kFieldH);
     m_btnPasteAngle->setStyleSheet(QStringLiteral("font-size: 11px;"));
@@ -238,6 +241,27 @@ void ContextStrip::buildUi()
     });
 
     rootLay->addWidget(m_segmentBar);
+
+    // ── 3. 圆专属条带容器 (独立子控件, CIRCLE_TOOL_DESIGN.md §6.1) ──
+    m_circleBar = new CircleStripBar(m_paramDoc, this);
+    connect(m_circleBar, &CircleStripBar::cancelRequested, this, [this] {
+        // 与线段条带 Esc 同语义: 创建锁定 → 取消创建; 否则解除锁定。
+        if (m_creationPinned) emit cancelRequested();
+        else { clearPinned(); returnFocusToCanvas(); }
+    });
+    connect(m_circleBar, &CircleStripBar::returnFocusRequested, this, [this] {
+        returnFocusToCanvas();
+    });
+    // 绘制会话输入 (一期补充) 直接透传给宿主接线。
+    connect(m_circleBar, &CircleStripBar::sessionRadiusChanged,
+            this, &ContextStrip::circleSessionRadiusChanged);
+    connect(m_circleBar, &CircleStripBar::sessionCommitted,
+            this, &ContextStrip::circleSessionCommitted);
+    connect(m_circleBar, &CircleStripBar::sessionCancelled,
+            this, &ContextStrip::circleSessionCancelled);
+    rootLay->addWidget(m_circleBar);
+    m_circleBar->hide();
+
     rootLay->addWidget(m_placedPointBar);
     m_placedPointBar->hide();
 
@@ -287,10 +311,60 @@ void ContextStrip::flushHover()
     m_focus = StripFocus::Hover;
     m_creationPinned = false;
     m_strokePreview = false;
+    if (routeToCircleBar(m_hoverBlock, m_hoverSegment, /*editable=*/false)) {
+        show();
+        return;
+    }
+    leaveCircleBar();
     setReadOnlyFields(true);
     refreshFields();
     refreshChrome();
     show();
+}
+
+bool ContextStrip::routeToCircleBar(const QUuid& blockId, const QUuid& segmentId, bool editable)
+{
+    if (!m_circleBar || !m_paramDoc) return false;
+    const auto* blk = m_paramDoc->findBlock(blockId);
+    const auto* seg = blk ? blk->findSegment(segmentId) : nullptr;
+    if (!seg || seg->fitKind != cad::param::FitKind::Circle) return false;
+    if (!m_circleBar->setTarget(blockId, segmentId)) return false;
+
+    if (m_segmentBar) m_segmentBar->hide();
+    m_circleBar->setEditable(editable);
+    return true;
+}
+
+void ContextStrip::leaveCircleBar()
+{
+    endCircleSession();
+}
+
+void ContextStrip::beginCircleSession()
+{
+    if (!m_circleBar) return;
+    if (m_placedPointBar) m_placedPointBar->clearTarget();
+    if (m_segmentBar) m_segmentBar->hide();
+    m_focus = StripFocus::Pinned;
+    m_blockId = QUuid();
+    m_segmentId = QUuid();
+    m_circleBar->beginSession();
+    show();
+    update();
+}
+
+void ContextStrip::updateCircleSessionValues(double radiusCm, bool locked)
+{
+    if (m_circleBar) m_circleBar->updateSessionValues(radiusCm, locked);
+}
+
+void ContextStrip::endCircleSession()
+{
+    if (m_circleBar) {
+        if (m_circleBar->isSession()) m_circleBar->endSession();
+        else                          m_circleBar->clearTarget();
+    }
+    if (m_segmentBar) m_segmentBar->show();
 }
 
 void ContextStrip::setPinnedTarget(const QUuid& blockId, const QUuid& segmentId,
@@ -313,6 +387,17 @@ void ContextStrip::setPinnedTarget(const QUuid& blockId, const QUuid& segmentId,
     m_creationPinned = false;
     m_strokePreview = false;
     m_editStartIndex = m_undoStack ? m_undoStack->index() : 0;
+    if (routeToCircleBar(blockId, segmentId, /*editable=*/true)) {
+        show();
+        if (grabFocus) {
+            if (auto* edit = m_circleBar->nameEdit()) {
+                edit->setFocus();
+                edit->selectAll();
+            }
+        }
+        return;
+    }
+    leaveCircleBar();
     setReadOnlyFields(false);
     refreshFields();
     refreshChrome();
@@ -378,6 +463,10 @@ void ContextStrip::hideBar()
     m_rotateAnchor = {};
 
     if (m_placedPointBar) m_placedPointBar->clearTarget();
+    if (m_circleBar) {
+        if (m_circleBar->isSession()) m_circleBar->endSession();
+        else                          m_circleBar->clearTarget();
+    }
     if (m_segmentBar) m_segmentBar->show();
 
     hide();
@@ -400,7 +489,8 @@ void ContextStrip::setReadOnlyFields(bool readOnly)
 bool ContextStrip::inputHasFocus() const
 {
     return m_nameEdit->hasFocus() || m_lenEdit->hasFocus() || m_angleEdit->hasFocus()
-        || (m_placedPointBar && m_placedPointBar->hasInputFocus());
+        || (m_placedPointBar && m_placedPointBar->hasInputFocus())
+        || (m_circleBar && m_circleBar->hasInputFocus());
 }
 
 void ContextStrip::returnFocusToCanvas()
@@ -411,6 +501,10 @@ void ContextStrip::returnFocusToCanvas()
 
 void ContextStrip::setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId)
 {
+    if (m_circleBar) {
+        if (m_circleBar->isSession()) m_circleBar->endSession();
+        else                          m_circleBar->clearTarget();
+    }
     if (m_placedPointBar && m_placedPointBar->setTarget(blockId, pointId)) {
         m_segmentBar->hide();
         m_focus = StripFocus::Pinned;
@@ -424,13 +518,14 @@ void ContextStrip::setPlacedPointTarget(const QUuid& blockId, const QUuid& point
 void ContextStrip::clearPlacedPoint()
 {
     if (m_placedPointBar) m_placedPointBar->clearTarget();
-    if (m_segmentBar) m_segmentBar->show();
+    endCircleSession();
     hideBar();
 }
 
 void ContextStrip::beginPlacePointSession(const QString& baseSegName)
 {
     if (m_placedPointBar) {
+        endCircleSession();
         m_segmentBar->hide();
         m_placedPointBar->beginSession(baseSegName);
         m_focus = StripFocus::Pinned;

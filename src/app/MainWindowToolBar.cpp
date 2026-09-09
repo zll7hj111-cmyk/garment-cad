@@ -32,6 +32,7 @@ namespace {
         { cad::tools::ToolType::Measure,      ElaIconType::RulerCombined },
         { cad::tools::ToolType::AngleMeasure, ElaIconType::Angle },
         { cad::tools::ToolType::PlacePoint,   ElaIconType::Diamond },
+        { cad::tools::ToolType::Circle,       ElaIconType::Compass },
     };
     if (auto it = kIcons.constFind(type); it != kIcons.constEnd())
         return *it;

@@ -285,6 +285,12 @@ cad::cmd::SegmentEditBarCommand::State ContextStrip::snapshotState() const
 
     st.segName = seg->name;
     st.lengthFormula = seg->lengthFormula;
+    if (const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId)) {
+        st.startDistance = sp->distance;
+        st.startDistanceFormula = sp->distanceFormula;
+        st.startAngle = sp->angle;
+        st.startAngleFormula = sp->angleFormula;
+    }
     if (const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId)) {
         st.endDistance = ep->distance;
         st.endDistanceFormula = ep->distanceFormula;

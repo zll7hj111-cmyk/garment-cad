@@ -21,6 +21,7 @@ enum class RotationMode;
 
 namespace cad::app {
 
+class CircleStripBar;
 class PlacedPointStripBar;
 
 /// 上下文属性条焦点三态 (CONTEXT_STRIP_DESIGN.md §2.1)。
@@ -87,6 +88,20 @@ public:
     [[nodiscard]] ElaPushButton* angleDetachButton() const { return m_btnAngleDetach; }
     [[nodiscard]] QString badgeText() const;
     [[nodiscard]] QString basisText() const;
+    /// 长度/角度槽标签文案 (线段语义恒为「长度:」/「角度:」)。
+    /// 圆区段走专属 CircleStripBar, 不再改写这两个槽 (CIRCLE_TOOL_DESIGN.md §6.1)。
+    [[nodiscard]] QString lengthLabelText() const;
+    [[nodiscard]] QString angleLabelText() const;
+
+    // ── 圆专属条带 (委托给 CircleStripBar) ──
+    [[nodiscard]] CircleStripBar* circleBar() const { return m_circleBar; }
+
+    // ── 圆绘制会话 (一期补充, CIRCLE_TOOL_DESIGN.md §5.5) ──
+    /// 圆心已落、半径未定: 隐藏线段条带, 圆条带进绘制态 (不抢键盘焦点)。
+    void beginCircleSession();
+    void updateCircleSessionValues(double radiusCm, bool locked);
+    /// 结束绘制态 (提交/取消/切模式/切工具) 并交还线段条带。
+    void endCircleSession();
 
     // ── 放置点专属模式与会话 (委托给 PlacedPointStripBar) ──
     void setPlacedPointTarget(const QUuid& blockId, const QUuid& pointId);
@@ -111,6 +126,11 @@ signals:
 
     // ── 旋转会话换向 ──
     void reverseRequested(const QUuid& blockId, const QUuid& segmentId);
+
+    // ── 圆绘制会话输入 (一期补充) ──
+    void circleSessionRadiusChanged(double radiusCm, bool locked);
+    void circleSessionCommitted();
+    void circleSessionCancelled();
 
     // ── 连接角度会话输入 ──
     void connectAngleTextChanged(const QString& text);
@@ -146,6 +166,11 @@ private:
     void buildUi();
     void setReadOnlyFields(bool readOnly);
     void flushHover();
+    /// 圆区段 (fitKind == Circle) 切到专属条带: 隐藏线段条带、显示圆条带。
+    /// 非圆返回 false (调用方照常走线段条带)。
+    bool routeToCircleBar(const QUuid& blockId, const QUuid& segmentId, bool editable);
+    /// 从圆条带切回线段条带 (清目标 + 显示线段条带)。
+    void leaveCircleBar();
     [[nodiscard]] bool inputHasFocus() const;
     void returnFocusToCanvas();
 
@@ -177,9 +202,11 @@ private:
 
     ElaText*       m_idLabel = nullptr;
     ElaLineEdit*   m_nameEdit = nullptr;
+    ElaText*       m_lenLabel = nullptr;
     ElaLineEdit*   m_lenEdit = nullptr;
     ElaPushButton* m_btnPasteLen = nullptr;
     ElaLineEdit*   m_baseAngleEdit = nullptr;
+    ElaText*       m_angleLabel = nullptr;
     ElaLineEdit*   m_angleEdit = nullptr;
     ElaPushButton* m_btnPasteAngle = nullptr;
     QPushButton*   m_btnUnitAngle = nullptr;
@@ -197,6 +224,7 @@ private:
 
     QWidget*             m_segmentBar = nullptr;
     PlacedPointStripBar* m_placedPointBar = nullptr;
+    CircleStripBar*      m_circleBar = nullptr;
 };
 
 } // namespace cad::app

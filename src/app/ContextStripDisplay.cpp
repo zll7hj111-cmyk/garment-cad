@@ -1,4 +1,5 @@
 ﻿#include "ContextStrip.h"
+#include "CircleStripBar.h"
 #include "PlacedPointStripBar.h"
 
 #include <cmath>
@@ -39,6 +40,11 @@ void ContextStrip::refreshFields()
 
     m_idLabel->setText(cad::param::Serial::tag(seg->serial));
 
+    const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId);
+    const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId);
+    // 圆区段不走本函数: ContextStrip::routeToCircleBar 已切到 CircleStripBar
+    // (CIRCLE_TOOL_DESIGN.md §6.1)。这里只处理线段语义。
+
     if (!m_nameEdit->hasFocus()) {
         const QSignalBlocker nb(m_nameEdit);
         m_nameEdit->setText(seg->name);
@@ -48,17 +54,13 @@ void ContextStrip::refreshFields()
         const QSignalBlocker lb(m_lenEdit);
         if (!seg->lengthFormula.isEmpty()) {
             m_lenEdit->setText(seg->lengthFormula);
+        } else if (sp && ep && sp->resolved && ep->resolved) {
+            const double mm = (ep->constraint == cad::param::PointConstraint::OrthoOffset)
+                ? ep->distance
+                : sp->resolvedPos.distanceTo(ep->resolvedPos);
+            m_lenEdit->setText(cad::geo::Units::formatCm(mm));
         } else {
-            const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId);
-            const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId);
-            if (sp && ep && sp->resolved && ep->resolved) {
-                const double mm = (ep->constraint == cad::param::PointConstraint::OrthoOffset)
-                    ? ep->distance
-                    : sp->resolvedPos.distanceTo(ep->resolvedPos);
-                m_lenEdit->setText(cad::geo::Units::formatCm(mm));
-            } else {
-                m_lenEdit->clear();
-            }
+            m_lenEdit->clear();
         }
     }
 
@@ -71,14 +73,10 @@ void ContextStrip::refreshFields()
             baseDeg = cad::geo::radToDeg(refWorldRad);
         } else if (m_rotateAnchor.active) {
             baseDeg = m_rotateAnchor.baseAngleDeg;
-        } else {
-            const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId);
-            const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId);
-            if (sp && ep && sp->resolved && ep->resolved) {
-                const cad::geo::Vec2 wd = block->transform.toWorld(ep->resolvedPos)
-                                        - block->transform.toWorld(sp->resolvedPos);
-                baseDeg = cad::geo::radToDeg(wd.angle());
-            }
+        } else if (sp && ep && sp->resolved && ep->resolved) {
+            const cad::geo::Vec2 wd = block->transform.toWorld(ep->resolvedPos)
+                                    - block->transform.toWorld(sp->resolvedPos);
+            baseDeg = cad::geo::radToDeg(wd.angle());
         }
         // 2026-09 拍板 D3：基准角 = 世界方向 ⇒ 统一 [0,360) 显示域
         // （旧式 normalizeDeg180 让 270° 显示成 −90°）。
@@ -100,8 +98,7 @@ void ContextStrip::refreshFields()
             m_angleEdit->setText(formula.isEmpty()
                 ? cad::param::attachmentValueDisplayText(*att)
                 : formula);
-        } else if (const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId)) {
-            const auto* sp = block->findPoint(seg->startPointId);
+        } else if (ep) {
             const auto* driven = (ep && !ep->angleFormula.isEmpty()) ? ep
                 : ((sp && !sp->angleFormula.isEmpty()) ? sp : ep);
             if (driven && !driven->angleFormula.isEmpty()) {
@@ -280,6 +277,20 @@ void ContextStrip::refreshChrome()
             QStringLiteral("角度基准为隐藏影子线（本体拆开瞬间的方向快照）。旋转本体不再影响本线；把本线拖到其他线上时影子随之挂载（链式跟随）。可在属性面板改基准角，或点「清除影子」转为自由线。"),
             false));
 
+    // ── 线段槽标签与 tooltip (圆区段已由 CircleStripBar 接管, 这里恒为线段语义) ──
+    if (m_lenLabel) m_lenLabel->setText(QString::fromUtf8("长度:"));
+    if (m_angleLabel) m_angleLabel->setText(QString::fromUtf8("角度:"));
+    m_lenEdit->setToolTip(QString());
+    m_baseAngleEdit->setToolTip(cad::ui::TooltipFormatter::status(
+        QStringLiteral("基准角度"),
+        QStringLiteral("当前线段的基准方向角（度数）。有连接时为母线切向；无连接时为基准参考角。"),
+        false));
+    m_angleEdit->setToolTip(QString());
+    if (m_btnPasteLen)
+        m_btnPasteLen->setToolTip(cad::ui::TooltipFormatter::actionWithShortcut(
+            cad::ui::str::kPasteFormulaOrValue, QStringLiteral("Ctrl+V"),
+            QStringLiteral("将剪贴板内容写入长度框并立即应用（自动清洗换行）")));
+
     const cad::param::ParamPoint* sp = block->findPoint(seg->startPointId);
     const cad::param::ParamPoint* ep = block->findPoint(seg->endPointId);
     const auto tagOf = [](const cad::param::ParamPoint* p) {
@@ -323,6 +334,9 @@ void ContextStrip::applyTheme()
     if (m_placedPointBar) {
         m_placedPointBar->applyTheme();
     }
+    if (m_circleBar) {
+        m_circleBar->applyTheme();
+    }
     const QString unitChip = cad::ui::chipButtonStyle();
     if (m_btnUnitAngle)
         m_btnUnitAngle->setStyleSheet(unitChip);
@@ -343,6 +357,16 @@ QString ContextStrip::badgeText() const
 QString ContextStrip::basisText() const
 {
     return m_btnBasis ? m_btnBasis->text() : QString();
+}
+
+QString ContextStrip::lengthLabelText() const
+{
+    return m_lenLabel ? m_lenLabel->text() : QString();
+}
+
+QString ContextStrip::angleLabelText() const
+{
+    return m_angleLabel ? m_angleLabel->text() : QString();
 }
 
 } // namespace cad::app

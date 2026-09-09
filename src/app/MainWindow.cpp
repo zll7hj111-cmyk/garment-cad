@@ -303,6 +303,26 @@ void MainWindow::connectSignals()
                 updateEditBand();
             });
 
+    // ── 圆绘制会话 (一期补充, CIRCLE_TOOL_DESIGN.md §5.5) ──
+    connect(m_toolManager, &ToolManager::circleSessionChanged,
+            this, [this](bool active) {
+                if (!m_contextStrip) return;
+                if (active) m_contextStrip->beginCircleSession();
+                else        m_contextStrip->endCircleSession();
+                updateEditBand();
+            });
+    connect(m_toolManager, &ToolManager::circleSessionUpdated,
+            this, [this](double radiusCm, bool locked) {
+                if (m_contextStrip)
+                    m_contextStrip->updateCircleSessionValues(radiusCm, locked);
+            });
+    connect(m_contextStrip, &cad::app::ContextStrip::circleSessionRadiusChanged,
+            m_toolManager, &ToolManager::forwardCircleRadius);
+    connect(m_contextStrip, &cad::app::ContextStrip::circleSessionCommitted,
+            m_toolManager, &ToolManager::forwardCircleCommit);
+    connect(m_contextStrip, &cad::app::ContextStrip::circleSessionCancelled,
+            m_toolManager, &ToolManager::forwardCircleCancel);
+
     // 撤销/重做瞬时反馈 (§6.5): 「已撤销：创建线段」1.5s 还原。
     // 编辑条可见时跳过 (条带编辑的 SegmentEditBarCommand 高频提交不刷屏);
     // 新命令 push (idx == count) 与 clear (count == 0) 不算重做。
