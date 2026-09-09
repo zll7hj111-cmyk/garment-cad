@@ -276,6 +276,7 @@ target_link_libraries(gcad_canvas PUBLIC
 add_library(gcad_document STATIC
     src/document/DocumentSerializer.h
     src/document/DocumentSerializer.cpp
+    src/document/EnumCodec.h
     src/document/SchemaKeys.h
     src/document/CommandTexts.h
     src/document/DocumentFile.h

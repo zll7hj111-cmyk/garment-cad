@@ -12,6 +12,7 @@
 #include <QStringList>
 
 #include "document/SchemaKeys.h"
+#include "document/EnumCodec.h"
 #include "parametric/ParamDocument.h"
 #include "parametric/LayerRegistry.h"
 #include "parametric/Block.h"
@@ -34,108 +35,6 @@ namespace {
 // ─── UUID helpers ───
 QString uuidStr(const QUuid& id) { return id.toString(QUuid::WithoutBraces); }
 QUuid uuidFrom(const QString& s) { return QUuid::fromString(s); }
-
-// ─── Enum string maps ───
-// 序列化成对映射表驱动 (2026-08-28 收口 B4)。原四个手写 switch + if 链改为
-// 单张 constexpr 表 + 双向查找 —— 新增枚举只改一处表 (str→enum 与 enum→str
-// 同表必然同步; 旧的 From 侧 if 链漏分支不报错、静默降级损坏存档, 现为
-// 表项缺失走 canonical default, 语义逐字节不变)。
-// 登记表规则: 第一行 = canonical default (未知枚举/未知字符串的降级目标),
-// 与 ParamPoint.h 枚举旁的 12 处登记同步扩展。
-template <typename E, std::size_t N>
-QString enumToStr(const std::array<std::pair<E, const char*>, N>& table, E v,
-                  const char* fallback)
-{
-    for (const auto& [e, s] : table)
-        if (e == v) return QLatin1String(s);
-    return QLatin1String(fallback);
-}
-
-/// @p recognized 语义与旧实现逐位一致: 命中表中任一 (含默认行) = true;
-/// 未知字符串 = false (s 非空且不是默认名)。空串 = 字段缺失, 正常默认化。
-template <typename E, std::size_t N>
-E enumFromStr(const std::array<std::pair<E, const char*>, N>& table,
-              const QString& s, const char* defaultName, E defaultVal,
-              bool* recognized)
-{
-    for (const auto& [e, name] : table) {
-        if (s == QLatin1String(name)) {
-            if (recognized) *recognized = true;
-            return e;
-        }
-    }
-    if (recognized) *recognized =
-        (s.isEmpty() || s == QLatin1String(defaultName));
-    return defaultVal;
-}
-
-constexpr std::array<std::pair<PointConstraint, const char*>, 8>
-    kPointConstraintMap = {{
-        {PointConstraint::Free,         "Free"},
-        {PointConstraint::Polar,        "Polar"},
-        {PointConstraint::Midpoint,     "Midpoint"},
-        {PointConstraint::OnSegment,    "OnSegment"},
-        {PointConstraint::Intersection, "Intersection"},
-        {PointConstraint::Interpolated, "Interpolated"},
-        {PointConstraint::CurveAnchor,  "CurveAnchor"},
-        {PointConstraint::OrthoOffset,  "OrthoOffset"},
-    }};
-QString pointConstraintStr(PointConstraint c) {
-    return enumToStr(kPointConstraintMap, c, "Free");
-}
-PointConstraint pointConstraintFrom(const QString& s, bool* recognized = nullptr) {
-    return enumFromStr(kPointConstraintMap, s, "Free",
-                       PointConstraint::Free, recognized);
-}
-
-constexpr std::array<std::pair<SegmentType, const char*>, 3>
-    kSegmentTypeMap = {{
-        {SegmentType::Line,   "Line"},
-        {SegmentType::Arc,    "Arc"},
-        {SegmentType::Bezier, "Bezier"},
-    }};
-QString segmentTypeStr(SegmentType t) {
-    return enumToStr(kSegmentTypeMap, t, "Line");
-}
-SegmentType segmentTypeFrom(const QString& s, bool* recognized = nullptr) {
-    return enumFromStr(kSegmentTypeMap, s, "Line",
-                       SegmentType::Line, recognized);
-}
-
-constexpr std::array<std::pair<SegmentRole, const char*>, 3>
-    kSegmentRoleMap = {{
-        {SegmentRole::Outline,   "Outline"},
-        {SegmentRole::Internal,  "Internal"},
-        {SegmentRole::Auxiliary, "Auxiliary"},
-    }};
-QString segmentRoleStr(SegmentRole r) {
-    return enumToStr(kSegmentRoleMap, r, "Outline");
-}
-SegmentRole segmentRoleFrom(const QString& s, bool* recognized = nullptr) {
-    return enumFromStr(kSegmentRoleMap, s, "Outline",
-                       SegmentRole::Outline, recognized);
-}
-
-constexpr std::array<std::pair<LineStyle, const char*>, 3>
-    kLineStyleMap = {{
-        {LineStyle::Solid,  "Solid"},
-        {LineStyle::Dashed, "Dashed"},
-        {LineStyle::Dotted, "Dotted"},
-    }};
-QString lineStyleStr(LineStyle s) {
-    return enumToStr(kLineStyleMap, s, "Solid");
-}
-LineStyle lineStyleFrom(const QString& s, bool* recognized = nullptr) {
-    return enumFromStr(kLineStyleMap, s, "Solid",
-                       LineStyle::Solid, recognized);
-}
-
-QString adjustModeStr(AdjustMode m) {
-    return m == AdjustMode::PerStep ? "PerStep" : "Flat";
-}
-AdjustMode adjustModeFrom(const QString& s) {
-    return s == "PerStep" ? AdjustMode::PerStep : AdjustMode::Flat;
-}
 
 // ─── Vec2 ───
 QJsonObject vec2Json(const geo::Vec2& v) {

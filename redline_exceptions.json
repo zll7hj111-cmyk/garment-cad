@@ -5,12 +5,6 @@
   "rules_reference": "E:/e/file_split_rules_v2_final.md",
   "description": "Baseline exceptions for file split rules v2.0. Invariant: This list may only shrink over time, never expand.",
   "file_size_exceptions": {
-    "src/document/DocumentSerializer.cpp": {
-      "lines": 987,
-      "threshold": 900,
-      "reason": "Exempt per Rule 附1: high cohesion, single serialization/deserialization responsibility; 2026-12 审计刷新 987 行",
-      "scheduled_phase": "Exempt"
-    },
     "src/geometry/CurveMath.cpp": {
       "lines": 928,
       "threshold": 500,
