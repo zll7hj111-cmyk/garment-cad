@@ -52,8 +52,8 @@
 | 目录 | 内容 | 说明 |
 |------|------|------|
 | `2026-07/repowiki/` | 自动生成知识库（68 篇，项目概览 / 核心架构 / API 参考 / 工具与画布系统 / 测试指南） | ⚠️ 严重过时（2026-07 生成，未反映 08 起全部重构），**以源码为准** |
-| `2026-08/` | `CONNECTION_REDESIGN_DESIGN.md`（连接卡方案被否决）、`COMPONENT_ROTATE_DESIGN.md`（整组旋转模态已删）、`CLEANUP_REFACTOR_DESIGN.md`（收口任务书已收尾）、`TOOL_SYSTEM_AUDIT.md`（工具链路审查已修复） | 已闭环 / 已废弃 |
-| `2026-09/` | `CURVE_P3_DESIGN.md`（曲线 P3 任务书，2026-08-28）、`DART_LINE_REMOVAL_REPORT.md`（省道线彻底下线工程报告） | 已落地 |
+| `2026-08/` | `CONNECTION_REDESIGN_DESIGN.md`（连接卡方案被否决）、`COMPONENT_ROTATE_DESIGN.md`（整组旋转模态已删）、`CLEANUP_REFACTOR_DESIGN.md`（收口任务书已收尾）、`TOOL_SYSTEM_AUDIT.md`（工具链路审查已修复）、`doc_archive_20260829/`（ARCHITECTURE_REVIEW 原始档案 + P2 交接指令，自 build/ 迁入） | 已闭环 / 已废弃 |
+| `2026-09/` | `CURVE_P3_DESIGN.md`（曲线 P3 任务书，2026-08-28）、`DART_LINE_REMOVAL_REPORT.md`（省道线彻底下线工程报告）、一致性/重复实现审计全案（正式版 `AUDIT_consistency_duplication.md` + `audit_dryrun.md` 中间稿 + `audit_backup_before_78.md` 备份 + `ledger_7.8_*.md` 逐条核销台账，2026-09 生成 / 2026-12 清账，自 build/ 与 docs/ 迁入） | 已落地 |
 | `2026-12/` | `DETOUR_AUDIT_REPORT.md`（拐弯路径审计，10 候选全部闭环） | 已落地 |
 | `plans/` | `DETACH_SHADOW_PLAN.md`、`FILE_SPLIT_PLAN_V2.md`、`FILE_SPLIT_PLAN_V3.md`、`plan-sess_577d56c5-4238-4245-abf5-5705b4540ae4.md` | 一次性计划书 / 验收口径档案 |
 | `SUMMARY.md` | 归档化石摘要（本区唯一活跃文档） | 回顾历史方案先看这里 |
@@ -86,6 +86,6 @@
 | 踩过的坑、快捷键登记 | `TROUBLESHOOTING.md`（grep 关键词） |
 | 某功能的设计细节 / 权威文档 | 本索引第三节 `docs/design/` |
 | 历史方案 / 已删功能的设计 | `docs/archive/`（摘要先看 `SUMMARY.md`） |
-| 旧版 API / 架构背景 | `docs/archive/2026-07/repowiki/`（⚠️ 过时，以源码为准） |
+| 已闭环报告 / 拐弯路径审计 | `docs/archive/2026-09/AUDIT_consistency_duplication.md`（正式版）、`docs/archive/2026-12/DETOUR_AUDIT_REPORT.md` |
 | 服装打版公式（领宽 / 省道 / 肩部修正等） | `docs/reference/garment-formulas.txt` |
 | 面板 UI 原型（交互/视觉参考） | `docs/design/line-property-panel-designs.html`（浏览器打开） |
