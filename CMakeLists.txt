@@ -1072,6 +1072,10 @@ target_link_libraries(test_transient_overlay PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test ElaWidgetTools)
 add_test(NAME test_transient_overlay COMMAND test_transient_overlay)
 
+# 并行跑测（ctest -j）下，性能测量类测试必须独占运行，否则邻居用例的 CPU 抢占会污染计时断言。
+# ctest 默认串行时本属性无影响；tools\test.bat all 与 CI 走并行。
+set_tests_properties(test_perf test_canvas_perf PROPERTIES RUN_SERIAL TRUE)
+
 # ── PDB 膨胀治理 + 链接映像完整性（2026-08 起，2026-12 泛化）──────────────
 # 全部 test_* 目标关闭增量链接，两个理由：
 # ① 这些测试把整个项目 + ElaWidgetTools 链接进一个 exe，Debug /Zi 符号下 PDB

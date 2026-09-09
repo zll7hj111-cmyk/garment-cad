@@ -1,12 +1,13 @@
 @echo off
 rem One-click build wrapper: vcvars64 + on-demand cmake configure + build (Ninja).
 rem Usage:
-rem   tools\build.bat                          (build all in relwithdebinfo)
+rem   tools\build.bat                          [REFUSED by gate] bare = all-targets link storm
 rem   tools\build.bat WildWindPattern          (fast incremental build of main app, ~0.3s)
 rem   tools\build.bat <test_name>              (fast incremental build of single test)
-rem   tools\build.bat [reldeb|debug|release]   (build all in specified preset)
+rem   tools\build.bat all                      (explicit full build: ALL targets relink, 30-60s)
+rem   tools\build.bat [reldeb|debug|release] all    (explicit full build in specified preset)
 rem   tools\build.bat reldeb WildWindPattern   (build specific target in specified preset)
-rem   tools\build.bat reconfig                 (force re-run cmake configure)
+rem   tools\build.bat reconfig                 (force re-run cmake configure, then build)
 setlocal enabledelayedexpansion
 
 set "PRESET=relwithdebinfo"
@@ -52,6 +53,19 @@ if /i "%ARG1%"=="debug" (
 
 if /i "%ARG2%"=="--config" set "DO_CONFIG=1"
 if /i "%ARG2%"=="-c" set "DO_CONFIG=1"
+
+rem Gate: 'all' is the only explicit full-build keyword; bare / preset-only is refused.
+set "EXPLICIT_ALL=0"
+if /i "%TARGET%"=="all" (
+    set "EXPLICIT_ALL=1"
+    set "TARGET="
+)
+if "%TARGET%"=="" if "%DO_CONFIG%"=="0" if "%EXPLICIT_ALL%"=="0" (
+    echo [build.bat] GATE: bare invocation or preset-only = full build of ALL targets ^(59 test exes relink storm, 30-60s^).
+    echo [build.bat] Daily incremental:   tools\build.bat WildWindPattern   or   tools\build.bat test_xxx
+    echo [build.bat] Explicit full build: tools\build.bat all   ^(or: debug all / release all / reldeb all^)
+    exit /b 1
+)
 
 rem Ensure MSVC environment (avoid re-running if already configured)
 if "%VSCMD_ARG_TGT_ARCH%"=="" (
