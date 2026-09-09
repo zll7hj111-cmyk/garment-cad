@@ -123,10 +123,88 @@ bool BlockGeometryCache::rebuild(const QUuid& blockId, cad::param::ParamDocument
             // strong curves — clicks ON the curve body missed the pick band
             // (选择工具对曲线判定失灵, 用户报告 2026-10). The item-level stroke
             // cache (CurveItem::shape) keeps the per-frame cost the same.
+            // ── 圆拟合段 (D16): 解析绘制路径 ──
+            // 折线是按固定 0.1 mm **绝对**容差预扁平的 (CurveMath::flattenSpan),
+            // 半径 63.5 mm 的圆只有 ~56 个点 —— 注释里 "below visual resolution
+            // at any zoom" 对圆不成立, 放大 ~300% 就能看出棱角。所以圆段另建一条
+            // 解析路径专供绘制; 命中与包围盒仍用折线 (与真实几何偏差 < 0.1 mm,
+            // 远小于拾取带宽)。
+            QPainterPath paintPath;
+            CurveItem::Data::CircleGuide guide;
+            if (seg.fitKind == cad::param::FitKind::Circle) {
+                const auto* sp = block->findPoint(seg.startPointId);
+                const auto* c  = sp ? block->findPoint(sp->refPointId) : nullptr;
+                if (sp && c && sp->resolved && c->resolved) {
+                    const cad::geo::Vec2 v0 = sp->resolvedPos - c->resolvedPos;
+                    const double rMm = v0.length();
+                    // 包角: 起终点几何方位角之差, 位置重合 (整圆) → 360。
+                    double sweepDeg = 360.0;
+                    if (const auto* ep = block->findPoint(seg.endPointId);
+                        ep && ep->resolved) {
+                        const cad::geo::Vec2 v1 = ep->resolvedPos - c->resolvedPos;
+                        sweepDeg = cad::geo::radToDeg(std::atan2(v1.y, v1.x)
+                                                      - std::atan2(v0.y, v0.x));
+                        while (sweepDeg <= 1e-9) sweepDeg += 360.0;
+                        while (sweepDeg > 360.0) sweepDeg -= 360.0;
+                    }
+                    const QPointF cSc = toLocal(c->resolvedPos);
+                    const double a0Deg = cad::geo::radToDeg(std::atan2(v0.y, v0.x));
+                    // 缓存坐标**已经烘入块旋转** (上面的 toLocal 施加了 cosR/sinR),
+                    // 所以解析弧的起始角必须取该坐标系里的角 = a₀ + 块旋转。
+                    // 直接喂局部 a₀ 只在块未旋转时碰巧正确; 整块旋转后解析弧会与
+                    // 折线(命中几何)/粉色锚点错开整整一个旋转角 —— 与 ③ 的镜像
+                    // 缺陷同源, 用户报告 m01094「虚线不指外圆点 / 角度恒定」。
+                    // 同一个值也就是该半径的**世界**方向角 (供角度标注)。
+                    const double a0FrameDeg =
+                        a0Deg + cad::geo::radToDeg(block->transform.rotation);
+                    const QRectF box(cSc.x() - rMm, cSc.y() - rMm,
+                                     2.0 * rMm, 2.0 * rMm);
+                    // ① 圆心→接缝半径基准 (2026-12): 圆段作角度基准 (D9) 的
+                    // 基准方向 = 这条半径, 悬停/选中时由 CurveItem 画虚线 +
+                    // 世界角徽标。变形圆 (圆度 ≠ 0) 不画 —— 那已不是圆。
+                    const bool analyticCircle =
+                        rMm > cad::geo::kGeomEps
+                        && std::abs(seg.tension) <= 1e-12;
+                    if (analyticCircle) {
+                        guide.valid = true;
+                        guide.center = cSc;
+                        // 接缝外端点直接取解析出的起点 —— 不要用角度反算, 否则
+                        // 角度口径一变(块旋转)虚线就不落在外圆点上 (m01094 ④)。
+                        guide.seam = toLocal(sp->resolvedPos);
+                        guide.radius = rMm;
+                        guide.worldAngleDeg = a0FrameDeg;
+                        // 圆度 = 0: 画真圆弧。Qt 的弧角约定与**世界系 (Y 向上)**
+                        // 一致 (arcTo 正角 = 视觉逆时针, 等价于 y-up 的 CCW;
+                        // 角度扇区 gizmo 同样直接喂世界角, 见 TransientOverlay),
+                        // 而 box 中心已经 toLocal 到场景系 —— 所以这里直接用
+                        // a0FrameDeg / sweepDeg, **不能再取负**。
+                        // 取负会把可见弧镜像到 X 轴另一侧: 整圆看不出来, 但半圆/
+                        // 部分包角下粉色锚点 (按世界几何解算) 与可见弧分居上下两
+                        // 半 —— 用户报告「粉色点在线段之外 / 只有粉点能开面板」,
+                        // 且镜像弧越出 boundingRect(折线 path) 造成拖动残影。
+                        if (sweepDeg >= 359.999) {
+                            paintPath.addEllipse(box);
+                        } else {
+                            paintPath.arcMoveTo(box, a0FrameDeg);
+                            paintPath.arcTo(box, a0FrameDeg, sweepDeg);
+                        }
+                    } else if (!entry->spans.empty()) {
+                        // 圆度 ≠ 0: 圆已变形 (如 −1 = 内接四边形), 必须按真实
+                        // Bézier 逐跨画, 否则会把正方形画成圆。
+                        paintPath.moveTo(toLocal(entry->spans.front().p0));
+                        for (const auto& span : entry->spans) {
+                            paintPath.cubicTo(toLocal(span.ctrl1),
+                                              toLocal(span.ctrl2),
+                                              toLocal(span.p3));
+                        }
+                    }
+                }
+            }
+
             auto* curveItem = new CurveItem(parentBlockItem, CurveItem::Data{
-                seg.id, curvePath, labelPos, labelAngle,
+                seg.id, curvePath, paintPath, labelPos, labelAngle,
                 seg.color, seg.role, seg.weight, ps, seg.name,
-                seg.showName, seg.showLength, lenText, seg.visible});
+                seg.showName, seg.showLength, lenText, seg.visible, guide});
             m_curveItems.push_back(curveItem);
 
             m_cachedBounds |= curveItem->boundingRect();

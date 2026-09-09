@@ -3,6 +3,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QGraphicsSceneHoverEvent>
 #include <QGraphicsView>
 
@@ -14,6 +15,7 @@
 #include "DirectionMarker.h"
 #include "BlockItemPick.h"
 #include "CanvasFonts.h"
+#include "geometry/Angle.h"
 #include "geometry/Epsilon.h"
 
 using canvas_fonts::lengthFont;
@@ -72,10 +74,17 @@ QRectF CurveItem::boundingRect() const
     // tol ≈ 40 local units; the old ±10 margin silently dropped hits in the
     // band outside the path bbox — 选择工具对曲线判定不准的另一半成因).
     // Worst case: hoverRadiusPx(8) / ZOOM_MIN(0.2) = 40 + cap safety.
-    return m_data.path.boundingRect().adjusted(-BlockItemPick::kPickMarginLocal,
-                                               -BlockItemPick::kPickMarginLocal,
-                                               BlockItemPick::kPickMarginLocal,
-                                               BlockItemPick::kPickMarginLocal);
+    QRectF r = m_data.path.boundingRect();
+    if (m_data.guide.valid) {
+        // ① 半径基准虚线从**圆心**出发, 而窄弧 (如包角 10°) 的折线包围盒
+        // 根本不含圆心 —— 不并进来就等于「画到包围盒外」, 会留下未重绘像素。
+        r = r.united(QRectF(m_data.guide.center - QPointF(1.0, 1.0),
+                            QSizeF(2.0, 2.0)));
+    }
+    return r.adjusted(-BlockItemPick::kPickMarginLocal,
+                      -BlockItemPick::kPickMarginLocal,
+                      BlockItemPick::kPickMarginLocal,
+                      BlockItemPick::kPickMarginLocal);
 }
 
 QPainterPath CurveItem::shape() const
@@ -168,7 +177,7 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
     }
     painter->setPen(curvePen);
     painter->setBrush(Qt::NoBrush);
-    painter->drawPath(m_data.path);
+    painter->drawPath(m_data.paintPath.isEmpty() ? m_data.path : m_data.paintPath);
 
     // 方向指示 (2026-12): 弧长中点处的起点→终点箭头, 换向后缓存重算自动翻转
     // (曲线保形换向, 几何零跳变 —— 这是画布上唯一的换向可见反馈)。灰显层不画;
@@ -177,6 +186,13 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
         QColor dirColor = pp.labelColor;
         if (ghost) dirColor.setAlpha(kGhostAlpha);
         drawDirectionChevron(painter, m_data.labelPos, m_data.labelAngle, dirColor);
+    }
+
+    // ① 圆心→接缝半径基准 (2026-12): 悬停/选中时画出「0° 在哪」。灰显层
+    // 与隐藏曲线不画 —— 基准是编辑参照, 不是几何本身。
+    if (m_data.guide.valid && !m_grayed && !ghost
+        && (m_hovered || m_owner->toolSelected() || m_owner->toolLocked())) {
+        drawCircleGuide(painter, st);
     }
 
     // Labels at the cached arc-length midpoint (suppressed on grayed layers).
@@ -199,6 +215,67 @@ void CurveItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* /*optio
         painter->setFont(lengthFont());
         painter->drawText(m_data.labelPos + QPointF(4, 12), m_data.lengthText);
     }
+}
+
+void CurveItem::drawCircleGuide(QPainter* painter, const CanvasStyle& st) const
+{
+    const Data::CircleGuide& g = m_data.guide;
+    if (!g.valid || g.radius <= cad::geo::kGeomEps)
+        return;
+
+    painter->save();
+    QPen pen(st.gizmoAccentColor, 1.0, Qt::DashLine);
+    pen.setCosmetic(true);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+    painter->drawLine(g.center, g.seam);
+
+    // 圆心小十字: 基准线的起点 (半径方向由它出发)。
+    constexpr double kCross = 2.0;
+    painter->drawLine(QPointF(g.center.x() - kCross, g.center.y()),
+                      QPointF(g.center.x() + kCross, g.center.y()));
+    painter->drawLine(QPointF(g.center.x(), g.center.y() - kCross),
+                      QPointF(g.center.x(), g.center.y() + kCross));
+
+    // 世界角标注: 直接挂在虚线上 (m01094 ②「不要一个大方块」) —— 文字沿半径
+    // 方向排布, 用画布底色描边保证可读, 不再画深色圆角块。
+    QPointF dir = g.seam - g.center;
+    const double len = std::hypot(dir.x(), dir.y());
+    if (len <= cad::geo::kGeomEps) {
+        painter->restore();
+        return;
+    }
+    dir /= len;
+    const double deg = cad::geo::toDisplayDeg(
+        g.worldAngleDeg, cad::geo::AngleDisplayRole::WorldDirection);
+    const QString text = QStringLiteral("%1°").arg(deg, 0, 'f', 1);  // units-allow: 角度标注(度), 非长度单位
+    painter->setFont(canvas_fonts::uiFontPt(9, true));
+    const QFontMetricsF fm(painter->font());
+    // 贴在虚线旁: 半径 62% 处, 沿法线抬半个字高 + 2 单位 (不再包底框)。
+    const QPointF perp(-dir.y(), dir.x());
+    const QPointF anchor = g.center + dir * (len * 0.62)
+        + perp * (fm.height() * 0.5 + 2.0);
+    // 文字随半径方向排布; 超过 ±90° 翻正, 避免倒着读。
+    double angDeg = cad::geo::radToDeg(std::atan2(dir.y(), dir.x()));
+    if (angDeg > 90.0) angDeg -= 180.0;
+    else if (angDeg < -90.0) angDeg += 180.0;
+
+    painter->translate(anchor);
+    painter->rotate(angDeg);
+    QPainterPath textPath;
+    textPath.addText(QPointF(-fm.horizontalAdvance(text) * 0.5, 0.0),
+                     painter->font(), text);
+    QPen halo(st.dark ? st.gizmoBadgeBg : st.canvasBackground);
+    halo.setCosmetic(true);
+    halo.setWidthF(3.0);
+    halo.setJoinStyle(Qt::RoundJoin);
+    painter->setPen(halo);
+    painter->setBrush(Qt::NoBrush);
+    painter->drawPath(textPath);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(st.gizmoAccentColor);
+    painter->drawPath(textPath);
+    painter->restore();
 }
 
 void CurveItem::hoverEnterEvent(QGraphicsSceneHoverEvent* event)
