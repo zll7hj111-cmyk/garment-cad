@@ -4,6 +4,7 @@
 #include <numbers>
 #include <algorithm>
 #include "geometry/Epsilon.h"
+#include "geometry/Vec2.h"
 
 namespace cad::geo {
 
@@ -117,6 +118,23 @@ inline double degToChordMm(double deg, double radiusMm)
     const double rad = std::abs(deg) * kPi / 180.0;
     const double chord = 2.0 * radiusMm * std::sin(rad * 0.5);
     return (deg < 0.0) ? -chord : chord;
+}
+
+// ─── Circle tangent direction ─────────────────────────────────────────────────
+
+/// Direction of travel (CCW tangent) at a point lying ON a circle, in degrees:
+/// the radial vector (point − center) rotated by +90°.
+///
+/// Used as the ray's base direction when the intersection host is a fitted
+/// circle (CIRCLE_TOOL_DESIGN.md §16): a full circle has a degenerate chord
+/// (start and end coincide), so "relative to the host segment" is anchored on
+/// the tangent at the segment start — continuous in sweep, defined for 360°,
+/// and matching the "along the segment from its start" semantics that a line
+/// chord provides.
+inline double circleCcwTangentDeg(const Vec2& point, const Vec2& center)
+{
+    const Vec2 radial = point - center;
+    return radToDeg(std::atan2(radial.y, radial.x)) + 90.0;
 }
 
 } // namespace cad::geo

@@ -33,17 +33,44 @@ void Block::resolve(const QHash<QString, double>& params,
     // effectiveLocalPos（交叉点宿主段、辅助点宿主等）即读到本帧值。
     evaluateExtendValues(params, conditioned, ctx);
 
-    resolveUnresolved(params, conditioned, ctx);
+    // Radius authority for fitted circles: mirror the start point's Polar
+    // radius onto the end point BEFORE solving, so a radius edit cannot leave
+    // the two ends at different radii for a frame (D2).
+    syncCircleFitRadius();
 
-    // Handle closure constraint: if isClosed and there are segments,
-    // force the last segment's endpoint to equal the first segment's startpoint.
-    if (isClosed && !segments.empty()) {
-        const ParamPoint* firstPt = findPoint(segments.front().startPointId);
-        ParamPoint* lastPt = findPoint(segments.back().endPointId);
-        if (firstPt && lastPt && firstPt->resolved) {
-            lastPt->resolvedPos = firstPt->resolvedPos;
-            lastPt->resolved = true;
+    // Point fixpoint + closure + analytic circle fit. The fit's tangents are
+    // derived from freshly solved anchor positions, so they can only be
+    // written AFTER the point fixpoint — but aux points hosted on a circle
+    // (Intersection / Interpolated) read the segment's spans DURING it. On a
+    // cold solve (document load, first solve of a programmatic block) those
+    // points would stick to the unfitted curve, because resolveUnresolved never
+    // revisits an already-resolved point. So re-run the fixpoint whenever the
+    // fit actually moved. Bounded: the next round leaves the tangents unchanged
+    // and breaks out.
+    for (int fitPass = 0;; ++fitPass) {
+        resolveUnresolved(params, conditioned, ctx);
+
+        // Handle closure constraint: if isClosed and there are segments,
+        // force the last segment's endpoint to equal the first segment's startpoint.
+        if (isClosed && !segments.empty()) {
+            const ParamPoint* firstPt = findPoint(segments.front().startPointId);
+            ParamPoint* lastPt = findPoint(segments.back().endPointId);
+            if (firstPt && lastPt && firstPt->resolved) {
+                lastPt->resolvedPos = firstPt->resolvedPos;
+                lastPt->resolved = true;
+            }
         }
+
+        // Analytic curve fits (circle): rewrite the anchor tangents from the
+        // freshly solved positions. MUST run after every point is solved and
+        // before rebuildCurveCache(), which consumes those tangents. The fit
+        // always runs (even on the last allowed pass) so the stored tangents
+        // match the final point positions.
+        const bool fitMoved = applyCircleFitTangents();
+        if (!fitMoved || fitPass >= 2)
+            break;
+        for (auto& pt : points)
+            pt.resolved = false;
     }
 
     // Bump the geometry epoch when any point actually moved (sub-nanometre
@@ -335,7 +362,13 @@ bool Block::resolveIntersectionPoint(ParamPoint& pt,
             segLen = segDir.length();
         }
     }
-    if (segLen < cad::geo::kGeomEps) return false;  // Degenerate segment.
+    if (segLen < cad::geo::kGeomEps && seg->fitKind != FitKind::Circle)
+        return false;  // Degenerate segment.
+    // A fitted circle (CIRCLE_TOOL_DESIGN.md §16) legitimately has a
+    // degenerate chord — a full circle's start and end coincide. The host is
+    // consumed through its curve spans below, so the chord guard must not
+    // reject it; the relative-angle base direction falls back to the tangent
+    // at the start point (see the baseAngle branch).
 
     // Ray direction: aim-point mode (指向点) overrides the
     // numeric/formula angle — the ray points straight at
@@ -350,6 +383,16 @@ bool Block::resolveIntersectionPoint(ParamPoint& pt,
         theta = std::atan2(toAim.y, toAim.x);
     } else {
         double baseAngle = std::atan2(segDir.y, segDir.x);
+        if (seg->fitKind == FitKind::Circle) {
+            // No chord direction to be relative to: anchor on the CCW
+            // tangent at the segment start (continuous in sweep, defined for
+            // a full circle). Same semantics as a line's "along the segment".
+            if (const ParamPoint* center = findPoint(sp->refPointId);
+                center && center->resolved) {
+                baseAngle = cad::geo::degToRad(
+                    cad::geo::circleCcwTangentDeg(spEff, center->resolvedPos));
+            }
+        }
         // Evaluate ray angle (formula overrides numeric).
         double angleDeg = pt.interAngle;
         if (!pt.interAngleFormula.isEmpty()) {
@@ -413,6 +456,36 @@ bool Block::resolveCurveAnchorPoint(ParamPoint& pt)
     const ParamPoint* ep = findPoint(hostSeg->endPointId);
     if (!sp || !ep || !sp->resolved || !ep->resolved) return false;
 
+    // --- Circle-fit branch (CIRCLE_TOOL_DESIGN.md D11) ---------------------
+    // A fitted circle has NO chord to interpolate on: for a full circle the
+    // start/end points coincide, so the chord is degenerate and the generic
+    // path below would collapse every anchor onto the start point. Position
+    // the anchor analytically on the circle instead:
+    //   theta = a0 + sweep * interpPercent,  P = center + r*(cos, sin)
+    // MUST stay ahead of the `len < kGeomEps` early-out.
+    if (hostSeg->fitKind == FitKind::Circle) {
+        const ParamPoint* center = findPoint(sp->refPointId);
+        if (!center || !center->resolved) return false;
+        const geo::Vec2 c = center->resolvedPos;
+        const geo::Vec2 v0 = sp->resolvedPos - c;
+        const double r = v0.length();
+        if (r < cad::geo::kGeomEps) {
+            pt.resolvedPos = c;
+            pt.resolved = true;
+            return true;
+        }
+        // Sweep authority = the two endpoints' Polar angles (D12); the end
+        // angle is stored unwrapped (a1 = a0 + 360 for a full circle), so a
+        // non-positive difference only happens for legacy/edited data.
+        double sweepDeg = ep->angle - sp->angle;
+        if (sweepDeg <= cad::geo::kGeomEps) sweepDeg += 360.0;
+        const double a0Rad = std::atan2(v0.y, v0.x);
+        const double theta = a0Rad + cad::geo::degToRad(sweepDeg * pt.interpPercent);
+        pt.resolvedPos = c + geo::Vec2{std::cos(theta), std::sin(theta)} * r;
+        pt.resolved = true;
+        return true;
+    }
+
     geo::Vec2 chord = ep->resolvedPos - sp->resolvedPos;
     const double len = chord.length();
     if (len < cad::geo::kGeomEps) {
@@ -438,6 +511,112 @@ bool Block::resolveCurveAnchorPoint(ParamPoint& pt)
                    + normal * offset;
     pt.resolved = true;
     return true;
+}
+
+bool Block::applyCircleFitTangents()
+{
+    bool moved = false;
+    for (auto& seg : segments) {
+        if (seg.fitKind != FitKind::Circle) continue;
+
+        // Ordered anchors: start -> pass points -> end.
+        std::vector<ParamPoint*> anchors;
+        anchors.reserve(seg.passPointIds.size() + 2);
+        anchors.push_back(findPoint(seg.startPointId));
+        for (const auto& pid : seg.passPointIds)
+            anchors.push_back(findPoint(pid));
+        anchors.push_back(findPoint(seg.endPointId));
+        if (anchors.size() < 2) continue;
+        bool complete = true;
+        for (const auto* a : anchors)
+            if (!a || !a->resolved) { complete = false; break; }
+        if (!complete) continue;
+
+        // Circle authority: center = start point's Polar reference, radius =
+        // |start - center| (the endpoints' own Polar distance/formula).
+        const ParamPoint* center = findPoint(anchors.front()->refPointId);
+        if (!center || !center->resolved) continue;
+        const geo::Vec2 c = center->resolvedPos;
+
+        const int n = static_cast<int>(anchors.size()) - 1;  // span count
+        std::vector<double> theta(anchors.size(), 0.0);
+        std::vector<double> radius(anchors.size(), 0.0);
+        for (size_t i = 0; i < anchors.size(); ++i) {
+            const geo::Vec2 v = anchors[i]->resolvedPos - c;
+            radius[i] = v.length();
+            theta[i]  = std::atan2(v.y, v.x);
+        }
+        // Unwrap each span's central angle to (0, 2pi]. The last span of a
+        // full circle wraps by -270deg (end position == start position) and
+        // recovers exactly +90deg here; a single-span circle yields 2pi.
+        std::vector<double> delta(n, 0.0);
+        for (int i = 0; i < n; ++i) {
+            double d = theta[i + 1] - theta[i];
+            while (d <= 0.0) d += 2.0 * cad::geo::kPi;
+            while (d > 2.0 * cad::geo::kPi) d -= 2.0 * cad::geo::kPi;
+            delta[i] = d;
+        }
+
+        // Control-arm ratio of the cubic that approximates a circular arc of
+        // central angle delta: kappa = (4/3)*tan(delta/4) — exact at 90deg.
+        // Scaled by the D17 roundness factor (1 + tension): 0 = true circle,
+        // -1 = inscribed polygon. Stored tangents are Hermite (ctrl = P +- T/3),
+        // hence the x3 — without it the control arm is 1/3 and the "circle"
+        // collapses into a rounded diamond.
+        const double roundness = 1.0 + seg.tension;
+        for (int i = 0; i < n; ++i) {
+            const double kappa = (4.0 / 3.0) * std::tan(delta[i] / 4.0) * roundness;
+            const geo::Vec2 perpOut{-std::sin(theta[i]),     std::cos(theta[i])};
+            const geo::Vec2 perpIn {-std::sin(theta[i + 1]), std::cos(theta[i + 1])};
+            const geo::Vec2 tOut = perpOut * (3.0 * kappa * radius[i]);
+            const geo::Vec2 tIn  = perpIn  * (3.0 * kappa * radius[i + 1]);
+            ParamPoint& a0 = *anchors[i];
+            ParamPoint& a1 = *anchors[i + 1];
+            // The fit OWNS the tangents of a circle segment, so a change is
+            // written even when the new value is ZERO: tension = -1 collapses
+            // every span into a straight chord (D17's inscribed polygon), and
+            // an epsilon-guarded write would silently keep the previous
+            // circular arms — the polygon would never appear.
+            if (a0.autoTangent || !(a0.tangentOut == tOut)) {
+                a0.tangentOut  = tOut;
+                a0.autoTangent = false;
+                moved = true;
+            }
+            if (a1.autoTangent || !(a1.tangentIn == tIn)) {
+                a1.tangentIn   = tIn;
+                a1.autoTangent = false;
+                moved = true;
+            }
+        }
+    }
+    // A tension-only edit moves no point, so the position epoch loop in
+    // resolve() would not invalidate the span cache — bump explicitly.
+    if (moved) touchGeometry();
+    return moved;
+}
+
+void Block::syncCircleFitRadius()
+{
+    // CIRCLE_TOOL_DESIGN.md D2: the radius has exactly ONE authority — the
+    // start point's Polar distance/distanceFormula. The end point of a fitted
+    // circle is a mirrored Polar point at the same radius (its angle carries
+    // the sweep instead, D12/D19). Without this mirror a radius edit would
+    // move only the start end, and applyCircleFitTangents() — which measures
+    // each anchor's own |P - center| — would fit a non-circular spiral.
+    for (auto& seg : segments) {
+        if (seg.fitKind != FitKind::Circle) continue;
+        ParamPoint* sp = findPoint(seg.startPointId);
+        ParamPoint* ep = findPoint(seg.endPointId);
+        if (!sp || !ep) continue;
+        // Mirror the radius definition, then the numeric fallback.
+        if (ep->distanceFormula != sp->distanceFormula)
+            ep->distanceFormula = sp->distanceFormula;
+        if (std::abs(ep->distance - sp->distance) > cad::geo::kGeomEpsLoose)
+            ep->distance = sp->distance;
+        // Both ends orbit the same center (the start's Polar reference).
+        if (ep->refPointId != sp->refPointId)
+            ep->refPointId = sp->refPointId;
+    }
 }
 
 bool Block::resolveInterpolatedPoint(ParamPoint& pt,

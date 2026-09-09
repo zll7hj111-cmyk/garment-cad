@@ -488,6 +488,9 @@ add_library(gcad_tools STATIC
     src/tools/SmartPenStrokeInput.cpp
     src/tools/LineFactory.h
     src/tools/LineFactory.cpp
+    # M1 画圆工具 (docs/design/CIRCLE_TOOL_DESIGN.md)
+    src/tools/CircleFactory.h
+    src/tools/CircleFactory.cpp
     src/tools/LeaderCandidatePicker.h
     src/tools/LeaderCandidatePicker.cpp
     src/tools/ToolCurveEdit.h

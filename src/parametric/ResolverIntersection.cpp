@@ -110,7 +110,10 @@ bool Resolver::resolveCrossBlockIntersection(
             segLen = segDir.length();
         }
     }
-    if (segLen < cad::geo::kGeomEps) return false;
+    if (segLen < cad::geo::kGeomEps && seg->fitKind != FitKind::Circle) return false;
+    // A fitted circle host has a degenerate chord by construction (full circle:
+    // start == end) — it is consumed through its spans below. The relative
+    // angle anchors on the start tangent instead (CIRCLE_TOOL_DESIGN.md §16).
 
     // Ray direction (local). Aim-point mode (指向点) overrides the angle — the
     // ray points straight at interAimPointId. interUseWorldAngle means the
@@ -125,7 +128,16 @@ bool Resolver::resolveCrossBlockIntersection(
         if (toAim.lengthSquared() < cad::geo::kGeomEpsTight) return false;  // Coincident with origin.
         theta = std::atan2(toAim.y, toAim.x);
     } else {
-        const double baseAngle = std::atan2(segDir.y, segDir.x);
+        double baseAngle = std::atan2(segDir.y, segDir.x);
+        if (seg->fitKind == FitKind::Circle) {
+            // Degenerate chord: anchor "relative to the host" on the CCW
+            // tangent at the segment start (defined for a full circle).
+            if (const ParamPoint* center = block.findPoint(sp->refPointId);
+                center && center->resolved) {
+                baseAngle = cad::geo::degToRad(
+                    cad::geo::circleCcwTangentDeg(spEff, center->resolvedPos));
+            }
+        }
 
         // Evaluate angle (formula).
         double angleDeg = pt.interAngle;

@@ -22,6 +22,13 @@ enum class SegmentRole {
 /// Visual line style.
 enum class LineStyle { Solid, Dashed, Dotted };
 
+/// Analytic fit applied on top of a Bezier segment (design: CIRCLE_TOOL_DESIGN.md
+/// D3/D21). None = ordinary interpolating curve; Circle = the four cubic spans
+/// are refit to a true circle/arc around a center point every resolve.
+/// Deliberately an enum, not a bool: Segment already carries 5 bool flags and
+/// tools/check_bool_flags.py fails above 5 (implicit state explosion).
+enum class FitKind { None, Circle };
+
 
 /// A segment connecting two parametric points within a Block.
 struct Segment {
@@ -36,6 +43,10 @@ struct Segment {
 
     SegmentType type = SegmentType::Line;
     SegmentRole role = SegmentRole::Outline;  ///< Semantic role (轮廓/内部/辅助).
+
+    /// Analytic fit (None = plain curve). Additive serialized key "fitKind";
+    /// old documents lack it and default to None (no format-version bump).
+    FitKind fitKind = FitKind::None;
 
     QUuid startPointId;  ///< References a ParamPoint in the same Block.
     QUuid endPointId;    ///< References a ParamPoint in the same Block.

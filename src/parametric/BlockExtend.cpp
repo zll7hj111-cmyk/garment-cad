@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "parametric/ConditionEngine.h"
+#include "geometry/Angle.h"
 #include "geometry/Epsilon.h"
 
 namespace cad::param {
@@ -48,6 +49,17 @@ double Block::segmentBaseLength(const QUuid& segmentId) const
     const ParamPoint* ep = findPoint(seg->endPointId);
     if (!sp || !ep || !sp->resolved) return 0.0;
     if (seg->isCurve()) {
+        // 圆拟合段 + 圆度 0 = 真圆（D16 走解析绘制），弧长有解析解 r·θ。
+        // 数值积分 spans 得到的是 4 跨三次 Bézier 近似的弧长：整圆时比 2πr 大
+        // 1.4e-4 相对量（r = 100 mm 差 0.088 mm，面板 2 位小数 cm 肉眼可见），
+        // 会让「弧长」行与「周长」行（2πr）自相矛盾，也会把 D15 发布的周长变量
+        // 污染成非精确值（§11.6e：值 == 2πr）。圆度 ≠ 0 时形状确实不再是圆，
+        // 继续用数值弧长。
+        if (seg->fitKind == FitKind::Circle && std::abs(seg->tension) <= 1e-12) {
+            const double r = circleRadiusMm(*seg);
+            if (r > cad::geo::kGeomEps)
+                return geo::degToArcMm(circleSweepDeg(*seg), r);
+        }
         if (const CurveSpanEntry* entry = curveSpanEntry(seg->id);
             entry && !entry->spans.empty())
             return entry->arcLengthMm;  // exact arc length cached with the spans

@@ -310,6 +310,19 @@ public:
     /// 用于"尾巴上禁止建辅助点/打断"判定（EXTEND_LINE_DESIGN.md D7）。
     [[nodiscard]] bool segmentSnapWithinBase(const QUuid& segmentId, double t) const;
 
+    // ── FitKind::Circle 几何访问器 (CIRCLE_TOOL_DESIGN.md §4.1 / D2) ──────
+    /// 圆心 = 起点 Polar 的参考点；半径唯一权威 = 起点的 distance /
+    /// distanceFormula (D2)。以下访问器优先读**解算后**的几何（公式半径时
+    /// distance 只是回退值），未解算时回退到存储值 —— 条带与属性面板共用
+    /// 同一权威，避免两处各写一份 sweep/a0 换算。
+    [[nodiscard]] const ParamPoint* circleCenterPoint(const Segment& seg) const;
+    [[nodiscard]] double circleRadiusMm(const Segment& seg) const;
+    /// 起点相对圆心的角度（度，块内坐标系）。
+    [[nodiscard]] double circleStartAngleDeg(const Segment& seg) const;
+    /// 包角（度，(0, 360]）。整圆两端点位置重合 → 几何差为 0，按 360 处理
+    /// （与 resolveCurveAnchorPoint 的 sweep 展开同一约定）。
+    [[nodiscard]] double circleSweepDeg(const Segment& seg) const;
+
     /// Freeze the current (resolved, possibly stretched) world geometry of
     /// this single-segment block into a self-contained local construction:
     /// origin at the start point, rotation along start→end, end point
@@ -449,6 +462,23 @@ private:
                                   const QHash<QString, QList<Condition>>& conditioned,
                                   EvalContext* ctx);
     bool resolveCurveAnchorPoint(ParamPoint& pt);
+
+    /// Refit every FitKind::Circle segment's cubic tangents to the true circle
+    /// (CIRCLE_TOOL_DESIGN.md D3/D11/D17). Runs inside resolve() AFTER all
+    /// points are solved and BEFORE rebuildCurveCache(), because the curve
+    /// builder consumes the tangents stored on the anchor ParamPoints.
+    /// Writes tangentIn/tangentOut + autoTangent=false and bumps the geometry
+    /// epoch when the tangents actually moved (a tension-only edit moves no
+    /// point, so the epoch loop alone would not invalidate the span cache).
+    /// Returns whether any tangent changed, which resolve() uses to re-run the
+    /// point fixpoint (see the circle re-pass comment there).
+    [[nodiscard]] bool applyCircleFitTangents();
+
+    /// Mirror the fitted circle's radius onto its end point (D2: the start
+    /// point's Polar distance is the single radius authority). Runs inside
+    /// resolve() before resolveUnresolved() so both ends are solved at the
+    /// same radius within one frame.
+    void syncCircleFitRadius();
 };
 
 } // namespace cad::param

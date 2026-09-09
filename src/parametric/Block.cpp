@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "geometry/Angle.h"
+
 namespace cad::param {
 // --- Transform2D ---
 
@@ -103,5 +105,50 @@ void Block::rebuildSegmentIndex() const
         m_segmentIndex.insert(segments[i].id, i);
 }
 
+// --- FitKind::Circle 几何访问器 (CIRCLE_TOOL_DESIGN.md §4.1/D2) ---
+
+const ParamPoint* Block::circleCenterPoint(const Segment& seg) const
+{
+    const auto* sp = findPoint(seg.startPointId);
+    return sp ? findPoint(sp->refPointId) : nullptr;
+}
+
+double Block::circleRadiusMm(const Segment& seg) const
+{
+    const auto* sp = findPoint(seg.startPointId);
+    const auto* c  = circleCenterPoint(seg);
+    if (sp && c && sp->resolved && c->resolved)
+        return (sp->resolvedPos - c->resolvedPos).length();
+    return sp ? sp->distance : 0.0;
+}
+
+double Block::circleStartAngleDeg(const Segment& seg) const
+{
+    const auto* sp = findPoint(seg.startPointId);
+    const auto* c  = circleCenterPoint(seg);
+    if (sp && c && sp->resolved && c->resolved) {
+        const auto v = sp->resolvedPos - c->resolvedPos;
+        return geo::radToDeg(std::atan2(v.y, v.x));
+    }
+    return sp ? sp->angle : 0.0;
+}
+
+double Block::circleSweepDeg(const Segment& seg) const
+{
+    const auto* sp = findPoint(seg.startPointId);
+    const auto* ep = findPoint(seg.endPointId);
+    const auto* c  = circleCenterPoint(seg);
+    if (sp && ep && c && sp->resolved && ep->resolved && c->resolved) {
+        const auto v0 = sp->resolvedPos - c->resolvedPos;
+        const auto v1 = ep->resolvedPos - c->resolvedPos;
+        double d = geo::radToDeg(std::atan2(v1.y, v1.x) - std::atan2(v0.y, v0.x));
+        while (d <= 1e-9) d += 360.0;
+        while (d > 360.0) d -= 360.0;
+        return d;
+    }
+    double d = (sp && ep) ? (ep->angle - sp->angle) : 360.0;
+    if (d <= 1e-9) d += 360.0;
+    return d;
+}
 
 } // namespace cad::param
